@@ -141,6 +141,10 @@ class CapabilityReport:
         body["tailnet_direct"] = direct.to_dict()
         # Which verified path names people, when attribution is available.
         body["attribution_via"] = "tailscale_direct" if direct.active else ""
+        from kiro_crew.shared_crew.host_power import reported
+
+        # Whether a shared Crew can keep this host awake, and whether it is a laptop.
+        body["keep_awake"] = reported()
         return body
 
 

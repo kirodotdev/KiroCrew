@@ -308,6 +308,16 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``capabilities.tailnet_origin`` ceiling at the enforcement call, and
         # never reached from a tool dispatch path.
         "dashboard/tailnet_serve.py::_run",
+        # Shared Crew's daemon query fallback when no LocalAPI socket answers:
+        # ``["<tailscale>", "whois", "--json", <addr>]`` or
+        # ``["<tailscale>", "status", "--json", "--peers=false"]``. The address is
+        # the connecting socket's own peer, never request text; the binary comes
+        # from ``cli_candidates``, which keeps only the vetted absolute paths
+        # ``tailnet.py`` trusts; the child gets ``sandbox.scrub_env()``. Not
+        # routed for the same reason as ``tailnet.py::_run_json_detail``: it is
+        # a read-only query of the local daemon on the auth path, and it must
+        # never depend on sandbox availability.
+        "dashboard/tailnet_localapi.py::_run_cli",
         # PID-reuse guard for app-backend reap and source-stable Browser
         # descendant checks. Only the macOS/other-POSIX arm spawns, and it uses
         # the fixed ``ps -o lstart= -p <pid>`` argv: no shell, the binary comes

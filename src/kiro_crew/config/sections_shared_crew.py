@@ -82,7 +82,7 @@ class SharedCrewConfig:
         default=False,
         metadata=_meta(
             "Direct Tailnet Link",
-            "Not active in this build yet. Off by default. On: while Tailscale runs, also listen on this "
+            "Off by default. On: while Tailscale runs, also listen on this "
             "machine's own Tailscale addresses (100.x and fd7a:) on the dashboard "
             "port, and let in the people Tailscale names (all of them, or only "
             "those Crew admits when local_authorization is on), without a "
@@ -96,10 +96,9 @@ class SharedCrewConfig:
         default=False,
         metadata=_meta(
             "Approve People In Crew",
-            "Not active in this build yet. "
             "Off: Tailscale decides who gets in. Every person Tailscale lets reach "
-            "this machine is admitted on the direct tailnet link and through "
-            "tailscale serve, and is still named by Tailscale. On: only you, "
+            "this machine is admitted on the direct tailnet link, and is still "
+            "named by Tailscale; tailscale serve keeps its allowlist. On: only you, "
             "people who accepted a Crew invite and people you approved on People "
             "get in, and People shows Approve, Remove and the waiting list. "
             "Tagged nodes are refused unless carried over in both modes. A value "

@@ -386,6 +386,53 @@ Request flow:
 8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
 9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
 
+#### Direct tailnet listener: daemon identity instead of a token
+
+A request whose LOCAL socket address is one of this machine's tailnet addresses
+arrived on the direct tailnet listener (`tailnet_direct.DirectGate.owns`; the
+listener exists only while `dashboard.shared_crew.tailnet_direct` is on (it is off by
+default) and Tailscale runs). `token_auth_middleware(tailnet_direct=...)` decides
+it before step 1, and no other request is affected: loopback, the unix socket and
+`tailscale serve` run the steps above unchanged.
+
+1. The TCP peer must be a tailnet address other than this machine's own (a local
+   process dialling its own tailnet address is refused `self_connection`), with no
+   forwarding header, and the
+   daemon's `whois` of that peer `ip:port` must name a node and a user with a
+   stable id. A `Tailscale-User-*` header is never read. Any failure is a 403
+   (`code: tailnet_direct_refused` with a `reason`); there is no fallback.
+2. The user must be in Shared Crew's derived access set (`shared_crew.access_set`,
+   published through `tailnet_live_allowlist`): the Crew owner (the login and user
+   id of this machine's own node), a login that accepted a Crew invite or came from
+   the one-time migration seed of `dashboard.tailscale.allowed_logins`, or a stable
+   user id the owner approved. A login added to `allowed_logins` later admits
+   nobody; one removed from it leaves the seed at the next start. A
+   tagged node needs a carried-over `tag:<name>` entry. A refused, verified person
+   is listed for the owner's approval and refused `awaiting_approval`. An
+   unreadable set admits only the owner; an unreadable config allowlist admits
+   nobody.
+3. Strict internal paths and `X-Internal-Secret` are refused on this listener.
+4. An app token (`?token=` claiming an app) runs the token flow so its scope holds.
+   Any other token or cookie is ignored. The owner is the owner's dashboard subject
+   (`owner_id`, else `local-app`) with `auth_owner_whois`, so owner-gated routes
+   answer it (`dashboard.tailnet_owner`); `DELETE
+   /api/shared-crew/tailscale/credential` and `DELETE /api/sessions` from it also
+   need `X-Kirocrew-Confirm: irreversible`, else 428 `confirm_required`. Anyone
+   else is the dashboard user `tailnet:uid:<id>`, which never matches the owner
+   subject, so owner-gated routes refuse it. Either way `auth_tailnet_direct` is
+   set, `auth_token` is empty, no cookie is minted, the Shared Crew actor is the
+   verified person, and `_caller_bounds` lends this listener no lifetime, so
+   nobody on it can mint a bearer link.
+5. `whois` is cached per `ip:port` (30 s, failures 2 s, bounded), asked again on
+   every WebSocket upgrade, and repeated on an open WebSocket every 60 s; a
+   failure or a different node key closes it.
+
+The CSRF origin check still applies: the listener's own origins
+(`http://<magicdns-name>:<port>` and `http://<tailnet-ip>:<port>`) join
+`allowed_origins` after the listener binds, so the `Host` barrier and `Origin`
+check accept exactly those. Rules and platform status are in
+[shared-crew.md](shared-crew.md) section 2.
+
 #### Link re-exchange is deliberately allowed (the link is not single-use)
 
 Presenting the same `?token=` link again within its link click window succeeds, and each presentation re-exchanges it for a fresh session cookie bound to the presenting peer (`test_link_token_still_reusable_via_query_param_after_exchange`; `test_url_token_exchanged_for_distinct_session_cookie`). This is deliberate: remote-instance iframes re-derive `/?token=` on navigation, and self-nudge polling re-opens the same URL, so refusing the second presentation would break both.
@@ -1081,7 +1128,7 @@ already names where to sign in.
 
 1. Persistent HMAC secret (`token_signing.key`, owner-restricted) — signed access and refresh cookies survive a process restart; `token_secret` supplies an ephemeral fallback only when the key cannot be persisted. A persisted key that exists but is shorter than 32 bytes is never accepted and is not repaired in place: the gateway boot preflight (`slack.gateway.signing_key_preflight`, backed by `token_secret.signing_key_health` and, for the bytes actually loaded, `token_secret.load_boot_secret`) refuses to start, logs CRITICAL and prints manual repair steps (stop the gateway and any restore, check the length, delete the file by hand, restart), and `kirocrew doctor` reports the same state, so a truncated key is a loud operator action instead of an ephemeral secret that logs every session out at each restart (#13221).
 2. Dual expiry: link click expiry plus configured cookie-session expiry, enforced by `validate_token()`
-3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for new ordinary sessions: they degrade to the address pin. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
+3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity`, the kernel proved the loopback client socket belongs to `tailscaled` (`tailnet_proxy_proof.loopback_client_is_daemon`: on Linux the `/proc/net/tcp{,6}` owner uid of the client end is root's and a `tailscaled` runs as root; every other platform proves nothing), and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. The allowlist fails closed when no peer resolves (`tailnet.forwarded_peer_refusal`): a forwarded tailnet request (loopback peer, a tailnet address in `X-Forwarded-For`) is admitted only when the daemon's `whois` of its single forwarded address names an allowlisted login and no `Tailscale-User-Login` header disagrees; a chain, an address the daemon cannot name, a disagreeing header or a login off the list is refused (`tailnet identity unverified` or `tailnet login not allowed`). A loopback client the kernel does not prove is the daemon (every platform but Linux, a same-user daemon, a proof that raised) is such a case: its forwarded address can only refuse the request or admit it as Unknown with the address pin, never name a person, so a local token holder cannot name a tailnet person (`test_shared_crew_identity_spoof.py`, `test_shared_crew_allowlist_fail_closed.py`). A request with no forwarding header is never refused here. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
 4. Link re-exchange is allowed during the signed link window; each query-param use mints a distinct session cookie (`test_link_token_still_reusable_via_query_param_after_exchange`; `test_url_token_exchanged_for_distinct_session_cookie`)
 5. Dashboard link sent via DM only — never posted in channels
 6. Ordinary loopback routes require token authentication (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`); internal routes have separate secret and mixed-cookie branches

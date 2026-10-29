@@ -9,19 +9,28 @@ Shared Crew lets several people who can already reach one Crew work in it togeth
 It attributes what each person does, charges execution to the person who asked for
 it, keeps one person from exhausting the host, and shows collaborators to each other.
 
-It is an attribution and fairness layer, not an access layer. The network
-(Tailscale) and the existing dashboard auth in `dashboard.token_auth` decide who may
-connect; Shared Crew never admits a request auth refused, and never refuses one auth
-admitted because an identity lookup failed. Every authorized collaborator has the
-same application rights. There are no roles and no per-session ACLs.
+It is an attribution and fairness layer, not an access layer. The network (Tailscale)
+and the existing dashboard auth in `dashboard.token_auth`, including the direct
+tailnet listener's `whois` and the derived access set (section 2, Access set), decide who may connect;
+Shared Crew never admits a request auth refused, and never refuses one auth admitted
+because an identity lookup failed. Every authorized collaborator has the same
+application rights. There are no roles and no per-session ACLs. The in-Crew
+membership actions are the owner's Tailscale invite (§2 Tailscale invites), which
+shares this machine through Tailscale and admits the login that accepted, and the
+owner's Approve on a same-tailnet person who is waiting (§2 Access set), both in
+Tailscale mode only. Tailscale is the only access authority: nobody types the set of people
+who get in.
+
+No permission scoping in this release: every collaborator a Crew admits has the same
+rights, and no code path reads a role or an ACL.
 
 A Crew is a machine identity, not a group of people. Its synthetic principal is the
 Crew acting as itself; the people who may work in it are individual grants, and
 several Crews may have overlapping member lists.
 
-Status: proof of concept. In this build only the configuration section exists, and
-nothing reads it yet. With every switch at its default the gateway behaves as a
-single-operator Crew.
+Status: proof of concept. `shared_crew.wiring` and `shared_crew.lifecycle` connect
+the sections below at gateway start (`dashboard.server`). With every switch at its default the gateway
+behaves as a single-operator Crew, and the direct tailnet listener binds nothing.
 
 ## 2. Identity
 
@@ -59,6 +68,7 @@ Evidence, strongest first (`identity.derive_principal`):
 | An app identity (an app token, or an internal caller the middleware derived an app for) | `system`, component `app:<name>` | `internal` |
 | The internal loopback secret (kiro-cli, MCP, doctor) | `system`, component `internal` | `internal` |
 | Loopback peer forwarded by local `tailscale serve`, resolved and allowlisted by `tailnet.resolve_forwarded_peer` | `human` keyed by tailnet login; `machine` keyed by node for a tagged node | `tailscale_serve` |
+| Tailnet peer on the direct tailnet listener, admitted by daemon `whois` of its own TCP `ip:port` and the derived access set (`tailnet_direct.DirectGate`) | `human` keyed by tailnet login (the stable user id is an alias); `machine` keyed by node for a tagged node | `tailscale_listener` |
 | Tailnet peer reaching a widened bind on its tailnet address, no forwarding header, resolved by daemon `whois` of the socket address (`tailnet.resolve_direct_peer`) | `human` keyed by tailnet login; `machine` keyed by node | `tailscale_direct` |
 | Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject | `local_operator` |
 | Anything else auth admitted | `Principal.unknown()` | `none` |
@@ -69,8 +79,95 @@ tagged node reports the login `tagged-devices`. The display snapshot is the logi
 (or node name) as the daemon reported it, so a rename never changes the id.
 
 A person is keyed by their tailnet login on every transport, never by a display
-name, so every node of one user and a re-created node map to one principal. The
-display name is a label only. The device a person was seen from is the node key.
+name. `tailscale serve` names only the login, while the direct listener's `whois`
+also names the stable user id (`UserProfile.ID`); the user id is an alias of the
+login, never the key, so one person reaching the Crew through Serve and through the
+listener is one principal with one admission budget. Every node of one user, a
+re-created node and a node shared in from another tailnet (`Node.Sharer` set; the
+principal is the node's owner, never the sharer) map to that principal. Access
+approvals still match the stable user id. The display name is a label only. The
+device a person was seen from is the node key.
+
+#### Direct tailnet listener
+
+With `dashboard.shared_crew.tailnet_direct` on (it is off by default; a value that
+is not a boolean reads as off) and Tailscale running, the gateway also listens on this
+machine's own tailnet addresses (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`, from
+the daemon's `status`) on the dashboard port (`dashboard/tailnet_direct_listener.py`).
+It never binds a wildcard, a LAN address or any non-tailnet interface, and it does
+not start beside a widened bind (`KIROCREW_BIND`), under a governance ceiling that
+pins `capabilities.tailnet_origin` off, or when the daemon names no address or no
+owner login. Loopback is unchanged. Off keeps the loopback-only listener; a change
+applies at the next gateway start. The bind is fixed at start; a Tailscale that starts later, or
+an address change, needs a gateway restart.
+
+A request is on the direct listener when the local end of its TCP connection is one
+of those addresses (`DirectGate.owns`). `token_auth_middleware` decides it before
+any token is read:
+
+| Check | Refusal (403, `code: tailnet_direct_refused`) |
+|---|---|
+| Socket peer is a tailnet address | `not_tailnet_peer` |
+| Socket peer is not one of this machine's own tailnet addresses (a local process uses loopback) | `self_connection` |
+| No `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header | `forwarded_header` |
+| Daemon `whois` of the peer `ip:port` names a node key and a user with a stable id | `whois_failed` |
+| Same node key as the connection's earlier answer | `node_changed` |
+| Tagged node: one of its tags is a `tag:<name>` entry the access set carried over (both modes) | `tagged_node_not_allowed` |
+| Person, `local_authorization` off (the default): any person the `whois` names, untagged with a stable user id | none; Tailscale already decided |
+| Person, `local_authorization` on: access set readable (the owner is still admitted) | `allowlist_unreadable` |
+| Person, `local_authorization` on: the Crew owner (the login and user id of this machine's own node), a login of an accepted Crew invite or of the migration seed, or a stable user id the owner approved (`access_set`, published through `tailnet_live_allowlist`) | `login_not_allowed`, or `awaiting_approval` once the person is listed as waiting |
+
+Only the `whois` answer is cached; the admission rule runs on every request, so an
+accepted invite or an approval admits on the next request and a removal is refused
+on the next request, with no restart. An admitted request needs no dashboard token.
+The owner (stable user id and login both match this machine's node,
+`tailnet_direct.is_owner`) carries the owner's dashboard subject (`owner_id`, else
+the bootstrap `local-app`) and `auth_owner_whois`, so every owner-gated route
+answers it (`dashboard.tailnet_owner`). Two irreversible actions, `DELETE
+/api/shared-crew/tailscale/credential` and `DELETE /api/sessions`, also need
+`X-Kirocrew-Confirm: irreversible`, which the dashboard sends only after its own
+confirm dialog; without it the answer is 428 `confirm_required`. Anyone else is the
+dashboard user `tailnet:uid:<id>` (a tagged node `tailnet:node:<name>`), which never
+matches the owner subject, so owner-gated routes refuse it. A token or cookie it carries is ignored, except an app token,
+which runs the ordinary token flow so the app keeps its scope. Strict internal
+paths and the internal secret are refused on this listener. It cannot mint a
+bearer link (`_caller_bounds` lends no lifetime), and `/api/auth/me` reports
+`auth_method: tailnet_direct`. A `Tailscale-User-*` header is never read here.
+Browsers get the refusal as a page, everything else as JSON.
+
+`whois` is not run per HTTP request. It runs once per connection and is cached per
+`ip:port` for `WHOIS_TTL_SECS` (30 s; a failure for 2 s; at most
+`WHOIS_CACHE_MAX_ENTRIES` entries). A WebSocket upgrade always asks again, and an
+open WebSocket is re-verified every `WEBSOCKET_REVERIFY_SECS` and closed when its
+peer stops verifying. Any `whois` failure rejects the request; there is no
+Unattributed fallback on this listener.
+
+The daemon is reached with `tailnet_localapi`, LocalAPI first, then the CLI. Every
+location is one the gateway user cannot write: a socket or token file must be
+root-owned in a root-owned directory, and a CLI found on `PATH` is used only when
+it resolves to a vetted install location (`tailnet._CLI_CANDIDATE_PATHS`). Nothing
+is installed. The method used is reported in the capabilities
+(`tailnet_direct.method`).
+
+| Platform | Order | Status |
+|---|---|---|
+| Linux | LocalAPI unix socket (`/var/run/tailscale/tailscaled.sock`, `/run/tailscale/tailscaled.sock`), then the CLI | code path and tests; live check on a host with Tailscale pending |
+| macOS | open-source daemon socket (`/var/run/tailscaled.socket`), standalone app LocalAPI (`/Library/Tailscale/ipnport` and `sameuserproof-<port>`), CLI on `PATH`, CLI in `/Applications/Tailscale.app/Contents/MacOS/Tailscale` | code path and tests with fakes; unverified on macOS |
+| Windows | CLI in `C:\Program Files\Tailscale` | code path and tests with fakes; unverified on Windows |
+
+`whois` names the user who owns the Tailscale node, not the operating-system user
+at that machine. Several people sharing one node are one principal; each of them
+needs the token path to be told apart. People says so.
+
+Supported topologies:
+
+| Topology | Names people | Admission |
+|---|---|---|
+| Direct tailnet listener (off by default), Linux | yes, by stable user id | `whois` plus access set, no token |
+| Direct tailnet listener, macOS and Windows | yes (code path, unverified on those systems) | same |
+| `tailscale serve` to loopback, Linux with `tailscaled` as root | yes, by login | token plus access set |
+| `tailscale serve` to loopback, macOS, Windows, Linux with a non-root `tailscaled` | no, Unattributed | token plus access set |
+| Widened bind reached on a tailnet address | yes, by login, attribution only | token |
 
 The serve and widened-bind rows require the existing identity-trust opt-in
 (`dashboard.tailscale.trust_identity` with a non-empty `allowed_logins`, i.e.
@@ -82,8 +179,37 @@ and is read by neither the pin (a direct peer stays `ip:`-pinned) nor the
 allowlist, so it cannot admit or refuse a request.
 
 Loopback alone is not proof of a trusted proxy: a loopback request carrying any
-forwarding header (`origin.is_proxied_request`) is never the local operator. It is
-a person only when the serve row resolved it, else Unknown.
+forwarding header (`origin.is_proxied_request`) is never the local operator, and
+its forwarded address is attributed only through the daemon, and only after the kernel
+proves the client end of the loopback socket belongs to `tailscaled`
+(`tailnet_proxy_proof.loopback_client_is_daemon`, Linux only; elsewhere the serve row
+never resolves and such a caller is Unknown). Only a `tailscaled` running as root is
+that proof (any user can name a process `tailscaled`), so a local token holder adding `X-Forwarded-For` is Unknown,
+not the person it names. Without the proof the allowlist still decides admission
+(`tailnet.forwarded_peer_refusal`): a forwarded tailnet request is admitted, as
+Unknown, only when the daemon's `whois` of its single forwarded address names an
+allowlisted login, and refused otherwise, so access never widens where names cannot
+be proven.
+
+Supported matrix for the serve row: Linux with `tailscaled` running as root names
+people; Linux with a non-root `tailscaled`, macOS and
+Windows admit allowlisted people as Unknown. macOS gives an unprivileged process no
+owner for another user's loopback socket, Windows has no such check in this build,
+and `tailscale serve` does not register its loopback connections for a `whois` by
+port. The direct tailnet listener names people on every platform. When it is active,
+`attribution` is `available` and the capabilities carry `attribution_via:
+tailscale_direct` and `tailnet_direct` (`state`, `reason`, `method`, `urls`,
+`owner_login`, `addresses`). Otherwise, when identity trust is on and
+the gateway listens on loopback only, `host_power.probe_after_start` runs
+`tailnet_proxy_proof.proof_support()` in a background task after the listener
+accepts requests and records it (`access.note_proof_gap`); `attribution` reports
+`degraded` (`not_checked`) until then, and afterwards
+`unavailable` (`platform_unprovable`, `daemon_same_user`) or `degraded`
+(`daemon_not_found`). A
+`Tailscale-User-Login` header that disagrees with the daemon drops the
+attribution. A non-loopback peer that sends `X-Forwarded-For` is a proxy on
+another node and is Unknown. Funnel, other reverse proxies and unverifiable
+forwarding headers resolve to Unknown.
 
 Failure never changes access. Derivation runs only on an admitted request, and
 an exception anywhere in it publishes Unknown. A request auth refused publishes
@@ -152,7 +278,208 @@ Inviting adds a person to the tailnet, which is the sharing step. The access car
 
 ### Access set
 
+**Network trust (default).** `dashboard.shared_crew.local_authorization` (bool,
+default `false`; any value but a literal `false` reads as on; read at gateway start)
+decides whether Crew adds its own approval on top of Tailscale. Off, Tailscale alone
+decides: whoever Tailscale lets reach this machine gets in. `access_set.install`
+publishes the set with `network_trust` on, so the direct listener admits every
+`whois`-verified untagged person and nobody is listed as waiting. Network trust
+widens only the direct listener: `tailnet.login_allowed` (the `tailscale serve`
+path and mobile setup) still admits only the owner, accepted invites, approvals
+and the seeded `allowed_logins`. Identity still comes from `whois` and is still used for
+attribution and owner rights. Tagged nodes keep the carried-over `tag:` rule. The
+`not_tailnet_peer`, `forwarded_header`, `whois_failed` and `node_changed` refusals
+are unchanged. Approve, Dismiss and Remove answer 409 `local_authorization_off`,
+`GET /api/shared-crew/access` reports `local_authorization: false` and People hides
+the access card. Revoking an invite still deletes it at Tailscale, which ends the
+share; Crew closes no socket and stops no work itself. Removing a person is done by
+removing them from the tailnet. Everything below in this section, and "Removal
+stops work now", applies only with `local_authorization` on.
+
+With `local_authorization` on, who gets in is computed
+(`shared_crew.access_set`), never typed:
+
+| Member | Matched by | Source |
+|---|---|---|
+| the owner | stable user id and login of this machine's node | daemon `status` at start |
+| a person who accepted a Crew invite | the accepting login (`acceptedBy.loginName`) | `tailscale_invites` members |
+| a person the owner approved | stable Tailscale user id (`whois` `UserProfile.ID`); another account with the same login is not admitted | approvals |
+| the migration seed | login, or `tag:<name>` for an ACL-tagged node | `dashboard.tailscale.allowed_logins`, read at the first start, only shrinks |
+
+Before the dashboard binds, the gateway publishes an owner-only placeholder
+(`access_set.install_placeholder`, no I/O); `tailnet_direct_listener.start` reads
+the set after the bind. At the first gateway start with a readable tailnet section, `access_set.install`
+copies `allowed_logins` (logins and `tag:` entries) into the set as its seed and
+marks it seeded. After that the seed only shrinks: at each start an entry no
+longer in `allowed_logins` leaves the seed, and an entry added later admits
+nobody. People lists the carried-over entries. With the set installed,
+`tailnet.login_allowed` reads the set and ignores the list it is handed, so the
+`tailscale serve` path and mobile setup follow the same set. The invite flow still
+mirrors an accepted login into `allowed_logins`, because `trust_identity` needs a
+non-empty list for the serve path to resolve identities at all. The dashboard has
+no control that edits the list.
+
+A same-tailnet person the Tailscale ACL lets reach this machine is not admitted by
+that alone. The direct listener refuses them (`awaiting_approval`, a "waiting for
+the owner to approve you" page for a browser) and `access_set.note_waiting` lists
+them: stable user id, login, display name, the `whois` `ProfilePicURL` when it is a
+plain `https` URL (display only, loaded with no referrer), node, first and last
+sighting. The list holds `MAX_WAITING` (50) people, oldest dropped; a person's
+sighting is refreshed at most once a minute; at most `NEW_WAITING_PER_MINUTE` (10)
+new people join per minute and the rest are refused unlisted. A dismissed person is
+not listed again for a day. Each new listing, approve, dismiss and removal writes
+one SEL `shared_crew.access.<op>` record with the actor and a login digest.
+
+Owner routes (`shared_crew.routes_access`, the invite routes' owner gate):
+
+| Route | Does |
+|---|---|
+| `GET /api/shared-crew/access` | waiting, approved, carried-over entries, `first_share` |
+| `POST /api/shared-crew/access/waiting/{user_id}/approve` | admit by stable user id |
+| `POST /api/shared-crew/access/waiting/{user_id}/dismiss` | drop from the list |
+| `DELETE /api/shared-crew/access/approved/{user_id}` | remove an approval and stop the person's work |
+| `POST /api/shared-crew/access/first-share/ack` | record the first-share acknowledgment |
+
+**Removal stops work now.** Removing an approval or revoking an accepted invite
+takes the person out of the set (a live revoke by login and by user id, so the
+next request is refused), closes every dashboard socket whose verified actor is
+that person (`routes_access.close_sockets`, by principal id or verified login), and
+calls `admission_revoke.stop_principals` with the person's principal id (keyed by
+login on every transport, `access_set.principal_ids_for`). Each non-terminal root work item charged to them is cancelled through
+`AdmissionService.cancel` with reason `access_removed`: queued and admitted work
+ends `cancelled` at once; running work moves to `cancelling`, its turn is
+cancelled, and its slot is released only when the runtime has stopped and the
+work settles. Finished work is kept. A parked message of theirs is dropped from
+its session's queue before any merge: the drain's per-entry check
+(`AdmissionService._cancelled_parked`) refuses work ended by `cancelled_by_user`
+or `access_removed`, with that reason, so their text never runs merged into
+someone else's turn. Work of theirs that reaches the front of a
+queue later is refused at revalidation (`AdmissionService._revalidate` consults
+`access_set.principal_removed`). With fair admission off (the default)
+no work record exists, so `access_set.slot_work_stopper`
+(`routes_access.stop_slot_work`) drops the queued messages the person sent first
+and then stops each turn they started through `stop_slot_turn`: a turn running
+outside admitted work records its initiator per slot
+(`turn_gate.unadmitted_slots`; a chat send passes its sender with
+`initiated_by`), and `turn_gate.gate_turn` refuses a removed person's drained
+turn with an `access_removed` note. A thread or side reply records its
+initiator under its session key the same way and is cancelled
+(`turn_gate.cancel_unadmitted`). The audit detail reads
+`stopped: access removed`. Removing an approval also marks that person's
+accepted-invite member record `removed`, so the set rebuilt after a restart
+leaves them out and `tailscale_invites.sync` re-admits them only through a new
+invite.
+
+Revoking an invite and `tailscale_invites.sync` commit one at a time
+(`_commit_lock`): `sync` reads the invite state again under the lock, and an
+invite Crew made that was revoked after the list was read admits nobody.
+
+**First share.** While nobody but the owner is in the set and the owner has not
+acknowledged it, the first invite (with a key connected) and the first approve
+answer 409 `first_share_ack_required`. People shows a confirm first: they will see
+all N sessions and Crew memory (M items), counted from the session catalog and the
+global memory store; on a laptop host it adds that teammates lose access while the
+host sleeps. The acknowledgment is stored once per Crew.
+
+**Keep awake.** `host_power.detect_laptop` reports a battery from
+`/sys/class/power_supply` (a `Battery` that is not a peripheral's `Device` scope),
+`/usr/bin/pmset -g batt` on macOS, or `GetSystemPowerStatus` on Windows; anything
+else is unknown, never a laptop. The gateway's prevent-sleep poll has a third
+reason, `host_power.shared_use_wants_awake`: a collaborator (a Tailscale person who
+is not the owner) has a dashboard socket open, or work charged to a member of the
+set is queued or running. The existing `power.SleepInhibitor` holds the host awake
+(`caffeinate -i -w <gateway pid>`, `systemd-inhibit --what=idle:sleep`,
+`SetThreadExecutionState`), each helper resolved from a fixed system path, and
+releases it when that stops. Nothing is installed.
+
+**Storage.** `<data_home>/.vault/shared-crew-tailscale/access.json` (0600), beside
+the invite records, masked from every sandbox mode. A file that cannot be parsed
+leaves the set unreadable: only the owner is admitted, and the access card says so. A
+failed write drops the in-memory copy, so the next read is the file again.
+
 ### Tailscale invites
+
+The owner invites a teammate in one step: emails, or a link, with an optional alias
+and avatar. Crew calls Tailscale's device-invite API, and when the teammate accepts it
+learns their real Tailscale login and admits it. This replaces a separate member list
+and a hand-edited trust list (`shared_crew.tailscale_invites`,
+`shared_crew.routes_invites`).
+
+**Credential.** A user-owned Tailscale API access key (`tskey-api-...`), made by an
+Owner, Admin or IT admin. An OAuth-client token cannot create or resend device
+invites (the share belongs to a user), so no OAuth path exists. The key is entered
+once through `POST /api/shared-crew/tailscale/credential` and stored in a dedicated
+`SecretVault` at `<data_home>/.vault/shared-crew-tailscale/`
+(`shared_crew.tailscale_invite_store`); never in `config.json`, never logged, never in
+a response. The status read reports `connected`, the tailnet name, the key's
+`expires` (from `GET /tailnet/-/keys/{keyId}`) and `key_expires_soon` (within 7
+days) or `key_expired`. `DELETE .../credential` removes it.
+
+**This machine's device.** `connect` matches the local daemon's `Self.PublicKey`
+against `devices[].nodeKey`, then `Self.TailscaleIPs` against `devices[].addresses`,
+and keeps the `nodeId`. Never by name; no match refuses `device_not_found`.
+
+**API calls.** Only to `https://api.tailscale.com/api/v2`, basic auth with the key,
+redirects refused (`shared_crew.tailscale_api`):
+
+| Call | Use |
+|---|---|
+| `POST /device/{id}/device-invites` | body a JSON array of `{email?, multiUse, allowExitNode}`; `allowExitNode` is always `false`, `multiUse` is `false` unless the owner turns on a reusable link (email invites are always single-use) |
+| `GET /device/{id}/device-invites` | read back each invite's `accepted` and `acceptedBy {id, loginName, profilePicUrl}` |
+| `POST /device-invites/{id}/resend` | Resend; Tailscale allows one per minute |
+| `DELETE /device-invites/{id}` | Revoke; a 404 counts as already gone |
+
+**Accept.** `sync` runs when the owner opens People (at most every 15 s) and from a
+gateway poller while any invite is pending (60 s, doubling on failure to 15 min, never
+sooner than a 429's `Retry-After`; a backed-off sync makes no call). Each newly
+accepted invite binds `acceptedBy.id` (the stable Tailscale user id) to `loginName`
+and the invite's alias and avatar, adds the login to
+`dashboard.tailscale.allowed_logins` with `enabled` and `trust_identity` on and the
+machine owner's own login kept (`shared_crew.tailscale_allowlist`), and grants it
+live (`dashboard.tailnet_live_allowlist`, read by `tailnet.login_allowed`), so no
+restart is needed once identity trust was already on; the first accept that turns it
+on reports `restart_required`. The accepting login is used even when it differs from
+the invited email: Tailscale lets an invite be accepted from any account. An invite
+made in the admin console that Tailscale reports accepted is admitted the same way. An
+unaccepted invite Tailscale no longer lists is dropped. Live access is granted only
+after the membership write is durable, so a revoke always finds the person. A reusable link stays due for a
+sync after its first accept, so each later person who accepts it is admitted.
+
+**Display only.** Alias (printable, 64 characters) and avatar (PNG, JPEG, GIF or
+WebP by magic bytes, at most 256 KiB, named by digest, served same-origin with
+`nosniff` and a sandbox CSP) never decide access. People rows whose provenance is a
+verified tailnet peer show the alias and avatar bound to that login; a session
+creator read back from stored attribution never borrows one.
+
+**Revoke.** Delete the invite at Tailscale; for every person it admitted (each one
+who accepted a reusable link), take the login out of the access set and
+the config mirror (never the machine owner's own), refuse it live, close that
+person's dashboard sockets (`_shared_crew_actor` on each socket) and stop their
+queued and running work (Access set, Removal stops work now). Revoking an accepted invite is assumed
+to end the share (Tailscale's sharing guide says so; the API schema does not); Crew's
+own refusal holds either way.
+
+**Owner gate.** Every route but the avatar read requires a dashboard user, a
+non-restricted session, `is_owner_dashboard_request`, and a viewer who is the local
+operator, the owner proved by the direct listener's `whois` (`auth_owner_whois`), or
+this machine's own tailnet login, so an admitted teammate cannot invite, approve or
+revoke. An upstream Tailscale failure answers 502 `tailscale_<code>` (429
+`tailscale_rate_limited` with `Retry-After`), never 401.
+
+**Without a key.** The card explains the manual step and links the admin console's
+Machines page; nothing else changes.
+
+**Audit.** Every connect, create, resend, accept and revoke writes one SEL
+`shared_crew.invite.<op>` record with the actor, `email_sha256:<16 hex>` of the
+invited email (never the address) and the outcome.
+
+Share link. While the direct tailnet listener is active, People (`network` mode) and
+the phone dialog show its plain URL, `http://<magicdns-name>:<port>/` first and each
+tailnet address as a fallback, with a copy button and the note that only people on
+the owner and people they invited or approved can open it (`TailnetDirectLink`). The URL carries no token.
+The phone dialog keeps its token-carrying QR and sign-in link under an Advanced fold
+for devices without Tailscale. People adds the device-owner caveat under the list,
+and the macOS empty state (`platform_unprovable`) points at the direct link.
 
 ## 3. Session attribution and records
 
@@ -858,6 +1185,8 @@ that never learned a revision sends none and is not compared.
 |---|---|
 | `GET /api/shared-crew/capabilities` | `Capabilities` |
 | `GET /api/auth/me` | gains `principal` (`Principal.to_public_dict`) |
+| `GET /api/shared-crew/sessions?creator=&q=&cursor=&limit=` | `SessionPage`; each item carries `attribution` |
+| `GET /api/shared-crew/people` | observed collaborators with usage, and the directory state |
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |
 | `POST /api/shared-crew/work/{work_id}/cancel` `{expected_revision}` | the next `AcceptedWork`, or 409 with `current`; a planned task or schedule run is owner only (403 `owner_only`), as on its own cancel route |
@@ -869,6 +1198,13 @@ that never learned a revision sends none and is not compared.
 | a chat send with `base_revision` | 409 `send_race` with `winner` and `current_revision` when another principal's send was accepted after it |
 | `GET /api/shared-crew/typing-lease?session_key=` | who holds the session's typing lease (dashboard users only) |
 | a chat send while someone else types | 409 `composer_locked` with `holder` and `lease`; a steer into a running turn is not held |
+| `GET /api/shared-crew/tailscale/invites` | owner: `connected`, `tailnet`, key expiry, `invites`, `members`, `sync` (§2 Tailscale invites) |
+| `POST /api/shared-crew/tailscale/invites` `{emails, multi_use, alias, avatar_id}` | owner: the created `invites` |
+| `POST /api/shared-crew/tailscale/invites/{id}/resend` | owner: `{resent: true}` |
+| `DELETE /api/shared-crew/tailscale/invites/{id}` | owner: `{revoked, member_removed, closed_connections}` |
+| `POST` / `DELETE /api/shared-crew/tailscale/credential` | owner: connect `{key}` or remove the key; the status body, never the key |
+| `POST /api/shared-crew/tailscale/avatars` `{data_base64}` | owner: `{avatar_id}` |
+| `GET /api/shared-crew/tailscale/avatars/{avatar_id}` | any dashboard user: the image |
 
 Browser-bound principals use `to_public_dict` (no issuer or subject); browser-bound
 work uses `AcceptedWork.to_public_dict` (no idempotency scope, lease or fencing ids).

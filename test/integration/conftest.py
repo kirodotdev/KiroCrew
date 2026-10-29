@@ -832,9 +832,16 @@ def _reset_home_bound_globals() -> None:
         with contextlib.suppress(Exception):
             live_nudge.stop()
         autonudge._INSTANCE = None
-    # Shared crew: the boot's admission host hooks.
+    # Shared crew: the tailnet allowlist snapshot, the access set read from the
+    # home, what this boot's tailnet setup resolved to, and the boot's host hooks.
+    from kiro_crew.dashboard import tailnet_live_allowlist
+    from kiro_crew.shared_crew import access as shared_crew_access
+    from kiro_crew.shared_crew import access_set as shared_crew_access_set
     from kiro_crew.shared_crew import admission_gate as shared_crew_admission
 
+    tailnet_live_allowlist.reset_for_tests()
+    shared_crew_access_set.reset_for_tests()
+    shared_crew_access._reset_setup_paths_for_tests()
     shared_crew_admission.install_host_hooks(None)
 
 
