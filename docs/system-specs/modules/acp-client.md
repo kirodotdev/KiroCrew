@@ -4225,6 +4225,9 @@ message, and shows a failed fetch's own error text under its lead
   fetch has already warmed. The widened worst case is one
   stale-`ready=True` usage spawn up to five minutes after an external logout,
   still caught sooner by the identity-change re-probe and by Refresh.
+  Both spawn sites call the gate with `harness_turn` left False: a Crew sign-in
+  never authorizes a `kiro-cli` spawn. Only the callers that merely start a turn
+  (`harness_turn=True`) accept that sign-in instead.
 - **`AcpAuthRequired` is the authoritative logout signal.** Readiness is probed
   at gateway start and on explicit user action only, so a mid-session sign-out is
   discovered when the ACP attempt fails, not by a poll. `AcpRuntime`/`AcpClient`
@@ -5217,7 +5220,10 @@ the unit of install) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
 `kas_bundle_route()`'s route half is `kas_bundle.kas_spawn_takes_bundle(agent)`,
-the one spelling over a loaded `agent` section. The sign-in owner
+the one spelling over a loaded `agent` section. Its optional `pin` (a session's
+stored Bot pin, `crewmate_harness.route_pin`) reaches `resolve_kas_route(pin=...)`,
+so rule 2 is judged on that pin as the spawn judges it; the turn-start readiness
+gate (`dashboard/kiro_readiness._kas_bundle_turn_sync`) passes it. The sign-in owner
 (`auth.whoami.agent_owns_sign_in`) reads it behind the backend half and the vault;
 the install probe and spec `permissions` gate (`backend_install._kas_bundle_route`)
 and a `?backend=kas` model list (`crewmate_harness.models_route`) read it bare,

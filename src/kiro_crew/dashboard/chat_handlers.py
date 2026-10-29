@@ -306,6 +306,7 @@ from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
     api_chat_slot_ultracode,
+    configured_backend_for_session,
 )
 from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,

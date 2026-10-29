@@ -238,18 +238,19 @@ def kas_bundle_route() -> bool:
         return False
 
 
-def kas_spawn_takes_bundle(agent: Any) -> bool:
+def kas_spawn_takes_bundle(agent: Any, pin: str = "") -> bool:
     """The route half of :func:`kas_bundle_route`, over a loaded ``agent`` section.
 
     ``agent.kas_bundle`` on, or the automatic switch (:func:`kas_route`). No backend
     half, for readers that ask about KAS whatever ``agent.acp_backend`` is. The flag
     is read off the caller's section first, so a switch that is on answers without
-    resolving kiro-cli. Blocking, as :func:`kas_route` is.
+    resolving kiro-cli. *pin* is the session's own Bot pin, as :func:`kas_route`
+    takes it. Blocking, as :func:`kas_route` is.
     """
-    return bool(getattr(agent, "kas_bundle", False)) or bool(kas_route().bundle)
+    return bool(getattr(agent, "kas_bundle", False)) or bool(kas_route(pin).bundle)
 
 
-def kas_route() -> Any:
+def kas_route(pin: str = "") -> Any:
     """The route the next KAS spawn takes, computed fresh (``acp.kas_route.KasRoute``).
 
     The bundle route is taken when ``agent.kas_bundle`` is on, or automatically
@@ -258,7 +259,7 @@ def kas_route() -> Any:
     """
     from kiro_crew.acp.kas_route import resolve_kas_route
 
-    return resolve_kas_route()
+    return resolve_kas_route(pin=pin)
 
 
 def crew_sign_in_starts_spawn() -> bool:
