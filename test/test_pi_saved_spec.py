@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 import test_member_mount_deepseek as deepseek_mount
+from real_adapter_gate import MEASURED_PI_ACP_VERSION, MEASURED_PI_VERSION
 
 import kiro_crew.validation  # noqa: F401 - break the legacy import cycle first
 from kiro_crew import agent_state
@@ -321,7 +322,7 @@ def test_the_live_capture_confirms_a_saved_spec_and_runs_its_server() -> None:
     header, *frames = _frames()
     meta = header["_meta"]
     assert meta["recorded"] == "live" and meta["backend"] == ACP_BACKEND_PI
-    assert meta["agent_version"] == "0.0.34 (pi 1.3.0)"
+    assert meta["agent_version"] == f"{MEASURED_PI_ACP_VERSION} (pi {MEASURED_PI_VERSION})"
     for fact in ("consumed_spec_matches was true", "capability_runtime_unverified"):
         assert fact in meta["note"]
     updates = [

@@ -170,7 +170,7 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
 # advertised it.
 #
-# pi is a member on a LIVE capture against pi-acp 0.0.34 over pi 1.3.0, driven through
+# pi is a member on a LIVE capture against pi-acp 0.0.34 over pi 1.4.0, driven through
 # Crew's own ``AcpClient``: ``test/fixtures/acp_frames/pi/steering-live.jsonl``. pi-acp
 # has no steer verb, and a second ``session/prompt`` lands in its turn queue as a new
 # turn after the running one, so no request reaches the turn; the steer bypasses the
@@ -180,9 +180,9 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # strictly increasing sequence number). At each ``turn_end`` that did not abort or
 # fail, the extension puts the oldest undelivered steer on pi's steering queue with
 # ``pi.sendMessage(message, {deliverAs: "steer"})``, which queues it synchronously
-# while pi streams and which pi hands the model as a user message; pi 1.3.0's agent
+# while pi streams and which pi hands the model as a user message; pi's agent
 # loop reads that queue right after the boundary and before its next model call in
-# the same run (``agent-loop.js``; no ``finishTurn`` in 1.3.0 ends a run there).
+# the same run (``agent-loop.js``; no ``finishTurn`` in 1.3.0 or 1.4.0 ends a run there).
 # ``pi.sendUserMessage`` is not used: it awaits pi's input handlers before it queues,
 # so its steer could miss that read and surface in a later run. When pi starts the message the extension notifies an envelope naming the
 # steer, which pi-acp forwards as an ``agent_message_chunk`` with
@@ -318,13 +318,13 @@ ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 # drive did: ``Agent::reply`` routes ``/compact`` through ``execute_command`` to
 # ``handle_compact_command``, and ``command_starts_turn("/compact")`` is false.
 #
-# pi is a member on a LIVE drive against pi-acp 0.0.34 over pi 1.3.0, taken with
+# pi is a member on a LIVE drive against pi-acp 0.0.34 over pi 1.4.0, taken with
 # ``scripts/capture_acp_compaction.py`` and a locally served model named in pi's own
 # ``models.json``. Over four ordinary turns its ``usage_update.used`` climbed
-# 13483 -> 25572 -> 37610 -> 49648. A ``/compact`` prompt then answered pi's own
+# 13484 -> 25572 -> 37611 -> 49649. A ``/compact`` prompt then answered pi's own
 # ``Compaction completed`` chunk and returned ``stopReason: end_turn`` with no
 # ``usage_update`` and no status frame after it, and the next ORDINARY turn -- which
-# added another ~12k-token prompt -- read 13596, below the pre-compact peak. The
+# added another ~12k-token prompt -- read 13597, below the pre-compact peak. The
 # drive is committed as evidence: ``test/fixtures/acp_frames/pi/compact-live.jsonl``.
 # The source agrees: pi-acp intercepts ``/compact`` in ``prompt()``, awaits
 # ``session.proc.compact(...)`` and returns ``{ stopReason: "end_turn" }``.
