@@ -1340,11 +1340,15 @@ automatic: own-store dispatch self-heals at the next gate-verified admission, wh
 member DM key agrees with its record and the config, or the durable
 `vouched-executions/` copy agrees (`revouch_at_verified_admission`). Only when neither
 source agrees does a member session's worker dispatch keep answering
-`memory_delegation_denied`; the fallback is the owner re-selecting that member's agent
-on the slot, which binds afresh through the durable path and vouches again.
-Re-selecting the agent the slot already names is enough: the owner-facing switch
-records the selection with `replace`, so it re-binds rather than short-circuiting on an
-unchanged choice. Closing a tab is NOT such a trigger — a non-destructive close and an
+`memory_delegation_denied`; the fallback is the owner running the dispatch from their
+own chat tab, or starting a new chat with that member's agent and dispatching from
+there. A new member chat is vouched when it is created, because the vouching binder
+(`_pin_private_agent_assignment`) runs while a chat has no messages. Picking an agent
+again on the refused chat does not recover it: a different member is refused
+`member_session_pinned`, and the same agent is recorded through
+`record_agent_selection(replace=True)`, which re-publishes the record without vouching.
+The `session_create` tool reply names only the remedies that work
+(`_create_refusal_remedy`). Closing a tab is NOT such a trigger — a non-destructive close and an
 idle archive both retain a persistent session's vouch, because the conversation is
 recreated from the warm pool on resume and the turn-start rebind publishes nothing when
 the selection has not changed, so withdrawing there would charge a restart's refusal to
