@@ -29,6 +29,7 @@ from typing import (  # noqa: F401
 
 from kiro_crew import (  # noqa: F401
     context_omissions,
+    injection_receipts,
     mcp_apps_render,
     model_registry,
     resource_status,

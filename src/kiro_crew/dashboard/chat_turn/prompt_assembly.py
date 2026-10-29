@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         _MemoryUnavailable,
         context_omissions,
         embed_startup_query,
+        injection_receipts,
         is_sensitive_path,
         logger,
         prefetch_session_memory,
@@ -577,6 +578,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
     """Build the prompt the turn sends: a slash command's, the context builder's or the bare message."""
     _trusted_prompt_tail: str | None
     slot_ctx_omitted: dict[str, dict[str, Any]]
+    slot_ctx_receipts: dict[str, dict[str, Any]]
     _context_is_new = turn._context_is_new
     _current_replay_message = turn._current_replay_message
     _is_quick_prompt = turn._is_quick_prompt
@@ -938,7 +940,12 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # the collection gathers them for the ``context/composed`` _turn_dispatch_gates writes.
         # It opens around the build alone, so only THIS turn's composition lands in
         # it, and the worker thread sees it through the context the pool copies.
-        with context_omissions.collect() as _ctx_omitted:
+        # The lesson tiers record WHICH rows they kept the same way, for the
+        # injection receipt _turn_dispatch_gates writes beside it.
+        with (
+            context_omissions.collect() as _ctx_omitted,
+            injection_receipts.collect() as _ctx_receipts,
+        ):
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
@@ -990,6 +997,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)
         turn.slot_ctx_omitted = slot_ctx_omitted
+        slot_ctx_receipts = dict(_ctx_receipts)
+        turn.slot_ctx_receipts = slot_ctx_receipts
         # The reported span is valid for the message as build_message
         # returned it. Several later steps PREPEND to the finished prompt
         # (incognito/temporary notice, re-injected history, hook context, a

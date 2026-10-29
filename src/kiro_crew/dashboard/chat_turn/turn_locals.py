@@ -290,6 +290,7 @@ class _ChatTurn:
     sessions: "Any | None"
     slot_ctx_blocks: "dict[str, int]"
     slot_ctx_omitted: "dict[str, dict[str, Any]]"
+    slot_ctx_receipts: "dict[str, dict[str, Any]]"
     slot_ctx_phase: "str"
     user_typed_len: "int"
     user_typed_message: "str"

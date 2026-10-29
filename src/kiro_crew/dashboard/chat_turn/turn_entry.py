@@ -171,6 +171,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn.slot_ctx_phase = slot_ctx_phase
     slot_ctx_omitted: dict[str, dict[str, Any]] = {}
     turn.slot_ctx_omitted = slot_ctx_omitted
+    slot_ctx_receipts: dict[str, dict[str, Any]] = {}
+    turn.slot_ctx_receipts = slot_ctx_receipts
     # The per-turn billing stats observed BEFORE this turn's cancellable work, so
     # the abnormal seam can tell a turn that installed fresh stats from one that
     # died before doing so and still carries the PREVIOUS turn's object. Snapshot

@@ -1141,6 +1141,25 @@ section names, which is exactly what the entry declares; the crew log refuses an
 undeclared member, and that refusal would also lose the block sizes. Omitted text,
 keys and rules are never recorded.
 
+**Which lessons a turn carried (`usage/injections/`).** The lesson tiers are ranked
+against the request, trimmed to a budget and filtered by topic, so the set a turn
+received cannot be rebuilt from the store afterwards. `render_lesson_tier` (and
+`render_withheld_tier`) also calls `injection_receipts.record` with the memory keys of
+the rows it KEPT and the omitted count; `_turn_build_prompt` opens
+`injection_receipts.collect()` beside `context_omissions.collect()`, and
+`_turn_dispatch_gates`, right after `context/composed`, appends one JSON line to
+`<data home>/usage/injections/YYYY-MM-DD.jsonl` (local day, owner-only): `ts`,
+`session_key`, `turn_index` (the crew log ordinal), `user_msg_id` (the `meta.mid` of the row that opened the turn, frozen on entry;
+empty on a synthetic turn), `model`, `agent`, `surface`, `phase`,
+`memory_store`, `lessons`, `lessons_omitted`, `findings`, `findings_omitted`, and
+`turn_lessons`: the keys `turn_lessons_block` adds to a follow-up under
+`memory.inject_lessons_per_turn`. Only an admitted turn whose composition rendered a
+lesson block writes a line, so a per-turn build that added none writes nothing: the
+model still holds what the session's earlier lines recorded. Incognito and temporary sessions write nothing. The write runs on a worker
+thread (no suspension point in the gate) and never fails the turn. Legacy JSONL lesson
+rows have no key: a kept one is not named, and a cut one still counts in `*_omitted`. Lesson
+text is never written. Purpose: scoring which lessons change behaviour (#20446).
+
 **Current-request recency boundary.** Injected blocks are not the only proof that a
 turn is contextual. A keyed warm provider session (`is_new_session=False`) carries
 native conversation history even when this turn emits no Kiro Crew context block,
@@ -1561,12 +1580,13 @@ during that chain.
 
 ## Anonymous outbound telemetry (`beacon.py`, `apps/install_receipt.py`)
 
-There are now **four independent** telemetry paths. Keep them straight:
+There are now **five independent** telemetry paths. Keep them straight:
 
 | Path | Purpose | Data | Egress | Switch |
 |------|---------|------|--------|--------|
 | OTEL metrics (`metrics/`) | Ops observability | DELTA histograms / counters | **Never** (local JSONL; OTLP only if the operator sets an endpoint) | `telemetry.enabled` (**off**) |
 | Token row store (`usage/tokens/`) | Cost + context analytics | One row per model-spending turn | **Never** | always on |
+| Injection receipts (`usage/injections/`) | Lesson precision scoring | One line per admitted turn that rendered a lesson tier: memory keys and counts, no text | **Never** | always on; skipped for incognito and temporary sessions |
 | **Beacon (`beacon.py`)** | **Product analytics** | One anonymous ping per install per day | **Yes — to the Kiro Crew endpoint** | `telemetry.beacon_enabled` (**on**) |
 | **Install receipt (`apps/install_receipt.py`)** | **Official app adoption** | One anonymous receipt after a successful official-catalog install/update | **Yes — to the same endpoint** | `telemetry.beacon_enabled` (**on**) |
 

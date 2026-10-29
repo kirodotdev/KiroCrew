@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import vector_memory
+from kiro_crew import injection_receipts, vector_memory
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.context import (
     _LESSONS_SHOWN_PER_SESSION,
@@ -337,6 +337,20 @@ class TestSessionLifecycle:
 
         assert HEADER in first and ROLLBACK in first
         assert ROLLBACK not in again
+
+    def test_the_block_records_the_keys_it_sent(self, builder, store, home) -> None:
+        enable(home, inject_lessons_per_turn=True)
+        rollback_key = next(
+            row["key"] for row in store.get_lessons() if ROLLBACK in row["value_json"]
+        )
+
+        with injection_receipts.collect() as first:
+            turn(builder, "flywheel telemetry canary")
+        with injection_receipts.collect() as again:
+            turn(builder, "the flywheel telemetry again")
+
+        assert first[injection_receipts.TURN_LESSONS]["ids"] == [rollback_key]
+        assert injection_receipts.TURN_LESSONS not in again
 
     def test_scrubbed_lesson_lines_stay_within_the_character_budget(
         self, builder, store, home

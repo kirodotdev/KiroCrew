@@ -152,6 +152,9 @@ def turn_lessons_block(
         record.add(lesson for _, lesson in chosen)
     if not chosen:
         return ""
+    from kiro_crew import injection_receipts
+
+    injection_receipts.record(injection_receipts.TURN_LESSONS, [{"key": key} for key, _ in chosen])
     lines = "\n".join(f"- {_markers._scrub_turn_lesson(lesson)}" for _, lesson in chosen)
     return (
         "[Learned corrections — relevant to this message, not shown earlier in this "
