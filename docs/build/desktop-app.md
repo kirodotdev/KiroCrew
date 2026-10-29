@@ -683,7 +683,17 @@ local SSH forward to a remote gateway looks like, is reused only when a remote
 crew is recorded for that port; otherwise the supervisor refuses it
 (`foreign-holder`) and the gateway-failure dialog offers **Add Remote Crew**
 (see [The gateway-failure dialog](#the-gateway-failure-dialog)). Adopting an
-unattributed holder would post this machine's local secret to it. Before
+unattributed holder would post this machine's local secret to it. On Windows a
+holder is attributed by the executable path the launch resolver selected. A
+source or pip venv's gateway listens from the venv's base interpreter (its
+`Scripts\python.exe` is a redirector), which every Python program can run, so
+that interpreter counts only when it is the one the venv's `pyvenv.cfg` names,
+its argv0 names that interpreter or the venv's redirector, its script is
+exactly that venv's `Scripts\kirocrew.exe`, and a server subcommand follows
+(`windowsVenvBaseInterpreterLaunches` in
+[`windows-port.js`](../../website/electron/windows-port.js)). Like every
+Windows rule here, this attributes by command line: it does not tell apart a
+process of the same account that copies that exact command line. Before
 reusing a same-family local gateway on a fixed-path POSIX install, the shell
 checks whether its sole listener is running from this app's current bundled
 backend path. If that bundled gateway reports an older version than the app,
