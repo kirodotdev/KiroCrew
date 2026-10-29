@@ -3,9 +3,10 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-// "Keep colors only" is remembered per slug until the user picks the theme in
-// the picker again. useTheme's setColorTheme is that pick; the boot restore of a
-// persisted selection is not, and must leave the answer alone.
+// The experience choice of a pack is the layer's to read: picking the theme in
+// the picker, restoring it at boot, or picking another theme leaves the stored
+// record (and an older build's marker, which the layer migrates) untouched, so a
+// pack with a record does not ask again and one without a record does.
 const themesFn = vi.fn()
 const themeDetailFn = vi.fn()
 const themeBootFn = vi.fn()
@@ -21,7 +22,8 @@ vi.mock('../api/client', () => ({
 import { ThemeProvider, useTheme } from '../hooks/useTheme'
 
 const SLUG = 'haunted'
-const DECLINE_KEY = `mc-theme-experience-declined-${SLUG}`
+const RECORD_KEY = `mc-theme-experience-${SLUG}`
+const RECORD = JSON.stringify({ sounds: false, overlays: true, persona: false })
 const catalog = { themes: [{ slug: SLUG, name: 'Haunted', emoji: '🎃', source: 'installed' }] }
 const detail = {
   slug: SLUG,
@@ -42,7 +44,7 @@ function wrapper({ children }: { children: ReactNode }) {
   )
 }
 
-describe('useTheme: the "Keep colors only" answer', () => {
+describe('useTheme: the stored experience choice', () => {
   beforeEach(() => {
     localStorage.clear()
     window.matchMedia = vi.fn().mockReturnValue({
@@ -55,31 +57,31 @@ describe('useTheme: the "Keep colors only" answer', () => {
     themeBootFn.mockReset()
   })
 
-  it('is forgotten when the user picks the theme', async () => {
+  it('survives the user picking the theme', async () => {
     themeBootFn.mockResolvedValue({ mode: 'dark', color: 'kiro' })
-    localStorage.setItem(DECLINE_KEY, 'consented-v2')
+    localStorage.setItem(RECORD_KEY, RECORD)
     const { result } = renderHook(() => useTheme(), { wrapper })
     await waitFor(() => expect(result.current.customThemes).toHaveLength(1))
     act(() => result.current.setColorTheme(`custom-${SLUG}`))
     expect(result.current.colorTheme).toBe(`custom-${SLUG}`)
-    expect(localStorage.getItem(DECLINE_KEY)).toBeNull()
+    expect(localStorage.getItem(RECORD_KEY)).toBe(RECORD)
   })
 
   it('survives the boot restore of the same theme', async () => {
     themeBootFn.mockResolvedValue({ mode: 'dark', color: `custom-${SLUG}` })
-    localStorage.setItem(DECLINE_KEY, 'consented-v2')
+    localStorage.setItem(RECORD_KEY, RECORD)
     const { result } = renderHook(() => useTheme(), { wrapper })
     await waitFor(() => expect(result.current.colorTheme).toBe(`custom-${SLUG}`))
     await waitFor(() => expect(result.current.customThemeDataMap.get(SLUG)).toEqual(detail))
-    expect(localStorage.getItem(DECLINE_KEY)).toBe('consented-v2')
+    expect(localStorage.getItem(RECORD_KEY)).toBe(RECORD)
   })
 
   it('is not touched by picking a built-in theme', async () => {
     themeBootFn.mockResolvedValue({ mode: 'dark', color: `custom-${SLUG}` })
-    localStorage.setItem(DECLINE_KEY, 'consented-v2')
+    localStorage.setItem(RECORD_KEY, RECORD)
     const { result } = renderHook(() => useTheme(), { wrapper })
     await waitFor(() => expect(result.current.colorTheme).toBe(`custom-${SLUG}`))
     act(() => result.current.setColorTheme('kiro'))
-    expect(localStorage.getItem(DECLINE_KEY)).toBe('consented-v2')
+    expect(localStorage.getItem(RECORD_KEY)).toBe(RECORD)
   })
 })

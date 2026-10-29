@@ -9162,18 +9162,17 @@
       "var_warning": "Aviso"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Adotar uma persona temática no assistente (segurança e precisão sempre têm prioridade; você pode pedir para abandonar a persona a qualquer momento).",
-      "enable_experience": "Ativar experiência",
       "enable_named_experience": "Ativar a experiência “{{name}}”?",
       "keep_colors_only": "Manter apenas as cores",
       "mute_theme_sounds": "Silenciar sons do tema",
       "persona_text": "Texto da persona",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Persona que será adicionada ao prompt de sistema do assistente:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Reproduzir sons temáticos (respeita o seu botão de silenciar e a configuração de movimento reduzido).",
-      "show_animated_visual_overlays": "• Exibir sobreposições visuais animadas.",
       "theme_overlay": "sobreposição de tema {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Este é um tema de experiência. Ativá-lo irá:",
-      "unmute_theme_sounds": "Reativar sons do tema"
+      "unmute_theme_sounds": "Reativar sons do tema",
+      "save": "Salvar",
+      "sounds": "Sons",
+      "overlays": "Sobreposições",
+      "persona": "Persona"
     },
     "timezoneSelect": {
       "render_timezone": "Fuso horário de exibição"
@@ -17593,6 +17592,7 @@
         "installed_theme_could_not_be_loaded": "Não foi possível carregar o tema instalado. Reinstale-o ou escolha outro tema.",
         "custom_theme_could_not_be_loaded": "Não foi possível carregar este tema. Escolha outro tema ou edite este.",
         "local_folder": "Pasta local",
+        "zip_file": "Arquivo zip",
         "mode": "Modo",
         "native_window_zoom_tip": "Zoom nativo da janela, a mesma configuração de {{mod}}+ / {{mod}}− (50%–300%). Fica salvo entre inicializações.",
         "new_theme": "+ Novo tema",
@@ -17600,8 +17600,6 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Nenhuma, ciclo automático ou escolha uma cor fixa.",
         "palette": "Paleta",
         "select_a_theme_for_the_dashboard": "Selecione um tema para o dashboard",
-        "enable_theme_experience": "Ativar experiência",
-        "enable_theme_experience_hint": "Você escolheu \"Manter apenas as cores\", então os sons, as sobreposições e a persona deste tema estão desativados.",
         "sidebar_colors": "Cores da barra lateral",
         "terminal": "Terminal",
         "terminal_font_family": "Fonte",
@@ -17680,7 +17678,14 @@
         "desktop_app": "Aplicativo para desktop",
         "keep_running_when_window_closed": "Manter o aplicativo em execução em segundo plano ao fechar a janela",
         "keep_running_when_window_closed_desc": "Fechar a janela oculta o {{productName}}, e suas sessões e tarefas continuam em execução. Desative para que o botão de fechar encerre o aplicativo. Um gateway iniciado por este aplicativo para junto com ele, e um gateway ao qual ele apenas se conecta continua em execução.",
-        "keep_running_when_window_closed_save_failed": "Não foi possível salvar esta configuração. Nada foi alterado. Tente novamente."
+        "keep_running_when_window_closed_save_failed": "Não foi possível salvar esta configuração. Nada foi alterado. Tente novamente.",
+        "choose_zip_file": "Escolher um arquivo .zip",
+        "theme_experience": "Experiência",
+        "theme_experience_sounds": "Sons",
+        "theme_experience_overlays": "Sobreposições",
+        "theme_experience_persona": "Persona",
+        "theme_experience_persona_text": "Texto da persona",
+        "theme_experience_persona_save": "Salvar"
       },
       "importPanel": {
         "agent_data": "Dados do agente",

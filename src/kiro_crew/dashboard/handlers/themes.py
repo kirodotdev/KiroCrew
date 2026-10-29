@@ -65,6 +65,7 @@ from kiro_crew.dashboard.theme_validate import (
     _validate_theme_data,
     _validate_theme_dir,
 )
+from kiro_crew.dashboard.theme_zip import THEME_ZIP_MAX_UPLOAD_BYTES, extract_theme_zip
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import (
     FileTooLargeError,
@@ -797,14 +798,8 @@ def _audit_theme_install_governance(
         pass
 
 
-async def api_themes_install(request: web.Request) -> web.Response:
-    """POST /api/themes/install — install a Level-0 theme directory.
-
-    Body: ``{"source": {"type": "local", "path": "..."}}`` or
-    ``{"source": {"type": "github", "url": "https://github.com/..."}}``.
-    Fetch/move -> validate (data + structure) -> register as
-    ``_themes_dir()/<slug>/``.
-    """
+def _theme_install_admission() -> web.Response | None:
+    """The governance refusal for a theme install, or ``None`` when permitted."""
     # Governance admission gate: installing a pack ingests third-party content
     # (local move or server-side git clone) and serves sandboxed JS into the
     # dashboard, so an enterprise POLICY must be able to ban it wholesale
@@ -832,6 +827,33 @@ async def api_themes_install(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "theme installation blocked (governance unavailable)"}, status=403
         )
+    return None
+
+
+def _install_response(
+    theme: dict[str, Any] | None, err: str | None, status: int, code: str | None = None
+) -> web.Response:
+    if err or theme is None:
+        payload = {"error": err or "install failed"}
+        if err == _THEME_GIT_SANDBOX_UNAVAILABLE:
+            payload["code"] = "theme_install_sandbox_unavailable"
+        elif code:
+            payload["code"] = code
+        return web.json_response(payload, status=status)
+    return web.json_response({"ok": True, "slug": theme["slug"], "theme": theme})
+
+
+async def api_themes_install(request: web.Request) -> web.Response:
+    """POST /api/themes/install — install a Level-0 theme directory.
+
+    Body: ``{"source": {"type": "local", "path": "..."}}`` or
+    ``{"source": {"type": "github", "url": "https://github.com/..."}}``.
+    Fetch/move -> validate (data + structure) -> register as
+    ``_themes_dir()/<slug>/``.
+    """
+    refused = _theme_install_admission()
+    if refused is not None:
+        return refused
 
     try:
         body = await request.json()
@@ -849,13 +871,65 @@ async def api_themes_install(request: web.Request) -> web.Response:
     theme, err, status = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(), _do_install, stype, source
     )
-    if err or theme is None:
-        payload = {"error": err or "install failed"}
-        if err == _THEME_GIT_SANDBOX_UNAVAILABLE:
-            payload["code"] = "theme_install_sandbox_unavailable"
-        return web.json_response(payload, status=status)
+    return _install_response(theme, err, status)
 
-    return web.json_response({"ok": True, "slug": theme["slug"], "theme": theme})
+
+def _do_install_zip(
+    data: bytes,
+) -> tuple[dict[str, Any] | None, str | None, int, str | None]:
+    """Unpack an uploaded archive privately, then run the local install on it.
+
+    The fourth element is the error ``code`` for an archive the unpacker refused.
+    """
+    tmp_root = Path(tempfile.mkdtemp(prefix="theme-zip-"))
+    try:
+        unpacked = tmp_root / "pack"
+        unpacked.mkdir()
+        try:
+            root = extract_theme_zip(data, unpacked)
+        except ValueError as exc:
+            return None, str(exc), 400, "theme_zip_invalid"
+        theme, err, status = _do_install("local", {"path": str(root)})
+        return theme, err, status, None
+    finally:
+        rmtree_force(tmp_root)
+
+
+async def api_themes_install_zip(request: web.Request) -> web.Response:
+    """POST /api/themes/install-zip — install a theme from an uploaded ``.zip``.
+
+    The body is the archive itself (``Content-Type: application/zip``). This is
+    the install path for a browser that is not on the gateway host, which the
+    folder-path source cannot serve. The archive is unpacked into a private
+    temporary directory and installed through the same stage -> validate ->
+    promote pipeline as a local folder.
+    """
+    refused = _theme_install_admission()
+    if refused is not None:
+        return refused
+    if request.content_length and request.content_length > THEME_ZIP_MAX_UPLOAD_BYTES:
+        return web.json_response(
+            {"error": "the theme archive is too large", "code": "theme_zip_too_large"},
+            status=413,
+        )
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.content.iter_chunked(64 * 1024):
+        received += len(chunk)
+        if received > THEME_ZIP_MAX_UPLOAD_BYTES:
+            return web.json_response(
+                {"error": "the theme archive is too large", "code": "theme_zip_too_large"},
+                status=413,
+            )
+        chunks.append(chunk)
+    if not received:
+        return web.json_response(
+            {"error": "no theme archive was uploaded", "code": "theme_zip_empty"}, status=400
+        )
+    theme, err, status, code = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _do_install_zip, b"".join(chunks)
+    )
+    return _install_response(theme, err, status, code)
 
 
 async def api_theme_detail(request: web.Request) -> web.Response:

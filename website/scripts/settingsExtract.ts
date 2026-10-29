@@ -119,6 +119,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatPanel.tsx': 'chat',
   'VoicePanel.tsx': 'voice',
   'DisplayPanel.tsx': 'display',
+  // The Theme page's per-part Experience toggles, mounted by DisplayPanel.
+  'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
   'BrowserPanel.tsx': 'browser',
   // The Browser tab's managed-browser and existing-browser sections, mounted by
   // BrowserPanel. Mapped with it so a control either one gains stays indexed.

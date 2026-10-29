@@ -1286,11 +1286,23 @@
       "hint": "Light or dark appearance for the dashboard"
     },
     {
+      "id": "display.overlays",
+      "label": "Overlays",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.overlays"
+    },
+    {
       "id": "display.palette",
       "label": "Palette",
       "tab": "display",
       "route": "/settings/display/sidebar?highlight=display.palette",
       "hint": "Choose a color palette for your sidebar sessions."
+    },
+    {
+      "id": "display.persona",
+      "label": "Persona",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.persona"
     },
     {
       "id": "display.reuse-the-current-terminal",
@@ -1306,6 +1318,12 @@
       "tab": "display",
       "route": "/settings/display/sidebar?highlight=key%3Adashboard.show_unread_dot",
       "configKey": "dashboard.show_unread_dot"
+    },
+    {
+      "id": "display.sounds",
+      "label": "Sounds",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.sounds"
     },
     {
       "id": "display.theme",

@@ -5634,14 +5634,13 @@
       "theme_name": "Theme Name"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Adopt a themed persona in the assistant (security and accuracy always take priority; you can ask it to drop the persona at any time).",
-      "enable_experience": "Enable experience",
       "keep_colors_only": "Keep colors only",
       "persona_text": "Persona text",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Persona that will be added to the assistant’s system prompt:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Play themed sounds (respects your mute toggle and reduced-motion setting).",
-      "show_animated_visual_overlays": "• Show animated visual overlays.",
-      "this_is_an_experience_theme_enabling_it_will": "This is an experience theme. Enabling it will:"
+      "save": "Save",
+      "sounds": "Sounds",
+      "overlays": "Overlays",
+      "persona": "Persona"
     },
     "timezoneSelect": {
       "render_timezone": "Render timezone"
@@ -9754,14 +9753,13 @@
         "installed_theme_could_not_be_loaded": "The installed theme could not be loaded. Reinstall it or choose another theme.",
         "custom_theme_could_not_be_loaded": "This theme could not be loaded. Choose another theme or edit this one.",
         "local_folder": "Local folder",
+        "zip_file": "Zip file",
         "mode": "Mode",
         "new_theme": "+ New Theme",
         "no_color": "No color",
         "none_auto_cycle_or_pick_a_fixed_color": "None, auto-cycle, or pick a fixed color.",
         "palette": "Palette",
         "select_a_theme_for_the_dashboard": "Select a theme for the dashboard",
-        "enable_theme_experience": "Enable experience",
-        "enable_theme_experience_hint": "You chose Keep colors only, so this theme's sounds, overlays and persona are off.",
         "sidebar_colors": "Sidebar Colors",
         "theme": "Theme",
         "theme_source": "Theme source",
@@ -9779,7 +9777,14 @@
         "desktop_app": "Desktop app",
         "keep_running_when_window_closed": "Keep running in the background after closing the window",
         "keep_running_when_window_closed_desc": "Closing the window hides {{productName}} and keeps your sessions and jobs running. Turn this off to make the close button quit the app. A gateway this app started stops with it, and a gateway it only connects to keeps running.",
-        "keep_running_when_window_closed_save_failed": "Couldn't save this setting. Nothing changed. Try again."
+        "keep_running_when_window_closed_save_failed": "Couldn't save this setting. Nothing changed. Try again.",
+        "choose_zip_file": "Choose a .zip file",
+        "theme_experience": "Experience",
+        "theme_experience_sounds": "Sounds",
+        "theme_experience_overlays": "Overlays",
+        "theme_experience_persona": "Persona",
+        "theme_experience_persona_text": "Persona text",
+        "theme_experience_persona_save": "Save"
       },
       "importPanel": {
         "agent_data": "Agent data",

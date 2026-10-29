@@ -14,7 +14,7 @@ vi.mock('../hooks/useTheme', () => ({
 }))
 
 import ThemeExperienceLayer from '../components/ThemeExperienceLayer'
-import { clearExperienceDecline } from '../utils/themeConsent'
+import { saveExperienceChoice } from '../utils/themeConsent'
 import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot, __resetThemeDecorSlot } from '../lib/themeDecorLayer'
 
 // The layer reads `instances.activeId` (it unmounts when a remote Crew is active),
@@ -114,17 +114,78 @@ describe('ThemeExperienceLayer', () => {
     expect(frames(container)).toHaveLength(0) // gated — nothing mounted yet
   })
 
-  it('Enable persists consent and mounts overlay + topbar iframes', async () => {
+  const RECORD_KEY = 'mc-theme-experience-bikini-bottom'
+  const GRANT_KEY = 'mc-theme-consent-bikini-bottom'
+  const record = () => JSON.parse(localStorage.getItem(RECORD_KEY) ?? 'null')
+  const checkbox = (name: RegExp) => screen.getByRole('checkbox', { name })
+  const muteButton = () => screen.queryByRole('button', { name: /mute|unmute/i })
+  const ALL_OFF = { sounds: false, overlays: false, persona: false }
+
+  it('asks with one checked checkbox per shipped part, and Save turns them all on', async () => {
     setTheme()
     const { container } = render(<ThemeExperienceLayer />)
-    await userEvent.click(screen.getByRole('button', { name: /enable experience/i }))
-    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBe('consented-v2')
+    expect(screen.getAllByRole('checkbox').map((c) => c.getAttribute('aria-label') ?? c.parentElement?.textContent)).toEqual([
+      'Sounds',
+      'Overlays',
+      'Persona',
+    ])
+    for (const c of screen.getAllByRole('checkbox')) expect(c).toBeChecked()
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: true })
+    expect(localStorage.getItem(GRANT_KEY)).toBe('consented-v2')
     const fs = frames(container)
     // overlay (bubbles) + topbar (dark)
     expect(fs).toHaveLength(2)
     for (const f of fs) expect(f.getAttribute('sandbox')).toBe('allow-scripts')
     expect(fs.some((f) => f.getAttribute('src') === '/api/theme/bikini-bottom/overlay/bubbles')).toBe(true)
     expect(fs.some((f) => f.getAttribute('src') === '/api/theme/bikini-bottom/topbar/dark')).toBe(true)
+    expect(muteButton()).toBeInTheDocument()
+  })
+
+  it('shows only the parts the pack ships', () => {
+    setTheme({ assets: l2Assets({ hasPersona: false, overlays: [], topbar: undefined }) })
+    render(<ThemeExperienceLayer />)
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
+    expect(checkbox(/^Sounds$/)).toBeChecked()
+  })
+
+  it('Sounds off keeps the overlays and drops the mute button', async () => {
+    setTheme()
+    const { container } = render(<ThemeExperienceLayer />)
+    await userEvent.click(checkbox(/^Sounds$/))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(record()).toEqual({ sounds: false, overlays: true, persona: true })
+    expect(frames(container)).toHaveLength(2)
+    expect(muteButton()).not.toBeInTheDocument()
+  })
+
+  it('Overlays off mounts no frame and keeps the sounds', async () => {
+    setTheme()
+    const { container } = render(<ThemeExperienceLayer />)
+    await userEvent.click(checkbox(/^Overlays$/))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(record()).toEqual({ sounds: true, overlays: false, persona: true })
+    expect(frames(container)).toHaveLength(0)
+    expect(muteButton()).toBeInTheDocument()
+  })
+
+  it('Persona off with sounds and overlays on writes no grant and mounts the overlays', async () => {
+    setTheme({ assets: l2Assets({ personaInfo: { sha256: 'sha-abc', chars: 4, text: 'boo!' } }) })
+    const { container } = render(<ThemeExperienceLayer />)
+    await userEvent.click(checkbox(/^Persona$/))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: false })
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
+    expect(frames(container)).toHaveLength(2)
+    expect(muteButton()).toBeInTheDocument()
+  })
+
+  it('a pack without a persona never writes a grant', async () => {
+    setTheme({ assets: l2Assets({ hasPersona: false }) })
+    render(<ThemeExperienceLayer />)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: false })
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
   })
 
   it('"Keep colors only" keeps the theme and mounts nothing of the experience', async () => {
@@ -135,10 +196,29 @@ describe('ThemeExperienceLayer', () => {
     expect(setColorTheme).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(frames(container)).toHaveLength(0)
-    expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
+    expect(muteButton()).not.toBeInTheDocument()
     // No grant is written, so the persona is never sent on the chat wire.
-    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
-    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
+    expect(record()).toEqual(ALL_OFF)
+  })
+
+  it('"Keep colors only" closes the dialog when localStorage refuses the write', async () => {
+    setTheme()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError')
+    })
+    try {
+      const { container } = render(<ThemeExperienceLayer />)
+      await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
+      expect(record()).toBeNull()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(frames(container)).toHaveLength(0)
+      expect(muteButton()).not.toBeInTheDocument()
+    } finally {
+      setItem.mockRestore()
+      // A stored save drops the choice kept for this tab, so it cannot leak into later cases.
+      saveExperienceChoice('bikini-bottom', {}, null)
+    }
   })
 
   it.each(['button', 'Escape'])('revokes a grant stored while the dialog is open via %s and stays colors-only after reload', async (answer) => {
@@ -146,14 +226,14 @@ describe('ThemeExperienceLayer', () => {
     const { container, unmount } = render(<ThemeExperienceLayer />)
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     // Another tab grants consent after this tab has already opened its dialog.
-    localStorage.setItem('mc-theme-consent-bikini-bottom', 'sha-abc')
+    localStorage.setItem(GRANT_KEY, 'sha-abc')
     if (answer === 'button') {
       await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
     } else {
       await userEvent.keyboard('{Escape}')
     }
-    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
-    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
+    expect(record()).toEqual(ALL_OFF)
     expect(setColorTheme).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(frames(container)).toHaveLength(0)
@@ -162,7 +242,7 @@ describe('ThemeExperienceLayer', () => {
     const { container: reloaded } = render(<ThemeExperienceLayer />)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(frames(reloaded)).toHaveLength(0)
-    expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
+    expect(muteButton()).not.toBeInTheDocument()
   })
 
   it('Escape keeps only the colors, like the button', async () => {
@@ -171,11 +251,11 @@ describe('ThemeExperienceLayer', () => {
     await userEvent.keyboard('{Escape}')
     expect(setColorTheme).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+    expect(record()).toEqual(ALL_OFF)
   })
 
-  it('a stored "Keep colors only" answer suppresses the dialog on the next load', () => {
-    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+  it('a stored record suppresses the dialog on the next load', () => {
+    localStorage.setItem(RECORD_KEY, JSON.stringify(ALL_OFF))
     setTheme()
     const { container } = render(<ThemeExperienceLayer />)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -187,16 +267,16 @@ describe('ThemeExperienceLayer', () => {
     ['the persona is removed', { hasPersona: false }],
     ['audio is removed', { hasAudio: false, personaInfo: { sha256: 'sha-abc', chars: 4, text: 'boo!' } }],
     ['persona and audio are removed', { hasAudio: false, hasPersona: false }],
-  ])('a stored decline holds when %s', async (_label, changed) => {
+  ])('"Keep colors only" holds when %s', async (_label, changed) => {
     setTheme({ assets: l2Assets({ personaInfo: { sha256: 'sha-abc', chars: 4, text: 'boo!' } }) })
     const { container, rerender, unmount } = render(<ThemeExperienceLayer />)
     await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
     const expectColorsOnly = (c: HTMLElement) => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(frames(c)).toHaveLength(0)
-      expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
-      expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
-      expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
+      expect(muteButton()).not.toBeInTheDocument()
+      expect(record()).toEqual(ALL_OFF)
+      expect(localStorage.getItem(GRANT_KEY)).toBeNull()
     }
     // The pack is re-installed under the same slug while the layer is mounted.
     setTheme({ assets: l2Assets(changed) })
@@ -210,73 +290,52 @@ describe('ThemeExperienceLayer', () => {
     expectColorsOnly(reloaded)
   })
 
-  it('a decline still holds after a re-install drops audio and persona but keeps overlays', async () => {
-    setTheme({ assets: l2Assets({ hasPersona: false }) })
-    const { container, rerender } = render(<ThemeExperienceLayer />)
-    await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
-    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
-    // Same slug, same token, but nothing left that needs consent.
+  it('an all-off record keeps an overlays-only pack colors-only; without a record it mounts', () => {
     setTheme({ assets: l2Assets({ hasAudio: false, hasPersona: false }) })
+    const { container: plain, unmount } = render(<ThemeExperienceLayer />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(plain).length).toBeGreaterThan(0)
+    unmount()
+
+    localStorage.setItem(RECORD_KEY, JSON.stringify(ALL_OFF))
+    const { container } = render(<ThemeExperienceLayer />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+  })
+
+  it('a part a re-install adds stays off and is not asked about', () => {
+    setTheme({ assets: l2Assets({ hasAudio: false, hasPersona: false }) })
+    localStorage.setItem(RECORD_KEY, JSON.stringify({ overlays: true }))
+    const { container, rerender } = render(<ThemeExperienceLayer />)
+    expect(frames(container)).toHaveLength(2)
+    setTheme({ assets: l2Assets({ hasPersona: false }) })
     act(() => {
       rerender(<ThemeExperienceLayer />)
     })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(frames(container)).toHaveLength(0)
-    expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(2)
+    expect(muteButton()).not.toBeInTheDocument()
   })
 
-  it('a stored decline keeps a no-consent pack colors-only on load; without one it mounts', () => {
-    setTheme({ assets: l2Assets({ hasAudio: false, hasPersona: false }) })
-    const { container: plain, unmount } = render(<ThemeExperienceLayer />)
-    expect(frames(plain).length).toBeGreaterThan(0)
-    unmount()
-
-    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
-    const { container } = render(<ThemeExperienceLayer />)
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(frames(container)).toHaveLength(0)
-  })
-
-  it('Enable after a decline clears the decline', async () => {
-    setTheme()
-    render(<ThemeExperienceLayer />)
-    // A stored decline suppresses the dialog, so it is written once the dialog is
-    // open (another tab answered "Keep colors only"); Enable here must clear it.
-    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
-    await userEvent.click(screen.getByRole('button', { name: /enable experience/i }))
-    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBe('consented-v2')
-    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBeNull()
-  })
-
-  it('clearing a stored decline without a theme switch brings the dialog back, and declining hides it again', async () => {
-    // Settings' "Enable experience" clears the decline while the pack stays
-    // selected, so nothing re-runs the slug-keyed read; the change event must.
-    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+  it('follows a choice saved elsewhere without a theme switch', () => {
+    localStorage.setItem(RECORD_KEY, JSON.stringify(ALL_OFF))
     setTheme()
     const { container } = render(<ThemeExperienceLayer />)
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    act(() => clearExperienceDecline('bikini-bottom'))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-    // Clearing grants nothing: the user still answers in the dialog.
-    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
     expect(frames(container)).toHaveLength(0)
-    await userEvent.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
-
-    act(() => clearExperienceDecline('bikini-bottom'))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    act(() => saveExperienceChoice('bikini-bottom', { overlays: true }, null))
+    expect(frames(container)).toHaveLength(2)
+    expect(muteButton()).not.toBeInTheDocument()
+    act(() => saveExperienceChoice('bikini-bottom', { sounds: true }, null))
     expect(frames(container)).toHaveLength(0)
+    expect(muteButton()).toBeInTheDocument()
   })
 
-  it('ignores a change event for another slug', () => {
-    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+  it('ignores a change for another slug', () => {
+    localStorage.setItem(RECORD_KEY, JSON.stringify(ALL_OFF))
     setTheme()
-    render(<ThemeExperienceLayer />)
-    act(() => clearExperienceDecline('other-pack'))
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const { container } = render(<ThemeExperienceLayer />)
+    act(() => saveExperienceChoice('other-pack', { overlays: true }, null))
+    expect(frames(container)).toHaveLength(0)
   })
 
   it('suppresses motion overlays under prefers-reduced-motion (topbar still shown)', () => {
@@ -972,17 +1031,44 @@ describe('ThemeExperienceLayer', () => {
       const { container, rerender } = render(<ThemeExperienceLayer />)
       // User consents to v1 → experience mounts, grant stored as the v1 hash.
       act(() => {
-        screen.getByRole('button', { name: /enable experience/i }).click()
+        screen.getByRole('button', { name: 'Save' }).click()
       })
       expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBe('sha-v1')
       expect(frames(container).length).toBeGreaterThan(0)
       // Re-install swaps persona.md → new hash → the old grant no longer applies.
-      setTheme({ assets: l2Assets({ personaInfo: persona('sha-v2') }) })
+      setTheme({ assets: l2Assets({ personaInfo: persona('sha-v2', 'You are Karen v2.') }) })
       act(() => {
         rerender(<ThemeExperienceLayer />)
       })
+      expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
       expect(screen.getByRole('dialog')).toBeInTheDocument()
       expect(frames(container)).toHaveLength(0)
+      // Only the persona is asked again; sounds and overlays keep their answer.
+      expect(screen.getAllByRole('checkbox')).toHaveLength(1)
+      expect(screen.getByRole('checkbox', { name: /^Persona$/ })).toBeChecked()
+      expect(screen.getByTestId('consent-persona-text').textContent).toBe('You are Karen v2.')
+      act(() => {
+        screen.getByRole('button', { name: 'Save' }).click()
+      })
+      expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBe('sha-v2')
+      expect(JSON.parse(localStorage.getItem('mc-theme-experience-bikini-bottom') as string)).toEqual({
+        sounds: true, overlays: true, persona: true,
+      })
+      expect(frames(container).length).toBeGreaterThan(0)
+    })
+
+    it('unchecking the persona when it is asked again keeps sounds and overlays on', async () => {
+      localStorage.setItem('mc-theme-experience-bikini-bottom', JSON.stringify({ sounds: true, overlays: true, persona: true }))
+      localStorage.setItem('mc-theme-consent-bikini-bottom', 'sha-OLD')
+      setTheme({ assets: l2Assets({ personaInfo: persona('sha-NEW') }) })
+      const { container } = render(<ThemeExperienceLayer />)
+      await userEvent.click(screen.getByRole('checkbox', { name: /^Persona$/ }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
+      expect(JSON.parse(localStorage.getItem('mc-theme-experience-bikini-bottom') as string)).toEqual({
+        sounds: true, overlays: true, persona: false,
+      })
+      expect(frames(container)).toHaveLength(2)
     })
 
     it('renders the persona text verbatim in the consent modal', () => {
@@ -997,7 +1083,7 @@ describe('ThemeExperienceLayer', () => {
     it('persists the persona sha256 (not "1") when consent is granted', async () => {
       setTheme({ assets: l2Assets({ personaInfo: persona('sha-xyz') }) })
       render(<ThemeExperienceLayer />)
-      await userEvent.click(screen.getByRole('button', { name: /enable experience/i }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
       expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBe('sha-xyz')
     })
 

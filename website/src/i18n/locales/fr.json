@@ -9162,18 +9162,17 @@
       "var_warning": "Avertissement"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Adopter un persona thématique dans l'assistant (la sécurité et l'exactitude restent toujours prioritaires ; vous pouvez lui demander d'abandonner le persona à tout moment).",
-      "enable_experience": "Activer l'expérience",
       "enable_named_experience": "Activer l'expérience “{{name}}” ?",
       "keep_colors_only": "Conserver uniquement les couleurs",
       "mute_theme_sounds": "Couper les sons du thème",
       "persona_text": "Texte du persona",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Persona qui sera ajouté au prompt système de l'assistant :",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Jouer des sons thématiques (respecte votre réglage de sourdine et le paramètre de mouvement réduit).",
-      "show_animated_visual_overlays": "• Afficher des superpositions visuelles animées.",
       "theme_overlay": "superposition de thème {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Ceci est un thème d'expérience. L'activer va :",
-      "unmute_theme_sounds": "Rétablir les sons du thème"
+      "unmute_theme_sounds": "Rétablir les sons du thème",
+      "save": "Enregistrer",
+      "sounds": "Sons",
+      "overlays": "Superpositions",
+      "persona": "Persona"
     },
     "timezoneSelect": {
       "render_timezone": "Fuseau horaire d'affichage"
@@ -17593,6 +17592,7 @@
         "installed_theme_could_not_be_loaded": "Le thème installé n’a pas pu être chargé. Réinstalle-le ou choisis un autre thème.",
         "custom_theme_could_not_be_loaded": "Ce thème n’a pas pu être chargé. Choisis un autre thème ou modifie celui-ci.",
         "local_folder": "Dossier local",
+        "zip_file": "Fichier zip",
         "mode": "Mode",
         "native_window_zoom_tip": "Zoom natif de la fenêtre, le même réglage que {{mod}}+ / {{mod}}− (50–300 %). Conservé d’un lancement à l’autre.",
         "new_theme": "+ Nouveau thème",
@@ -17600,8 +17600,6 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Aucune, rotation automatique, ou couleur fixe.",
         "palette": "Palette",
         "select_a_theme_for_the_dashboard": "Sélectionnez un thème pour le tableau de bord",
-        "enable_theme_experience": "Activer l'expérience",
-        "enable_theme_experience_hint": "Vous avez choisi « Conserver uniquement les couleurs » : les sons, les superpositions et la persona de ce thème sont désactivés.",
         "sidebar_colors": "Couleurs de la barre latérale",
         "terminal": "Terminal",
         "terminal_font_family": "Police",
@@ -17680,7 +17678,14 @@
         "desktop_app": "Application de bureau",
         "keep_running_when_window_closed": "Continuer en arrière-plan après la fermeture de la fenêtre",
         "keep_running_when_window_closed_desc": "Fermer la fenêtre masque {{productName}}, et tes sessions et tâches continuent. Désactive cette option pour que le bouton de fermeture quitte l'application. Une passerelle lancée par cette application s'arrête avec elle, et une passerelle à laquelle elle se connecte seulement continue de tourner.",
-        "keep_running_when_window_closed_save_failed": "Impossible d'enregistrer ce réglage. Rien n'a changé. Réessaie."
+        "keep_running_when_window_closed_save_failed": "Impossible d'enregistrer ce réglage. Rien n'a changé. Réessaie.",
+        "choose_zip_file": "Choisir un fichier .zip",
+        "theme_experience": "Expérience",
+        "theme_experience_sounds": "Sons",
+        "theme_experience_overlays": "Superpositions",
+        "theme_experience_persona": "Persona",
+        "theme_experience_persona_text": "Texte du persona",
+        "theme_experience_persona_save": "Enregistrer"
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

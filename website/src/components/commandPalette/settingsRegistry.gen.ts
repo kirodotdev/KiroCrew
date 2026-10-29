@@ -2232,6 +2232,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.overlays",
+    "label": "Overlays",
+    "labelKey": "pages.settings.displayPanel.theme_experience_overlays",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
+  },
+  {
     "id": "display.palette",
     "label": "Palette",
     "labelKey": "pages.settings.displayPanel.palette",
@@ -2241,6 +2252,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "sidebar"
+    }
+  },
+  {
+    "id": "display.persona",
+    "label": "Persona",
+    "labelKey": "pages.settings.displayPanel.theme_experience_persona",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
     }
   },
   {
@@ -2267,6 +2289,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "sidebar"
     },
     "configKey": "dashboard.show_unread_dot"
+  },
+  {
+    "id": "display.sounds",
+    "label": "Sounds",
+    "labelKey": "pages.settings.displayPanel.theme_experience_sounds",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
   },
   {
     "id": "display.theme",

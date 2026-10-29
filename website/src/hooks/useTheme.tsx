@@ -18,7 +18,6 @@ import { pendingRefresh } from '../api/refreshOnce'
 import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
-import { clearExperienceDecline } from '../utils/themeConsent'
 import {
   adoptServerLiquidGlass,
   readLiquidGlass,
@@ -1281,9 +1280,6 @@ function useThemeState(): ThemeContextValue {
     // on for an installed slug here would never clear (the apply effect only runs
     // when colorTheme actually changes), wedging the "Applying…" indicator.
     if (t === colorThemeRef.current) return
-    // Picking an experience pack is the way back from "Keep colors only": the
-    // stored answer is forgotten so the layer asks again on this activation.
-    if (t.startsWith('custom-')) clearExperienceDecline(t.slice('custom-'.length))
     safeSetItem('mc-color-theme', t)
     // Show the "Applying…" indicator only for installed themes, whose branding
     // + overrides.css apply asynchronously. Built-ins / editor customs (L0) are
