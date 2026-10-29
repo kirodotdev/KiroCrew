@@ -927,7 +927,8 @@ class TestStartKiroRuntimeResume:
         mock_runtime.spawn = AsyncMock()
         mock_runtime.create_session = AsyncMock(return_value=mock_handle)
         if load_raises:
-            mock_runtime.load_session = AsyncMock(side_effect=RuntimeError("load boom"))
+            error = load_raises if isinstance(load_raises, Exception) else RuntimeError("load boom")
+            mock_runtime.load_session = AsyncMock(side_effect=error)
         else:
             mock_runtime.load_session = AsyncMock(return_value=mock_handle)
         provider._client._resume_session_id = resume_sid
@@ -1023,6 +1024,36 @@ class TestStartKiroRuntimeResume:
         assert runtime.create_session.await_count == 1
         assert provider._client._handle is handle
         assert provider._client.resumed is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("backend", "required"), [("", False), ("kas", True)])
+    async def test_only_a_kas_resume_requires_replayed_turns(self, backend, required):
+        """KAS answers a load of a lost record with a new empty one, so its resume
+        must prove history came back; kiro-cli's transcript precheck already does."""
+        provider = self._kiro_provider()
+        provider._client.backend = backend
+        _handle, runtime = await self._run_start(provider, "abc-123", file_exists=True)
+        runtime.load_session.assert_awaited_once()
+        assert runtime.load_session.await_args.kwargs["require_replay"] is required
+
+    @pytest.mark.asyncio
+    async def test_a_kas_load_that_restored_nothing_replays_history(self):
+        """The refused load is the record-missing case: fresh session, history replay."""
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+
+        provider = self._kiro_provider()
+        provider._client.backend = "kas"
+        handle, runtime = await self._run_start(
+            provider,
+            "abc-123",
+            file_exists=True,
+            load_raises=AcpRuntimeError("session/load of abc-123 replayed no earlier turn"),
+        )
+        assert runtime.load_session.await_count == 1
+        assert runtime.create_session.await_count == 1
+        assert provider._client._handle is handle
+        assert provider._client.resumed is False
+        assert provider._history_replay_needed is True
 
     @pytest.mark.asyncio
     async def test_non_default_model_applied_to_runtime_session(self):

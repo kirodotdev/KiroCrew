@@ -15,6 +15,7 @@ from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_runtime_helpers import _stub_sel_for_permission_tests  # noqa: F401
 from acp_runtime_helpers import (
     _await_pending,
+    _drain,
     _feed,
     _make_runtime,
     _replying_send,
@@ -34,6 +35,26 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.testing.wait import await_until
+
+
+def _kas_turn_frame(session_id: str, *, replay: bool) -> dict:
+    """A ``session/update`` as KAS sends one, replayed on load or live.
+
+    Shape from ``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``.
+    """
+    kiro = {"agentMode": "kirocrew", "replay": True} if replay else {"agentMode": "kirocrew"}
+    return {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "PURPLE-OTTER-42"},
+                "_meta": {"kiro": kiro},
+            },
+        },
+    }
 
 
 def _identity_tokens(elements):
@@ -476,6 +497,88 @@ class TestAcpRuntimeLoadSession:
             await rt.load_session("/f.json", "sid-y", agent="kirocrew")
         # The queue registered before the send must be cleaned up on failure.
         assert "sid-y" not in rt._session_queues
+
+    async def _load_with_frames(self, monkeypatch, frames, *, require_replay):
+        """Run load_session with the real reader, the engine sending *frames*
+        before it answers the load. Returns (runtime, result-or-exception)."""
+        rt, reader, _ = _make_runtime()
+        rt._can_load_session = True
+        evict = AsyncMock()
+        terminate = AsyncMock()
+        monkeypatch.setattr(rt, "evict_session", evict)
+        monkeypatch.setattr(rt, "terminate_session", terminate)
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_LOAD:
+                for frame in frames:
+                    _feed(reader, frame)
+                await _drain(reader)
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        reader_task = await _start_reader(rt)
+        try:
+            try:
+                outcome = await rt.load_session(
+                    "", "sid-r", agent="kirocrew", require_replay=require_replay
+                )
+            except AcpRuntimeError as exc:
+                outcome = exc
+        finally:
+            await _stop_reader(reader_task)
+        return rt, evict, terminate, outcome
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_replayed_turns_is_a_resume(self, monkeypatch):
+        """Record present: the engine replays the stored turns, so the load stands."""
+        frames = [_kas_turn_frame("sid-r", replay=True), _kas_turn_frame("sid-r", replay=True)]
+        rt, evict, terminate, outcome = await self._load_with_frames(
+            monkeypatch, frames, require_replay=True
+        )
+        assert isinstance(outcome, AcpSessionHandle)
+        assert outcome.session_id == "sid-r"
+        assert "sid-r" in rt._session_queues
+        evict.assert_not_awaited()
+        terminate.assert_not_awaited()
+        assert rt._load_replay_frames == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "frames",
+        [
+            pytest.param([], id="nothing_sent"),
+            # A live frame for this id is not a replayed turn.
+            pytest.param([_kas_turn_frame("sid-r", replay=False)], id="no_replay_marker"),
+            # Another session's replay says nothing about this one.
+            pytest.param([_kas_turn_frame("sid-other", replay=True)], id="other_session"),
+        ],
+    )
+    async def test_a_load_that_replayed_nothing_is_refused(self, monkeypatch, frames):
+        """Record missing: KAS answers with a new empty record, which is refused
+        and evicted so the caller replays Kiro Crew's own history."""
+        rt, evict, terminate, outcome = await self._load_with_frames(
+            monkeypatch, frames, require_replay=True
+        )
+        assert isinstance(outcome, AcpRuntimeError)
+        assert "replayed no earlier turn" in str(outcome)
+        # Evicted, never deleted: a wrong refusal must not lose a real record.
+        evict.assert_awaited_once_with("sid-r")
+        terminate.assert_not_awaited()
+        assert "sid-r" not in rt._session_queues
+        assert rt._load_replay_frames == {}
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_does_not_require_replay_is_unchanged(self, monkeypatch):
+        """kiro-cli resumes and the KAS MCP re-injection load do not ask, so a load
+        with no replayed turn still stands for them."""
+        rt, evict, terminate, outcome = await self._load_with_frames(
+            monkeypatch, [], require_replay=False
+        )
+        assert isinstance(outcome, AcpSessionHandle)
+        evict.assert_not_awaited()
+        terminate.assert_not_awaited()
+        assert rt._load_replay_frames == {}
 
     @pytest.mark.asyncio
     async def test_load_session_reinjects_the_kas_agent_definition(self, monkeypatch):

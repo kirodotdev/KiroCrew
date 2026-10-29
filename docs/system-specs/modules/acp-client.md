@@ -1805,6 +1805,21 @@ attempts `session/load` instead of `session/new`:
 The resume ID is consumed on attempt (no retry loop). After successful load,
 `client.resumed` returns `True` — callers use this to skip thread history injection.
 
+**A KAS resume must prove history came back.** KAS has no transcript Crew can
+stat, and it answers `session/load` for an id whose stored record is gone by
+creating a new, empty record under that id, with a normal response that carries
+`modes`. Taken as a resume, the turn gets the short `[SESSION RESUMED ...]` block
+and no history, and the agent denies its own earlier work. So the provider's
+resume on KAS passes `require_replay=True` to `AcpRuntime.load_session`. While
+that load is in flight, the reader loop counts the `session/update` frames for
+its id that carry `_meta.kiro.replay: true`, which KAS puts on every turn it
+replays (`test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl`). A load with
+none evicts the session (`evict_session`, which keeps the stored record, so a
+wrong refusal cannot delete a real conversation) and raises, and
+the provider then takes the fresh-session path with `_history_replay_needed`, the
+same one a failed load takes. The MCP re-injection load and every other backend
+pass `False`.
+
 `AcpRuntime.load_session` has a second caller on KAS: applying a dashboard MCP
 config change to a LIVE session (`acp/session_provider_mcp_reinject.py`,
 membership `ACP_BACKENDS_MCP_WIRE_REINJECT`). The engine registers a session's

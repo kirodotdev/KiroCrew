@@ -484,6 +484,11 @@ class AcpRuntime:
         # never outlives the init scope whose progress it describes (see
         # _stage_init_frame).
         self._session_inits_in_flight = 0
+        # Per session id whose ``session/load`` is in flight with
+        # ``require_replay``: how many replayed-turn frames the engine sent
+        # before answering. The reader loop counts them; load_session reads the
+        # count to tell a restored conversation from a freshly created record.
+        self._load_replay_frames: dict[str, int] = {}
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )

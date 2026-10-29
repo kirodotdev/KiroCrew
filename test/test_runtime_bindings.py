@@ -209,7 +209,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_alive": ("function", False, "a6632a57e602", "runtime_liveness"),
     "keep_record_on_teardown": ("function", False, "4f730038263e", "runtime_session_registry"),
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
-    "load_session": ("function", True, "abdb4c5767fc", "runtime_session_load"),
+    "load_session": ("function", True, "e76bae1fa2fd", "runtime_session_load"),
     "mark_turn_active": ("function", False, "a3b3a732c817", "runtime_session_registry"),
     "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "pid": ("property", False, "8dc15be1dfda", "runtime_class"),

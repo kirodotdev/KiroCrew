@@ -6,7 +6,8 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``.
+Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_inits_in_flight``,
+``_session_queues``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
@@ -71,6 +72,7 @@ async def load_session(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    require_replay: bool = False,
 ) -> AcpSessionHandle:
     """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -97,6 +99,16 @@ async def load_session(
     does: session/load re-initializes this session's MCP servers, so a resume
     that dropped it would take the channel identity away from a conversation
     that already had it.
+
+    ``require_replay`` makes the load fail when the engine replayed no earlier
+    turn before answering. KAS answers ``session/load`` for an id whose stored
+    record is gone by creating a new, empty record under that id, and the
+    response looks like a real resume (it carries ``modes``). Taken as one, the
+    conversation is lost while the turn is told its history was restored. The
+    replayed frames are the evidence that history came back: KAS marks each
+    ``_meta.kiro.replay: true``. A load with none is evicted (the stored record
+    is kept) and raised, so the caller starts a fresh session and replays Kiro
+    Crew's own transcript.
     """
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -318,6 +330,8 @@ async def load_session(
     budget = await self._session_start_budget()
     self._session_inits_in_flight += 1
     loaded_session_id = ""
+    if require_replay:
+        self._load_replay_frames[resume_sid] = 0
     try:
         # session/load is gated by the SAME MCP (re-)initialization as
         # session/new — kiro-cli re-initializes the session's servers on
@@ -342,6 +356,17 @@ async def load_session(
         raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, wire_servers) from exc
     finally:
         buffered_init = self._finish_session_init(loaded_session_id)
+        replayed_turn_frames = self._load_replay_frames.pop(resume_sid, 0)
+
+    if require_replay and not replayed_turn_frames:
+        # Free the resident session but keep its stored record: on KAS the
+        # teardown verb deletes the record, and a refusal that was wrong would
+        # then lose a real conversation. The caller starts a fresh session.
+        await self.evict_session(resume_sid)
+        raise AcpRuntimeError(
+            f"session/load of {resume_sid} replayed no earlier turn: "
+            "the stored conversation was not restored"
+        )
 
     # Register the queue AFTER _send_and_await returns. During session/load
     # kiro-cli replays the full prior transcript on stdout; without a

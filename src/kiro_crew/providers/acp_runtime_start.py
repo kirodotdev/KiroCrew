@@ -413,8 +413,14 @@ async def _load_session_with_retry(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    require_replay: bool = False,
 ) -> AcpSessionHandle | None:
     """Resume via session/load, retrying past a stale native session lock.
+
+    ``require_replay`` is passed through to ``AcpRuntime.load_session``: the
+    caller sets it for KAS, which answers a load of a missing record with a new
+    empty one that looks resumed, so only its replayed turns prove history came
+    back. A refused load takes the fresh-session-plus-replay path.
 
     F2 load-recovery (Phase 1). A kiro-cli holder killed uncleanly can leave
     its per-session lock held for a short window; re-issuing session/load a
@@ -441,6 +447,7 @@ async def _load_session_with_retry(
             member_session_key=member_session_key,
             session_key=session_key,
             channel_id=channel_id,
+            require_replay=require_replay,
         )
 
     swept = False
@@ -765,6 +772,7 @@ async def _start_kiro_runtime_impl(
                         member_session_key=self._member_session_key(),
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
+                        require_replay=self.is_kas_backend,
                     )
                 finally:
                     phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
