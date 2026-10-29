@@ -1048,7 +1048,10 @@ class TestSyncLimitedSpawns:
         # The shim execs without a PATH search, so an unresolved bare name would
         # exit 127 ("cannot execute") instead of running the command.
         result = run_limited(
-            ["true"], env={"PATH": os.path.dirname(true_path)}, capture_output=True, text=True
+            ["true"],
+            env={"PATH": os.path.dirname(true_path)},
+            capture_output=True,
+            encoding="utf-8",
         )
         assert (result.returncode, result.stderr) == (0, "")
 
@@ -1080,7 +1083,7 @@ class TestSyncLimitedSpawns:
         with patch.object(
             sandbox, "_resolve_spawn_target", side_effect=AssertionError("resolved a path")
         ):
-            result = run_limited([str(tool)], cwd="/tmp", capture_output=True, text=True)
+            result = run_limited([str(tool)], cwd="/tmp", capture_output=True, encoding="utf-8")
         assert (result.returncode, result.stdout) == (0, f"ran:{tool}")
 
     @pytest.mark.parametrize(
