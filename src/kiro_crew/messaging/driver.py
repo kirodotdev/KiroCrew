@@ -1071,12 +1071,15 @@ class TurnDriver:
                                 ),
                             )
                             continue
-                        logger.warning(
-                            "declining a hook auto-approve: %s; the request "
-                            "falls through to the channel's normal approval "
-                            "ladder",
-                            _ng_refusal.log_text,
-                        )
+                        # Once per session for a platform-scope refusal; the
+                        # audit row below is still written for every call.
+                        if name_grant.should_log_decline(self.audit_session_key, _ng_refusal):
+                            logger.warning(
+                                "declining a hook auto-approve: %s; the request "
+                                "falls through to the channel's normal approval "
+                                "ladder",
+                                _ng_refusal.log_text,
+                            )
                         # The decline row uses the shared cross-surface writer
                         # (log_tool_invocation) rather than this ladder's
                         # log_api_access rows, so every surface's decline has
