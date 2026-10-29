@@ -45,6 +45,7 @@ import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
 import { resolveGatewayNotice } from './gatewayNotice'
+import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -387,6 +388,16 @@ export function createTranscriptRenderers(
       roles: ['notice'],
       match: m => m.meta?.kind === 'warm_task_brief_claim',
       render: () => null,
+    },
+    {
+      // The gateway's one-per-turn Crew Mode dispatch notice: a dispatched crew
+      // member is in the Crew (Workers) tab, not the session list, so this row
+      // names that tab and opens it. The gateway decides when it appears; the
+      // card only renders localized copy and the button.
+      id: 'crew_dispatch_notice',
+      roles: ['notice'],
+      match: m => m.meta?.kind === 'crew_dispatch_notice',
+      render: (_m, ctx) => ctx.row(<CrewDispatchNoticeCard key={ctx.key} slot={o.slot} />),
     },
     // ── Shape-matched rows, ahead of anything keyed only by role ──
     {

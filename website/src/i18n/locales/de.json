@@ -11792,6 +11792,10 @@
         "blocked": "Blockiert",
         "warning": "Warnung"
       },
+      "crewDispatchNotice": {
+        "openCrewTab": "Crew-Tab öffnen",
+        "text": "Ein Crew-Mitglied wurde gestartet. Crew-Mitglieder stehen im Crew-Tab der Seitenleiste, nicht in der Sitzungsliste."
+      },
       "compactionCard": {
         "after_turn": "Kontext bei {{pct}}, über dem Schwellenwert für automatische Verdichtung von {{limit}} – der Chat wird nach diesem Zug zusammengefasst",
         "no_summary": "Fertig – keine Zusammenfassung vorhanden",
