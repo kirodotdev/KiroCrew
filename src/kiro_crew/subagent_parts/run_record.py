@@ -255,6 +255,17 @@ class SubagentInfo:
         return self._reap_reason in _NEUTRAL_REAP_REASONS
 
     @property
+    def run_agent(self) -> str:
+        """The agent this run executes on, for a card's agent chip.
+
+        ``agent`` is only the name the spawn passed, so it is empty for a
+        ``crew=`` or inherited spawn. Those runs execute on the template their
+        execution record names, the same fallback the spawn frame and the
+        run's ``state.json`` use. ``""`` when neither is known.
+        """
+        return self.agent or str(getattr(self.execution_context, "template_id", "") or "")
+
+    @property
     def _inflight_tool(self) -> Any:
         """The :class:`ToolCallState` a stall verdict is read against (``None``
         when no tool is in flight).

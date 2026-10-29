@@ -377,7 +377,7 @@ class TerminalCoordinator(ManagerComponent):
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,
                 "task": _redact(info.task),
-                "agent": _redact(info.agent),
+                "agent": _redact(getattr(info, "run_agent", info.agent)),
                 "label": _redact(info.label),
                 # The sub-agent's own session key (see build_subagent_snapshot):
                 # lets a client fetch this node's own context-trace even after
