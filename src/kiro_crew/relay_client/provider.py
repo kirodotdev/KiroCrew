@@ -22,7 +22,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 
@@ -37,8 +36,8 @@ from kiro_crew.relay_client.lease import (
 )
 from kiro_crew.relay_client.protocol import (
     CREW_HOST_RE,
+    MOVE_QUIET_GRACE_MAX_SECONDS,
     MOVE_QUIET_GRACE_SECONDS,
-    MOVE_WINDOW_MAX_SECONDS,
     WS_MESSAGE_MAX_BYTES,
     host_url_problem,
     is_loopback_host,
@@ -50,11 +49,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The default Region, and the shapes the provisional relay names take in it.
-DEFAULT_REGION = "us-east-1"
-HOST_URL_TEMPLATE = "wss://kiro-relay.{region}.api.aws/v1/host"
-CREW_DOMAIN_TEMPLATE = "kiro-relay.{region}.on.aws"
-_REGION_RE = re.compile(r"\A[a-z]{2}(-[a-z]+)+-[0-9]+\Z", re.ASCII)
+#: The relay's own names have no built-in default: they come from the lease
+#: answer, or from ``tunnel.relay_host_url`` and ``tunnel.relay_crew_domain``.
 #: Room for one endpoint label (63) and its dot inside a 253-character host.
 _CREW_DOMAIN_MAX_CHARS = 189
 
@@ -75,7 +71,6 @@ class RelaySettings:
     """
 
     enabled: bool
-    region: str
     host_url: str
     crew_domain: str
     #: Seconds an old connection stays open, quiet, after a move (0 to 30).
@@ -86,20 +81,18 @@ class RelaySettings:
     @classmethod
     def from_config(cls, cfg: Any) -> "RelaySettings":
         tunnel = getattr(cfg, "tunnel", None)
-        region = str(getattr(tunnel, "relay_region", "") or DEFAULT_REGION).strip()
         host_url = str(getattr(tunnel, "relay_host_url", "") or "").strip()
         crew_domain = str(getattr(tunnel, "relay_crew_domain", "") or "").strip().lower()
         return cls(
             # ``is True``: a stand-in config object answers any attribute truthily.
             enabled=getattr(tunnel, "relay_enabled", False) is True,
-            region=region,
-            host_url=host_url or HOST_URL_TEMPLATE.format(region=region),
-            crew_domain=crew_domain or CREW_DOMAIN_TEMPLATE.format(region=region),
+            host_url=host_url,
+            crew_domain=crew_domain,
             move_grace=_safe_float(
                 getattr(tunnel, "relay_move_grace_seconds", MOVE_QUIET_GRACE_SECONDS),
                 MOVE_QUIET_GRACE_SECONDS,
                 0.0,
-                float(MOVE_WINDOW_MAX_SECONDS),
+                MOVE_QUIET_GRACE_MAX_SECONDS,
             ),
             lease_url=_setting_text(tunnel, "relay_lease_url"),
             lease_credential=_setting_text(tunnel, "relay_lease_credential"),
@@ -112,12 +105,27 @@ class RelaySettings:
         ``wss://`` (TLS) unless it names this machine's loopback, which only a local
         test relay does. The lease credential rides the same way to the lease
         service, under the same rule.
+
+        With a lease service the relay's names come from each lease answer
+        (``hostUrl`` and ``crewUrl``), so the two name settings may stay empty.
+        Without one, nothing else names the relay, so both must be set: no name
+        is guessed.
         """
-        if not _REGION_RE.match(self.region):
-            raise RelaySettingsError(f"tunnel.relay_region is not a Region name: {self.region!r}")
-        validate_host_url(self.host_url)
-        if len(self.crew_domain) > _CREW_DOMAIN_MAX_CHARS or not CREW_HOST_RE.match(
-            self.crew_domain
+        if not self.lease_url:
+            for name, value in (
+                ("tunnel.relay_host_url", self.host_url),
+                ("tunnel.relay_crew_domain", self.crew_domain),
+            ):
+                if not value:
+                    raise RelaySettingsError(
+                        f"{name} is not set, and with no tunnel.relay_lease_url nothing "
+                        "else names the relay"
+                    )
+        if self.host_url:
+            validate_host_url(self.host_url)
+        if self.crew_domain and (
+            len(self.crew_domain) > _CREW_DOMAIN_MAX_CHARS
+            or not CREW_HOST_RE.match(self.crew_domain)
         ):
             raise RelaySettingsError(
                 f"tunnel.relay_crew_domain is not a host name: {self.crew_domain!r}"
@@ -131,6 +139,15 @@ class RelaySettings:
                 raise RelaySettingsError(problem)
 
     def crew_url_for(self, endpoint_id: str) -> str:
+        """The Crew's relay URL from ``tunnel.relay_crew_domain``.
+
+        Only reached when the credential names no ``crewUrl``. A lease answer
+        always does, so with the domain empty this refuses rather than guess.
+        """
+        if not self.crew_domain:
+            raise RelaySettingsError(
+                "tunnel.relay_crew_domain is not set and the host token names no Crew URL"
+            )
         return f"https://{endpoint_id}.{self.crew_domain}"
 
 
@@ -149,29 +166,28 @@ def _setting_text(tunnel: Any, name: str) -> str:
 def gateway_listener() -> tuple[str, int]:
     """The gateway's own loopback TCP listener, as the relay client dials it.
 
-    The port is the one the gateway exported once it bound (``KIROCREW_BOUND_PORT``),
-    which is the truth even under ``--port auto``. The dashboard's relay ingress
-    honours a hand-off only over loopback TCP, so a gateway bound to one specific
-    non-loopback address cannot serve the relay and is refused here.
+    Both halves come from the socket the gateway actually bound, never from the
+    address it was asked for (``KIROCREW_BIND``), which the bind policy may have
+    refused. The listener exports them together once it binds:
+    ``KIROCREW_BOUND_PORT``, the truth even under ``--port auto``, and
+    ``KIROCREW_BOUND_HOST``, absent for an IPv4 loopback or wildcard bind (reached
+    at 127.0.0.1), ``::1`` for an IPv6 one, else the specific address bound.
+    The dashboard's relay ingress honours a hand-off only over loopback TCP, so a
+    gateway bound to one specific non-loopback address cannot serve the relay and
+    is refused here.
     """
     raw = os.environ.get("KIROCREW_BOUND_PORT", "").strip()
     if not raw.isdigit() or not 0 < int(raw) < 65536:
         raise RelaySettingsError("the gateway's bound port is not known yet")
-    bind = os.environ.get("KIROCREW_BIND", "").strip()
-    if not bind or bind in ("*", "localhost"):
-        return "127.0.0.1", int(raw)
-    host = bind[1:-1] if bind.startswith("[") and bind.endswith("]") else bind
+    host = os.environ.get("KIROCREW_BOUND_HOST", "").strip() or "127.0.0.1"
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        pass
-    else:
-        if address.is_unspecified:
-            return ("127.0.0.1" if address.version == 4 else "::1"), int(raw)
-        if is_loopback_host(host):
-            return str(address), int(raw)
+        address = None
+    if address is not None and is_loopback_host(host):
+        return str(address), int(raw)
     raise RelaySettingsError(
-        f"the relay hands requests over loopback, but KIROCREW_BIND names {bind!r}"
+        f"the relay hands requests over loopback, but the gateway is bound to {host!r}"
     )
 
 

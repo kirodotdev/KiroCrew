@@ -50,8 +50,8 @@
       "at": "2026-11-02T17:00:00Z",
       "body": {
         "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra",
-        "hostUrl": "https://kiro-relay.us-east-1.api.aws/v1/host",
-        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.kiro-relay.us-east-1.on.aws/",
+        "hostUrl": "https://host-us-east-1.relay.example/v1/host",
+        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.us-east-1.relay.example/",
         "hostToken": "eyJhbGciOiJFUzI1NiIsInR5cCI6Imtpcm8tcmVsYXktaG9zdCtqd3QiLCJraWQiOiJ0ZXN0LWtleS0yMDI2LTExIn0.eyJpc3MiOiJodHRwczovL2tpcm8tcmVsYXktaXNzdWVyLmludmFsaWQiLCJhdWQiOiJraXJvLXJlbGF5L2hvc3QiLCJzdWIiOiJ1LTAwMDEuZXhhbXBsZS1vd25lciIsImtpbmQiOiJwZXJzb25hbCIsImhvc3QiOiJjcmV3IiwiZXAiOiJrN3FtM3gydnR6cjRoYm42Y3dhcGZlNWRqM3EybTdyYSIsInJnbiI6InVzLWVhc3QtMSIsImluc3QiOiIzZjJiOGMxZS03YTRkLTRlOWItOWM2MS0yZDVhOGYwZTRiMTciLCJpYXQiOjE3OTM2Mzg4MDAsIm5iZiI6MTc5MzYzODgwMCwiZXhwIjoxNzkzNjM5MTAwLCJqdGkiOiI2YTFmMGM1Mi0zZThiLTRkMjctOWYxNC1iMGM3ZTJhOWQzNjEifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "hostTokenExpiresAt": 1793639100,
         "leaseExpiresAt": 1793639100,
@@ -64,8 +64,8 @@
       "at": "2026-11-02T17:00:57Z",
       "body": {
         "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra",
-        "hostUrl": "https://kiro-relay.us-east-1.api.aws/v1/host",
-        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.kiro-relay.us-east-1.on.aws/",
+        "hostUrl": "https://host-us-east-1.relay.example/v1/host",
+        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.us-east-1.relay.example/",
         "leaseExpiresAt": 1793639157,
         "leaseVersion": 2,
         "renewInSeconds": 55
@@ -76,8 +76,8 @@
       "at": "2026-11-02T17:03:45Z",
       "body": {
         "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra",
-        "hostUrl": "https://kiro-relay.us-east-1.api.aws/v1/host",
-        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.kiro-relay.us-east-1.on.aws/",
+        "hostUrl": "https://host-us-east-1.relay.example/v1/host",
+        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.us-east-1.relay.example/",
         "hostToken": "eyJhbGciOiJFUzI1NiIsInR5cCI6Imtpcm8tcmVsYXktaG9zdCtqd3QiLCJraWQiOiJ0ZXN0LWtleS0yMDI2LTExIn0.eyJpc3MiOiJodHRwczovL2tpcm8tcmVsYXktaXNzdWVyLmludmFsaWQiLCJhdWQiOiJraXJvLXJlbGF5L2hvc3QiLCJzdWIiOiJ1LTAwMDEuZXhhbXBsZS1vd25lciIsImtpbmQiOiJwZXJzb25hbCIsImhvc3QiOiJjcmV3IiwiZXAiOiJrN3FtM3gydnR6cjRoYm42Y3dhcGZlNWRqM3EybTdyYSIsInJnbiI6InVzLWVhc3QtMSIsImluc3QiOiIzZjJiOGMxZS03YTRkLTRlOWItOWM2MS0yZDVhOGYwZTRiMTciLCJpYXQiOjE3OTM2MzkwMjUsIm5iZiI6MTc5MzYzOTAyNSwiZXhwIjoxNzkzNjM5MzI1LCJqdGkiOiIwZTdkM2I5MS1jMjRhLTRmNTgtYTFiNi05M2Q1ZThmMmMwNDcifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "hostTokenExpiresAt": 1793639325,
         "leaseExpiresAt": 1793639325,
@@ -90,8 +90,8 @@
       "at": "2026-11-02T17:00:57Z",
       "body": {
         "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra",
-        "hostUrl": "https://kiro-relay.us-east-1.api.aws/v1/host",
-        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.kiro-relay.us-east-1.on.aws/",
+        "hostUrl": "https://host-us-east-1.relay.example/v1/host",
+        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra.us-east-1.relay.example/",
         "leaseExpiresAt": "2026-11-02T17:05:57Z",
         "leaseVersion": 2,
         "renewInSeconds": 55

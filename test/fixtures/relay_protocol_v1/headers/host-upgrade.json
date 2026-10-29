@@ -26,9 +26,9 @@
       "name": "upgrade",
       "request": {
         "method": "GET",
-        "url": "wss://kiro-relay.us-east-1.api.aws/v1/host",
+        "url": "wss://host-us-east-1.relay.example/v1/host",
         "headers": {
-          "host": "kiro-relay.us-east-1.api.aws",
+          "host": "host-us-east-1.relay.example",
           "upgrade": "websocket",
           "connection": "Upgrade",
           "sec-websocket-version": "13",
@@ -42,7 +42,7 @@
       "name": "no Authorization header",
       "request": {
         "method": "GET",
-        "url": "wss://kiro-relay.us-east-1.api.aws/v1/host",
+        "url": "wss://host-us-east-1.relay.example/v1/host",
         "headers": {
           "upgrade": "websocket"
         }

@@ -44,6 +44,17 @@ def _cfg(**tunnel: object) -> KiroCrewConfig:
     return cfg
 
 
+#: Reserved example names for a relay with no lease service, which must name both.
+_NAMED = {
+    "relay_host_url": "wss://host-us-east-1.relay.example/v1/host",
+    "relay_crew_domain": "us-east-1.relay.example",
+}
+
+
+def _named_cfg(**tunnel: object) -> KiroCrewConfig:
+    return _cfg(**{**_NAMED, **tunnel})
+
+
 class _EditionTunnel(DefaultTunnelProvider):
     """An edition's own tunnel provider."""
 
@@ -96,19 +107,32 @@ class TestSelection:
 
 
 class TestSettings:
-    def test_defaults_name_the_provisional_relay(self) -> None:
-        settings = RelaySettings.from_config(KiroCrewConfig())
-        assert settings.host_url == "wss://kiro-relay.us-east-1.api.aws/v1/host"
-        assert settings.crew_domain == "kiro-relay.us-east-1.on.aws"
-        assert settings.crew_url_for("k7qm3x2vtzr4hbn6cwapfe5dj3") == (
-            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws"
-        )
-        settings.validate()
+    def test_no_relay_name_is_built_in(self) -> None:
+        # Empty stays empty: the names come from the lease answer or the settings.
+        settings = RelaySettings.from_config(_cfg())
+        assert settings.host_url == "" and settings.crew_domain == ""
+        with pytest.raises(RelaySettingsError, match="tunnel.relay_crew_domain"):
+            settings.crew_url_for("k7qm3x2vtzr4hbn6cwapfe5dj3")
 
-    def test_the_region_shapes_both_names(self) -> None:
-        settings = RelaySettings.from_config(_cfg(relay_region="eu-central-1"))
-        assert settings.host_url == "wss://kiro-relay.eu-central-1.api.aws/v1/host"
-        assert settings.crew_domain == "kiro-relay.eu-central-1.on.aws"
+    def test_with_a_lease_service_the_names_may_stay_empty(self) -> None:
+        RelaySettings.from_config(
+            _cfg(relay_lease_url="https://lease.example", relay_lease_credential="/abs/cred")
+        ).validate()
+
+    @pytest.mark.parametrize(
+        ("tunnel", "names"),
+        [
+            ({}, "tunnel.relay_host_url"),
+            ({"relay_host_url": "wss://host-us-east-1.relay.example/v1/host"}, "relay_crew_domain"),
+            ({"relay_crew_domain": "us-east-1.relay.example"}, "tunnel.relay_host_url"),
+        ],
+        ids=["neither", "no-domain", "no-host-url"],
+    )
+    def test_without_a_lease_service_an_empty_name_is_refused_by_name(
+        self, tunnel: dict, names: str
+    ) -> None:
+        with pytest.raises(RelaySettingsError, match=names):
+            RelaySettings.from_config(_cfg(**tunnel)).validate()
 
     def test_explicit_names_win(self) -> None:
         settings = RelaySettings.from_config(
@@ -125,29 +149,51 @@ class TestSettings:
         [
             {"relay_host_url": "ws://relay.example/v1/host"},
             {"relay_host_url": "https://relay.example/v1/host"},
-            {"relay_region": "US East"},
             {"relay_crew_domain": "bad domain"},
         ],
-        ids=["clear-text-remote", "not-websocket", "bad-region", "bad-domain"],
+        ids=["clear-text-remote", "not-websocket", "bad-domain"],
     )
     def test_unusable_settings_are_refused(self, tunnel: dict) -> None:
         with pytest.raises(RelaySettingsError):
             RelaySettings.from_config(_cfg(**tunnel)).validate()
 
     def test_a_loopback_test_relay_may_use_ws(self) -> None:
-        RelaySettings.from_config(_cfg(relay_host_url="ws://127.0.0.1:9/v1/host")).validate()
+        RelaySettings.from_config(
+            _cfg(relay_host_url="ws://127.0.0.1:9/v1/host", relay_crew_domain="relay.example")
+        ).validate()
 
     def test_config_json_round_trip(self, tmp_path, monkeypatch) -> None:
         config_file = tmp_path / "config.json"
         config_file.write_text(
-            json.dumps({"tunnel": {"relay_enabled": True, "relay_region": "eu-central-1"}}),
+            json.dumps(
+                {"tunnel": {"relay_enabled": True, "relay_crew_domain": "eu.relay.example"}}
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
         cfg = KiroCrewConfig.load()
         assert cfg.tunnel.relay_enabled is True
-        assert cfg.tunnel.relay_region == "eu-central-1"
+        assert cfg.tunnel.relay_crew_domain == "eu.relay.example"
         assert cfg.tunnel.relay_host_url == ""
+
+    def test_an_old_config_with_a_relay_region_still_loads(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        # tunnel.relay_region is retired: an old file holding it loads, the
+        # relay settings still validate, and one warning names the dead key.
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {"tunnel": {"relay_enabled": True, "relay_region": "eu-central-1", **_NAMED}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
+        with caplog.at_level("WARNING", logger="kiro_crew.config"):
+            cfg = KiroCrewConfig.load()
+        assert not hasattr(cfg.tunnel, "relay_region")
+        RelaySettings.from_config(cfg).validate()
+        assert [r.getMessage() for r in caplog.records if "tunnel.relay_region" in r.getMessage()]
 
     def test_a_string_true_does_not_enable_it(self, tmp_path, monkeypatch) -> None:
         config_file = tmp_path / "config.json"
@@ -203,7 +249,7 @@ class TestSettings:
             raise RuntimeError("stop here")
 
         settings = RelaySettings.from_config(
-            _cfg(
+            _named_cfg(
                 relay_enabled=True, relay_move_grace_seconds=4.0
             )  # flake-ok: a settings value parsed and handed on, never waited on
         )
@@ -252,7 +298,7 @@ class TestSettings:
                 closed.append("ingress")
 
         settings = RelaySettings.from_config(
-            _cfg(relay_enabled=True, relay_host_url="ws://127.0.0.1:9/v1/host")
+            _named_cfg(relay_enabled=True, relay_host_url="ws://127.0.0.1:9/v1/host")
         )
         provider = RelayTunnelProvider(
             settings,
@@ -270,54 +316,65 @@ class TestSettings:
 
     def test_the_gateway_listener_comes_from_the_bound_port(self, monkeypatch) -> None:
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "6123")
-        monkeypatch.delenv("KIROCREW_BIND", raising=False)
+        monkeypatch.delenv("KIROCREW_BOUND_HOST", raising=False)
         assert gateway_listener() == ("127.0.0.1", 6123)
-        monkeypatch.setenv("KIROCREW_BIND", "0.0.0.0")
-        assert gateway_listener() == ("127.0.0.1", 6123)
-        monkeypatch.setenv("KIROCREW_BIND", "::")
+        monkeypatch.setenv("KIROCREW_BOUND_HOST", "::1")
         assert gateway_listener() == ("::1", 6123)
         # The relay ingress honours a hand-off over loopback only.
-        monkeypatch.setenv("KIROCREW_BIND", "10.0.0.5")
+        monkeypatch.setenv("KIROCREW_BOUND_HOST", "10.0.0.5")
         with pytest.raises(RelaySettingsError):
             gateway_listener()
-        monkeypatch.delenv("KIROCREW_BIND")
+        monkeypatch.delenv("KIROCREW_BOUND_HOST")
         monkeypatch.delenv("KIROCREW_BOUND_PORT")
         with pytest.raises(RelaySettingsError):
             gateway_listener()
 
+    @pytest.mark.parametrize("asked", ["::1", "10.0.0.5", "0.0.0.0", ""])
+    def test_the_gateway_listener_is_the_address_actually_bound_not_the_one_asked(
+        self, monkeypatch, asked
+    ) -> None:
+        # The bind policy can refuse KIROCREW_BIND and bind 127.0.0.1 instead. The
+        # relay hands requests, and the handover credential, to the socket that
+        # was bound, never to the address that was asked for.
+        import socket
+
+        from kiro_crew.dashboard.server_runtime.listener import _export_reserved_bind_evidence
+
+        monkeypatch.setenv("KIROCREW_BIND", asked)
+        monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+        monkeypatch.delenv("KIROCREW_BOUND_HOST", raising=False)
+        with socket.socket() as bound:
+            bound.bind(("127.0.0.1", 0))
+            _export_reserved_bind_evidence(bound)
+            assert gateway_listener() == ("127.0.0.1", bound.getsockname()[1])
+
     @pytest.mark.parametrize(
-        ("bind", "host"),
+        ("exported", "host"),
         [
             ("127.0.0.2", "127.0.0.2"),
             ("0:0:0:0:0:0:0:1", "::1"),
-            ("[::1]", "::1"),
-            ("::", "::1"),
-            ("0.0.0.0", "127.0.0.1"),
-            ("localhost", "127.0.0.1"),
-            ("0:0:0:0:0:0:0:0", "::1"),
-            ("[::]", "::1"),
+            ("::1", "::1"),
             ("", "127.0.0.1"),
-            ("*", "127.0.0.1"),
         ],
     )
-    def test_the_gateway_listener_uses_address_identity(self, monkeypatch, bind, host) -> None:
+    def test_the_gateway_listener_uses_address_identity(self, monkeypatch, exported, host) -> None:
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "6123")
-        monkeypatch.setenv("KIROCREW_BIND", bind)
+        monkeypatch.setenv("KIROCREW_BOUND_HOST", exported)
         assert gateway_listener() == (host, 6123)
 
     @pytest.mark.parametrize(
-        "bind",
+        "exported",
         ["10.0.0.5", "my-host", "::ffff:127.0.0.1", "127.0.0.1.example", "[::1"],
     )
-    def test_the_gateway_listener_refuses_non_loopback_binds(self, monkeypatch, bind) -> None:
+    def test_the_gateway_listener_refuses_non_loopback_binds(self, monkeypatch, exported) -> None:
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "6123")
-        monkeypatch.setenv("KIROCREW_BIND", bind)
-        with pytest.raises(RelaySettingsError, match="KIROCREW_BIND"):
+        monkeypatch.setenv("KIROCREW_BOUND_HOST", exported)
+        with pytest.raises(RelaySettingsError, match="the gateway is bound to"):
             gateway_listener()
 
 
 def _provider(relay: FakeRelay, crew: FakeCrew) -> RelayTunnelProvider:
-    settings = RelaySettings.from_config(_cfg(relay_enabled=True, relay_host_url=relay.url))
+    settings = RelaySettings.from_config(_named_cfg(relay_enabled=True, relay_host_url=relay.url))
     credential = HostCredential(TOKEN, crew_kind="personal", owner_user_id=OWNER)
     return RelayTunnelProvider(
         settings,
@@ -361,7 +418,7 @@ class TestThroughTheTunnelWrapper:
             try:
                 leg = await relay.next_leg()
                 await leg.handshake()
-                url = f"https://{ready_frame()['endpointId']}.kiro-relay.us-east-1.on.aws"
+                url = f"https://{ready_frame()['endpointId']}.us-east-1.relay.example"
                 await async_wait_until(lambda: url in origins)
                 assert manager.state is TunnelState.CONNECTED
                 assert manager.public_url == url
@@ -426,9 +483,9 @@ class TestThroughTheTunnelWrapper:
         from kiro_crew.relay_client import provider as provider_mod
 
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "6123")
-        monkeypatch.delenv("KIROCREW_BIND", raising=False)
+        monkeypatch.delenv("KIROCREW_BOUND_HOST", raising=False)
         monkeypatch.setattr(provider_mod, "_gateway_ingress", RelayIngress(enabled=True))
-        provider = RelayTunnelProvider(RelaySettings.from_config(_cfg(relay_enabled=True)))
+        provider = RelayTunnelProvider(RelaySettings.from_config(_named_cfg(relay_enabled=True)))
         await provider.start()
         try:
             await async_wait_until(
@@ -442,7 +499,7 @@ class TestThroughTheTunnelWrapper:
     async def test_unusable_settings_report_an_error_and_start_nothing(self) -> None:
         provider = RelayTunnelProvider(
             RelaySettings.from_config(
-                _cfg(relay_enabled=True, relay_host_url="ws://relay.example/v1")
+                _named_cfg(relay_enabled=True, relay_host_url="ws://relay.example/v1")
             )
         )
         await provider.start()
@@ -458,7 +515,7 @@ class TestThroughTheTunnelWrapper:
 
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "6123")
         monkeypatch.setattr(provider_mod, "_gateway_ingress", None)
-        provider = RelayTunnelProvider(RelaySettings.from_config(_cfg(relay_enabled=True)))
+        provider = RelayTunnelProvider(RelaySettings.from_config(_named_cfg(relay_enabled=True)))
         await provider.start()
         snapshot = provider.status_snapshot()
         assert snapshot is not None and snapshot["state"] == "error"

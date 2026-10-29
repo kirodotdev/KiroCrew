@@ -1084,15 +1084,10 @@ class TunnelConfig:
             "can hold a lease; without them it starts a relay client that reports it "
             "cannot connect. While it is off, Crew starts no "
             "relay client, strips every x-kiro-relay-* header from every request and "
-            "trusts none of them.",
-            restart=True,
-        ),
-    )
-    relay_region: str = field(
-        default="us-east-1",
-        metadata=_meta(
-            "Relay Region",
-            "The AWS Region of the Kiro relay this Crew dials, for example 'us-east-1'.",
+            "trusts none of them. To reach the relay and the lease service through a "
+            "proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment "
+            "variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in "
+            "macOS System Settings is not used.",
             restart=True,
         ),
     )
@@ -1100,8 +1095,9 @@ class TunnelConfig:
         default="",
         metadata=_meta(
             "Relay Host URL",
-            "The relay's host dial URL. Empty uses wss://kiro-relay.<region>.api.aws/v1/host. "
-            "Must be wss:// (ws:// only for a loopback test relay).",
+            "The relay's host dial URL. Empty means the relay address from the lease "
+            "service; with no lease service it must be set. Must be wss:// (ws:// only "
+            "for a loopback test relay).",
             restart=True,
         ),
     )
@@ -1110,7 +1106,8 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Crew Domain",
             "The domain this Crew's relay URL sits under, as https://<endpoint>.<domain>. "
-            "Empty uses kiro-relay.<region>.on.aws.",
+            "Empty means the relay address from the lease service; with no lease service "
+            "it must be set.",
             restart=True,
         ),
     )
@@ -1120,8 +1117,7 @@ class TunnelConfig:
             "Relay Move Grace (secs)",
             "When the relay moves this Crew to a new connection, how long the old one "
             "stays open with no request in flight before it closes, so a request already "
-            "on its way there is still answered. 0 to 30; never past the relay's own "
-            "move window.",
+            "on its way there is still answered. 0 to 30.",
             restart=True,
         ),
     )

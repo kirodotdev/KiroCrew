@@ -1221,6 +1221,9 @@ def _apply_seed_config_floor(data: dict) -> None:
         if not isinstance(data.get(section), dict):
             data[section] = {}
         data[section]["enabled"] = False
+    # The tunnel section's second switch: left on, a seeded pod would dial the
+    # operator's Kiro relay with the operator's lease credential.
+    data["tunnel"]["relay_enabled"] = False
     _force_seed_agent_security(data)
 
 

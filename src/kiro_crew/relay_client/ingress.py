@@ -329,6 +329,11 @@ class LoopbackIngress:
             raise ValueError(f"not a TCP port: {port!r}")
         bracketed = f"[{host}]" if ":" in host else host
         self._base = f"http://{bracketed}:{port}"
+        # The hand-off dials the address the gateway bound, but names the canonical
+        # loopback host of its family: the gateway's Host check allows 127.0.0.1 and
+        # [::1] whatever loopback address it is bound to, and nothing reads this
+        # Host as the caller (a relayed request's remote is the relay's marker).
+        self._host_header = f"[::1]:{port}" if ":" in host else f"127.0.0.1:{port}"
         self._gateway = gateway
         self._max_ws_message_bytes = max_ws_message_bytes
         self._session: Optional[aiohttp.ClientSession] = None
@@ -350,11 +355,13 @@ class LoopbackIngress:
         from kiro_crew.dashboard.kiro_relay.ingress import RelayIngressError
 
         try:
-            return self._gateway.stamp_headers(
+            stamped = self._gateway.stamp_headers(
                 forwardable_request_headers(headers), relay_user=user
             )
         except (RelayIngressError, ValueError) as exc:
             raise IngressUnavailable(str(exc)) from exc
+        stamped["Host"] = self._host_header
+        return stamped
 
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

@@ -254,7 +254,7 @@ def _gated_client(relay: FakeRelay, ingress: _GatedIngress) -> RelayClient:
     source = StaticHostTokenSource(HostCredential(TOKEN, crew_kind="personal", owner_user_id=OWNER))
     return RelayClient(
         host_url=relay.url,
-        crew_url_for=lambda ep: f"https://{ep}.kiro-relay.us-east-1.on.aws",
+        crew_url_for=lambda ep: f"https://{ep}.us-east-1.relay.example",
         token_source=source,
         ingress=ingress,
         client_version="0.0.0-test",

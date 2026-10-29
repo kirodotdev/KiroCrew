@@ -54,13 +54,22 @@ CREW_FIRST_BYTE_SECONDS = 50.0
 WS_PAUSE_WATCHDOG_SECONDS = 30.0
 #: How long a close handshake on the host socket may take before it is abandoned.
 CLOSE_HANDSHAKE_SECONDS = 5.0
-#: The reconnect contract gives 5 seconds for drain and 30 for max-age.
+#: The longest the client waits for a new connection to get ready after a
+#: ``reconnect``: the contract gives 5 seconds to move on a drain and 30 for
+#: max-age. It does not bound the old connection, which keeps its HTTP requests.
 MOVE_WINDOW_MAX_SECONDS = 30
+#: The longest an old connection drains before the client closes it itself. The
+#: relay always closes it first, with 1012: 30 seconds after a max-age
+#: ``reconnect``, or 80 seconds from the start of a drain (contract sections 4.5
+#: and 11.2). 90 is the load balancer's deregistration delay.
+DRAIN_BACKSTOP_SECONDS = 90.0
 #: After a move, the old connection stays open until no request has arrived on it
 #: for this long with none in flight: a request the relay wrote there just before
-#: it stopped routing to it can still be on its way. Never past the move window.
+#: it stopped routing to it can still be on its way. Never past the drain backstop.
 #: Provisional, so it is the setting ``tunnel.relay_move_grace_seconds``.
 MOVE_QUIET_GRACE_SECONDS = 1.0
+#: The largest ``tunnel.relay_move_grace_seconds`` accepts.
+MOVE_QUIET_GRACE_MAX_SECONDS = 30.0
 
 # ── sizes (contract section 3, fixture limits/sizes.json) ──
 MAX_TEXT_FRAME_BYTES = 65536

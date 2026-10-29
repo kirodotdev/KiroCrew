@@ -329,7 +329,7 @@ def make_client(
         kwargs["monotonic"] = monotonic
     client = RelayClient(
         host_url=relay.url,
-        crew_url_for=lambda ep: f"https://{ep}.kiro-relay.us-east-1.on.aws",
+        crew_url_for=lambda ep: f"https://{ep}.us-east-1.relay.example",
         token_source=source,
         ingress=ingress,
         client_version="0.0.0-test",

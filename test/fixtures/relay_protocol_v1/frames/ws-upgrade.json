@@ -61,7 +61,7 @@
         "headers": [
           [
             "origin",
-            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws"
+            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example"
           ],
           [
             "cookie",
@@ -69,7 +69,7 @@
           ],
           [
             "x-forwarded-host",
-            "k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws"
+            "k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example"
           ],
           [
             "x-forwarded-proto",

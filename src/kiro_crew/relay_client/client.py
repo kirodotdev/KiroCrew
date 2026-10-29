@@ -254,9 +254,14 @@ class RelayClient:
         try:
             while not self._stopping.is_set():
                 try:
-                    credential = self._credential or await self._tokens.current()
+                    # Every dial asks the source, which alone knows whether the
+                    # token it issued is still inside its lifetime. A cached one
+                    # can be spent, and the relay would refuse it on every redial.
+                    credential = await self._tokens.current()
                 except HostTokenUnavailable as exc:
                     self._fail(str(exc))
+                    # An earlier connection may have published the relay URL.
+                    await self._lose_url()
                     return
                 except HostTokenRetryLater as exc:
                     self._state, self._error = STATE_RECONNECTING, str(exc)
@@ -264,12 +269,15 @@ class RelayClient:
                     continue
                 if host_binding(credential) is None:
                     self._fail("the host token names no Crew kind, or a personal Crew no owner")
+                    await self._lose_url()
                     return
                 self._credential = credential
                 try:
                     end, served = await self._serve(credential)
                 finally:
-                    self._unbind()
+                    # A connection a move left draining still answers requests the
+                    # relay wrote to it, so the binding stays until it closes too.
+                    self._unbind_unless_serving()
                 if self._stopping.is_set():
                     return
                 if end.reached_ready:
@@ -332,6 +340,16 @@ class RelayClient:
         except Exception:
             logger.warning("the relay ingress refused the unbind", exc_info=True)
 
+    def _unbind_unless_serving(self) -> None:
+        """Unbind only when no connection, active or draining, still serves.
+
+        Unbinding retires the handover credential, so doing it while a drained
+        connection still serves would refuse that connection's late requests.
+        Whichever of the loop and the drain finishes last does the unbind.
+        """
+        if not any(conn.serving for conn in self._live):
+            self._unbind()
+
     async def _renew(self) -> "_Renewal":
         """Ask the source for a fresh host token."""
         try:
@@ -341,7 +359,9 @@ class RelayClient:
             await self._lose_url()
             return _Renewal.STOP
         except HostTokenRetryLater:
-            # Keep the token the client holds; the backoff paces the next try.
+            # The token the relay just refused or let expire is no use: drop it.
+            # The next dial asks the source again after the backoff.
+            self._credential = None
             return _Renewal.LATER
         return _Renewal.RENEWED
 
@@ -393,12 +413,23 @@ class RelayClient:
 
         Returns the new connection once it is ready, after handing the old one to
         a background drain. Returns ``None`` when the new one did not get ready
-        within the relay's window; the old one then ends with the relay's 1012,
-        which redials at once.
+        within the relay's window, or when the source has no usable host token to
+        dial it with. The old one then serves on until the relay's 1012 ends it,
+        and the loop asks the source again before any redial.
+
+        The window (``closeInSeconds``) bounds only the wait for the new connection.
+        The old one keeps its HTTP requests until they finish, then closes with
+        1000, or until the relay closes it with 1012, which ends the drain without a
+        redial: the new connection already serves the endpoint.
         """
         window = old.move_close_in
-        started = self._monotonic()
-        credential = self._credential or old.credential
+        try:
+            credential = await self._tokens.current()
+        except (HostTokenRetryLater, HostTokenUnavailable) as exc:
+            # Never dial with the old connection's token: it can be spent.
+            logger.warning("relay move: nothing to dial the new connection with yet (%s)", exc)
+            return None
+        self._credential = credential
         new = self._connection(credential)
         new_run: "asyncio.Future[ConnectionEnd]" = asyncio.ensure_future(new.run())
         ready = asyncio.ensure_future(new.ready.wait())
@@ -417,21 +448,19 @@ class RelayClient:
         if self._draining is not None:
             await self._draining.close(1000)
         self._draining = old
-        remaining = window - (self._monotonic() - started)
-        self._spawn(self._drain(old, old_run, remaining))
+        self._spawn(self._drain(old, old_run))
         await self._now_connected(new)
         return new, new_run
 
-    async def _drain(
-        self, old: HostConnection, old_run: "asyncio.Future[ConnectionEnd]", within: float
-    ) -> None:
+    async def _drain(self, old: HostConnection, old_run: "asyncio.Future[ConnectionEnd]") -> None:
         try:
-            await old.drain_and_close(within, quiet=self._timings.move_grace)
+            await old.drain_and_close(quiet=self._timings.move_grace)
             await asyncio.gather(old_run, return_exceptions=True)
         finally:
             self._live.discard(old)
             if self._draining is old:
                 self._draining = None
+            self._unbind_unless_serving()
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)

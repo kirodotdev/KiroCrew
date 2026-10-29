@@ -80,7 +80,7 @@
         "headers": {
           "accept": "application/json",
           "authorization": "Bearer crew-own-session-credential",
-          "x-forwarded-host": "k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws",
+          "x-forwarded-host": "k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example",
           "x-forwarded-proto": "https"
         },
         "streaming": true,
@@ -100,7 +100,7 @@
         "headers": {
           "content-type": "application/octet-stream",
           "content-length": "52428800",
-          "x-forwarded-host": "t4nw2q7hzk5rmc3xvbp6ld2fe7.kiro-relay.us-east-1.on.aws",
+          "x-forwarded-host": "t4nw2q7hzk5rmc3xvbp6ld2fe7.us-east-1.relay.example",
           "x-forwarded-proto": "https"
         },
         "streaming": true,

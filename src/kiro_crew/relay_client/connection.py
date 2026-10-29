@@ -29,6 +29,7 @@ from kiro_crew.relay_client.protocol import (
     CLOSE_GOING_AWAY,
     CLOSE_HANDSHAKE_SECONDS,
     CREW_FIRST_BYTE_SECONDS,
+    DRAIN_BACKSTOP_SECONDS,
     ERR_CREW_UNREACHABLE,
     ERR_INVALID_MESSAGE,
     ERR_MESSAGE_TOO_LARGE,
@@ -72,9 +73,13 @@ _PROXY_SCHEME = {"wss": "https", "ws": "http", "https": "https", "http": "http"}
 def env_proxy_for(url: str) -> Optional[str]:
     """The proxy the environment names for *url*, or ``None`` to dial directly.
 
-    Reads only the proxy variables (``HTTPS_PROXY``, ``HTTP_PROXY``, ``ALL_PROXY``
-    and ``NO_PROXY``), never netrc, so no stored password can reach the relay. A
-    loopback relay, which only a local test runs, is never proxied.
+    Reads only the proxy environment variables: ``HTTPS_PROXY`` for the relay's
+    ``wss://`` and the lease service's ``https://``, ``HTTP_PROXY`` for a
+    ``ws://`` one, ``ALL_PROXY`` when that one is unset, and ``NO_PROXY``. Never netrc, so no stored password can reach the
+    relay, and never the operating system's proxy settings: on macOS reading
+    those can block on a DNS lookup, and this runs on the event loop. So a proxy
+    set only in macOS System Settings is not used. A loopback relay, which only
+    a local test runs, is never proxied.
     """
     try:
         parts = urlsplit(url)
@@ -83,9 +88,10 @@ def env_proxy_for(url: str) -> Optional[str]:
         return None
     if not host or is_loopback_host(host):
         return None
-    if urllib.request.proxy_bypass(host):
+    # The stdlib's environment-only NO_PROXY check, which typeshed doesn't list.
+    if urllib.request.proxy_bypass_environment(host):  # type: ignore[attr-defined]
         return None
-    proxies = urllib.request.getproxies()
+    proxies = urllib.request.getproxies_environment()
     proxy = proxies.get(_PROXY_SCHEME.get(parts.scheme, "")) or proxies.get("all")
     return proxy or None
 
@@ -101,6 +107,8 @@ class RelayTimings:
     dial: float = DIAL_TIMEOUT_SECONDS
     close_handshake: float = CLOSE_HANDSHAKE_SECONDS
     move_grace: float = MOVE_QUIET_GRACE_SECONDS
+    #: The longest an old connection drains before the client closes it itself.
+    drain_backstop: float = DRAIN_BACKSTOP_SECONDS
 
 
 Stream = Union[HttpStream, WsStream]
@@ -244,21 +252,27 @@ class HostConnection:
         if ws is not None and not ws.closed:
             await self._close_ws(ws, code, reason)
 
-    async def drain_and_close(self, within: float, *, quiet: float = 0.0) -> None:
-        """Let open HTTP requests finish, then close with 1000; at most *within* seconds.
+    async def drain_and_close(self, *, quiet: float = 0.0) -> None:
+        """Let open HTTP requests finish, then close with 1000.
 
         Once none is in flight, the connection stays open until no new request has
         arrived for *quiet* seconds, and serves any that does: the relay may have
         written one here just before it stopped routing to this connection, and it
-        travels apart from the new connection's ``ready``. *within* bounds the whole
-        drain, grace included.
+        travels apart from the new connection's ``ready``.
+
+        A ``reconnect``'s ``closeInSeconds`` is only the time to get the new
+        connection ready; it does not bound this drain. A request that outlives it
+        keeps going here until the relay closes the connection with 1012, which
+        ends the drain (contract section 4.5). The drain's only deadline of its own
+        is ``drain_backstop``, which the relay always beats, and the grace never
+        runs past it.
 
         WebSockets do not finish on their own, so the close ends them; the relay
         then closes each viewer's socket with 1012 and the viewer reconnects to
         the new connection.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(within, 0.0)
+        deadline = loop.time() + max(self._timings.drain_backstop, 0.0)
         quiet = quiet if math.isfinite(quiet) and quiet > 0 else 0.0
         while True:
             if self._ended.is_set():
@@ -272,7 +286,7 @@ class HostConnection:
                     if loop.time() < deadline:
                         continue
                     logger.info(
-                        "relay move: open requests outlived the move window; closing anyway"
+                        "relay move: open requests outlived the drain backstop; closing anyway"
                     )
                     break
                 continue

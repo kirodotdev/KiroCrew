@@ -184,6 +184,9 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     # gateway installs the engine on its own). Only pre-release builds wrote it,
     # so it is dropped on save without a load-time warning.
     "browser": frozenset({"first_run_dismissed"}),
+    # RETIRED: the relay region had no reader; the relay names are set in full
+    # by tunnel.relay_host_url and tunnel.relay_crew_domain. Named once at load.
+    "tunnel": frozenset({"relay_region"}),
 }
 
 #: The RETIRED subset of ``_SECTION_KEYS_DELIBERATELY_DROPPED`` worth ONE load-time
@@ -191,6 +194,7 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
 #: still honoured under its old spelling, so it is not listed here.
 _RETIRED_SECTION_KEYS_WARNED: dict = {
     "dashboard": frozenset({"use_builtin_browser", "browser_view_port"}),
+    "tunnel": frozenset({"relay_region"}),
 }
 
 

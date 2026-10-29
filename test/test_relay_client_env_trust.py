@@ -136,3 +136,23 @@ def test_a_loopback_relay_is_never_proxied(monkeypatch: pytest.MonkeyPatch, url:
 def test_no_proxy_environment_dials_directly(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_proxy_env(monkeypatch)
     assert env_proxy_for("wss://relay.example/v1/host") is None
+
+
+def test_the_operating_systems_proxy_settings_are_never_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On macOS the stdlib's full lookups read System Settings and can block on a
+    # DNS lookup, on the event loop. Only the environment counts.
+    import urllib.request
+
+    def system_lookup(*_: object) -> object:
+        raise AssertionError("the operating system's proxy settings were read")
+
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setattr(urllib.request, "getproxies", system_lookup)
+    monkeypatch.setattr(urllib.request, "proxy_bypass", system_lookup)
+    assert env_proxy_for("wss://relay.example/v1/host") is None
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    assert env_proxy_for("https://lease.example/") == "http://proxy.example:3128"
+    monkeypatch.setenv("NO_PROXY", "lease.example")
+    assert env_proxy_for("https://lease.example/") is None

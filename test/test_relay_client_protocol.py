@@ -268,7 +268,7 @@ def test_the_binding_reads_the_host_token_claims_when_the_source_names_none() ->
 def test_the_host_upgrade_uses_a_bearer_host_token() -> None:
     upgrade = fixture("headers/host-upgrade")
     assert "Authorization: Bearer" in upgrade["rule"]
-    assert upgrade["cases"][0]["request"]["url"].startswith("wss://kiro-relay.")
+    assert upgrade["cases"][0]["request"]["url"].startswith("wss://host-us-east-1.relay.example/")
 
 
 @pytest.mark.parametrize(
@@ -305,10 +305,10 @@ def test_a_credential_never_carries_an_unsafe_dial_url(url: str) -> None:
 @pytest.mark.parametrize(
     "url",
     [
-        "http://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws",
-        "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws/path",
-        "https://user@k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws",
-        "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws?x=1",
+        "http://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example",
+        "https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example/path",
+        "https://user@k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example",
+        "https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example?x=1",
         "https://*.example",
     ],
     ids=["clear-text", "path", "userinfo", "query", "wildcard"],
@@ -325,8 +325,8 @@ def test_the_lease_shapes_of_both_urls_are_accepted() -> None:
 
     HostCredential(
         "a.b.c",
-        host_url="wss://kiro-relay.us-east-1.api.aws/v1/host",
-        crew_url="https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws/",
+        host_url="wss://host-us-east-1.relay.example/v1/host",
+        crew_url="https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example/",
     )
     HostCredential("a.b.c", host_url="ws://127.0.0.1:9/v1/host")
 
@@ -334,18 +334,18 @@ def test_the_lease_shapes_of_both_urls_are_accepted() -> None:
 @pytest.mark.parametrize(
     ("url", "origin"),
     [
-        ("https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws/", None),
-        ("https://K7QM3X2VTZR4HBN6CWAPFE5DJ3.Kiro-Relay.us-east-1.on.aws", None),
-        ("https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws:443/", None),
+        ("https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example/", None),
+        ("https://K7QM3X2VTZR4HBN6CWAPFE5DJ3.US-EAST-1.Relay.Example", None),
+        ("https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example:443/", None),
         (
-            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws:8443",
-            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws:8443",
+            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example:8443",
+            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example:8443",
         ),
     ],
     ids=["trailing-slash", "upper-case", "default-port", "other-port"],
 )
 def test_the_crew_origin_is_what_a_browser_sends(url: str, origin: str) -> None:
-    expected = origin or "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws"
+    expected = origin or "https://k7qm3x2vtzr4hbn6cwapfe5dj3.us-east-1.relay.example"
     assert protocol.crew_url_problem(url) is None
     assert protocol.crew_origin(url) == expected
 
