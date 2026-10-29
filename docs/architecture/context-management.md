@@ -281,6 +281,10 @@ The mechanism, when on:
   write (a recovery or Continue continuation, the synthesis prompt, an MCP
   App's message), which then matches and selects nothing. Other callers match
   the turn text.
+  A Discord or Webex DM auto-nudge reads the loop's message instead of the
+  `[auto-nudge cycle N]` text it delivers: `_fire_dm_nudge` hands it to the
+  dispatcher's `handle_message` as `skill_trigger_text`, and the channel pipeline
+  (`ChannelTurns.answer`, `ChannelTurn.skill_trigger_text`) passes it to the build.
 - `skill_runtime/delivery.py` → `split_triggered` decides delivery. **A matched
   skill's full body lands in the prompt as `[Skill: name]` the first time it
   matches in a provider session**; a later match of the same unconfined skill in

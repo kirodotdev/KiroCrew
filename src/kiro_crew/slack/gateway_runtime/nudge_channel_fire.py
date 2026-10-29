@@ -581,10 +581,15 @@ async def _fire_dm_nudge(
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
 
     if wake_message is None:
-        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
+        fired_message = loop.message
+        msg_body = await compose_nudge_body(fired_message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"{nudge_cycle_header(loop)}\n{msg_body}"
+        # Skill triggers read the loop's own message, not the cycle header or the
+        # ledger snapshot Kiro Crew put before it, as on the Slack thread path.
+        trigger_text: str | None = fired_message
     else:
         tagged = wake_message
+        trigger_text = None
 
     try:
         conversation_id = await adapter.resolve_conversation(transport, sessions, key, principal)
@@ -601,6 +606,8 @@ async def _fire_dm_nudge(
     try:
         synthetic = adapter.build_inbound(principal, conversation_id, tagged)
         dispatch_kwargs: dict[str, Any] = {"interpret_commands": False}
+        if trigger_text is not None:
+            dispatch_kwargs["skill_trigger_text"] = trigger_text
         if adapter.supports_monitor:
             completion_hook = self._monitor_completion_hook(loop)
             if wake_message is not None and completion_hook is None:
