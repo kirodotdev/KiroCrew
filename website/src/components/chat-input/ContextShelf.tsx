@@ -331,6 +331,11 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                           : i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}
                       </div>
                     )}
+                    {autoCompact.harness_managed && (
+                      <div className="mt-1 text-[10px] text-muted" data-testid="autocompact-harness-managed-note">
+                        {i18nT('components.chatInput.harness_managed_note', { backend: autoCompact.harness_managed.toUpperCase() })}
+                      </div>
+                    )}
                   </div>
                 )}
         </div>

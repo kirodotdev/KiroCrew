@@ -814,7 +814,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "labelKey": "pages.settings.chatPanel.auto_compact_threshold",
-    "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+    "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1,

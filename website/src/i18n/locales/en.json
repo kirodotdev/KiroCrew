@@ -9455,7 +9455,7 @@
         "content_width": "Content Width",
         "context": "Context",
         "turns": "Turns",
-        "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+        "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
         "default_defers_to_your_agent_config_and_then_to": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
         "default_model": "Default Model",
         "default_normal_length": "Default — normal length",

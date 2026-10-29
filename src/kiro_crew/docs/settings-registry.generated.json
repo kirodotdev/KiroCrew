@@ -441,7 +441,7 @@
       "label": "Auto-Compact Threshold",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=key%3Asession.autocompact_pct",
-      "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+      "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
       "configKey": "session.autocompact_pct"
     },
     {

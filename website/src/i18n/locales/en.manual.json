@@ -2200,6 +2200,7 @@
       "reset_to_agent_default": "Reset to the <agent/> agent's default ({{pct}}%)",
       "following_agent_default": "Following the <agent/> agent's default ({{pct}}%)",
       "agent_default_source": "Set per agent in config.json (agents.{{agent}}.autocompact_pct). Moving the slider overrides it for this session.",
+      "harness_managed_note": "This chat runs on {{backend}}, which compacts on its own. This threshold does not apply here.",
       "optimize_failed": "Couldn't optimize the prompt. Your original text was restored.",
       "optimize_failed_elsewhere": "Couldn't optimize the prompt you started in another session. Its original text was restored there.",
       "cancel_optimizing": "Cancel optimizing",
