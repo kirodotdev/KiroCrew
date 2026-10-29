@@ -32,8 +32,11 @@ from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import turn as _turn
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from kiro_crew.agent_sdk import ContextPromptProvider
     from kiro_crew.hooks import HookResult
+    from kiro_crew.skills import SkillsLoader
 
 logger = logging.getLogger("kiro_crew.context")
 
@@ -41,6 +44,22 @@ logger = logging.getLogger("kiro_crew.context")
 #: while the session's Computer Use reading is off (no ``kirocrew-computer``
 #: server was mounted), so the trigger path neither matches nor offers it then.
 _COMPUTER_USE_SKILL = "computer-use"
+
+
+def _mapped_trigger_keys(
+    skills: SkillsLoader, project: str | Path | None, mapped: list[str]
+) -> set[str]:
+    """The keys a mapped agent's triggers may inject.
+
+    Triggers match and load the copy that wins each key, so a key whose mapped
+    copy is not that winner (it carries its own ``mapping_root``) must not
+    trigger: it would inject the other copy's body.
+    """
+    return {
+        row["key"]
+        for row in skills.scoped_skills(project_dir=project, only=mapped)
+        if not row.get("mapping_root")
+    }
 
 
 def build_message(
@@ -781,9 +800,7 @@ def build_message(
             else (ctx.agent_skill_globs(agent, project_dir=template_root) if agent else [])
         )
         if mapped:
-            allowed = {
-                row["key"] for row in self.skills.scoped_skills(project_dir=project, only=mapped)
-            }
+            allowed = _mapped_trigger_keys(self.skills, project, mapped)
             triggered = [key for key in triggered if key in allowed]
 
         if triggered:
