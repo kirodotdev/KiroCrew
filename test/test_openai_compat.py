@@ -666,6 +666,157 @@ class TestBlockingEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# A turn that ends on its error row is a failed completion
+# ---------------------------------------------------------------------------
+
+_RUNTIME_ERROR_ROW = {
+    "role": "error",
+    "content": "❌ the default agent spec kirocrew.json is missing",
+    "meta": None,
+}
+_RETRY_NOTICE_ROW = {
+    "role": "error",
+    "content": "⟳ Session busy — retrying…",
+    "meta": {"kind": "transient_retry"},
+}
+
+
+async def _complete(rows: list[dict], *, stream: bool):
+    """Run one completion over *rows* (then ``done``); return the response and SSE text."""
+    slot = _make_slot()
+    state = _make_state(slot)
+    body = {"model": "vanellope", "messages": [{"role": "user", "content": "hi"}]}
+    request = _make_request({**body, "stream": stream}, state)
+    written: list[bytes] = []
+    mock_resp = MagicMock()
+    mock_resp.prepare = AsyncMock()
+    mock_resp.write = AsyncMock(side_effect=written.append)
+    mock_resp.content_type = None
+    mock_resp.headers = {}
+
+    async def fake_run_chat(s, sl, prompt, **_kwargs):
+        slot._pending.extend([*rows, {"cls": "done"}])
+        slot.event.set()
+
+    with (
+        patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+        patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
+    ):
+        resp = await api_completions(request)
+    return resp, "".join(w.decode() for w in written if isinstance(w, bytes))
+
+
+def _sse_frames(text: str) -> list:
+    return [
+        json.loads(line[len("data: ") :])
+        for line in text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+
+
+@pytest.mark.asyncio
+class TestTurnErrorRow:
+    async def test_blocking_answers_502_naming_the_error_row(self):
+        resp, _ = await _complete([_RUNTIME_ERROR_ROW], stream=False)
+
+        assert resp.status == 502
+        data = json.loads(resp.body)
+        assert data["code"] == "turn_failed"
+        assert data["error"]["code"] == "turn_failed"
+        assert data["error"]["type"] == "server_error"
+        assert "kirocrew.json is missing" in data["error"]["message"]
+        assert "choices" not in data
+
+    async def test_stream_ends_on_the_error_frame_without_a_stop(self):
+        _, text = await _complete([_RUNTIME_ERROR_ROW], stream=True)
+
+        frames = _sse_frames(text)
+        assert frames[-1]["error"]["code"] == "turn_failed"
+        assert "kirocrew.json is missing" in frames[-1]["error"]["message"]
+        assert '"finish_reason": "stop"' not in text
+        assert text.endswith("data: [DONE]\n\n")
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_the_error_message_is_redacted(self, stream):
+        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        row = {"role": "error", "content": f"❌ bad key {secret}", "meta": None}
+        resp, text = await _complete([row], stream=stream)
+
+        payload = text if stream else resp.body.decode()
+        assert secret not in payload
+        assert "turn_failed" in payload
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_a_reply_after_a_recovered_error_is_a_normal_stop(self, stream):
+        rows = [_RUNTIME_ERROR_ROW, {"role": "assistant", "content": "recovered"}]
+        resp, text = await _complete(rows, stream=stream)
+
+        if stream:
+            assert "recovered" in text
+            assert '"finish_reason": "stop"' in text
+            assert "turn_failed" not in text
+        else:
+            assert resp.status == 200
+            data = json.loads(resp.body)
+            assert data["choices"][0]["message"]["content"] == "recovered"
+            assert data["choices"][0]["finish_reason"] == "stop"
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_an_error_after_partial_text_still_fails(self, stream):
+        rows = [{"role": "chunk", "content": "half an ans"}, _RUNTIME_ERROR_ROW]
+        resp, text = await _complete(rows, stream=stream)
+
+        if stream:
+            assert '"finish_reason": "stop"' not in text
+            assert _sse_frames(text)[-1]["error"]["code"] == "turn_failed"
+        else:
+            assert resp.status == 502
+            assert json.loads(resp.body)["code"] == "turn_failed"
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_a_retry_notice_alone_is_not_a_failure(self, stream):
+        rows = [_RETRY_NOTICE_ROW, {"role": "assistant", "content": "done it"}]
+        resp, text = await _complete(rows, stream=stream)
+
+        if stream:
+            assert '"finish_reason": "stop"' in text
+            assert "turn_failed" not in text
+        else:
+            assert resp.status == 200
+            assert json.loads(resp.body)["choices"][0]["message"]["content"] == "done it"
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_an_empty_reply_with_no_error_row_stays_a_200_stop(self, stream):
+        resp, text = await _complete([], stream=stream)
+
+        if stream:
+            assert '"finish_reason": "stop"' in text
+            assert "turn_failed" not in text
+        else:
+            assert resp.status == 200
+            data = json.loads(resp.body)
+            assert data["choices"][0]["message"]["content"] == ""
+            assert data["choices"][0]["finish_reason"] == "stop"
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_a_turn_that_failed_before_it_started_holds_over_later_text(self, stream):
+        rows = [
+            {
+                "role": "error",
+                "content": "⚠ This message failed before it started.",
+                "meta": {"turn_failed": True},
+            },
+            {"role": "assistant", "content": "the next queued entry"},
+        ]
+        resp, text = await _complete(rows, stream=stream)
+
+        if stream:
+            assert _sse_frames(text)[-1]["error"]["code"] == "turn_failed"
+        else:
+            assert resp.status == 502
+
+
+# ---------------------------------------------------------------------------
 # Coverage: remaining edge cases
 # ---------------------------------------------------------------------------
 

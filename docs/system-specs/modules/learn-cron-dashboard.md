@@ -2741,8 +2741,8 @@ record and the slot, not from where the turn stopped:
 - An exception above the `try` appends an error row, since the dispatcher
   only logs it, and propagates. The row carries `meta.turn_failed`
   (`chat_turn.queue_cycle.TURN_FAILED_META`), so the OpenAI-compatible endpoint, which
-  waits for the cycle's `done` row, answers `server_error` instead of an empty
-  reply. Raised by a local command's own handler
+  waits for the cycle's `done` row, answers `turn_failed` instead of an empty
+  reply, even when an entry queued behind it answers. Raised by a local command's own handler
   (`/goal`, `/workflow`, `/prompts`, recorded as `_TurnExit.local_command`)
   it is that entry's failure and the queue drains on; any other one holds
   the queue, because the setup that failed would fail every queued entry in
@@ -4862,12 +4862,25 @@ BEFORE any mutation, returning the shared `kiro_prerequisite_required` 503.
 turn.)
 
 **`POST /v1/chat/completions` also fails closed**, for a different reason: it has
-no transcript the caller reads. Its collectors pick up only `chunk`/`assistant`
-roles, so the `error` card an `AcpAuthRequired` turn appends is invisible and the
-request would return **HTTP 200 with empty content** — an OpenAI SDK client
-cannot distinguish that from a model that legitimately said nothing. It returns
-the `kiro_prerequisite_required` 503 in OpenAI error shape until the endpoint
-learns to translate `AcpAuthRequired` itself.
+no transcript the caller reads. It returns the `kiro_prerequisite_required` 503
+in OpenAI error shape, which names the fix, rather than starting a turn that
+can only fail.
+
+**A turn that ends on its `error` card is a failed completion, not an empty
+one** (`openai_compat._TurnOutcome`). Every turn's cycle ends with a `done` row,
+including one the runtime could not start, so `done` alone would read as
+**HTTP 200 with empty content and `finish_reason: stop`** — indistinguishable,
+for an OpenAI SDK client, from a model that said nothing. Both readers watch
+the `error` rows: an error row that no later `chunk`/`assistant` text follows
+ends the turn as failed. The blocking reader answers **502** with
+`{"error": {"message": <the error row, redacted>, "type": "server_error",
+"code": "turn_failed"}, "code": "turn_failed"}`; the streamed reader flushes the
+text it held back, then sends that error object as its last frame and
+`[DONE]`, with no `finish_reason: stop` chunk. A retry notice
+(`meta.kind == TRANSIENT_RETRY_KIND`) is not a failure, and an error followed by
+the reply the turn recovered with is a normal `stop`. A row carrying
+`meta.turn_failed` (a turn that failed before it started) holds whatever the
+queue behind it answers. An empty reply with no error row stays a 200 `stop`.
 
 **An unresolved check is never rendered as "setup required."** The cold probe
 spawns several sandboxed `kiro-cli` subprocesses (`--version`, `whoami`,

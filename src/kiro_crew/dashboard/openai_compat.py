@@ -27,6 +27,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
+from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
@@ -136,12 +137,10 @@ def _redact(text: str) -> str:
 
 async def api_completions(request: web.Request) -> web.StreamResponse:
     """POST /v1/chat/completions — OpenAI-compatible chat endpoint."""
-    # Unlike the dashboard, this endpoint has no transcript the caller reads: the
-    # collectors below pick up only `chunk`/`assistant` roles, so the `error` card
-    # an AcpAuthRequired turn appends is invisible and the request would return
-    # HTTP 200 with empty content — an SDK client cannot tell that apart from a
-    # model that legitimately said nothing. Fail closed until this endpoint
-    # translates AcpAuthRequired into an OpenAI-shaped error.
+    # Unlike the dashboard, this endpoint has no transcript the caller reads. A
+    # turn that ends on its `error` card answers the generic `turn_failed`
+    # (`_TurnOutcome`); a missing sign-in is refused here first, so the caller
+    # gets the code that names its fix instead of a failed turn.
     blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return web.json_response(
@@ -646,20 +645,57 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
 _SERVER_ERROR = {"error": {"message": "internal error", "type": "server_error"}}
 
 
-def _turn_failed(msg: dict[str, Any]) -> bool:
-    """Whether *msg* is the error row of a turn that failed before it started.
+#: The ``code`` of a completion whose turn ended on its own error row.
+_TURN_FAILED_CODE = "turn_failed"
 
-    That turn's cycle still ends with a ``done`` row, which on its own reads as
-    an empty successful reply."""
-    meta = msg.get("meta")
-    return isinstance(meta, dict) and bool(meta.get(TURN_FAILED_META))
+
+class _TurnOutcome:
+    """Whether the rows read so far end the turn on an error, and which one.
+
+    A turn that cannot run still ends its cycle with a ``done`` row, which on
+    its own reads as an empty successful reply. Its failure is the ``error``
+    row the turn appended (the card the dashboard shows), so the readers below
+    feed every row through :meth:`observe` and answer the failure at ``done``.
+
+    An error row ends the turn unless reply text follows it: a retry notice
+    (``meta.kind == TRANSIENT_RETRY_KIND``) is not a failure, and an error the
+    turn recovered from is followed by the reply it went on to give. A row
+    from a turn that failed before it started (``meta.turn_failed``) holds,
+    whatever the queue behind it answers.
+    """
+
+    __slots__ = ("reason", "_pinned")
+
+    def __init__(self) -> None:
+        self.reason: str | None = None
+        self._pinned = False
+
+    def observe(self, msg: dict[str, Any]) -> None:
+        role = msg.get("role")
+        meta = msg.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        if role == "error":
+            if meta.get("kind") == TRANSIENT_RETRY_KIND:
+                return
+            self.reason = _redact(str(msg.get("content") or "")).strip() or "the turn failed"
+            self._pinned = self._pinned or bool(meta.get(TURN_FAILED_META))
+        elif role in ("assistant", "chunk") and msg.get("content") and not self._pinned:
+            self.reason = None
+
+
+def _turn_failed_body(reason: str) -> dict[str, Any]:
+    """The OpenAI-shaped error for a turn that ended on its error row *reason*."""
+    return {
+        "error": {"message": reason, "type": "server_error", "code": _TURN_FAILED_CODE},
+        "code": _TURN_FAILED_CODE,
+    }
 
 
 async def _stream_server_error(
-    request: web.Request, resp: web.StreamResponse
+    request: web.Request, resp: web.StreamResponse, body: dict[str, Any] = _SERVER_ERROR
 ) -> web.StreamResponse:
-    """End an SSE completion with the server-error frame and ``[DONE]``."""
-    await write_sse_or_abort(request, resp, f"data: {json.dumps(_SERVER_ERROR)}\n\n".encode())
+    """End an SSE completion with an error frame (*body*) and ``[DONE]``."""
+    await write_sse_or_abort(request, resp, f"data: {json.dumps(body)}\n\n".encode())
     await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
     return resp
 
@@ -683,13 +719,11 @@ async def _stream_response(
     try:
         _redact_buffer = ""
         _last_emitted_len = 0
-        failed = False
+        outcome = _TurnOutcome()
         while True:
             pending = slot.drain()
             for msg in pending:
-                failed = failed or _turn_failed(msg)
-                if msg.get("cls") == "done" and failed:
-                    return await _stream_server_error(request, resp)
+                outcome.observe(msg)
                 if msg.get("cls") == "done":
                     # Flush remaining buffer
                     if _redact_buffer:
@@ -712,6 +746,11 @@ async def _stream_response(
                             await write_sse_or_abort(
                                 request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
                             )
+                    if outcome.reason is not None:
+                        # No ``finish_reason: stop``: the turn did not finish.
+                        return await _stream_server_error(
+                            request, resp, _turn_failed_body(outcome.reason)
+                        )
                     chunk = {
                         "id": completion_id,
                         "object": _OPENAI_OBJECT_CHUNK,
@@ -792,24 +831,24 @@ async def _blocking_response(
     counts at the slot layer.
     """
     collected: list[str] = []
-    failed = False
+    outcome = _TurnOutcome()
 
     try:
         while True:
             pending = slot.drain()
             for msg in pending:
-                failed = failed or _turn_failed(msg)
-                if msg.get("cls") == "done" and failed:
+                outcome.observe(msg)
+                if msg.get("cls") == "done" and outcome.reason is not None:
                     return web.json_response(
                         {
                             "error": {
-                                "message": "internal error",
+                                "message": outcome.reason,
                                 "type": "server_error",
-                                "code": "server_error",
+                                "code": _TURN_FAILED_CODE,
                             },
-                            "code": "server_error",
+                            "code": _TURN_FAILED_CODE,
                         },
-                        status=500,
+                        status=502,
                     )
                 if msg.get("cls") == "done":
                     content = _redact("".join(collected))
