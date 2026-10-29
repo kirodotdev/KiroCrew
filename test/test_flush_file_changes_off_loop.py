@@ -20,6 +20,7 @@ import inspect
 import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -124,6 +125,43 @@ class _HeldRead:
             raise AssertionError("the after-content read was never started") from None
 
 
+class _SkippableLoopClock:
+    """The running loop's own clock, plus an offset only the test moves.
+
+    The flush reads its deadline from ``loop.time()`` and its waits schedule on
+    the same clock, so ``skip`` makes the deadline due at a point the test
+    chose: after the worker started, after a cancel was delivered. Real time
+    still runs underneath, so every ceiling in the test stays a real bound.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+        self._real = loop.time
+        self._offset = 0.0
+
+    def time(self) -> float:
+        return self._real() + self._offset
+
+    def skip(self, seconds: float) -> None:
+        self._offset += seconds
+
+    def __enter__(self) -> "_SkippableLoopClock":
+        # An instance attribute shadows the class method for this loop only.
+        self._loop.time = self.time  # type: ignore[method-assign]
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        del self._loop.time
+
+
+async def _await_abandoned_flush(flush: asyncio.Future[None]) -> None:
+    """Wait, bounded, for the flush the deadline gave up on to finish discarding."""
+    try:
+        await asyncio.wait_for(flush, _LOST_RUN_CEILING_SECS)
+    except TimeoutError:
+        raise AssertionError("the abandoned flush never finished after its read returned") from None
+
+
 # ── the flush itself ─────────────────────────────────────────────────────────
 
 
@@ -203,6 +241,77 @@ async def test_cancellation_during_the_read_is_deferred_until_after_the_attach()
     assert slot.messages[-1]["meta"]["file_changes"][0]["after"] == "after\n"
     assert slot._dirty is True
     assert slot._file_changes == []
+
+
+@pytest.mark.asyncio
+async def test_a_read_past_the_deadline_ends_the_wait_without_the_chips(caplog) -> None:
+    """A stuck filesystem or resolver must not hold the turn: past the bound the
+    flush returns, says so, and a late result is never attached."""
+    read = _HeldRead()
+    slot = _slot_with_one_change()
+    rows_before = [dict(row) for row in slot.messages]
+    try:
+        with (
+            patch.object(chat_runner, "_safe_read_snapshot", read),
+            _SkippableLoopClock(asyncio.get_running_loop()) as clock,
+            caplog.at_level("WARNING", logger=chat_runner.logger.name),
+        ):
+            outer = asyncio.create_task(
+                _flush_file_changes_off_loop(slot, turn_boundary=0, turn_start_mid="")
+            )
+            await read.wait_started()
+            # The worker is inside the read: this is the flush the deadline abandons.
+            flush = slot._file_changes_flush
+            assert flush is not None and not flush.done()
+            clock.skip(chat_runner._FILE_CHANGES_FLUSH_SECS + 1.0)
+            await asyncio.wait_for(outer, _LOST_RUN_CEILING_SECS)
+            assert slot._file_changes_flush is None
+            assert any(
+                "without its file-change chips" in record.getMessage() for record in caplog.records
+            )
+            # Let the worker finish; the abandoned flush discards its result.
+            read.release.set()
+            await _await_abandoned_flush(flush)
+    finally:
+        read.release.set()
+    assert "file_changes" not in (slot.messages[-1].get("meta") or {})
+    assert len(slot.messages) == len(rows_before)
+    # Dropped once: the next flush has nothing to re-read.
+    assert slot._file_changes == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_and_the_deadline_together_still_re_raise_the_cancel() -> None:
+    """The deadline counts across a deferred cancel, and the cancel is never swallowed."""
+    read = _HeldRead()
+    slot = _slot_with_one_change()
+
+    try:
+        with (
+            patch.object(chat_runner, "_safe_read_snapshot", read),
+            _SkippableLoopClock(asyncio.get_running_loop()) as clock,
+        ):
+            task = asyncio.create_task(
+                _flush_file_changes_off_loop(slot, turn_boundary=0, turn_start_mid="")
+            )
+            await read.wait_started()
+            flush = slot._file_changes_flush
+            assert flush is not None
+            task.cancel()
+            # The cancel's wake-up is queued ahead of anything the skip makes due,
+            # so these turns deliver it to the flush's wait, which defers it.
+            for _ in range(3):
+                await asyncio.sleep(0)
+            assert not task.done(), "the flush unwound while its worker was still reading"
+            clock.skip(chat_runner._FILE_CHANGES_FLUSH_SECS + 1.0)
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=_LOST_RUN_CEILING_SECS)
+            read.release.set()
+            await _await_abandoned_flush(flush)
+    finally:
+        read.release.set()
+    assert slot._file_changes_flush is None
+    assert "file_changes" not in (slot.messages[-1].get("meta") or {})
 
 
 @pytest.mark.asyncio
@@ -442,6 +551,65 @@ async def test_a_cancel_during_the_finally_flush_still_releases_the_permit_and_h
     [successor] = record.successors
     assert successor.args[0] == "next please"
     assert _window_chips(record)[0]["after"] == "after\n"
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_a_stuck_finally_flush_still_releases_the_permit_and_hands_off(
+    short_tmp_dir: Path, monkeypatch
+) -> None:
+    """A read that never returns cannot hold Stop: past the bound the ``finally``
+    goes on to release the session permit and hand off the queue, without chips."""
+    monkeypatch.setattr(chat_runner, "_FILE_CHANGES_FLUSH_SECS", 0.05)
+    f = short_tmp_dir / "x.py"
+    f.write_text("after\n")
+    read = _HeldRead()
+    real_after_reads = chat_runner._turn_after_reads
+    stalls: list[str] = []
+
+    def held_after_reads(changes, turn_had_shell):
+        read(str(f))
+        return real_after_reads(changes, turn_had_shell)
+
+    async def stop_mid_read(ctx: TurnContext) -> None:
+        await read.wait_started()
+        ctx.slot.task.cancel()
+        # The harness holds virtual time while a worker thread is busy, so move
+        # it past the bound by hand; the flush's deadline timer is then due.
+        ctx.clock.now += 1.0
+        # Release the read only once the flush gave up on it, so the late
+        # result meets the abandoned flush rather than a waiting one.
+        # Bounded on the real clock: the harness's virtual one stands still here.
+        give_up_at = time.monotonic() + _LOST_RUN_CEILING_SECS
+        while getattr(ctx.slot, "_file_changes_flush", None) is not None:
+            if time.monotonic() >= give_up_at:
+                stalls.append(
+                    f"the flush never gave up on the stuck read: virtual now={ctx.clock.now}, "
+                    f"flush={ctx.slot._file_changes_flush!r}, "
+                    f"file_changes={ctx.slot._file_changes!r}"
+                )
+                break
+            await asyncio.sleep(0)
+        read.release.set()
+
+    def setup(ctx: TurnContext) -> None:
+        ctx.slot.queue_insert(0, "next please")
+        asyncio.get_running_loop().create_task(stop_mid_read(ctx))
+
+    events = [*_write(f), Raise(RuntimeError("boom"))]
+    try:
+        with patch.object(chat_runner, "_turn_after_reads", held_after_reads):
+            record = await run_turn(
+                TurnScript(events=events, setup=setup), slot=SlotSpec(rows=_SEEDED)
+            )
+    finally:
+        read.release.set()
+
+    assert not stalls, stalls[0]
+    assert read.started.is_set()
+    assert [call for call in record.session_calls if call.name == "release"]
+    [successor] = record.successors
+    assert successor.args[0] == "next please"
+    assert not any((row.get("meta") or {}).get("file_changes") for row in record.window)
 
 
 def test_both_archival_paths_drain_the_flush_before_they_persist() -> None:

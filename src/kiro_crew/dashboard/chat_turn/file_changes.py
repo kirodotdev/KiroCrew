@@ -25,7 +25,6 @@ if TYPE_CHECKING:
         _MAX_TURN_FULL_CONTENT_CHARS,
         _ChatSlot,
         logger,
-        run_to_completion,
         safe_read_file,
         validate_file_path,
     )
@@ -1102,6 +1101,13 @@ _MAX_SNAPSHOT_PATH_CHARS = 32_767
 # accumulator holds every distinct path once, so a repeated write adds no row.
 _MAX_TURN_SNAPSHOT_ENTRIES = 200
 
+#: Seconds the turn waits for its turn-end file-change read before it goes on
+#: without the chips. The same bound a close gives the same read
+#: (``chat_handlers._FILE_CHANGES_DRAIN_SECS``) and the loop watchdog gave it when
+#: it ran ON the event loop: a read this long is a stuck filesystem or resolver,
+#: and Stop must still release the session permit and hand off the queue.
+_FILE_CHANGES_FLUSH_SECS = 25.0
+
 
 # Bytes the snapshot read pulls before ``_truncate_snapshot`` caps it. A UTF-8
 # code point is at most four bytes, so ``_MAX_SNAPSHOT`` characters never span
@@ -1479,8 +1485,8 @@ async def _flush_file_changes_off_loop(
     """``_flush_file_changes`` with its disk reads and redaction off the event loop.
 
     Runs ``_read_and_prepare_file_changes`` in a worker thread over a copy of
-    the accumulator, then ``_attach_file_changes`` on the loop, as ONE task
-    behind ``run_to_completion``. The turn awaits this on every exit path, so
+    the accumulator, then ``_attach_file_changes`` on the loop, as ONE shielded
+    task. The turn awaits this on every exit path, so
     the row carries its chips before the durable save that follows on the
     landed path, and before the ``finally`` continues on a cancel or error --
     the same order the synchronous composition gave.
@@ -1488,8 +1494,8 @@ async def _flush_file_changes_off_loop(
     A cancelled turn must still flush. The ``finally`` that calls this may be
     unwinding a cancellation already, and another one (a Stop, the turn
     ceiling, a tab close, a shutdown) can land at this await. The worker cannot
-    be cancelled, so ``run_to_completion`` keeps waiting, the attach runs with
-    the finished result, and only then is the cancellation re-raised: deferred,
+    be cancelled, so the wait goes on (up to the bound below), the attach runs
+    with the finished result, and only then is the cancellation re-raised: deferred,
     never swallowed. The landed path lets it propagate into the turn's own
     ``CancelledError`` arm; the ``finally`` catches it and re-raises after the
     session permit release and the queue hand-off, since a raise inside the
@@ -1501,21 +1507,67 @@ async def _flush_file_changes_off_loop(
     archive, on a slot that is out of ``state._slots``, where no later save
     reaches disk and the chips are lost. An empty accumulator
     (``_pending_file_changes``) publishes nothing and schedules no thread.
+
+    The wait is bounded by ``_FILE_CHANGES_FLUSH_SECS``, counted across any
+    cancellation it defers. A read still running past it is a stuck filesystem
+    or resolver: the chips are dropped KNOWINGLY, with a warning naming the slot,
+    the worker's late result is discarded rather than attached to a turn that
+    has moved on, and the turn's tail runs -- otherwise Stop could not end the
+    turn, since the permit release and queue hand-off wait behind this await.
     """
     changes = _pending_file_changes(slot)
     if changes is None:
         return
+    abandoned = False
 
     async def _prepare_and_attach() -> None:
         file_meta, demoted, dropped = await asyncio.to_thread(
             _read_and_prepare_file_changes, changes, turn_had_shell
         )
+        if abandoned:
+            return
         _attach_file_changes(slot, file_meta, demoted, dropped, turn_boundary, turn_start_mid)
 
     flush = asyncio.ensure_future(_prepare_and_attach())
     slot._file_changes_flush = flush
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FILE_CHANGES_FLUSH_SECS
+    cancelled: asyncio.CancelledError | None = None
     try:
-        await run_to_completion(flush)
+        while not flush.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                abandoned = True
+                # Drop the chips exactly once, as the attach would: a full
+                # accumulator would send the turn's next flush (the finally
+                # after the landed path, or a queued successor's) back to the
+                # same stuck paths, and could attach these chips to a later reply.
+                slot._file_changes = []
+                reply_mids = getattr(slot, "_turn_reply_mids", None)
+                if isinstance(reply_mids, list):
+                    reply_mids.clear()
+                logger.warning(
+                    "Slot %s: the turn-end file-change read was still running after "
+                    "%.0fs; ending the turn without its file-change chips",
+                    getattr(slot, "key", "?"),
+                    _FILE_CHANGES_FLUSH_SECS,
+                )
+                break
+            try:
+                await asyncio.wait_for(asyncio.shield(flush), timeout=remaining)
+            except asyncio.CancelledError as exc:
+                if flush.cancelled():
+                    raise
+                # OUR await was cancelled, not the flush: defer it, keep waiting.
+                cancelled = exc
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                break  # the flush's own failure, re-raised below
+        if flush.done() and not flush.cancelled():
+            flush.result()
     finally:
         if getattr(slot, "_file_changes_flush", None) is flush:
             slot._file_changes_flush = None
+    if cancelled is not None:
+        raise cancelled
