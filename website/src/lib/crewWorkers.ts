@@ -120,6 +120,16 @@ export function groupCrewWorkers(workers: CrewWorker[]): { group: CrewWorkerGrou
     .filter(g => g.workers.length > 0)
 }
 
+/** The finished group: a closed tab, a closed ledger item, or a `done` report.
+ *  The side panel folds it away under one toggle so live workers stay on top. */
+export const CREW_FINISHED_GROUP: CrewWorkerGroup = 'done'
+
+/** The root's finished workers, in the panel's order. One seam for anything that
+ *  lists past workers (the folded group today, a search over them later). */
+export function finishedCrewWorkers(workers: CrewWorker[]): CrewWorker[] {
+  return workers.filter(w => crewWorkerGroup(w) === CREW_FINISHED_GROUP)
+}
+
 /** A worker's dispatcher when that is not the root: a sub-conductor's key, or "". */
 export function crewSubDispatcher(worker: CrewWorker, root: string): string {
   const by = worker.dispatched_by || ''

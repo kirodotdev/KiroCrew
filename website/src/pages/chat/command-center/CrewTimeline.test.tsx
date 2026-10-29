@@ -83,6 +83,7 @@ describe('CrewTimeline', () => {
     vi.clearAllMocks()
     motion.reduced = false
     mobile.value = false
+    localStorage.removeItem('mc-crew-workers-finished-open')
   })
 
   it('keeps a pixel gap between axis labels on a narrow, long-running timeline', async () => {
@@ -220,6 +221,8 @@ describe('CrewTimeline', () => {
       lanes: [lane('root-1', { role: 'conductor' }), lane('w-1', { group: 'waiting' }), lane('w-gone', { status: 'closed' })],
     })
     renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    // The List folds Done away by default: open it so it shows every worker.
+    fireEvent.click(await screen.findByTestId('crew-finished-toggle'))
     const listed = (await screen.findAllByRole('button', { name: /Waiting one|Done one/ })).length
     fireEvent.click(screen.getByRole('button', { name: 'Timeline' }))
     const lanes = await screen.findAllByTestId('crew-timeline-lane')
@@ -405,6 +408,7 @@ describe('Crew panel List | Timeline switch', () => {
     vi.useRealTimers()
     vi.clearAllMocks()
     mobile.value = false
+    localStorage.removeItem('mc-crew-workers-finished-open')
   })
 
   it('starts on List and swaps to the timeline', async () => {
@@ -445,6 +449,7 @@ describe('Crew panel List | Timeline switch', () => {
       { key: 'w-1', title: 'Welcome note', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'root-1' },
     ] })
     const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    fireEvent.click(await screen.findByTestId('crew-finished-toggle'))
     fireEvent.click(await screen.findByRole('button', { name: /Welcome note/ }))
     expect(store.getState().chat.activeSlot).toBe('w-1')
     expect(store.getState().chat.activityOpen).toBe(false)
