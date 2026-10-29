@@ -502,6 +502,13 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # session writes the workspace ``.kiro/cli.json`` overlay from a task that
     # races shutdown, so either boot may be the one that fills it.
     ("kiro_crew.atomic_write", "_default_mode"): "lazy umask cache",
+    # Each calling thread's path-resolver wait allowance. The harness clears it
+    # before every boot, but a boot records an entry only when one resolve's wait
+    # clears ``_PATH_RESOLVE_WAIT_FLOOR_SECS``, so whether the second boot leaves
+    # one depends on how loaded the host is, not on the home. Listed under both
+    # the owning module and the ``security.paths`` facade that re-exports it.
+    ("kiro_crew.security.paths", "_path_resolve_thread_waits"): "wait timing",
+    ("kiro_crew.security.paths_resolver", "_path_resolve_thread_waits"): "wait timing",
     # The dotted names of the facades imported so far in this process. A
     # facade imported lazily by a boot's background work (the update check
     # imports ``platform.wheel_engine``) is added by whichever boot first
