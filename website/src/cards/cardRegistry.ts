@@ -24,6 +24,8 @@ export interface CardKindSpec {
   decline?: () => string
   /** One line beside the primary button: what the press does and how to take it back. */
   pressNote?: () => string
+  /** The kind's own `code_exec` warning, when the generic one misstates when code runs. */
+  riskNote?: () => string
   Body: ComponentType<KindBodyProps>
 }
 
@@ -117,11 +119,16 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'workflow.save': {
     icon: Workflow, label: () => i18nT('components.changeCards.kind_workflow_save'),
-    primary: () => i18nT('components.changeCards.primary_workflow_save'), Body: NoBody,
+    primary: () => i18nT('components.changeCards.primary_workflow_save'),
+    riskNote: () => i18nT('components.changeCards.risk_workflow'),
+    decline: () => i18nT('components.changeCards.decline_workflow_save'),
+    pressNote: () => i18nT('components.changeCards.press_workflow_save'), Body: NoBody,
   },
   'workflow.update': {
     icon: Workflow, label: () => i18nT('components.changeCards.kind_workflow_update'),
-    primary: () => i18nT('components.changeCards.primary_workflow_update'), Body: NoBody,
+    primary: () => i18nT('components.changeCards.primary_workflow_update'),
+    riskNote: () => i18nT('components.changeCards.risk_workflow'),
+    pressNote: () => i18nT('components.changeCards.press_workflow_update'), Body: NoBody,
   },
 }
 

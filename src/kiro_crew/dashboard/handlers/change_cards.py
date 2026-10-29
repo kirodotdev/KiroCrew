@@ -101,38 +101,32 @@ _VALUE_ROUTES = frozenset({("PATCH", "/api/config/kirocrew"), ("PUT", "/api/dash
 _BACKGROUND: set[asyncio.Task[Any]] = set()
 
 
-def _audit(caller: str, operation: str, outcome: str, error: str = "") -> None:
+def _audit(
+    caller: str, operation: str, outcome: str, error: str = "", *, resources: str = "/api/cards"
+) -> None:
     try:
         sel().log_api_access(
             caller=caller or "unknown",
             operation=operation,
             outcome=outcome,
             source="dashboard",
-            resources="/api/cards",
+            resources=resources,
             error=error,
         )
     except Exception:  # pragma: no cover - an audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
 
 
-def _audit_workflow_card(caller: str, decision: str, outcome: str, card: dict[str, Any]) -> None:
-    """One SEL row per workflow-library proposal and per decision on it.
+def _card_resources(card: dict[str, Any]) -> str:
+    """The audit resource for a workflow card's rows; every other card keeps ``/api/cards``.
 
-    A workflow card writes runnable code into the library, so who proposed it and
-    what the owner decided are kept in the audit log, not only on the card.
+    A workflow card puts runnable code into the library, so its proposal row names
+    the card and its kind, and the owner's decline (the one decision no route
+    records) gets a row of its own. Its save is the definition route's own row.
     """
     if card.get("kind") not in catalog.WORKFLOW_KINDS:
-        return
-    try:
-        sel().log_api_access(
-            caller=caller or "unknown",
-            operation=f"cards.workflow.{decision}",
-            outcome=outcome,
-            source="dashboard",
-            resources=f"/api/cards/{card.get('id') or ''} {card.get('kind')}",
-        )
-    except Exception:  # pragma: no cover - an audit must never change the outcome
-        logger.debug("SEL audit for a workflow card failed", exc_info=True)
+        return "/api/cards"
+    return f"/api/cards/{card.get('id') or ''} {card.get('kind')}"
 
 
 def _refusal(exc: CardError | catalog.CardCatalogError) -> web.Response:
@@ -680,8 +674,7 @@ async def propose_for_caller(
     await chat_cards.load_conversation_window(request.app["state"], public)
     chat_cards.record_change_proposed(request.app["state"], public)
     delivered = await _broadcast(request.app["state"], public)
-    _audit(sk, "cards.propose", "ok")
-    _audit_workflow_card(sk, "propose", "ok", public)
+    _audit(sk, "cards.propose", "ok", resources=_card_resources(public))
     return web.json_response({**public, "delivered_clients": delivered})
 
 
@@ -1048,7 +1041,13 @@ async def api_cards_cancel(request: web.Request) -> web.Response:
         revert = store.snapshot(rec)
         store.cancel(rec, body.get("revision"))
         published = await _publish(request, rec, revert)
-        _audit_workflow_card(str(request.get("user") or "owner"), "decline", "rejected", rec)
+        if rec.get("kind") in catalog.WORKFLOW_KINDS:
+            _audit(
+                str(request.get("user") or "owner"),
+                "cards.decline",
+                "rejected",
+                resources=_card_resources(rec),
+            )
         return web.json_response(published)
     except CardError as exc:
         return _refusal(exc)
@@ -1716,7 +1715,6 @@ async def _record_failed_step(
     """
     store = _store(request)
     store.record_failure(rec, op=op, index=index, status=status, body=data)
-    _audit_workflow_card(str(request.get("user") or "owner"), "apply", "error", rec)
     if rec["status"] == cards.STATUS_PARTIAL:
         await _complete(request, rec, partial=True)
     unsaved = await _publish_committed(request, rec)
@@ -1783,9 +1781,6 @@ async def _complete(request: web.Request, rec: dict[str, Any], *, partial: bool)
         undo=undo,
         undo_reason=reason,
         status=cards.STATUS_PARTIAL if partial else cards.STATUS_APPLIED,
-    )
-    _audit_workflow_card(
-        str(request.get("user") or "owner"), "apply", "partial" if partial else "completed", rec
     )
     from kiro_crew import crewmate_dynamic_capabilities
 

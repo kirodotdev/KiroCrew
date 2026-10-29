@@ -10505,13 +10505,22 @@
       "tool_access_not_allowed": "Не разрешено",
       "tool_access_turn_on": "Включить",
       "tool_access_not_now": "Не сейчас",
-      "kind_workflow_save": "Сохранённый воркфлоу",
-      "kind_workflow_update": "Изменение сохранённого воркфлоу",
+      "kind_workflow_save": "Воркфлоу для сохранения",
+      "kind_workflow_update": "Обновление воркфлоу",
       "primary_workflow_save": "Сохранить воркфлоу",
       "primary_workflow_update": "Сохранить ревизию",
       "field_workflow_command": "Команда",
       "field_workflow_source": "Скрипт",
-      "field_workflow_diff": "Изменения в скрипте"
+      "field_workflow_diff": "Изменения в скрипте",
+      "risk_workflow": "Скрипт выполняется на этом компьютере при каждом запуске этого воркфлоу — тобой или агентом.",
+      "press_workflow_save": "Сохранённые воркфлоу нельзя удалить из библиотеки.",
+      "press_workflow_update": "Прежние ревизии остаются сохранёнными в библиотеке. Эта карточка не может их восстановить.",
+      "diff_gap": "Неизменённые строки скрыты · показаны строки {{start}}–{{end}}",
+      "diff_gap_label": "Неизменённые строки пропущены; далее строки {{start}}–{{end}}",
+      "diff_gap_after": "Неизменённые строки скрыты · показаны строки, удалённые после строки {{line}}",
+      "diff_gap_after_label": "Неизменённые строки пропущены; далее строки, удалённые после строки {{line}}",
+      "code_scrolls": "Некоторые строки выходят за правый край. Прокрути вбок, чтобы прочитать их целиком.",
+      "decline_workflow_save": "Не сохранять"
     },
     "assistantWelcome": {
       "default_name": "Mate"

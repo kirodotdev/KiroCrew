@@ -10213,13 +10213,22 @@
       "tool_access_not_allowed": "अनुमति नहीं है",
       "tool_access_turn_on": "चालू करो",
       "tool_access_not_now": "अभी नहीं",
-      "kind_workflow_save": "सहेजा गया वर्कफ़्लो",
-      "kind_workflow_update": "सहेजे गए वर्कफ़्लो में बदलाव",
+      "kind_workflow_save": "सहेजने के लिए वर्कफ़्लो",
+      "kind_workflow_update": "वर्कफ़्लो अपडेट",
       "primary_workflow_save": "वर्कफ़्लो सहेजो",
       "primary_workflow_update": "संशोधन सहेजो",
       "field_workflow_command": "कमांड",
       "field_workflow_source": "स्क्रिप्ट",
-      "field_workflow_diff": "स्क्रिप्ट में बदलाव"
+      "field_workflow_diff": "स्क्रिप्ट में बदलाव",
+      "risk_workflow": "जब भी तुम या कोई एजेंट यह वर्कफ़्लो शुरू करे, स्क्रिप्ट इस मशीन पर चलती है।",
+      "press_workflow_save": "सहेजे गए वर्कफ़्लो लाइब्रेरी से हटाए नहीं जा सकते।",
+      "press_workflow_update": "पिछले संशोधन लाइब्रेरी में सहेजे रहते हैं। यह कार्ड उन्हें बहाल नहीं कर सकता।",
+      "diff_gap": "बिना बदलाव वाली पंक्तियाँ छिपी हैं · दिख रही हैं पंक्तियाँ {{start}}–{{end}}",
+      "diff_gap_label": "बिना बदलाव वाली पंक्तियाँ छोड़ी गईं; आगे पंक्तियाँ {{start}} से {{end}}",
+      "diff_gap_after": "बिना बदलाव वाली पंक्तियाँ छिपी हैं · दिख रही हैं पंक्ति {{line}} के बाद हटाई गई पंक्तियाँ",
+      "diff_gap_after_label": "बिना बदलाव वाली पंक्तियाँ छोड़ी गईं; आगे पंक्ति {{line}} के बाद हटाई गई पंक्तियाँ",
+      "code_scrolls": "कुछ पंक्तियाँ दाएँ किनारे से आगे जाती हैं। पूरी पढ़ने के लिए बगल में स्क्रॉल करो।",
+      "decline_workflow_save": "मत सहेजो"
     },
     "assistantWelcome": {
       "default_name": "Mate"

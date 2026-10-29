@@ -10359,13 +10359,22 @@
       "tool_access_not_allowed": "Não permitido",
       "tool_access_turn_on": "Ativar",
       "tool_access_not_now": "Agora não",
-      "kind_workflow_save": "Fluxo de trabalho salvo",
-      "kind_workflow_update": "Alteração em fluxo de trabalho salvo",
+      "kind_workflow_save": "Fluxo de trabalho a salvar",
+      "kind_workflow_update": "Atualização do fluxo de trabalho",
       "primary_workflow_save": "Salvar fluxo de trabalho",
       "primary_workflow_update": "Salvar revisão",
       "field_workflow_command": "Comando",
       "field_workflow_source": "Script",
-      "field_workflow_diff": "Alterações no script"
+      "field_workflow_diff": "Alterações no script",
+      "risk_workflow": "O script é executado nesta máquina sempre que você ou um agente inicia este fluxo de trabalho.",
+      "press_workflow_save": "Fluxos de trabalho salvos não podem ser removidos da biblioteca.",
+      "press_workflow_update": "As revisões anteriores continuam salvas na biblioteca. Este cartão não pode restaurá-las.",
+      "diff_gap": "Linhas sem alteração ocultas · mostrando as linhas {{start}}–{{end}}",
+      "diff_gap_label": "Linhas sem alteração omitidas; seguem as linhas {{start}} a {{end}}",
+      "diff_gap_after": "Linhas sem alteração ocultas · mostrando as linhas removidas após a linha {{line}}",
+      "diff_gap_after_label": "Linhas sem alteração omitidas; seguem as linhas removidas após a linha {{line}}",
+      "code_scrolls": "Algumas linhas passam da borda direita. Role para o lado para lê-las por inteiro.",
+      "decline_workflow_save": "Não salvar"
     },
     "assistantWelcome": {
       "default_name": "Mate"

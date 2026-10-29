@@ -10067,13 +10067,22 @@
       "tool_access_not_allowed": "許可しない",
       "tool_access_turn_on": "オンにする",
       "tool_access_not_now": "今はしない",
-      "kind_workflow_save": "保存済みワークフロー",
-      "kind_workflow_update": "保存済みワークフローの変更",
+      "kind_workflow_save": "保存するワークフロー",
+      "kind_workflow_update": "ワークフローの更新",
       "primary_workflow_save": "ワークフローを保存",
       "primary_workflow_update": "リビジョンを保存",
       "field_workflow_command": "コマンド",
       "field_workflow_source": "スクリプト",
-      "field_workflow_diff": "スクリプトの変更"
+      "field_workflow_diff": "スクリプトの変更",
+      "risk_workflow": "あなたまたはエージェントがこのワークフローを開始するたびに、スクリプトはこのマシンで実行されます。",
+      "press_workflow_save": "保存したワークフローはライブラリから削除できません。",
+      "press_workflow_update": "以前のリビジョンはライブラリに保存されたままです。このカードからは復元できません。",
+      "diff_gap": "変更のない行は非表示 · {{start}}–{{end}} 行を表示",
+      "diff_gap_label": "変更のない行を省略。続いて {{start}} 行目から {{end}} 行目",
+      "diff_gap_after": "変更のない行は非表示 · {{line}} 行目の後で削除された行を表示",
+      "diff_gap_after_label": "変更のない行を省略。続いて {{line}} 行目の後で削除された行",
+      "code_scrolls": "一部の行は右端からはみ出しています。横にスクロールすると全体を読めます。",
+      "decline_workflow_save": "保存しない"
     },
     "assistantWelcome": {
       "default_name": "Mate"

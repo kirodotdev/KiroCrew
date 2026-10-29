@@ -10359,13 +10359,22 @@
       "tool_access_not_allowed": "Non consentito",
       "tool_access_turn_on": "Attiva",
       "tool_access_not_now": "Non ora",
-      "kind_workflow_save": "Workflow salvato",
-      "kind_workflow_update": "Modifica di un workflow salvato",
+      "kind_workflow_save": "Workflow da salvare",
+      "kind_workflow_update": "Aggiornamento del workflow",
       "primary_workflow_save": "Salva workflow",
       "primary_workflow_update": "Salva revisione",
       "field_workflow_command": "Comando",
       "field_workflow_source": "Script",
-      "field_workflow_diff": "Modifiche allo script"
+      "field_workflow_diff": "Modifiche allo script",
+      "risk_workflow": "Lo script viene eseguito su questo computer ogni volta che tu o un agente avviate questo workflow.",
+      "press_workflow_save": "I workflow salvati non si possono rimuovere dalla libreria.",
+      "press_workflow_update": "Le revisioni precedenti restano salvate nella libreria. Questa scheda non può ripristinarle.",
+      "diff_gap": "Righe invariate nascoste · mostrate le righe {{start}}–{{end}}",
+      "diff_gap_label": "Righe invariate omesse; seguono le righe da {{start}} a {{end}}",
+      "diff_gap_after": "Righe invariate nascoste · mostrate le righe rimosse dopo la riga {{line}}",
+      "diff_gap_after_label": "Righe invariate omesse; seguono le righe rimosse dopo la riga {{line}}",
+      "code_scrolls": "Alcune righe superano il bordo destro. Scorri di lato per leggerle per intero.",
+      "decline_workflow_save": "Non salvare"
     },
     "assistantWelcome": {
       "default_name": "Mate"

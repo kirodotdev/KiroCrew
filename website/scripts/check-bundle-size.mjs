@@ -320,7 +320,13 @@ export const CHUNK_BUDGETS = {
   // chunk that is already lazy, not a library to move behind an `import()`. The
   // ~5% convention over the measurement (517,094 B * 1.05 = 542,949 B), rounded
   // up to this table's whole-KB unit, leaves 26,650 B (5.15%) of headroom.
-  ModelEffortDropdown: 531 * KB, // measured 517,094 B on main @ 0dab198632 (~5% headroom)
+  // Re-measured 2026-10-29: by then main's own chat-route growth had used all but
+  // about 1 KB of that headroom, and the workflow change cards (the line-by-line
+  // script diff and script block in cards/CardChanges.tsx, about 4.5 KB of
+  // first-party code in this already-lazy chunk, no new dependency) built it at
+  // 543,975 B, 231 B over. The same ~5% convention over that measurement
+  // (543,975 B * 1.05 = 571,174 B), rounded up to whole KB, is 558 KB.
+  ModelEffortDropdown: 558 * KB, // measured 543,975 B on 2026-10-29 (~5% headroom)
 }
 
 const REPORT_PATH = path.resolve('dist', 'bundle-report.json')

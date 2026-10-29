@@ -56,6 +56,7 @@ from .library import (
     SOURCE_FORMAT_TASK_PLAN,
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
+    WorkflowSlugTakenError,
 )
 from .registry import (
     STATUS_CANCELLED,
@@ -1235,8 +1236,13 @@ class WorkflowService:
         slug: str = "",
         derived_from: Any = None,
         source_format: str = SOURCE_FORMAT_PYTHON,
+        exact_slug: bool = False,
     ) -> dict[str, Any]:
-        """Validate and explicitly promote a source definition into the library."""
+        """Validate and explicitly promote a source definition into the library.
+
+        With *exact_slug* a used slug is answered ``slug_taken`` rather than saved
+        under a suffixed one.
+        """
         with self._definition_lock:
             errors: list[str] = []
             meta: dict[str, Any] = {}
@@ -1266,7 +1272,10 @@ class WorkflowService:
                     slug=slug,
                     derived_from=derived_from,
                     source_format=source_format,
+                    exact_slug=exact_slug,
                 )
+            except WorkflowSlugTakenError as exc:
+                return {"ok": False, "error": str(exc), "errors": [str(exc)], "slug_taken": True}
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
         return {"ok": True, "definition": definition}

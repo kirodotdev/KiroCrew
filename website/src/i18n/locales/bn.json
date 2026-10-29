@@ -10213,13 +10213,22 @@
       "tool_access_not_allowed": "অনুমতি নেই",
       "tool_access_turn_on": "চালু করো",
       "tool_access_not_now": "এখন না",
-      "kind_workflow_save": "সংরক্ষিত ওয়ার্কফ্লো",
-      "kind_workflow_update": "সংরক্ষিত ওয়ার্কফ্লোর পরিবর্তন",
+      "kind_workflow_save": "সংরক্ষণের জন্য ওয়ার্কফ্লো",
+      "kind_workflow_update": "ওয়ার্কফ্লো আপডেট",
       "primary_workflow_save": "ওয়ার্কফ্লো সংরক্ষণ করো",
       "primary_workflow_update": "রিভিশন সংরক্ষণ করো",
       "field_workflow_command": "কমান্ড",
       "field_workflow_source": "স্ক্রিপ্ট",
-      "field_workflow_diff": "স্ক্রিপ্টের পরিবর্তন"
+      "field_workflow_diff": "স্ক্রিপ্টের পরিবর্তন",
+      "risk_workflow": "তুমি বা কোনো এজেন্ট যতবার এই ওয়ার্কফ্লো চালু করবে, স্ক্রিপ্টটি ততবার এই মেশিনে চলবে।",
+      "press_workflow_save": "সংরক্ষিত ওয়ার্কফ্লো লাইব্রেরি থেকে সরানো যায় না।",
+      "press_workflow_update": "আগের রিভিশনগুলো লাইব্রেরিতে সংরক্ষিত থাকে। এই কার্ড সেগুলো ফিরিয়ে আনতে পারে না।",
+      "diff_gap": "অপরিবর্তিত লাইন লুকানো · দেখানো হচ্ছে লাইন {{start}}–{{end}}",
+      "diff_gap_label": "অপরিবর্তিত লাইন বাদ দেওয়া হয়েছে; এরপর লাইন {{start}} থেকে {{end}}",
+      "diff_gap_after": "অপরিবর্তিত লাইন লুকানো · দেখানো হচ্ছে লাইন {{line}}-এর পরে সরানো লাইন",
+      "diff_gap_after_label": "অপরিবর্তিত লাইন বাদ দেওয়া হয়েছে; এরপর লাইন {{line}}-এর পরে সরানো লাইন",
+      "code_scrolls": "কিছু লাইন ডান কিনারা ছাড়িয়ে যায়। পুরোটা পড়তে পাশে স্ক্রোল করো।",
+      "decline_workflow_save": "সংরক্ষণ কোরো না"
     },
     "assistantWelcome": {
       "default_name": "Mate"

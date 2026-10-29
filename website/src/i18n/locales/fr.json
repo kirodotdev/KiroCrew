@@ -10359,13 +10359,22 @@
       "tool_access_not_allowed": "Non autorisé",
       "tool_access_turn_on": "Activer",
       "tool_access_not_now": "Pas maintenant",
-      "kind_workflow_save": "Workflow enregistré",
-      "kind_workflow_update": "Modification d'un workflow enregistré",
+      "kind_workflow_save": "Workflow à enregistrer",
+      "kind_workflow_update": "Mise à jour du workflow",
       "primary_workflow_save": "Enregistrer le workflow",
       "primary_workflow_update": "Enregistrer la révision",
       "field_workflow_command": "Commande",
       "field_workflow_source": "Script",
-      "field_workflow_diff": "Modifications du script"
+      "field_workflow_diff": "Modifications du script",
+      "risk_workflow": "Le script s’exécute sur cette machine à chaque lancement de ce workflow, par toi ou par un agent.",
+      "press_workflow_save": "Les workflows enregistrés ne peuvent pas être retirés de la bibliothèque.",
+      "press_workflow_update": "Les révisions précédentes restent enregistrées dans la bibliothèque. Cette carte ne peut pas les restaurer.",
+      "diff_gap": "Lignes inchangées masquées · lignes {{start}} à {{end}} affichées",
+      "diff_gap_label": "Lignes inchangées omises, puis lignes {{start}} à {{end}}",
+      "diff_gap_after": "Lignes inchangées masquées · lignes retirées après la ligne {{line}} affichées",
+      "diff_gap_after_label": "Lignes inchangées omises, puis lignes retirées après la ligne {{line}}",
+      "code_scrolls": "Certaines lignes dépassent le bord droit. Fais défiler sur le côté pour les lire en entier.",
+      "decline_workflow_save": "Ne pas enregistrer"
     },
     "assistantWelcome": {
       "default_name": "Mate"

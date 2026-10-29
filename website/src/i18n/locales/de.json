@@ -10213,13 +10213,22 @@
       "tool_access_not_allowed": "Nicht erlaubt",
       "tool_access_turn_on": "Einschalten",
       "tool_access_not_now": "Jetzt nicht",
-      "kind_workflow_save": "Gespeicherter Workflow",
-      "kind_workflow_update": "Änderung am gespeicherten Workflow",
+      "kind_workflow_save": "Zu speichernder Workflow",
+      "kind_workflow_update": "Workflow-Aktualisierung",
       "primary_workflow_save": "Workflow speichern",
       "primary_workflow_update": "Revision speichern",
       "field_workflow_command": "Befehl",
       "field_workflow_source": "Skript",
-      "field_workflow_diff": "Änderungen am Skript"
+      "field_workflow_diff": "Änderungen am Skript",
+      "risk_workflow": "Das Skript läuft auf diesem Rechner bei jedem Start dieses Workflows, ob durch dich oder einen Agenten.",
+      "press_workflow_save": "Gespeicherte Workflows lassen sich nicht aus der Bibliothek entfernen.",
+      "press_workflow_update": "Frühere Revisionen bleiben in der Bibliothek gespeichert. Diese Karte kann sie nicht wiederherstellen.",
+      "diff_gap": "Unveränderte Zeilen ausgeblendet · angezeigt werden die Zeilen {{start}}–{{end}}",
+      "diff_gap_label": "Unveränderte Zeilen ausgelassen; es folgen die Zeilen {{start}} bis {{end}}",
+      "diff_gap_after": "Unveränderte Zeilen ausgeblendet · angezeigt werden die nach Zeile {{line}} entfernten Zeilen",
+      "diff_gap_after_label": "Unveränderte Zeilen ausgelassen; es folgen die nach Zeile {{line}} entfernten Zeilen",
+      "code_scrolls": "Einige Zeilen gehen über den rechten Rand hinaus. Scrolle seitwärts, um sie ganz zu lesen.",
+      "decline_workflow_save": "Nicht speichern"
     },
     "assistantWelcome": {
       "default_name": "Mate"

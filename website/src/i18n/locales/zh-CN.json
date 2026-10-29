@@ -10067,13 +10067,22 @@
       "tool_access_not_allowed": "不允许",
       "tool_access_turn_on": "开启",
       "tool_access_not_now": "暂不",
-      "kind_workflow_save": "已保存的工作流",
-      "kind_workflow_update": "已保存工作流的更改",
+      "kind_workflow_save": "待保存的工作流",
+      "kind_workflow_update": "工作流更新",
       "primary_workflow_save": "保存工作流",
       "primary_workflow_update": "保存修订",
       "field_workflow_command": "命令",
       "field_workflow_source": "脚本",
-      "field_workflow_diff": "脚本的更改"
+      "field_workflow_diff": "脚本的更改",
+      "risk_workflow": "每当你或智能体启动此工作流时，脚本都会在这台机器上运行。",
+      "press_workflow_save": "已保存的工作流无法从库中移除。",
+      "press_workflow_update": "之前的修订仍保存在库中。此卡片无法恢复它们。",
+      "diff_gap": "已隐藏未改动的行 · 显示第 {{start}}–{{end}} 行",
+      "diff_gap_label": "已省略未改动的行，接下来是第 {{start}} 至 {{end}} 行",
+      "diff_gap_after": "已隐藏未改动的行 · 显示第 {{line}} 行之后删除的行",
+      "diff_gap_after_label": "已省略未改动的行，接下来是第 {{line}} 行之后删除的行",
+      "code_scrolls": "有些行超出了右边缘。横向滚动即可完整阅读。",
+      "decline_workflow_save": "不保存"
     },
     "assistantWelcome": {
       "default_name": "Mate"

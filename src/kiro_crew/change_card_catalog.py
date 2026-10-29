@@ -682,6 +682,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TEMPLATE_LIST_FIELDS,
         _TEMPLATE_NAME_RE,
         _TEXT_MAX,
+        _WORKFLOW_GAP_MIN,
+        _WORKFLOW_HIDDEN_BREAKS,
+        _WORKFLOW_MARKS_MAX,
+        _WORKFLOW_SLUG_RE,
         APP_ONLY_KINDS,
         CREWMATE_FORMAT_VERSIONS,
         DEFAULT_CREWMATE_TEMPLATE,
@@ -699,7 +703,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RISK_TIGHTEN,
         RISK_WIDEN,
         SELF_ONLY_KINDS,
+        WORKFLOW_INDENT_MAX,
         WORKFLOW_KINDS,
+        WORKFLOW_LINE_MAX,
         WORKFLOW_SOURCE_MAX,
         CardCatalogError,
         KindDef,
@@ -714,13 +720,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_name,
         _obj,
         _only,
+        _refuse_hidden_line_tails,
+        _refuse_non_ascii_code,
         _str_list,
         _template_clear,
         _workflow_source,
         check_editable,
+        escape_hidden_characters,
         list_kinds,
         valid_mcp_name,
         validate_params,
+        workflow_save_slug,
     )
     from kiro_crew.change_card_catalog_plans import (  # noqa: F401
         _BOOL_VALUES,
@@ -776,6 +786,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         effective_pin_scope,
         normalize_agent_model,
     )
+    from kiro_crew.terminal_safe import _is_invisible  # noqa: F401
 
 # This module is the facade of the change-card catalog: every name is reached through it
 # as ``kiro_crew.change_card_catalog.<name>``. A read is served by the owner that binds

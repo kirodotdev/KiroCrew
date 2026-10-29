@@ -885,13 +885,95 @@ authorization gates is SEL-audited.
 An agent may PROPOSE a save, never perform one. The `workflow.save` and
 `workflow.update` change-card kinds (`change_card_catalog_kinds.py`, raised with
 the guide server's `propose_change`) carry a Python script of at most
-`WORKFLOW_SOURCE_MAX` characters. The proposal is validated by `validate` before the
+`WORKFLOW_SOURCE_MAX` bytes once JSON-encoded, the way the card store counts a
+record, so a script at the cap still fits one card with its copies and diff. The
+script must read exactly the way Python runs it, so these are refused with
+`invalid_param`, naming the character as `U+XXXX` and its 1-based line wherever
+one is at fault. Over the whole source, comments included: U+2028, U+2029 and
+U+0085 (which `str.splitlines` and a browser treat as line breaks and the compiler
+does not); every Unicode format character (category `Cf`: bidi controls and
+zero-width characters); every Default_Ignorable_Code_Point (Unicode's
+DerivedCoreProperties.txt: variation selectors, Hangul fillers, U+034F and the
+like), read through the shared invisible-character check
+`terminal_safe._is_invisible` that titles and config sanitizing also use, since
+`unicodedata` lacks the property; and every control character (category `Cc`) but tab and
+line feed. A source that is not in Unicode NFC form is refused, since a decomposed
+`e` + U+0301 draws like the precomposed `é`. Outside comments the source is ASCII:
+the source is tokenized (`tokenize`) and any character above U+007F that does not
+sit inside a `COMMENT` token is refused, in a name, a string or f-string literal,
+or between tokens, with "non-ASCII text in code or strings is not accepted on an
+agent-proposed workflow card; save it from the Workflows tab instead". A source
+that cannot be tokenized is refused too, because which text is a comment is then
+unknown. This one rule is what keeps look-alike letters (a Cyrillic `е`, a
+mathematical `𝚎` U+1D68E, an all-Cyrillic `"уеѕ"` beside `"yes"`) from making two
+names, keys or compared strings that look the same on the card and run as
+different ones. It also refuses every non-English prompt string on this path:
+such a workflow is saved from the Workflows tab, which runs none of these card
+checks. Comments may use any script. Right-to-left text in a comment can draw
+the neutral punctuation around it reordered; that is an accepted trade-off, since
+the comment does not run and refusing it would refuse Hebrew or Arabic notes. A
+comment may not stack more than 2 combining marks (Unicode category `Mn` or `Me`)
+in a row, since a longer run draws over the lines above and below it and can
+cover code there; the error names the line. So
+that no code sits past the card's edge, a line longer than `WORKFLOW_LINE_MAX`
+(160) characters is refused, and so is a tab, or a run of 8 or more spaces, after
+a line's first non-blank character (`pass` + spaces + `; x()` would read as
+`pass`); leading indentation may use either, but no line, inside a string or
+not, may be indented more than `WORKFLOW_INDENT_MAX` (40) columns, a tab counting
+to the next multiple of 8; the error names the line. A script that tokenizes but does not
+parse is reported by the workflow validator. A
+requested slug must already be in the library's own form (lowercase words joined by
+single hyphens); without one the card uses the slug the library derives from the
+name (`workflows.library.derived_slug`). Either way the slug must not name a saved
+workflow (`slug_taken`, read again before
+Apply). The card's save step always sends that slug with `exact_slug: true`, so a save that takes the
+slug after that re-read is refused by the locked create itself (409
+`workflow_slug_taken`) instead of being given a suffixed slug: the `/workflow`
+command the card shows is the one that is saved. The
+proposal is validated by `validate` before the
 card exists, so a script the save route would refuse is never put in front of the
 owner. The card shows the name, the description, the requested slash command and
 the whole script; an update card names the definition by id or slug, reads its
 current revision, and shows the revision step, any name or description change and
-a unified diff of the script (bounded at `WORKFLOW_DIFF_MAX`, with the whole new
-script under Details). Both carry `code_exec` risk. Apply is the owner's browser
+a unified diff of the script, with the whole new script under Details. The diff
+is never cut: one larger than `WORKFLOW_DIFF_MAX` once encoded is refused
+(`diff_too_large`), telling the agent to propose a smaller change or the owner to
+edit the workflow in the Workflows tab, because a cut diff would hide the changed
+lines past the cut and a removed line is shown nowhere else. The diff is
+`difflib.unified_diff`'s hunks without its two file-header lines, matched with
+`SequenceMatcher(autojunk=False)`, since autojunk never anchors a line that makes
+up over 1% of a script of 200 or more lines (a blank line, a repeated call), so one
+changed line could diff as the whole script rewritten and be refused as too large;
+the match runs off the event loop. It replaces each hunk header, matched by its exact `@@ -a[,b] +c[,d] @@` shape, with
+a separator row `⋯ lines c-(c+d-1) ⋯` naming the new revision's lines the hunk
+spans, the same numbers as the card's numbered script block; a hunk that only
+removes lines spans none and reads `⋯ after line c ⋯`. So a changed source line that starts
+with `--`, `++` or `---` is always shown and two far-apart hunks never draw as one
+block. Every other diff line starts with `+`, `-` or a space, so the separator
+shape is never a script line. A removed line comes from a revision saved earlier,
+which never passed these card checks, so its format, line-separator,
+paragraph-separator, control (but tab) and default-ignorable characters are shown
+spelled as `\uXXXX` (`\UXXXXXXXX` past U+FFFF) and it draws as the one row it is.
+Lines are split at `\n` only,
+the way the compiler reads them, and any difference between the saved and the new
+script is a change that always carries the whole new script (under Details next to
+a diff, in the open without one); the diff is read from the same
+revision Apply pins, or the proposal is refused (`workflow_changed`). The card draws
+each diff line as its own row with a fixed `+`/`-` gutter, each separator as a
+muted, dashed, centered row in the sans face whose visible text and separator
+label both say unchanged lines were hidden and name the lines that follow (a hunk
+that opens at line 1 hides nothing above it and gets no row), and the whole script as
+one row per source line with a line-number gutter. Neither wraps
+(`whitespace-pre`): a long line scrolls sideways, because a wrapped tail would
+start at column 0 of the next row and read as a line of its own at another
+indent. Neither box has a height cap (the diff is already bounded by
+`WORKFLOW_DIFF_MAX` and the script by `WORKFLOW_SOURCE_MAX`), so no line sits
+below a box's bottom edge, and each diff row's `+`/`-` mark sits behind a border,
+apart from script text that itself starts with `--` or `++`. A save card's
+decline button reads "Don't save". The box's scrollbar stays hidden until scrolled, so when any line runs
+past its edge (measured with `useScrollEdges`, not guessed from line lengths) the
+clipped edge fades (`edge-fade-x`) and a line under the box says some lines run
+past the right edge and must be scrolled to be read in full. Both carry `code_exec` risk. Apply is the owner's browser
 sending the card's single step to the same `POST /api/workflows/definitions` or
 `PATCH /api/workflows/definitions/{ref}` route the Workflows tab uses, through the
 card hook (`HOOKED_ROUTES`), so the owner-dashboard gates above are unchanged and
@@ -903,10 +985,12 @@ keeps every earlier revision in `revisions`. Only the main assistant's own
 dashboard chat may propose one: the shared card caller check already refuses
 sub-agents, scheduled and app sessions, channel turns and turns the user did not
 send, and the propose route also refuses a crewmate's thread and its workers
-(`owner_assistant_only`). SEL records `cards.workflow.propose`, and each owner
-decision as `cards.workflow.decline` or `cards.workflow.apply` (outcome `completed`,
-`partial` or `error`), beside the definition routes' own allow/deny rows. Neither
-route is a memory route, so an ordinary Workflows-tab save stays off the card hook.
+(`owner_assistant_only`). SEL records the proposal on the shared `cards.propose` row
+(its resource names the card id and kind), the owner's decline as `cards.decline`,
+and the save itself on the definition route's own `workflow_definition_create` /
+`_update` row. Neither route is a memory route, so an ordinary Workflows-tab save
+passes the card hook untouched. A pressed card refreshes the Workflows tab's library
+list, in the pressing tab and, through the `card_update` frame, in every other one.
 
 A definition has a stable `wfd_*` id, unique slash-command `slug`, current source,
 SHA-256 content hash, timestamps, an integer `revision`, immutable source entries
@@ -926,8 +1010,9 @@ if credential or exfiltration redaction would change executable source, the save
 the library never persists a corrupted script. Async gateway, authoring, and saved-run
 paths offload library disk I/O to worker threads, while the service serializes library
 operations so slug allocation and revision checks remain atomic in-process.
-Revision updates also hold a sidecar file lock across the disk read, expected-revision
-check, and atomic replacement. This makes two gateway or harness processes sharing
+Creates and revision updates also hold a sidecar file lock across the disk read
+(slug allocation, or the expected-revision check) and atomic replacement. A create
+with `exact_slug` refuses a used slug rather than suffixing it. This makes two gateway or harness processes sharing
 the library reject the second update to the same revision rather than silently
 accepting both and losing one writer's source.
 
@@ -1300,7 +1385,7 @@ launch a script under a trusted chat's identity.
 | `POST /api/workflows/runs/{run_id}/cancel` | | `{run_id, cancelled}` |
 | `POST /api/workflows/runs/{run_id}/rerun` | `{from_index?, source?}` | `{run_id, from, replayed_before, edited}`; 400 on an invalid edited script, 404 on an unknown run |
 | `GET /api/workflows/definitions?q=` | optional local match query | `{definitions: [...]}` |
-| `POST /api/workflows/definitions` | `{source, format?, name?, description?, slug?, derived_from?}` | explicitly save a validated definition; format defaults to `python` |
+| `POST /api/workflows/definitions` | `{source, format?, name?, description?, slug?, exact_slug?, derived_from?}` | explicitly save a validated definition; format defaults to `python`; with `exact_slug: true` a used slug is 409 `workflow_slug_taken` instead of a suffixed one |
 | `GET /api/workflows/definitions/{id-or-slug}` | | one definition including revisions and lineage |
 | `PATCH /api/workflows/definitions/{id-or-slug}` | `{source, expected_revision, name?, description?, slug?}` | append a revision; 404 when unknown, 409 on stale revision |
 | `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 503 when its executor is unavailable |

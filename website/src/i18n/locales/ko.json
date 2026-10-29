@@ -10067,13 +10067,22 @@
       "tool_access_not_allowed": "허용 안 함",
       "tool_access_turn_on": "켜기",
       "tool_access_not_now": "나중에",
-      "kind_workflow_save": "저장된 워크플로",
-      "kind_workflow_update": "저장된 워크플로 변경",
+      "kind_workflow_save": "저장할 워크플로",
+      "kind_workflow_update": "워크플로 업데이트",
       "primary_workflow_save": "워크플로 저장",
       "primary_workflow_update": "리비전 저장",
       "field_workflow_command": "명령",
       "field_workflow_source": "스크립트",
-      "field_workflow_diff": "스크립트 변경 사항"
+      "field_workflow_diff": "스크립트 변경 사항",
+      "risk_workflow": "사용자 또는 에이전트가 이 워크플로를 시작할 때마다 스크립트가 이 컴퓨터에서 실행됩니다.",
+      "press_workflow_save": "저장된 워크플로는 라이브러리에서 제거할 수 없습니다.",
+      "press_workflow_update": "이전 리비전은 라이브러리에 저장된 채로 남습니다. 이 카드에서는 복원할 수 없습니다.",
+      "diff_gap": "변경 없는 줄 숨김 · {{start}}–{{end}}행 표시",
+      "diff_gap_label": "변경 없는 줄 생략, 이어서 {{start}}행부터 {{end}}행까지",
+      "diff_gap_after": "변경 없는 줄 숨김 · {{line}}행 다음에서 삭제된 줄 표시",
+      "diff_gap_after_label": "변경 없는 줄 생략, 이어서 {{line}}행 다음에서 삭제된 줄",
+      "code_scrolls": "일부 줄이 오른쪽 가장자리를 넘어갑니다. 옆으로 스크롤해 전체를 읽으세요.",
+      "decline_workflow_save": "저장 안 함"
     },
     "assistantWelcome": {
       "default_name": "Mate"

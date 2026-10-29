@@ -4364,13 +4364,22 @@
       "tool_access_not_allowed": "Not allowed",
       "tool_access_turn_on": "Turn on",
       "tool_access_not_now": "Not now",
-      "kind_workflow_save": "Saved workflow",
-      "kind_workflow_update": "Saved workflow change",
+      "kind_workflow_save": "Workflow to save",
+      "kind_workflow_update": "Workflow update",
       "primary_workflow_save": "Save workflow",
       "primary_workflow_update": "Save revision",
       "field_workflow_command": "Command",
       "field_workflow_source": "Script",
-      "field_workflow_diff": "Changes to the script"
+      "field_workflow_diff": "Changes to the script",
+      "risk_workflow": "The script runs on this machine each time you or an agent start this workflow.",
+      "press_workflow_save": "Saved workflows can't be removed from the library.",
+      "press_workflow_update": "Earlier revisions stay saved in the library. This card can't restore them.",
+      "diff_gap": "Unchanged lines hidden · showing lines {{start}}–{{end}}",
+      "diff_gap_label": "Unchanged lines skipped; lines {{start}} to {{end}} follow",
+      "diff_gap_after": "Unchanged lines hidden · showing lines removed after line {{line}}",
+      "diff_gap_after_label": "Unchanged lines skipped; lines removed after line {{line}} follow",
+      "code_scrolls": "Some lines run past the right edge. Scroll sideways to read them in full.",
+      "decline_workflow_save": "Don't save"
     },
     "assistantWelcome": {
       "default_name": "Mate"
