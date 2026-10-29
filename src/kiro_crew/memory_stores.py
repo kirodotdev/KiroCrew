@@ -643,16 +643,6 @@ def create_declared_store(store: str) -> tuple[Path, bool]:
     return target, not existed
 
 
-def member_memory_identity(store: str) -> tuple[str, int]:
-    """Read the canonical database identity without any filesystem manifest."""
-    from kiro_crew.vector_memory import read_member_database_identity
-
-    member_id, store_id = read_member_database_identity(_named_store_dir(store) / MEMORY_DB_FILE)
-    if store_id != store:
-        raise UnknownMemoryStore("Member database store identity does not match its location")
-    return member_id, 2
-
-
 def memory_store_version(store: str) -> int:
     """Use the explicit declaration; an invalid member store never becomes V1."""
     if store in ("", DEFAULT_MEMORY_STORE):

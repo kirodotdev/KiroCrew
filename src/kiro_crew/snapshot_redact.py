@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -1246,9 +1245,3 @@ def _stamp_manifest(stage: Path, report: RedactionReport) -> None:
         return
     data["redaction"] = report.as_manifest_entry()
     mf.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def stage_redacted_copy(source_stage: Path, dest: Path) -> RedactionReport:
-    """Copy *source_stage* to *dest* and redact the copy, never the original."""
-    shutil.copytree(source_stage, dest)
-    return redact_bundle_for_egress(dest)
