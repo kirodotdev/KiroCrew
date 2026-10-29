@@ -1149,9 +1149,14 @@ class SessionAllocationService:
                 try:
                     session_id = session.provider.session_id
                     if session_id:
-                        asyncio.ensure_future(
+                        # Held in the owner's set: the loop keeps only a weak
+                        # reference to a task, so an unreferenced one can be
+                        # garbage-collected before the cleanup finishes.
+                        task = asyncio.ensure_future(
                             self._owner._safe_cleanup(session.provider, session_id)
                         )
+                        self._owner._background_tasks.add(task)
+                        task.add_done_callback(self._owner._background_tasks.discard)
                 except Exception:
                     self._deps.logger.debug("Failed to get session_id for cleanup", exc_info=True)
             try:

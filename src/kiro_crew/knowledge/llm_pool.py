@@ -75,6 +75,11 @@ logger = logging.getLogger(__name__)
 # the fallback is logged once per backend per process.
 _WARNED_UNSAFE_BACKENDS: set = set()
 
+# Fire-and-forget tasks this module starts. The event loop keeps only a weak
+# reference to a task, so one nothing else holds can be garbage-collected
+# mid-run; each is held here until it finishes.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
 DEFAULT_POOL_SIZE = 3
 DEFAULT_TIMEOUT = 60.0
 FETCH_TIMEOUT = 120.0
@@ -1298,7 +1303,9 @@ class LLMPool:
             if self._resize_when_idle:
                 # A width change waiting on a zero-TTL pool: recycle now that
                 # nothing is in flight, so the next acquire spawns the new width.
-                asyncio.get_running_loop().create_task(self._maybe_scale_to_zero(force=True))
+                task = asyncio.get_running_loop().create_task(self._maybe_scale_to_zero(force=True))
+                _BACKGROUND_TASKS.add(task)
+                task.add_done_callback(_BACKGROUND_TASKS.discard)
         self._semaphore.release()
 
     async def _idle_reaper(self) -> None:

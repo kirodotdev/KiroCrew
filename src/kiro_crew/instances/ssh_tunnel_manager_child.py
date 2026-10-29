@@ -94,6 +94,11 @@ _STDOUT_READ_CHUNK = 4096
 #: Each means "not delivered", so the caller falls back to the single-process kill.
 _TREE_KILL_UNDELIVERED = (ProcessLookupError, PermissionError, OSError, ValueError, AttributeError)
 
+#: Fire-and-forget tasks this module starts. The event loop keeps only a weak
+#: reference to a task, so one nothing else holds can be garbage-collected
+#: mid-run; each is held here until it finishes.
+_BACKGROUND_TASKS: set["asyncio.Task[None]"] = set()
+
 
 class TunnelState(enum.Enum):
     """Per-instance tunnel states."""
@@ -450,7 +455,9 @@ class _SshTunnel:
                     # Terminate the child; _monitor (not stopping) marks ERROR and
                     # fires on_exit. Done in a task so we don't await our own
                     # cancellation if stop() races in.
-                    asyncio.create_task(self._terminate())
+                    task = asyncio.create_task(self._terminate())
+                    _BACKGROUND_TASKS.add(task)
+                    task.add_done_callback(_BACKGROUND_TASKS.discard)
                     return
         except asyncio.CancelledError:
             raise
