@@ -173,10 +173,17 @@ export default function SessionGridView({
       const openFileForPane = onFileOpen
         ? (path: string, opts?: { line?: number; endLine?: number }) => onFileOpen(path, { ...opts, slot: paneSlot })
         : undefined
+      // The single-chat composer is not mounted in split view, so the grid
+      // hands the "Start Dictation with a Key" binding to exactly one pane:
+      // the one that last took focus (a click or a focus move into it). A
+      // placeholder holding focus leaves no pane armed, since it has no
+      // composer to dictate into.
+      const focused = grid.focusedId === leaf.id
       return (
         <ChatPane
           slotKey={leaf.slot}
-          focused={grid.focusedId === leaf.id}
+          focused={focused}
+          pushToTalk={focused}
           onFocus={() => grid.setFocused(leaf.id)}
           onRemove={() => grid.closeLeaf(leaf.id)}
           onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}

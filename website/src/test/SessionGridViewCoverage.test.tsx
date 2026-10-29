@@ -39,6 +39,7 @@ vi.mock('../components/ChatPane', () => ({
   default: ({
     slotKey,
     focused,
+    pushToTalk,
     onFocus,
     onRemove,
     onSplitRight,
@@ -49,6 +50,7 @@ vi.mock('../components/ChatPane', () => ({
   }: {
     slotKey: string
     focused?: boolean
+    pushToTalk?: boolean
     onFocus?: () => void
     onRemove?: () => void
     onSplitRight?: () => void
@@ -57,7 +59,7 @@ vi.mock('../components/ChatPane', () => ({
     leading?: { inset?: boolean; control?: React.ReactNode }
     onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   }) => (
-    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
+    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-ptt={pushToTalk ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
       {leading?.control}
       {focused !== undefined && <PaneDim dimmed={!focused} />}
       <button type="button" aria-label={`focus ${slotKey}`} onClick={onFocus} />
@@ -438,6 +440,36 @@ describe('SessionGridView — slot-focus intent signal', () => {
     renderGrid('a')
 
     await waitFor(() => expect(vi.mocked(emitSlotFocused).mock.calls.at(-1)).toEqual(['a']))
+  })
+})
+
+describe('SessionGridView — dictation key ownership', () => {
+  const ptt = (slot: string) => screen.getByTestId(`pane-${slot}`).getAttribute('data-ptt')
+
+  it('arms the key on the focused pane only, and moves it with focus', async () => {
+    seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
+    seedApi([{ key: 'a' }, { key: 'b' }])
+    renderGrid('a')
+    await screen.findByTestId('pane-b')
+
+    fireEvent.click(screen.getByLabelText('focus a'))
+    await waitFor(() => expect(ptt('a')).toBe('yes'))
+    expect(ptt('b')).toBe('no')
+
+    fireEvent.click(screen.getByLabelText('focus b'))
+    await waitFor(() => expect(ptt('b')).toBe('yes'))
+    expect(ptt('a')).toBe('no')
+  })
+
+  it('arms no pane while a placeholder holds focus', async () => {
+    renderGrid('a')
+    await screen.findByTestId('pane-a')
+    fireEvent.click(screen.getByLabelText('focus a'))
+    await waitFor(() => expect(ptt('a')).toBe('yes'))
+
+    fireEvent.mouseDown(onlyPicker())
+
+    await waitFor(() => expect(ptt('a')).toBe('no'))
   })
 })
 

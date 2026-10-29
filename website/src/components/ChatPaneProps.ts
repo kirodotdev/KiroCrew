@@ -58,9 +58,10 @@ export interface ChatPaneProps {
   followContentWidth?: boolean
   /** This pane's composer owns the document-wide "Start Dictation with a Key"
    *  binding. Defaults to false: the key listens on the whole document, so
-   *  only a host that shows ONE composer may set it (N armed panes would
+   *  exactly one mounted composer may have it set (N armed panes would
    *  open N captures on one keystroke). The Members page's DM pane sets it;
-   *  split-view panes leave it off and ChatPage keeps its own. */
+   *  in split view the grid sets it on the focused pane only, since the
+   *  single-chat composer is not mounted there. */
   pushToTalk?: boolean
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread

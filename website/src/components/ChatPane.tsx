@@ -235,9 +235,11 @@ export default function ChatPane({
   // voice props, only the two things the atom cannot know — the endpointer's
   // auto-submit, and (through the root) that a pane's composer IS its slot's, so
   // the atom's default on-screen predicate is exact. Push-to-talk only when the
-  // host says so (`pushToTalk`): the key binding is document-wide, so a
-  // split-view grid of panes must not arm it (ChatPage owns it there); the
-  // Members page's single DM pane does. The pane's steer-not-queue rule
+  // host says so (`pushToTalk`): the key binding is document-wide, so exactly
+  // one composer may hold it. In split view that is the focused pane (the
+  // grid moves it with focus, and a pane that loses it mid-hold commits what
+  // was said); the Members page's single DM pane holds it while nothing
+  // covers the chat. The pane's steer-not-queue rule
   // (#8852) stays on `canSteer` below until the Send atom exists.
   const composerRef = useRef<ComposerHandle>(null)
   const autoSubmitRef = useRef<(() => void) | null>(null)
