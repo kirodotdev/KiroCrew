@@ -292,6 +292,38 @@ def _started(state: FakeState) -> dict[str, Any]:
     )
 
 
+def test_a_reloaded_tab_takes_over_and_cancels_after_the_old_lease_lapsed():
+    """The routes sweep before they act, so the old tab's lease lapses inside the
+    very request that takes the guide over. The takeover still lands (no 409),
+    and Cancel from a tab holding an older revision ends it, twice over."""
+    state = FakeState()
+    g = _started(state)
+    store = guide_store_for(state)
+    now = [1_000_000.0]
+    store._clock = lambda: now[0]
+
+    async def go(c):
+        def body(tab: str, revision: int, **extra: Any) -> dict[str, Any]:
+            return {"guide_id": g["guide_id"], "tab_id": tab, "revision": revision, **extra}
+
+        owned = await (
+            await c.post("/api/guide/claim", json=body("t1", g["revision"]), headers=OWNER)
+        ).json()
+        (read,) = (await (await c.get("/api/guide/pending", headers=OWNER)).json())["guides"]
+        now[0] = owned["lease_expires_at"] + 1
+        taken = await c.post(
+            "/api/guide/claim", json=body("t2", read["revision"], take_over=True), headers=OWNER
+        )
+        taken_body = await taken.json()
+        first = await c.post("/api/guide/cancel", json=body("t1", 1), headers=OWNER)
+        second = await c.post("/api/guide/cancel", json=body("t1", 1), headers=OWNER)
+        return taken.status, taken_body, first.status, second.status, await second.json()
+
+    taken_status, taken, first, second, ended = _run(go, state)
+    assert (taken_status, taken["owner_tab"]) == (200, "t2")
+    assert (first, second, ended["status"]) == (200, 200, "cancelled")
+
+
 @pytest.mark.parametrize("auth", ["", "app", "internal"])
 def test_browser_half_is_owner_cookie_only(auth):
     state = FakeState()

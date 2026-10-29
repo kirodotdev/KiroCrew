@@ -2078,7 +2078,11 @@ above" with no card on screen). A channel's Settings page (`settings.sub.channel
 gets its guide with a note that its token fields are credentials: the walk ends
 on the page, and the reply describes the fields in words, never guiding to one
 or asking for a value. A preview feature's `next` also rules out any reply
-option that offers to take the user to the Developer settings.
+option that offers to take the user to the Developer settings. The server's
+instructions (`mcp_instructions.GUIDE`) and `find_ui`'s description both tell
+the agent to write no text before these calls: every word it writes is shown,
+so a "Let me check the real layout first" line reaches the user ahead of the
+guide.
 `guide_start` also takes
 the agent's own plain words: an optional `intro` (at most 200 characters, shown
 on the offer card and the first step) and an optional `note` per action (at most
@@ -2179,7 +2183,18 @@ press it again. `target_found`
 is a no-op on an active guide, is refused on a terminal one, and needs the owner
 tab, so a cancelled, expired or completed guide never resumes; a reloaded tab
 (a new tab id) takes the guide over explicitly, which walks it back to the
-step's page. A tab that already showed a step's target and then navigates off
+step's page. Every browser route sweeps before it acts, so the old tab's lease
+can lapse inside the takeover's own request: a claim made at the revision that
+lapse moved the guide on from is accepted while nothing else has moved it
+(`lapsed_from_revision`), and no other write is. A claim or a lapse keeps a
+missing step's reason (`ambiguous_target`, `not_found`, `gate_off`, ...), so
+the tab that takes it over draws why the step is missing instead of a bare
+"stopped". The person's Cancel (`cancelled_by_user`) always succeeds: from any
+of their tabs, at any revision, and on a guide that already ended (answered as
+it stands); only the automatic `saved_without_guide` close keeps the revision
+and owner-tab checks. A refused write is said from the catalog by its `code`
+(`components.guideLayer.error_moved` / `error_ended` / `error_generic`), never
+with the gateway's English `error` text. A tab that already showed a step's target and then navigates off
 that action's page says so at once ("You left this step", with the same way
 back) instead of waiting out the bound; that state is the tab's own and reports
 nothing. `mcp.open_add` takes no parameters and has only UI steps: it
@@ -3648,7 +3663,12 @@ registered id is never a name match. Of several matches, a section title (a
 heading, or a control drawn in one) gives way to one that is not, and for a
 `tab` role or a `settings.*` location the one inside the page's navigation
 (`nav`, `navigation`, `tablist`, `listbox`) wins over a field or control of
-the same name in the section it opens. With `location_id`, a visible
+the same name in the section it opens. Without `location_id`, a single match
+in the main navigation wins over same-named controls outside every navigation
+region (the Mates rail row over the Mates page's switcher chip, which is also
+named "Mates"), so a tour of the rail never asks the person to pick; a rail
+entry and another navigation entry of the same name (a Customize tab) stay
+ambiguous. With `location_id`, a visible
 control carrying that id is the match before any name is compared, whatever
 its label reads in the page's current state (the top bar's Search reads "Open
 command bar" while an app owns the slot): `data-ui-location` on the control,

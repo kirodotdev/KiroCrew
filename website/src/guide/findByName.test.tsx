@@ -161,6 +161,20 @@ describe('searchByName', () => {
     expect(distinguishingContexts(r.matches)).toEqual(['Mates · link · Main navigation', 'Mates · tab · Customize'])
   })
 
+  it('takes the main-menu entry over a same-named control outside every navigation region', () => {
+    // The Mates page: the rail row and the thread header's switcher chip are
+    // both buttons named "Mates". A tour of the rail never asks which one.
+    render(
+      <>
+        <nav aria-label="Main navigation"><div role="button" tabIndex={0} data-testid="rail">Mates</div></nav>
+        <header><button type="button" aria-label="Mates" data-testid="chip">faces</button></header>
+      </>,
+    )
+    const r = searchByName({ label: 'Mates' })
+    expect(r.result).toBe('found')
+    expect(r.element?.dataset.testid).toBe('rail')
+  })
+
   it('prefers the page tab over the main-menu entry of the same name for a tab target', () => {
     render(
       <>

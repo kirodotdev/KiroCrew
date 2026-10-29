@@ -357,7 +357,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "find_ui",
             "description": (
                 "Find where something is in the dashboard, e.g. 'older sessions' or "
-                "'较早的会话'. Call it first for every where-is or how-do-I-find question "
+                "'较早的会话'. Call it first for every where-is or how-do-I-find question, "
+                "with no text before the call (no 'let me check the layout first': the "
+                "user sees every word), "
                 "and quote only what it returns: never guess or recall a location. Pass the user's words as `query` and the language of "
                 "their words as `lang` (e.g. 'zh-CN') when known. Labels and paths "
                 "come back in the language the user's dashboard shows "

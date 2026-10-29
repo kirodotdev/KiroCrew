@@ -1246,7 +1246,8 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
     await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
     act(() => vp.toPhone())
     await waitFor(() => expect(writes('/api/guide/replan')).toHaveLength(1))
-    expect(await screen.findByText('replan store unavailable')).toBeTruthy()
+    expect(await screen.findByText(L('error_generic'))).toBeTruthy()
+    expect(screen.queryByText('replan store unavailable')).toBeNull()
   })
 
   describe('a pick binds every step after it, through the confirm its removal opens', () => {

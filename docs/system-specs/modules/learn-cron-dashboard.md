@@ -6628,7 +6628,10 @@ The owner browser reads `/api/guide/pending` and explicitly claims a guide befor
 navigation or prefill. Claim, progress, heartbeat, cancel, dismiss, replay, refuse and
 observe are owner-only routes;
 revision checks and a per-tab lease prevent another tab from silently advancing
-it. An explicit takeover is distinct from Start. Pending state is held by this
+it. An explicit takeover is distinct from Start, and lands even when the old
+tab's lease lapsed between the reload and the press. The person's Cancel always
+ends the guide, from any of their tabs and at any revision, and a second press
+is answered as it stands. Pending state is held by this
 gateway, survives a browser reload, and is lost on gateway restart. Guides have
 a finite lifetime and closed-slot guides are retired on the next state check.
 A new offer in the same chat supersedes the chat's unfinished guide (status
