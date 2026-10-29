@@ -95,6 +95,8 @@ Advertised during initialization:
 | `config_option_update` | Config option changed |
 | `session_info_update` | Session metadata changed |
 | `user_message_chunk` | Echo of user message |
+| `subagent_update` | A subagent's lifecycle, on the session that started it: the child `sessionId`, `title`, `description`, `state` (claude-agent-acp, only to a client that declares `clientCapabilities.subagents`) |
+| `session_message` | The prompt a subagent was handed, on the child's session; `messageId` is the parent's Agent `toolCallId` (claude-agent-acp, same condition) |
 
 ## Kiro extensions (experimental)
 

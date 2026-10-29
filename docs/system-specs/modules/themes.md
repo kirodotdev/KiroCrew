@@ -28,7 +28,7 @@ a pack may ship. Validation is tier-scaled to payload trust.
 
 | Tier | `level` | Surface unlocked |
 |---|---|---|
-| **L0 Color** | 0 | the 56 theme CSS variables (dark + light) only |
+| **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
 | **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
@@ -45,7 +45,11 @@ Installed packs may also supply the loader **art**, not just select symbols:
 `loader/*.png` `.webp` `.gif` `.svg` (1–8 images, Level 1) are the pack's own
 loader art: one image renders on its own, 2–8 are cycled by the stock carousel.
 Animated WebP/APNG/GIF and animated SVG self-animate inside the `<img>`, so a
-pack can ship a single fully-authored loop. Each is served through the ordinary
+pack can ship a single fully-authored loop. Under `prefers-reduced-motion:
+reduce` each loader image is instead painted once, at its first frame, onto a
+`<canvas>` (`PackLoaderImage`, `website/src/pages/chat/PackLoaderImage.tsx`):
+nothing on the page can pause an image's own animation, and theme overlays
+already stand down under reduced motion. Each is served through the ordinary
 asset route with a strict Content-Type + `nosniff` under `_THEME_ASSET_CSP`
 (`default-src 'none'; sandbox`) and referenced only as an `<img>` — SVG is safe
 the same way `logo.svg` is (an `<img>`-loaded SVG runs in the browser's secure

@@ -21,6 +21,9 @@ logger = logging.getLogger("kiro_crew.config.loader")
 #: keeps its own allowance above it, so a build never outwaits the embed it joined.
 STARTUP_RECALL_TIMEOUT_MAX_SECS = 10.0
 
+#: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
+KIND_ROUTING_MODES = ("off", "shadow", "enforce")
+
 
 @dataclass
 class MemoryConfig:
@@ -50,9 +53,10 @@ class MemoryConfig:
             "CPU threads for an explicit memory query or user-started re-embedding. "
             "Defaults to 4, capped one core below the CPUs this process may run on -- "
             "never below one thread, so a single-core host still embeds -- to leave the "
-            "event loop a core wherever there is one to spare; 4 means that default, "
-            "so pinning threads where the process may use 4 or fewer CPUs takes "
-            "another number. Any other "
+            "event loop a core wherever there is one to spare, and 6 where the process "
+            "may use 12 or more CPUs; 4 means that default, "
+            "so 4 cannot be pinned where the process may use 4 or fewer, or 12 or "
+            "more CPUs (there a 4 runs 6; set 3 or 5 to stay low). Any other "
             "setting is honoured up to that count, which a CPU-set restriction "
             "(--cpuset-cpus, taskset) narrows; a CFS quota (--cpus, cpu.max) sets "
             "no mask and is not seen, while a limit a scheduler turns into an "
@@ -273,6 +277,20 @@ class MemoryConfig:
             "lessons; every other memory write, learn_add and injection carry on.",
         ),
     )
+    kind_routing: str = field(
+        default="off",
+        metadata=_meta(
+            "Consolidation Kind Routing",
+            "Whether consolidation tags each project.* fact with a kind (fact, event "
+            "or state) and what it does with it. 'off' (default) keeps today's "
+            "prompt and writes. 'shadow' writes every fact as before and only "
+            "logs, within fixed size caps, what routing would do. 'enforce' skips a "
+            "state item (a PR, CI or branch status that GitHub, git or the work "
+            "ledger already holds) and writes facts and events as before. Stored "
+            "facts are never changed.",
+            enum=list(KIND_ROUTING_MODES),
+        ),
+    )
     inject_memory: bool = field(
         default=True,
         metadata=_meta(
@@ -354,6 +372,13 @@ def memory_writes_off_key(memory: object) -> str | None:
     if not getattr(memory, "writes_enabled", True):
         return "memory.writes_enabled"
     return None
+
+
+def kind_routing_mode_from(raw: object) -> str:
+    """A stored ``memory.kind_routing``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in KIND_ROUTING_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "kind_routing"))
 
 
 def lesson_extraction_enabled(memory: object) -> bool:
@@ -492,8 +517,10 @@ class KnowledgeConfig:
         default_factory=list,
         metadata=_meta(
             "Doc-Ingest Host Allowlist",
-            "Exact hostnames whose links may be fetched by KIROCREW ITSELF and "
-            "ingested, for an edition that wires a server-side doc-link scanner. "
+            "Exact hostnames whose pages Kiro Crew ITSELF may fetch and ingest: "
+            "a web-page source added under Knowledge -> Add Source. https only, "
+            "port 443, no subdomain matching; the host must resolve to public "
+            "addresses and a redirect may not leave it. "
             "Empty = fetch nothing (SSRF-safe deny-by-default). This governs only "
             "that server-fetch path -- it does NOT gate 'Auto-Add Documents' "
             "above, where the agent has already fetched the content under its own "

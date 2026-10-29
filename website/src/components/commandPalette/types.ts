@@ -44,11 +44,12 @@ export interface Result {
    * `colorVar` is a CSS custom property name (e.g. "--warn"). */
   statusDot?: { colorVar: string; pulse?: boolean }
   /** Inline status line. `statusStyle` picks the treatment:
-   *  - 'pill' → a filled pill (bg = statusColorVar, light text) + muted detail
+   *  - 'pill' → a filled pill (bg = statusColorVar, text = its `-fg` pair) + muted detail
    *    (e.g. "Needs input" / "Approve").
    *  - 'dot' → a colored dot + colored label + muted detail (e.g. "Thinking…"),
    *    matching the chat sidebar.
-   * `statusColorVar` is a CSS var name (e.g. "--warn", "--accent", "--info"). */
+   * `statusColorVar` is a CSS var name (e.g. "--warn", "--accent", "--info"); a
+   * 'pill' needs a fill tier with a `-fg` pair (accent, warn, danger, ok, info). */
   statusStyle?: 'pill' | 'dot'
   statusColorVar?: string
   statusPulse?: boolean

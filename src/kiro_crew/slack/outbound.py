@@ -30,6 +30,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import secrets
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -106,7 +109,25 @@ def encode_options_token(session_key: str, row_ts: str) -> str | None:
         + ":"
         + base64.urlsafe_b64encode(row_ts.encode()).decode().rstrip("=")
     )
-    return packed if len(packed) <= _MAX_BLOCK_ID else None
+    return packed if len(packed) <= _MAX_BLOCK_ID - len(_ROW_SUFFIX_RESERVE) else None
+
+
+#: Separates a control's token from its row number. A control of more than one
+#: row of buttons needs a distinct ``block_id`` per row (Slack refuses duplicates
+#: in one message), and every row must carry the token, because a click reports
+#: only its own row's id. ``~`` is in neither the base64url alphabet nor the
+#: ``:`` separator, so the suffix can never be mistaken for token payload.
+OPTIONS_ROW_SEP = "~"
+# Room ``encode_options_token`` leaves for a row suffix: ``~9`` covers the
+# capped card (ten buttons, five to a row, so row 1 at most).
+_ROW_SUFFIX_RESERVE = OPTIONS_ROW_SEP + "9"
+
+
+def options_row_block_id(token: str, row: int) -> str:
+    """The ``block_id`` for row *row* of the control whose token is *token*.
+
+    Row 0 is the token itself, so a single-row control is unchanged."""
+    return token if row == 0 else f"{token}{OPTIONS_ROW_SEP}{row}"
 
 
 def decode_options_token(block_id: str | None) -> tuple[str, str] | None:
@@ -119,7 +140,7 @@ def decode_options_token(block_id: str | None) -> tuple[str, str] | None:
     """
     if not block_id or not block_id.startswith(OPTIONS_TOKEN_PREFIX):
         return None
-    body = block_id[len(OPTIONS_TOKEN_PREFIX) :]
+    body = block_id[len(OPTIONS_TOKEN_PREFIX) :].split(OPTIONS_ROW_SEP, 1)[0]
     parts = body.split(":")
     if len(parts) != 2:
         return None
@@ -193,6 +214,79 @@ def _evict_settled_answers() -> None:
             return
         if settled:
             _ANSWERED.pop(key, None)
+
+
+@dataclass(frozen=True)
+class OptionsSeveralRequest:
+    """The card a "Choose several..." modal answers, kept until it is submitted.
+
+    Held here, keyed by an unguessable nonce the modal carries as its
+    ``private_metadata``, rather than in the metadata itself: the card's blocks are
+    needed to edit it in place and to read the choices' full text, and they do not
+    fit Slack's metadata limit -- and a nonce gives a submitter nothing to forge.
+    A restart loses the record; the modal's submission then does nothing and the
+    card's buttons still work.
+    """
+
+    channel: str
+    msg_ts: str
+    thread_ts: str
+    team_id: str
+    user_id: str
+    block_id: str | None
+    blocks: tuple[dict, ...]
+    opened: float
+
+
+_SEVERAL_MAX = 256
+_SEVERAL_TTL_SECS = 3600.0
+_SEVERAL_PENDING: "OrderedDict[str, OptionsSeveralRequest]" = OrderedDict()
+
+
+def remember_options_several(request: OptionsSeveralRequest) -> str:
+    """Hold *request* for its modal and return the nonce the modal carries.
+
+    Bounded: requests older than an hour, then the oldest, are dropped."""
+    now = time.monotonic()
+    for nonce, held in list(_SEVERAL_PENDING.items()):
+        if now - held.opened > _SEVERAL_TTL_SECS:
+            _SEVERAL_PENDING.pop(nonce, None)
+    while len(_SEVERAL_PENDING) >= _SEVERAL_MAX:
+        _SEVERAL_PENDING.popitem(last=False)
+    nonce = secrets.token_urlsafe(16)
+    _SEVERAL_PENDING[nonce] = request
+    return nonce
+
+
+def take_options_several(nonce: str) -> OptionsSeveralRequest | None:
+    """Remove and return the request held under *nonce*, unless missing or expired.
+
+    Once only: a modal submitted twice finds nothing the second time."""
+    request = _SEVERAL_PENDING.pop(nonce, None) if nonce else None
+    if request is None or time.monotonic() - request.opened > _SEVERAL_TTL_SECS:
+        return None
+    return request
+
+
+def options_answered(channel: str, ts: str) -> bool:
+    """Whether the control posted as *ts* already has its answer (or was retired).
+
+    A read only, for a click that opens something before answering -- the
+    "Choose several" menu -- so it can refuse at once instead of opening a form
+    whose submission would lose. The claim itself is still taken, under the edit
+    lock, by whichever path actually answers."""
+    return (channel, ts) in _ANSWERED
+
+
+def options_answer_settled(channel: str, ts: str) -> bool:
+    """Whether the control posted as *ts* is answered (or retired) AND its buttons are gone.
+
+    True once :func:`settle_options_answer` or :func:`mark_options_terminal` ran
+    for it: the message shows no clickable control, so an expiry has
+    nothing to spend -- and editing it would overwrite the answer line. False for
+    an unanswered control and for a claim whose original is still on screen (a
+    fallback post whose delete failed), which an expiry must still strike."""
+    return _ANSWERED.get((channel, ts)) is True
 
 
 def settle_options_answer(channel: str, ts: str) -> None:

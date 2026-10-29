@@ -244,12 +244,14 @@ from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     api_slack_reactions,
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
+    STOPPED_BEFORE_START_CODE,
     _continue_on_loop,
     _qualified_model_refusal,
     _requested_backend,
     _slot_for_parent,
     _spawn_on_loop,
     _spawn_request_memory_mode,
+    _stopped_before_start,
     api_spawn,
     api_spawn_continue,
 )
@@ -321,6 +323,7 @@ from kiro_crew.notifications.bus import (  # noqa: F401
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.platform.context import redact_via_context  # noqa: F401
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY  # noqa: F401
 from kiro_crew.platform_compat import IS_MACOS  # noqa: F401
 from kiro_crew.security import (  # noqa: F401
@@ -364,6 +367,7 @@ from kiro_crew.subagent_persistence import (  # noqa: F401
     read_tombstone,
     record_panel_dismissal_outcome,
 )
+from kiro_crew.subagent_wait_reasons import stopped_before_start  # noqa: F401
 from kiro_crew.validation import (  # noqa: F401
     _EMOJI_NAME_RE,
     CHANNEL_ID_RE,
@@ -916,8 +920,9 @@ async def api_teams_activity(request: web.Request) -> web.Response:
 
     The route is registered at app-build time (aiohttp freezes routes at
     startup), but the handler that validates the JWT + drives the turn is the
-    ``TeamsClient.on_activity`` built by ``maybe_start_teams`` once credentials
-    are present. Until then (channel disabled/uncredentialed) we return 503.
+    ``TeamsClient.on_activity`` of the client the gateway host accepted as the
+    live Teams handle (``channel_lifecycle._publish_teams_webhook``). Until then
+    (channel disabled, uncredentialed, or still connecting) we return 503.
 
     This route is exempt from the dashboard cookie gate and from the CSRF Origin
     check, for POST only (``token_auth._BYPASS_EXACT_METHODS`` /

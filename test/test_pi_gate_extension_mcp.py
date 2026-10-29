@@ -24,6 +24,7 @@ import pytest
 from real_adapter_gate import require_real_adapter
 
 from kiro_crew.acp.harness.pi import pi_gate_extension_path, pi_mcp_handoff_payload
+from kiro_crew.mcp_instructions import BY_SERVER
 
 pytestmark = pytest.mark.real_adapter
 
@@ -38,7 +39,8 @@ _ELEMENT = {
     "type": "stdio",
 }
 
-# Drives the extension: load, session_start, then one tool_call per name in argv.
+# Drives the extension: load, session_start, then one tool_call per name in argv,
+# then two ``before_agent_start`` runs, the second on the prompt the first returned.
 _HARNESS = r"""
 import { pathToFileURL } from "node:url";
 const [, , extPath, cwd, ...calls] = process.argv;
@@ -67,7 +69,11 @@ for (const name of calls) {
   const out = await handlers.tool_call({ toolName: name, toolCallId: "c1", input: {} }, ctx);
   results[name] = out ? out.reason : "allowed";
 }
-console.log(JSON.stringify({ registered, notes, results }));
+const base = process.env.GATE_BASE_PROMPT || "BASE PROMPT";
+const first = await handlers.before_agent_start({ type: "before_agent_start", systemPrompt: base }, ctx);
+const prompt = first?.systemPrompt ?? base;
+const second = await handlers.before_agent_start({ type: "before_agent_start", systemPrompt: prompt }, ctx);
+console.log(JSON.stringify({ registered, notes, results, prompt, second: second ?? null }));
 """
 
 
@@ -100,6 +106,8 @@ def _run(
     calls: list[str],
     handoff_nonce: str = _NONCE,
     key: bytes | None = None,
+    elements: list[dict] | None = None,
+    base_prompt: str = "BASE PROMPT",
 ) -> dict:
     """Run the extension once; *mcp_json* is the text of pi's user-level ``mcp.json``."""
     agent_dir = tmp_path / "agent"
@@ -108,7 +116,7 @@ def _run(
         (agent_dir / "mcp.json").write_text(mcp_json, encoding="utf-8")
     project = tmp_path / "project"
     project.mkdir()
-    payload, _names = pi_mcp_handoff_payload([_ELEMENT], handoff_nonce, _KEY)
+    payload, _names = pi_mcp_handoff_payload(elements or [_ELEMENT], handoff_nonce, _KEY)
     handoff = tmp_path / "handoff.json"
     handoff.write_bytes(payload)
     harness = tmp_path / "harness.mjs"
@@ -128,6 +136,7 @@ def _run(
         "KIROCREW_PI_GATE_SESSION": _NONCE,
         "KIROCREW_PI_MCP_HANDOFF": str(handoff),
         "KIROCREW_PI_MCP_KEY": (key if key is not None else _KEY).hex(),
+        "GATE_BASE_PROMPT": base_prompt,
     }
     completed = subprocess.run(
         [*node, str(harness), str(extension), str(project), *calls],
@@ -204,3 +213,45 @@ def test_a_handoff_for_another_nonce_registers_nothing(node, tmp_path) -> None:
     """The file is bound to the session: one written for a different nonce is ignored."""
     out = _run(node, tmp_path, mcp_json=None, calls=[], handoff_nonce="f" * 32)
     assert out["registered"] == []
+
+
+_CRON_ELEMENT = {**_ELEMENT, "name": "kirocrew-cron"}
+
+
+def test_crew_server_instructions_reach_the_system_prompt_once(node, tmp_path) -> None:
+    """pi lists no instructions for a direct server, so the extension appends Crew's."""
+    out = _run(node, tmp_path, mcp_json=None, calls=[], elements=[_ELEMENT, _CRON_ELEMENT])
+    prompt = out["prompt"]
+    assert prompt.startswith(
+        "BASE PROMPT\n\n<!-- kiro-crew:mcp-instructions -->\n# MCP Server Instructions\n\n## kirocrew-cron\n"
+    )
+    assert BY_SERVER["kirocrew-cron"] in prompt
+    # kirocrew-core has no instructions of Crew's in this phase.
+    assert "## kirocrew-core" not in prompt
+    # A prompt that already carries the section is left as it is.
+    assert out["second"] is None
+
+
+def test_a_shadowed_server_contributes_no_instructions(node, tmp_path) -> None:
+    """A same-named server in pi's mcp.json is not Crew's, so neither is its text."""
+    shadow = json.dumps({"mcpServers": {"kirocrew-cron": {"command": "/tmp/not-crew"}}})
+    out = _run(node, tmp_path, mcp_json=shadow, calls=[], elements=[_CRON_ELEMENT])
+    assert out["prompt"] == "BASE PROMPT"
+
+
+def test_servers_without_crew_instructions_leave_the_prompt_alone(node, tmp_path) -> None:
+    out = _run(node, tmp_path, mcp_json=None, calls=[])
+    assert out["prompt"] == "BASE PROMPT"
+
+
+def test_an_agent_prompt_with_the_heading_still_gets_crew_instructions(node, tmp_path) -> None:
+    """Only the extension's own sentinel counts as "already added", not the heading."""
+    out = _run(
+        node,
+        tmp_path,
+        mcp_json=None,
+        calls=[],
+        elements=[_CRON_ELEMENT],
+        base_prompt="# MCP Server Instructions\nmine",
+    )
+    assert BY_SERVER["kirocrew-cron"] in out["prompt"]

@@ -651,6 +651,15 @@ async def _restart_gateway() -> dict:
                         return {"ok": False, "error": runtime._redact(err)}
                     _MAKE_LIVE_COMMITTED = True
                     return {"ok": True, "start_id": start_id}
+                if fg_status == gateway_service.STATUS_DESKTOP_SUPERVISED:
+                    # The CLI refuses this gateway, so its command is no remedy.
+                    return {
+                        "ok": False,
+                        "error": (
+                            "the Kiro Crew desktop app runs this gateway — restart it"
+                            " from the app (Settings → About → Restart gateway)"
+                        ),
+                    }
                 # Foreground eligible but confined/broken — surface the
                 # foreground's own refusal reason plus the manual remedy.
                 return {
@@ -870,10 +879,15 @@ async def _make_live_inner(
     # FOREGROUND_ELIGIBLE codes qualify — a mis-set-up manager keeps its named
     # remedy instead of being bounced behind its back.
     foreground: "gateway_service.ForegroundBackend | None" = None
+    # The desktop app runs the gateway: the CLI refuses to restart it until the
+    # app has quit, so the staged notice must say so.
+    desktop_app = False
     if not can_restart and _foreground_eligible(unit_status):
         fg = _foreground_backend()
-        if fg is not None and await fg.status() == gateway_service.STATUS_OK:
+        fg_status = None if fg is None else await fg.status()
+        if fg_status == gateway_service.STATUS_OK:
             foreground = fg
+        desktop_app = fg_status == gateway_service.STATUS_DESKTOP_SUPERVISED
 
     live = await _live_worktree_path()
     same_as_running = live is not None and await _off(
@@ -1377,7 +1391,7 @@ async def _make_live_inner(
                 "target": str(real),
                 "plan": plan,
                 "manual_restart": _manual_restart_command(),
-                "notice": _staged_notice(real.name, unit_status),
+                "notice": _staged_notice(real.name, unit_status, desktop_app=desktop_app),
             }
         assert svc is not None  # can_restart implies a backend
 

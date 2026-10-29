@@ -58,14 +58,14 @@ class _GovernanceDeny(str):
 
 #: Forbidden ``(binary, subcommand-path)`` pairs. Structured rather than flat strings
 #: because a substring match is trivially evaded by a GLOBAL OPTION between the two:
-#: ``gh --repo o/r pr ready 123`` and ``git -C /tmp/x push`` both slipped past a
-#: ``"gh pr ready"``/``"git push"`` check. Measured before fixing. Raised by review.
+#: ``gh --repo o/r pr ready 123`` and ``git -C /tmp/x push`` both slip past a
+#: ``"gh pr ready"``/``"git push"`` check. Measured.
 #: GLOBAL options that consume the following word, per binary — the only ones for which the
 #: subcommand scan may skip ahead. Everything else is treated as valueless.
 #:
-#: Enumerated rather than guessed. The previous rule assumed any option without `=` took a
-#: value, which let a VALUELESS option swallow the subcommand: `git --no-pager push` was
-#: ALLOWED while bare `git push` was REFUSED. Getting this list wrong in the other direction
+#: Enumerated rather than guessed. Assuming any option without `=` takes a value lets a
+#: VALUELESS option swallow the subcommand: `git --no-pager push` would be ALLOWED while
+#: bare `git push` is REFUSED. Getting this list wrong in the other direction
 #: is safe for a denylist — an unlisted value-taking option means its value is read as a
 #: subcommand, which can only over-refuse.
 #:
@@ -96,11 +96,11 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         # PUBLISHING verbs. A watcher's whole job is to READ review comments and PR
         # bodies — attacker-controlled text — so any verb that writes back to GitHub
         # converts "the agent read a malicious comment" into "the agent posted
-        # attacker-directed content under the operator's identity". `pr comment` was
-        # the one review found; the rest are the same capability under other names, and
-        # naming only the reported instance is how this denylist got evaded three times
-        # already. The app's own draft PR comes from `pr_recipe.py`, which builds its
-        # argv directly and never passes through here, so nothing legitimate is lost.
+        # attacker-directed content under the operator's identity". `pr comment` is
+        # one; the rest are the same capability under other names, and naming only a
+        # reported instance is how a denylist gets evaded. The app's own draft PR comes
+        # from `pr_recipe.py`, which builds its argv directly and never passes through here,
+        # so nothing legitimate is lost.
         ("pr", "comment"),
         ("pr", "review"),
         ("pr", "edit"),
@@ -181,7 +181,7 @@ _COMMAND_WRAPPERS: dict[str, int] = {
 #: value" because most wrapper long options are flags (``env --ignore-environment``,
 #: ``timeout --preserve-status``) and over-consuming there would drop the real command from
 #: view and UNDER-refuse — the wrong direction for a denylist. A ``--opt=value`` form carries
-#: its value inline and is not listed. Raised by the GPT review.
+#: its value inline and is not listed.
 _WRAPPER_VALUE_TAKING_LONG_OPTIONS: dict[str, int] = {
     "--unset": 1,  # `env --unset NAME cmd` — NAME is a variable name, not the command
     "--chdir": 1,  # `env --chdir=DIR` is inline, but `env --chdir DIR cmd` is separate
@@ -231,8 +231,8 @@ def _refusal(text: str, *, depth: int) -> str:
     # this, `true & gh pr comment --body X` tokenizes to `binary='true'` (harmless) and the
     # `gh pr comment`/`curl` behind the `&` slips past the denylist the watcher's
     # outsider-writable prompt exists to enforce. Ordered AFTER `&&` so only the single-`&`
-    # separator remains to split on. Same lesson as the wrapper-option fix: a parser that
-    # inspects fixed positions is evaded by adding a position. Raised by the Opus review.
+    # separator remains to split on. As with the wrapper options: a parser that inspects
+    # fixed positions is evaded by adding a position.
     normalized = normalized.replace("&", "\n")
     # Split on the subshell / command-substitution PARENTHESES too. `$(` and backtick above
     # open a substitution, but the CLOSING `)` stayed attached to the last inner token, so
@@ -240,7 +240,7 @@ def _refusal(text: str, *, depth: int) -> str:
     # `("pr","ready")` denylist; a bare subshell `(gh pr ready)` has the same shape. A `(` or
     # `)` is never part of a legitimate command word here, so splitting on both isolates the
     # inner command with no trailing bracket — over-checking at worst, the safe direction for a
-    # denylist. Raised by the GPT review.
+    # denylist.
     normalized = normalized.replace("(", "\n").replace(")", "\n")
     for segment in normalized.splitlines():
         words = _shell_words(segment)
@@ -332,7 +332,7 @@ def _refusal(text: str, *, depth: int) -> str:
                 # and `--no-replace-objects` were all ALLOWED. An UNKNOWN option is treated as
                 # valueless, which over-matches at worst (a stray value could be read as a
                 # subcommand and refuse a benign command) — the safe direction for a denylist.
-                # `--opt=value` never consumes the next word. Raised by the GPT review.
+                # `--opt=value` never consumes the next word.
                 skip_next = "=" not in word and word.split("=", 1)[0] in value_taking
                 continue
             rest.append(word.lower())
@@ -383,7 +383,7 @@ def _governance_denial(
         # config.json cannot affect the deny ceiling". Measured with an operator rule in the
         # keystone file: `from_dict` yielded [] where the helper yielded ['^curl\s'], so a
         # custom denied command was silently unenforced for the UNATTENDED agent — the one
-        # caller that most needs it. Raised by the GPT review.
+        # caller that most needs it.
         manager = HookManager(hooks_config_from_config_dict(getattr(cfg, "hooks", {}) or {}))
         if tool_kind is None:
             # ``tool_purpose`` is the agent's own prose about the call (display text

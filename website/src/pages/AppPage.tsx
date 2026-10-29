@@ -30,11 +30,16 @@ export default function AppPage() {
 
   useEffect(() => {
     if (!name) return
+    // Every /apps/:name shares this instance, so a switch re-runs the effect while
+    // the previous app's request is still in flight. Its answer is for a page the
+    // user has left: it must neither render nor redirect.
+    let cancelled = false
     let redirecting = false
     setError(null)
     setLoading(true)
     api.getApp(name)
       .then((data: AppData) => {
+        if (cancelled) return
         // Native builtin apps have a registered surface at their bare route —
         // redirect there. Builtins that ship a dynamic UI bundle (manifest.ui.entry)
         // have no native surface and render via AppHost below, like installed apps.
@@ -46,13 +51,15 @@ export default function AppPage() {
         setApp(data)
       })
       .catch((e: unknown) => {
+        if (cancelled) return
         setApp(null)
         // Only a 404 means the app is absent; anything else is a failure to say so.
         if (!isNotFoundError(e)) setError(e instanceof Error ? e.message : String(e))
       })
       .finally(() => {
-        if (!redirecting) setLoading(false)
+        if (!cancelled && !redirecting) setLoading(false)
       })
+    return () => { cancelled = true }
   }, [name, navigate, attempt])
 
   if (loading) {

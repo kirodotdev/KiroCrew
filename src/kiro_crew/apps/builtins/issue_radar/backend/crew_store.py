@@ -226,6 +226,7 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         atomic_write,
+        read_json_or,
     )
     from kiro_crew.config.paths import (  # noqa: F401
         data_home,

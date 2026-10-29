@@ -28,8 +28,6 @@ from kiro_crew.dashboard.handlers import agent_panel as panel_routes
 from kiro_crew.dashboard.handlers import member_dashboard as routes
 from kiro_crew.dashboard_templates import catalog, instance
 
-pytestmark = pytest.mark.asyncio
-
 ROOT = "chat-100"
 DISPATCHED = "chat-101"
 ADOPTED = "chat-102"
@@ -175,6 +173,7 @@ def test_a_session_key_names_its_own_directory_and_no_member_slug_can():
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_a_root_session_gets_its_page():
     instance.adopt(instance.session_instance_key(ROOT), "fixture-board")
     async with _client() as client:
@@ -186,6 +185,7 @@ async def test_a_root_session_gets_its_page():
         assert "rendered_html" in body
 
 
+@pytest.mark.asyncio
 async def test_a_dispatched_session_gets_no_page():
     async with _client() as client:
         resp = await client.get(_read(DISPATCHED))
@@ -193,6 +193,7 @@ async def test_a_dispatched_session_gets_no_page():
         assert (await resp.json())["code"] == "not_root_session"
 
 
+@pytest.mark.asyncio
 async def test_an_adopted_session_gets_no_page():
     async with _client() as client:
         resp = await client.get(_read(ADOPTED))
@@ -200,6 +201,7 @@ async def test_an_adopted_session_gets_no_page():
         assert (await resp.json())["code"] == "not_root_session"
 
 
+@pytest.mark.asyncio
 async def test_an_unknown_slot_is_a_404():
     async with _client() as client:
         resp = await client.get(_read("chat-nope"))
@@ -207,6 +209,7 @@ async def test_an_unknown_slot_is_a_404():
         assert (await resp.json())["code"] == "slot_not_found"
 
 
+@pytest.mark.asyncio
 async def test_the_slot_read_is_owner_only(monkeypatch):
     async def _deny(_request, _op):
         return web.json_response({"error": "owner only", "code": "owner_only"}, status=403)
@@ -218,6 +221,7 @@ async def test_the_slot_read_is_owner_only(monkeypatch):
         assert (await resp.json())["code"] == "owner_only"
 
 
+@pytest.mark.asyncio
 async def test_the_slot_read_denies_an_app_caller(monkeypatch):
     async def _deny(_request, _op):
         return web.json_response({"error": "apps", "code": "app_denied"}, status=403)
@@ -228,6 +232,7 @@ async def test_the_slot_read_denies_an_app_caller(monkeypatch):
         assert resp.status == 403
 
 
+@pytest.mark.asyncio
 async def test_the_slot_read_is_redacted(tmp_path):
     # Assembled at runtime so the source holds no credential-shaped literal.
     token = "ghp" + "_" + "ZXAMPLEzxampleZXAMPLEzxampleZXAMPLE12"
@@ -240,6 +245,7 @@ async def test_the_slot_read_is_redacted(tmp_path):
     assert "board" in text
 
 
+@pytest.mark.asyncio
 async def test_the_session_route_is_bound_through_the_deferred_binder():
     import inspect
 
@@ -254,6 +260,7 @@ async def test_the_session_route_is_bound_through_the_deferred_binder():
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_a_root_session_writes_its_own_page():
     async with _client() as client:
         staged = await client.post(
@@ -282,6 +289,7 @@ async def test_a_root_session_writes_its_own_page():
         assert not [frame for frame in state.broadcasts if "slot" in dict(frame[1])]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("slot", [DISPATCHED, ADOPTED])
 async def test_a_non_root_session_is_refused_the_write(slot):
     async with _client() as client:
@@ -295,6 +303,7 @@ async def test_a_non_root_session_is_refused_the_write(slot):
     assert instance.staged_preview(instance.session_instance_key(slot)) is None
 
 
+@pytest.mark.asyncio
 async def test_a_subagent_with_no_slot_is_refused_the_write():
     async with _client() as client:
         resp = await client.get(
@@ -304,6 +313,7 @@ async def test_a_subagent_with_no_slot_is_refused_the_write():
         assert (await resp.json())["code"] == "no_dashboard_slot"
 
 
+@pytest.mark.asyncio
 async def test_a_root_session_still_cannot_publish_a_crew_webview():
     """The widened branch is the dynamic dashboard's alone, not the crew panel's."""
     async with _client() as client:
@@ -314,6 +324,7 @@ async def test_a_root_session_still_cannot_publish_a_crew_webview():
         assert (await resp.json())["code"] == "no_crew"
 
 
+@pytest.mark.asyncio
 async def test_the_write_gate_still_wants_the_internal_secret():
     async with _client(internal=False) as client:
         resp = await client.get("/api/agent-panel/dashboard/templates", headers=_as(ROOT))
@@ -321,6 +332,7 @@ async def test_the_write_gate_still_wants_the_internal_secret():
         assert (await resp.json())["code"] == "internal_secret_required"
 
 
+@pytest.mark.asyncio
 async def test_an_unseeded_tree_refuses_the_write(monkeypatch):
     """`is_root_session` fails closed before the tree is seeded, and so does the gate."""
     monkeypatch.setattr(
@@ -349,6 +361,7 @@ def _subject(rendered: str) -> str:
     return match.group(1)
 
 
+@pytest.mark.asyncio
 async def test_a_session_page_is_told_it_is_a_session():
     instance.adopt(instance.session_instance_key(ROOT), "fixture-board")
     async with _client() as client:
@@ -356,6 +369,7 @@ async def test_a_session_page_is_told_it_is_a_session():
     assert _subject(body["rendered_html"]) == "session"
 
 
+@pytest.mark.asyncio
 async def test_a_session_page_is_told_when_the_person_last_spoke_in_that_session(monkeypatch):
     """The session's OWN chat, read off its own slot: a steer there is the reply."""
     from kiro_crew.history import HUMAN_TURN_META_KEY

@@ -69,10 +69,10 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import redact_t
 # calls in the public edition, so behaviour here is unchanged — but on a host that loads a
 # companion, the companion's declared credential patterns apply too, and an enterprise host
 # that FAILS to compose its companion fails CLOSED rather than silently falling back to public
-# patterns. `registry.gather_evidence` and `dispatch.investigation_brief` already went through
-# the shim; this sink, `notify_out` and `store` were still calling the core directly, so a
-# companion-only credential shape was redacted on two egress paths and not the other three.
-# Found in review. Aliased to `redact` so the call sites and their prose read unchanged.
+# patterns. Every egress path (`registry.gather_evidence`, `dispatch.investigation_brief`,
+# this sink, `notify_out`, `store`) has to go through the shim, or a companion-only
+# credential shape is redacted on some egress paths and not the others.
+# Aliased to `redact` so the call sites and their prose read unchanged.
 from kiro_crew.platform.context import redact_via_context as redact
 
 logger = logging.getLogger(__name__)
@@ -265,9 +265,8 @@ def _blocks(incident: Incident) -> list[dict]:
     # anything unusable, and the link is then omitted rather than rendered broken.
     #
     # A URL is not exempt from redaction: a signed webhook or console link can carry a token
-    # in its query string. That was missed when `_safe` was introduced for title/resource/
-    # detail, because the guard test asserted no bare `redact(` remained but not that every
-    # FIELD went through it. Both rounds found in review.
+    # in its query string. A guard test that asserts no bare `redact(` remains does not
+    # prove every FIELD goes through it.
     link_target = _safe_link_target(incident.signal.url)
     if link_target:
         context.append({"type": "mrkdwn", "text": f"<{link_target}|open in provider>"})
@@ -325,10 +324,9 @@ async def publish(incident: Incident, client: Any | None) -> bool:
         try:
             # Off-loop: `update_fields` is a full read-modify-write of the incident index,
             # and `publish` is awaited by `dispatch.run_cycle` on the gateway loop (through
-            # `publish_all`), so on a busy install this stalled every other task — the chat
-            # turn and the liveness heartbeat included. Same class as the other index calls
-            # already wrapped on this path; this one is reached only on a SUCCESSFUL Slack
-            # post, which is why it survived the earlier sweep. Found in review.
+            # `publish_all`), so on a busy install this would stall every other task — the
+            # chat turn and the liveness heartbeat included. Same class as the other index
+            # calls wrapped on this path; this one is reached only on a SUCCESSFUL Slack post.
             await asyncio.to_thread(
                 store.update_fields, incident.incident_id, slack_thread_ts=str(ts)
             )

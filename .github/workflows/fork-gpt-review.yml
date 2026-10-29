@@ -60,7 +60,11 @@ concurrency:
 jobs:
   fork-gpt-review:
     name: Fork GPT 6.1 Review
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # Must stay above the sum of the two PASS_WALLs plus setup, or this wall --
     # not the named pass timeout -- kills pass 2 and the job ends with no
     # verdict. The extra 30 min over that sum is the adjudication pass, which

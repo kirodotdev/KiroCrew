@@ -284,15 +284,19 @@ describe("loading.html carries its own close control", () => {
     );
   });
 
-  // The status line under the close button stays as the base splash draws it:
-  // bare text on the backdrop, no surface of its own. The accent surface
-  // belongs to the exit block alone, and only #closeWin is the bordered pill,
-  // so nothing else at the bottom-centre reads as a second control.
-  it("the status line declares no surface; only the exit block and the button do", () => {
+  // The status line under the close button gets the same accent surface as the
+  // exit block, for the same reason: a ghost drifting under white ink erases
+  // the words. It must still not read as a second control, so only #closeWin is
+  // the bordered pill: the status line draws no border and is not pill-shaped.
+  it("the status line paints an accent surface but never looks like the button", () => {
     const status = LOADING_HTML.match(/#status\s*\{([^}]*)\}/);
     assert.ok(status, "#status must have a style rule");
-    assert.doesNotMatch(status[1], /background/, "#status paints no background of its own");
-    assert.doesNotMatch(status[1], /border-radius/, "#status has no corners to round");
+    assert.match(
+      status[1],
+      /background:\s*color-mix\(in srgb, var\(--accent\)/,
+      "#status must declare a background derived from the accent token",
+    );
+    assert.doesNotMatch(status[1], /border-radius:\s*999px/, "#status is not a pill");
     assert.doesNotMatch(status[1], /(^|[^-])border:/, "#status must not draw a border");
 
     const button = LOADING_HTML.match(/#closeWin\s*\{([^}]*)\}/);

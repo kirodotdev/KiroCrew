@@ -10,6 +10,7 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.messaging.dispatch import warn_if_toolless_turns_unservable
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.whatsapp.client import (
+    FAILED_STATES,
     STATE_CONNECTED,
     WhatsAppClient,
     default_db_path,
@@ -161,6 +162,7 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
         logger.warning("whatsapp: %s", MISSING_EXTRA_HINT)
         if state is not None:
             state.whatsapp_connected = False
+            state.whatsapp_connect_failed = True
             state.whatsapp_connect_error = MISSING_EXTRA_STATUS[:120]
         return None
 
@@ -213,6 +215,9 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
             nonlocal checked_groups
             if state is not None:
                 state.whatsapp_connected = new_state == STATE_CONNECTED
+                # The structured verdict the settings panel reads; the error
+                # text below is the human detail only.
+                state.whatsapp_connect_failed = new_state in FAILED_STATES
                 state.whatsapp_connect_error = (
                     "" if new_state == STATE_CONNECTED else f"{new_state}: {detail}"[:120]
                 )
@@ -240,5 +245,6 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
         logger.exception("Failed to start WhatsApp channel; continuing without it.")
         if state is not None:
             state.whatsapp_connected = False
+            state.whatsapp_connect_failed = True
             state.whatsapp_connect_error = str(exc)[:120]
         return None

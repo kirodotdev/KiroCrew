@@ -13,8 +13,9 @@ const SCHEDULE_STATE_KEYS = {
   running: 'pages.membersPage.schedule_state_running',
 } as const
 
-/** `remaining` seconds as the largest two non-zero units, the goal chip's reading. */
-function inDuration(remaining: number): string {
+/** `remaining` seconds as the largest two non-zero units, the goal chip's reading.
+ *  Shared with the patrol row above this list, so both say "next in" the same way. */
+export function inDuration(remaining: number): string {
   const d = Math.floor(remaining / 86400)
   const h = Math.floor((remaining % 86400) / 3600)
   const m = Math.floor((remaining % 3600) / 60)

@@ -1,7 +1,7 @@
 """``class AcpSessionHandle``: the session handle's constructor, state, properties and members.
 
 The class body binds each member an owner module defines (``prompt = _sh_turn.prompt``) and
-keeps the constructor, the properties and the class default. ``_own_methods`` names each bound
+keeps the constructor, the properties and the class default. ``own_methods`` names each bound
 function after its class attribute. ``kiro_crew.acp.session_handle`` re-exports the class,
 which keeps that module as its ``__module__``: the facade is the import path callers, pickles
 and reprs name.
@@ -13,6 +13,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
@@ -46,35 +47,37 @@ from kiro_crew.acp.session_handle_watchdog import (
 from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.types import (
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     AcpEvent,
     AcpPromptStats,
     JsonRpcMessage,
+    steering_advertised,
 )
 from kiro_crew.recovery.ladder import InfraError
 
-_OWNER_PREFIX = "kiro_crew.acp.session_handle_"
+#: The owner modules whose functions ``AcpSessionHandle`` binds as its members, this
+#: shell included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.acp.session_handle_class",
+        "kiro_crew.acp.session_handle_compaction",
+        "kiro_crew.acp.session_handle_dispatch",
+        "kiro_crew.acp.session_handle_elicitation",
+        "kiro_crew.acp.session_handle_kas",
+        "kiro_crew.acp.session_handle_lifecycle",
+        "kiro_crew.acp.session_handle_mcp",
+        "kiro_crew.acp.session_handle_model_selection",
+        "kiro_crew.acp.session_handle_native_children",
+        "kiro_crew.acp.session_handle_permissions",
+        "kiro_crew.acp.session_handle_steering",
+        "kiro_crew.acp.session_handle_turn",
+        "kiro_crew.acp.session_handle_updates",
+        "kiro_crew.acp.session_handle_watchdog",
+    }
+)
 
 
-def _own_methods(cls: type) -> type:
-    """Make each member *cls* binds from an owner module read as a method of *cls*.
-
-    A bound function annotates ``self`` so mypy checks its body as a method body;
-    this drops that annotation from the runtime object and names the function after
-    the class attribute (``AcpSessionHandle._run_turn``), so its ``inspect.signature``
-    and ``__qualname__`` are what the one-module class had, and so are the reprs of
-    the coroutines and tasks it starts. Only ``__module__`` moves: it names the owner
-    module that holds the body.
-    """
-    for name, member in vars(cls).items():
-        function = getattr(member, "__func__", member)
-        if getattr(function, "__module__", "").startswith(_OWNER_PREFIX):
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
-    return cls
-
-
-@_own_methods
 class AcpSessionHandle:
     """Handle for a single ACP session on a shared runtime.
 
@@ -156,10 +159,13 @@ class AcpSessionHandle:
     _normalize_models = staticmethod(_sh_models._normalize_models)
     refresh_available_models = _sh_models.refresh_available_models
     _mark_available_models_captured = _sh_models._mark_available_models_captured
+    _feed_advertised_model_cache = _sh_models._feed_advertised_model_cache
+    _persist_advertised_models_if_changed = _sh_models._persist_advertised_models_if_changed
     maybe_refresh_available_models = _sh_models.maybe_refresh_available_models
     _sync_effort_levels = _sh_models._sync_effort_levels
     # Steering a live turn: ``kiro_crew.acp.session_handle_steering``.
     steer = _sh_steering.steer
+    clear_pending_steers = _sh_steering.clear_pending_steers
     _steer_via_steering_request = _sh_steering._steer_via_steering_request
     _settle_abandoned_steering = _sh_steering._settle_abandoned_steering
     _take_injected_steers = _sh_steering._take_injected_steers
@@ -624,6 +630,14 @@ class AcpSessionHandle:
         # The capabilities the agent batch this session registered auto-approves
         # (see ``kas_agents.projected_auto_approved``); None when no batch was sent.
         self.kas_auto_approved: frozenset[str] | None = None
+        # The built-ins that batch keeps at ``ask`` but the active agent's spec
+        # grants (``kas_permissions.crew_answered_builtins``): Crew's gate answers
+        # their permission requests itself, after the deny floor, the
+        # sensitive-path check and the governance ceiling. Empty with no batch.
+        self.kas_crew_answered: frozenset[str] = frozenset()
+        # The agent's `toolsSettings.shell.allowedCommands` as the gate matches
+        # them (``kas_permissions.crew_answered_commands``), answered the same way.
+        self.kas_crew_answered_commands: tuple[str, ...] = ()
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.
@@ -631,6 +645,9 @@ class AcpSessionHandle:
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []
+        # The upgrade notice when that batch's prompt is dropped by the KAS this
+        # process runs (``harness.kas.kas_agent_prompt_issue``); "" otherwise.
+        self.kas_agent_prompt_notice: str = ""
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").
@@ -648,6 +665,13 @@ class AcpSessionHandle:
         # State tracking (populated from session/new response via store_session_config)
         self._model: str = ""
         self.active_agent: str = ""
+        # The vault identity fingerprint read as THIS session's ``session/new``
+        # or ``session/load`` went out (``kas_model_catalog.request_vault_identity``);
+        # ``""`` on a handle whose request was never stamped, which records
+        # nothing. The KAS catalog recorder keeps it with the response's
+        # ``model`` select: the engine answers for the account in the vault when
+        # it was asked, and the picker serves the rows only to that account.
+        self.request_vault_identity: str = ""
         # Model id kiro-cli RESOLVED the session to (from currentModelId in the
         # session/new|load response), kept separate from _model (the user-picked
         # alias) so it feeds ONLY the context-window backfill — never slot.model
@@ -669,6 +693,11 @@ class AcpSessionHandle:
         self.model_pin_partial: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
+        # Set by ``_feed_advertised_model_cache`` when the capture changed the
+        # cross-session advertised-model cache, so the async init caller can
+        # offload the disk persist off the event loop. Mirrors
+        # ``AcpClient._advertised_models_changed`` on the direct-spawn path.
+        self._advertised_models_changed: bool = False
         # Read by KAS only: the listed id a session born on an unlisted ``auto`` moves to,
         # or "". One answer read from the ``model`` select, never the list itself:
         # nobody has shown that list to be the account's complete served set, so
@@ -798,6 +827,10 @@ class AcpSessionHandle:
     # mixing the two clocks is how a suspend-resume silently reorders them.
     _last_steer_monotonic: float = 0.0
 
+    # Set once kiro-cli refuses ``_session/steer/clear`` (a build without it), so
+    # the session stops offering a pending steer back. See ``clear_pending_steers``.
+    _steer_clear_refused: bool = False
+
     @property
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the last steer written to the backend (0.0 if none)."""
@@ -811,14 +844,32 @@ class AcpSessionHandle:
         ``ACP_BACKENDS_STEERING_REQUEST``, read from the runtime's own backend id.
         The first is kiro-cli's ``_session/steer``, the same answer, from the same
         table, that ``AcpClient.supports_steer`` gives; the second is codex-acp's
-        ``_session/steering``, which only this handle speaks. A capability is
-        granted by opt-in membership, so a host the runtime learns to drive does
-        not inherit an extension it never demonstrated: answering True for one
-        would advertise the steer affordance and then meet the user's mid-turn
-        correction with ``-32601``.
+        ``_session/steering``, which only this handle speaks, and only when the
+        process's handshake advertised it (``_meta.steering.supported: true``). A
+        capability is granted by opt-in membership, so a host the runtime learns to
+        drive does not inherit an extension it never demonstrated: answering True
+        for one would advertise the steer affordance and then meet the user's
+        mid-turn correction with ``-32601``.
         """
         backend = self._runtime.acp_backend
-        return backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST
+        if backend in ACP_BACKENDS_STEER:
+            return True
+        return backend in ACP_BACKENDS_STEERING_REQUEST and steering_advertised(
+            self.initialize_result
+        )
+
+    @property
+    def supports_steer_retract(self) -> bool:
+        """True when a steer this session has not read yet can be taken back.
+
+        Membership in ``ACP_BACKENDS_STEER_RETRACT``, read from the runtime's own
+        backend id, and False once the host refused the request
+        (:meth:`clear_pending_steers`), so a build without it is not offered again.
+        """
+        return (
+            self._runtime.acp_backend in ACP_BACKENDS_STEER_RETRACT
+            and not self._steer_clear_refused
+        )
 
     @property
     def supports_refusal_steer(self) -> bool:
@@ -873,6 +924,12 @@ class AcpSessionHandle:
         session: every handle on one runtime reports the same value.
         """
         return self._runtime.agent_version
+
+    @property
+    def initialize_result(self) -> dict:
+        """The shared process's ``initialize`` result (``{}`` until its handshake)."""
+        init = getattr(self._runtime, "initialize_result", None)
+        return init if isinstance(init, dict) else {}
 
     @property
     def config_options(self) -> list[dict[str, Any]]:
@@ -967,3 +1024,6 @@ class AcpSessionHandle:
         de-duplicating an id means remembering it, which is the one thing the
         cap exists to refuse."""
         return self._native_child_overflow
+
+
+own_methods(AcpSessionHandle, _MEMBER_OWNERS)

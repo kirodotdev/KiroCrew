@@ -8,6 +8,7 @@ and the paper keeps its folder name.
 from __future__ import annotations
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps.builtins.papyrus.backend.doc_title import document_title
 
@@ -15,40 +16,53 @@ from kiro_crew.apps.builtins.papyrus.backend.doc_title import document_title
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        pytest.param(
-            "\\documentclass{article}\n\\title{MACKEREL}\n\\begin{document}\n\\maketitle",
-            "MACKEREL",
-            id="plain",
+        *named_cases(
+            "test_reads_the_title",
+            ("source", "expected"),
+            [
+                pytest.param(
+                    "\\documentclass{article}\n\\title{MACKEREL}\n\\begin{document}\n\\maketitle",
+                    "MACKEREL",
+                    id="plain",
+                ),
+                pytest.param(r"\title{A \textbf{bold} word}", "A bold word", id="nested-braces"),
+                pytest.param(
+                    "\\title{A long title\n  over two lines}",
+                    "A long title over two lines",
+                    id="split-across-lines",
+                ),
+            ],
         ),
-        pytest.param(r"\title{A \textbf{bold} word}", "A bold word", id="nested-braces"),
-        pytest.param(
-            "\\title{A long title\n  over two lines}",
-            "A long title over two lines",
-            id="split-across-lines",
+        *named_cases(
+            "test_turns_latex_into_plain_text",
+            ("source", "expected"),
+            [
+                pytest.param(
+                    "% \\title{Old draft}\n\\title{Final}", "Final", id="commented-out-title"
+                ),
+                pytest.param(
+                    r"\titleformat{\section}{\bf}{}{0pt}{}\title{Real}", "Real", id="look-alike"
+                ),
+                pytest.param(
+                    r"\title{Deep Nets\thanks{Funded by a grant.}}", "Deep Nets", id="thanks"
+                ),
+                pytest.param(
+                    r"\title{First line\\Second line}", "First line Second line", id="line-break"
+                ),
+                pytest.param(r"\title{Part~I}", "Part I", id="non-breaking-space"),
+                pytest.param(
+                    r"\title{Theory \& Practice at 99\%}", "Theory & Practice at 99%", id="escaped"
+                ),
+                pytest.param(
+                    r"\title{Schr\"odinger \emph{revisited}}",
+                    "Schrodinger revisited",
+                    id="commands",
+                ),
+            ],
         ),
     ],
 )
-def test_reads_the_title(source: str, expected: str) -> None:
-    assert document_title(source) == expected
-
-
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        pytest.param("% \\title{Old draft}\n\\title{Final}", "Final", id="commented-out-title"),
-        pytest.param(r"\titleformat{\section}{\bf}{}{0pt}{}\title{Real}", "Real", id="look-alike"),
-        pytest.param(r"\title{Deep Nets\thanks{Funded by a grant.}}", "Deep Nets", id="thanks"),
-        pytest.param(r"\title{First line\\Second line}", "First line Second line", id="line-break"),
-        pytest.param(r"\title{Part~I}", "Part I", id="non-breaking-space"),
-        pytest.param(
-            r"\title{Theory \& Practice at 99\%}", "Theory & Practice at 99%", id="escaped"
-        ),
-        pytest.param(
-            r"\title{Schr\"odinger \emph{revisited}}", "Schrodinger revisited", id="commands"
-        ),
-    ],
-)
-def test_turns_latex_into_plain_text(source: str, expected: str) -> None:
+def test_reads_the_title_as_plain_text(source: str, expected: str) -> None:
     assert document_title(source) == expected
 
 

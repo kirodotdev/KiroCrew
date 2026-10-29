@@ -5,6 +5,7 @@ const { forceStopPort, isKirocrewCommand } = require("../../gateway-stop");
 const {
   canonicalWindowsPath,
   windowsGatewayExecutablePaths,
+  windowsVenvBaseInterpreterLaunches,
   windowsListenPids,
   windowsProcessCommand,
   windowsTaskkill,
@@ -97,6 +98,13 @@ function createPortHolders({
         ...windowsGatewayExecutablePaths(gatewayBin, { realpathSync: windowsRealpath }),
         ...getSpawnedExecutablePaths(),
       ],
+      // A source or pip venv's gateway listens from the venv's base
+      // interpreter, a child of its `Scripts\python.exe` redirector. Trusted
+      // only as a launch of the resolver's own `Scripts\kirocrew.exe`.
+      trustedVenvLaunches: windowsVenvBaseInterpreterLaunches(gatewayBin, {
+        readFileSync: fs.readFileSync,
+        realpathSync: windowsRealpath,
+      }),
       canonicalizePath: (candidate) => canonicalWindowsPath(candidate, windowsRealpath),
     });
   }

@@ -94,6 +94,7 @@ MAX_QR_TTL_SECS = 12 * 3600
 MOBILE_QR_BOX_SIZE = 4
 
 Step = Literal[
+    "policy_off",
     "pinned",
     "untrusted_cli",
     "install",
@@ -111,6 +112,7 @@ Step = Literal[
 
 def _derive_step(
     *,
+    policy_off: bool = False,
     pinned: bool,
     probe: tailnet.DaemonProbe,
     trusted: bool,
@@ -123,6 +125,8 @@ def _derive_step(
     Ordered by what blocks what, so the operator is never sent to a switch that
     cannot help yet. Each branch is a different remedy:
 
+    0. ``policy_off`` — an enterprise build whose policy does not turn tailnet
+       access on (``tailnet.policy_off``). Dead end, ahead of every daemon step.
     1. ``pinned`` — an administrator's ceiling forbids tailnet access. Dead end;
        nothing below is actionable, and offering a toggle would be a lie.
     2. ``install`` / ``start_daemon`` / ``sign_in`` / ``enable_magicdns`` — the
@@ -157,6 +161,8 @@ def _derive_step(
     7. ``publish`` — everything is in place; one action left.
     8. ``ready`` — published and trusted.
     """
+    if policy_off:
+        return "policy_off"
     if pinned:
         return "pinned"
     if not probe.installed:
@@ -260,9 +266,9 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
     # whether the dashboard is currently published, and how many devices share
     # the tailnet — network facts about the operator's machine. Nothing consumes
     # it but the owner's own card, so refusing a non-owner costs nothing and
-    # closes the disclosure that survived making the FRONTEND owner-only. The
-    # renderer no longer needs an `is_owner` field: a refused read yields no
-    # data, and the card already renders nothing without data.
+    # closes the disclosure an owner-only FRONTEND alone leaves open. The
+    # renderer needs no `is_owner` field: a refused read yields no data, and
+    # the card already renders nothing without data.
     if request.get("app") != "" or not is_owner_dashboard_request(request):
         # A DENIED read is audited even though a successful one is not. The
         # docstring for `_audit` says reads are skipped because a polled question
@@ -362,9 +368,16 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         keep_awake = True
 
     try:
+        # A pure read, like the pin probe below (no SEL row per refresh).
+        policy_off = await asyncio.to_thread(tailnet.policy_off)
+    except Exception:
+        logger.debug("tailnet mobile: policy probe unavailable", exc_info=True)
+        policy_off = True
+    try:
         # No audit_tool: a polled read must not append an HMAC-chained SEL row
-        # per refresh (see tailnet.is_governance_pinned_off).
-        pinned = await asyncio.to_thread(tailnet.is_governance_pinned_off)
+        # per refresh (see tailnet.is_governance_pinned_off). Not asked when the
+        # enterprise policy already leaves tailnet off.
+        pinned = policy_off or await asyncio.to_thread(tailnet.is_governance_pinned_off)
     except Exception:
         # Fail CLOSED, matching the callee's own contract: an unknown ceiling is
         # treated as pinned, so the QR mint refuses rather than issuing an owner
@@ -389,6 +402,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
 
     startup_host = tailnet.running_tailnet_origin(request.app)[0]
     step = _derive_step(
+        policy_off=policy_off,
         pinned=pinned,
         probe=probe,
         trusted=trusted,
@@ -421,6 +435,10 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
 #: differ in which errand fixes them, which is the CARD's business, and the API
 #: contract only needs to say why no code was made.
 _QR_REFUSALS: dict[Step, tuple[str, str]] = {
+    "policy_off": (
+        "policy_off",
+        "Tailnet is off by policy, so no sign-in link can be issued for this machine.",
+    ),
     "pinned": (
         "governance_pinned",
         "An administrator's security policy pins tailnet access off, so no "
@@ -649,6 +667,12 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
         await _audit_async(request, "tailnet.mobile.configure", "denied", "restricted-session")
         return refusal
 
+    if await asyncio.to_thread(tailnet.policy_off, audit_tool="tailnet_mobile_configure"):
+        await _audit_async(request, "tailnet.mobile.configure", "denied", "policy-off")
+        return web.json_response(
+            {"error": tailnet.POLICY_OFF_DETAIL, "code": "policy_off"}, status=403
+        )
+
     pinned = await asyncio.to_thread(
         tailnet.is_governance_pinned_off, audit_tool="tailnet_mobile_configure"
     )
@@ -875,7 +899,7 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
         return web.json_response({"error": denied, "code": "governance_denied"}, status=403)
 
     port = _dashboard_port(request)
-    # Unconditional, unlike an earlier revision that nested this in `if port:`.
+    # Unconditional, deliberately not nested in `if port:`.
     # Both server entrypoints set ``app["port"]``, so an unresolved port is not a
     # reachable state today — but this handler's contract is that it refuses
     # unless the dashboard is actually published, and a gate that silently

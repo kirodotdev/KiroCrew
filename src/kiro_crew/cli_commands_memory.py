@@ -846,14 +846,16 @@ def _memory_verb(args: argparse.Namespace) -> None:
             # whose target is not the default store settles everything it can before
             # anything opens one. The three checks and their wording are unchanged; only
             # the point at which they run moved.
+            # Each refusal below imported nothing, so it exits 1 on stderr: a script
+            # running `memory import f && next` must not read it as a success.
             import_file = getattr(args, "file", None)
             if not import_file:
-                print("Usage: kirocrew memory import <file>")
-                return
+                print("Usage: kirocrew memory import <file>", file=sys.stderr)
+                sys.exit(1)
             path = Path(import_file)
             if not path.is_file():
-                print(f"File not found: {import_file}")
-                return
+                print(f"File not found: {import_file}", file=sys.stderr)
+                sys.exit(1)
             try:
                 loaded = json.loads(safe_read_file(str(path)))
             except (OSError, ValueError) as exc:
@@ -863,13 +865,16 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 # OSError as well as ValueError: `safe_read_file` re-raises a
                 # PermissionError or a mid-read truncation unchanged, and a traceback
                 # here would be the only refusal on this path that is not one line.
-                print(f"Error: {import_file} could not be read as JSON: {exc}")
-                return
+                print(f"Error: {import_file} could not be read as JSON: {exc}", file=sys.stderr)
+                sys.exit(1)
             if not isinstance(loaded, dict):
                 # `import_memory` reads `data.get(...)`, so a top-level list or scalar
                 # would raise inside the write path -- after the store was opened.
-                print(f"Error: {import_file} is not an export object; nothing was imported.")
-                return
+                print(
+                    f"Error: {import_file} is not an export object; nothing was imported.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             for collection in _IMPORTED_COLLECTIONS:
                 # Dict-ness alone is NOT enough, and the gap is narrow and real:
                 # `{"semantic": null}` has the key, so `data.get("semantic", [])` answers
@@ -881,9 +886,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 if not isinstance(loaded.get(collection, []), list):
                     print(
                         f"Error: {import_file} has a {collection!r} collection that is not "
-                        "a list; nothing was imported."
+                        "a list; nothing was imported.",
+                        file=sys.stderr,
                     )
-                    return
+                    sys.exit(1)
             import_payload = loaded
         # THE INVARIANT, stated on the outcome rather than on payload shape. The set of
         # payloads that reach `import_memory` and write nothing is open-ended:

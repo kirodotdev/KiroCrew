@@ -7,7 +7,7 @@ import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { esc } from '../../api/helpers'
-import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
+import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -396,7 +396,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       await api.vectorEnableEmbeddings()
       pollEmbeddingStatus()
     } catch (error: unknown) {
-      setEmbeddingStartError(extractError(error))
+      setEmbeddingStartError(enableEmbeddingsErrorMessage(error) || extractError(error))
       setEnabling(false)
     }
   }

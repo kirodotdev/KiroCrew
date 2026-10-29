@@ -66,7 +66,7 @@ from kiro_crew.resource_status import (
     ResourceStatus,
     probe,
 )
-from kiro_crew.sandbox import check_agents_slice_pressure
+from kiro_crew.sandbox import check_agents_slice_pressure, reclaim_agents_slice_page_cache
 
 if TYPE_CHECKING:
     from kiro_crew.notifications.bus import NotificationBus
@@ -188,6 +188,14 @@ class ResourcePressureNotifier:
             except Exception:
                 self._slice_oom_msg = None
                 logger.debug("agents-slice OOM check failed", exc_info=True)
+            # Same tick: drop clean page cache on the agents slice before it
+            # holds the slice at memory.high. The decision is a few file
+            # reads; the writes run in their own thread, so this returns at
+            # once and never spends the probe's budget.
+            try:
+                reclaim_agents_slice_page_cache()
+            except Exception:
+                logger.debug("agents-slice page-cache reclaim failed", exc_info=True)
             return self._probe()
         finally:
             self._inflight = False

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.imessage import client as client_mod
 from kiro_crew.imessage.client import (
@@ -1139,9 +1140,14 @@ class TestOwnEchoLedger:
         await imc.close()
 
     @pytest.mark.asyncio
-    async def test_resolved_records_are_still_bounded(
-        self, tmp_path: Path, peers: list[StubPeer]
-    ) -> None:
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_resolved_records_are_still_bounded"),
+            *named_cases("test_the_ledger_is_bounded"),
+        ],
+    )
+    async def test_the_echo_ledger_is_bounded(self, tmp_path: Path, peers: list[StubPeer]) -> None:
         # The other half: exempting in-flight records must not stop the cap from
         # bounding the resolved ones, or a long conversation grows the list.
         imc = await _client(tmp_path)
@@ -1213,17 +1219,6 @@ class TestOwnEchoLedger:
         decomposed = parse_inbound(_message(text="cafe\u0301 ready"))
         assert decomposed is not None
         assert imc.is_own_echo(decomposed) is True
-        await imc.close()
-
-    @pytest.mark.asyncio
-    async def test_the_ledger_is_bounded(self, tmp_path: Path, peers: list[StubPeer]) -> None:
-        # A long answer is delivered as many sends, so the ledger must not grow
-        # with the conversation.
-        imc = await _client(tmp_path)
-        peers[0].default_result = {"ok": True}
-        for i in range(ECHO_WINDOW + 40):
-            await imc.send(OWNER, f"chunk {i}")
-        assert len(imc._own_sends) <= ECHO_WINDOW
         await imc.close()
 
     @pytest.mark.asyncio

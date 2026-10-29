@@ -86,7 +86,8 @@
         "libatspi2.0-0 | libatspi2.0-0t64",
         "libuuid1",
         "libsecret-1-0",
-        "libasound2 | libasound2t64"
+        "libasound2 | libasound2t64",
+        "lsof"
       ]
     },
     "rpm": {
@@ -108,7 +109,8 @@
         "at-spi2-core",
         "libuuid",
         "libsecret",
-        "alsa-lib"
+        "alsa-lib",
+        "lsof"
       ]
     },
     "dmg": {
@@ -177,11 +179,13 @@
       "runtime/update/managed-lane.js",
       "runtime/update/freshness-gate.js",
       "runtime/update/feed-lane.js",
+      "runtime/update/policy-channel.js",
       "update-logger.js",
       "bundle-location.js",
       "gateway-auth-hint.js",
       "blocking-prompt.js",
       "splash-history.js",
+      "scroll-touch.js",
       "swipe-history.js",
       "hide-to-tray.js",
       "html-fullscreen.js",
@@ -194,6 +198,7 @@
       "home-dir.js",
       "local-token.js",
       "local-gateway.js",
+      "close-action.js",
       "wsl-detection.js",
       "mochi-session-token.js",
       "window-state.js",
@@ -215,6 +220,7 @@
       "gpu-crash-fallback.js",
       "early-boot-guard.js",
       "memory-watch-log.js",
+      "launch-log.js",
       "frame-load-log.js",
       "pane-asset-journal.js",
       "cage-trace.js",

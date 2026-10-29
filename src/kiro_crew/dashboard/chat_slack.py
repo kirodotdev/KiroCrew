@@ -757,7 +757,15 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
-    body = await request.json() if request.content_length else {}
+    try:
+        body = await request.json() if request.content_length else {}
+    except (LookupError, RecursionError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    # Valid JSON that is not an object (a list, a string) would crash on .get().
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
     raw_channel = body.get("channel", "")
     # When the caller supplies an existing thread_ts (challenge-and-redirect
     # auto-link from a Slack thread the user replied in), link to THAT thread

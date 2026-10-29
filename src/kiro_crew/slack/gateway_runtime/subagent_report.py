@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from kiro_crew.slack.gateway import (
         DIGEST_HOLD_SECS,
+        LEAKED_TOOL_CALL_NOTE,
         NEVER_STARTED_MEMORY_PREFIX,
         NO_TOOL_CALLS_NOTE,
         OUTCOME_FAILED,
@@ -168,6 +169,13 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     no_tools_note = ""
     if single_outcome == OUTCOME_OK and not _flush_only and info.made_no_tool_calls:
         no_tools_note = f"⚠ Agent `{info.id}` {NO_TOOL_CALLS_NOTE}"
+    # A completed run whose final segment wrote a tool call as text instead of
+    # running it (``SubagentInfo.leaked_tool_call``) reads as a success while
+    # that call never executed. Same channel as the note above, so a lone run
+    # and a wave digest line both carry it; the outcome stays completed.
+    if single_outcome == OUTCOME_OK and not _flush_only and info.leaked_tool_call:
+        _leak_note = f"⚠ Agent `{info.id}` {LEAKED_TOOL_CALL_NOTE}"
+        no_tools_note = f"{no_tools_note}\n{_leak_note}" if no_tools_note else _leak_note
     announce = (
         f"{SUBAGENT_COMPLETION_PREFIX}\n"
         f"Agent `{info.id}`"
@@ -324,9 +332,19 @@ def _subagent_wave_digest(
         # Exception-first digest content: failures/stops carry detail,
         # successes are one pointer line (full output stays on disk).
         if _oc == "completed":
-            # A run that kept its output after a generate failure is
-            # completed but partial; the digest must say so.
-            _kept = " (partial: backend failed to generate the final response)"
+            # A completed run is partial for one of two causes, and the
+            # digest names which: it kept its streamed output after a
+            # generate failure, or it called tools and then closed with no
+            # reply. The second case always ends with
+            # EMPTY_TURN_NOTICE_AFTER_WORK, which run_turn appends after the
+            # keep cap. Imported here: these functions run with the
+            # gateway's module globals, which do not carry the notice.
+            from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE_AFTER_WORK
+
+            if (info.result or "").endswith(EMPTY_TURN_NOTICE_AFTER_WORK):
+                _kept = " (partial: ended without a closing reply after tool calls)"
+            else:
+                _kept = " (partial: backend failed to generate the final response)"
             bp["ok_lines"].append(
                 f"— `{info.id}` ✅{_kept if info.partial else ''} {task_text[:80]}"
                 f"{_model_tag} · {usage}"

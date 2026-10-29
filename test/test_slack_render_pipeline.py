@@ -32,6 +32,8 @@ Two tiers, deliberately:
   captions) and so cannot be banned outright the way a conversion call can; it is
   a judgment-tier problem, not a deterministic one. ``security_posture.py`` states
   the same bound, deliberately, rather than claiming every Slack path is enforced.
+  ``test_slack_post_message_call_sites.py`` does not ban those calls; it pins
+  each module's count to a baseline, so a NEW direct send path fails the build.
 
   BEHAVIOURAL tier -- the ordering tests below. They prove the pipeline the
   structural tier funnels everyone into actually closes both hazards, in both
@@ -1019,15 +1021,17 @@ class TestOptionsChoicesAreRedacted:
         assert "[REDACTED]" in payload
 
     def test_the_button_value_is_redacted_before_it_is_sliced(self) -> None:
-        """The value is echoed back into the session on submit.
+        """The value is echoed back into the session on click.
 
-        ``value`` is ``choice[:150]``. Slicing first can cut a credential into a
-        prefix the regex does not match, so redaction has to precede the
-        slice -- the same ordering hazard as the conversion ceiling.
+        ``value`` is ``choice[:OPTIONS_VALUE_LIMIT]``. Slicing first can cut a
+        credential into a prefix the regex does not match, so redaction has to
+        precede the slice -- the same ordering hazard as the conversion ceiling.
         """
-        pad = "p" * 140
+        from kiro_crew.slack.format import OPTIONS_VALUE_LIMIT
+
+        pad = "p" * (OPTIONS_VALUE_LIMIT - 10)
         blocks = build_options_blocks([pad + _SECRET], redactor=_fake_redactor)
-        value = blocks[0]["elements"][0]["options"][0]["value"]
+        value = blocks[0]["elements"][0]["value"]
         assert _SECRET[:8] not in value, "a credential fragment survived into the value"
 
     def test_an_ansi_split_credential_in_a_choice_is_redacted(self) -> None:
@@ -1046,7 +1050,7 @@ class TestOptionsChoicesAreRedacted:
     def test_ordinary_choices_are_unchanged(self) -> None:
         """Redaction must be identity for text that holds no secret."""
         blocks = build_options_blocks(["Merge it now", "Show me the diff"])
-        labels = [o["text"]["text"] for o in blocks[0]["elements"][0]["options"]]
+        labels = [el["text"]["text"] for el in blocks[0]["elements"] if el["type"] == "button"]
         assert labels == ["Merge it now", "Show me the diff"]
 
 

@@ -89,9 +89,20 @@ and rejected writes. Saving starts no compute, removing a profile stops or
 deletes nothing external, turning the preview off changes nothing, and an older
 gateway shows an unsupported notice. "Verify readiness"
 (`POST /api/session-environments/check`, owner-only, saved configuration only)
-runs `coder whoami` and `CoderClient.probe` per profile, touching no workspace.
-"Manage" (`GET /api/session-environments/workspaces`, owner-only) lists
-registry rows without a Coder command.
+runs `coder whoami` and `CoderClient.probe` per profile, plus
+`git_gateway.login_status` per proxied git host, which runs only status
+commands (`gh auth status`, `glab auth status`, `az account show`) and reads
+their exit codes with output discarded. A host that falls back to git's
+credential helper reports `unchecked` rather than asking the helper, since
+asking would hand the gateway the secret; the card says that row cannot be
+checked and says to clone a private repository over HTTPS on the gateway so
+the helper saves the login (a bare `git credential approve` waits on stdin),
+and a `not_signed_in` row names the
+sign-in command to run on the gateway. Under the `strict` tier
+`git_gateway.git_readiness` runs no command and reports every host `withheld`,
+and the card shows one row saying no gateway login is shared. It touches no
+workspace. "Manage" (`GET /api/session-environments/workspaces`, owner-only)
+lists registry rows without a Coder command.
 
 ### Placement and the tool fence
 
@@ -144,6 +155,178 @@ computer-use refusal is about placement, not governance.
 
 ### Transport
 
+Git from a remote workspace to GitHub, GitLab, Bitbucket and Azure DevOps is
+proxied through the gateway, so the credential never goes to the guest. Session
+start runs `begin_git_proxy` in the background (it never delays the start, and
+a failure only costs that git access): a guest worker runs `git_proxy.py`, a
+stdlib HTTP server on guest loopback that writes the port to the file the
+gateway names with the required `--port-file` (one per launch; there is no
+shared default on either side), and the gateway's
+`git_gateway.GitProxyChannel` answers it over that worker's own authenticated
+link. `workspace_tools.run_command` gives each command git's environment config
+(`GIT_CONFIG_COUNT`, so the workspace template needs git 2.31 or newer: an
+older git ignores those variables and reaches the host directly, without the
+gateway's login), appended after any `GIT_CONFIG_*` entries the command's
+environment already sets, rewriting each host's spellings
+(`workspace_tools.GIT_PROXY_REWRITES`, pinned equal to `git_gateway.HOSTS`:
+`https://`, `git@host:` and `ssh://git@host/` for the first three, HTTPS only
+for `dev.azure.com`, whose SSH path shape differs) to `/<host>/` on the proxy,
+for the lendable hosts only, and only while the port answers (a stale file from
+a dead proxy must not break public clones). Which hosts are lendable is the
+gateway's call: once the guest proxy sends a `lend` frame, the channel
+publishes `{"t": "lend", "hosts": [...]}` (`GitProxyChannel.lendable_hosts`:
+empty under `strict` or an unknown tier, else each host whose credential
+sources answer; values never leave the gateway) at once, every
+`LEND_REFRESH_SECS` (60 s), and as soon as an upstream 401 drops a cached
+login. Hosts are looked up concurrently, each under its own lock, and until
+the first full list is out each host is published as soon as its login is
+found, in a frame marked `"partial": true`, so a slow source for one host does
+not hold back another's; a refresh publishes only its full list. A login the host refused is not lent again until its source returns a
+different value (a source such as `gh auth token` can keep printing a revoked
+token), so that host goes direct until a fresh sign-in. The proxy keeps the list as `<port> <host>...` in `<port file>.lend`
+(`<port> * <host>...` for a partial one),
+removes it on exit, and `git_proxy_env` re-reads it for every command; a list
+that is unreadable routes nothing. A list that is missing, or names another
+port, means the gateway has not answered this proxy yet (the proxy removes the
+file before it asks): a command run then waits for the first answer, up to
+`GIT_PROXY_FIRST_LEND_WAIT_SECS` (20 s, above one credential CLI's 15 s limit),
+so a first private clone right after the session starts still gets the login.
+A partial list keeps the command waiting, since a host still being looked up
+would be left out of its rewrite; a complete list, even an empty one, is used
+at once. Past the wait the command routes what has been found (nothing if no
+list came), and if the proxy stops it routes nothing. The proxy itself starts in
+the background, and writes its port file only once it listens (its server binds
+without a host-name lookup, which can stall on macOS). Each new tool server is
+told by the launch whether a proxy start is in flight (`starting:<n>`, from
+`RemoteWorkerLaunch.git_proxy_state`) or not (`none`). Only during an in-flight
+start, and within the tool server's first `GIT_PROXY_FIRST_LEND_WAIT_SECS`, does
+a command with no listening port file wait for it. The wait ends as soon as the
+port answers, or when the launch writes start `n`'s number to
+`<port file>.failed` because that start failed. With no start in flight, a
+missing proxy costs no wait. A host that
+is not routed keeps the workspace's own git login (its SSH key, its
+`GIT_ASKPASS`), exactly as without Kiro Crew, so under `strict` everything goes
+direct. `GIT_ASKPASS` and the terminal prompt are never changed; a credential
+helper scoped to the proxy's own URL answers `quit=1`, so a routed request
+that ends in a 401 prompts no one. The protected-branch rule below covers
+routed pushes only: a push made with the workspace's own login goes straight
+to the forge, as from any machine holding that key. No
+git config file is written, so a terminal opened outside the tool is
+unaffected. The channel accepts only git's smart-HTTP requests
+(`info/refs?service=git-upload-pack|git-receive-pack` by GET, the two pack
+endpoints by POST) whose repository path matches that host's shape in
+`HOSTS`: `owner/repo` on GitHub and Bitbucket, nested `group/.../project` on
+GitLab, `org/[project/]_git/repo` (percent-encoded names) on Azure. Every
+segment is decoded and refused if it is empty, `.`/`..`/`-`, starts with `-`,
+or holds a separator, `@`, `:` or a control character. Leading-dot repository
+names such as `.github` remain valid. The upstream URL
+is rebuilt from those parts (GitLab gets `.git` so it does not redirect), so the
+guest cannot aim it elsewhere. It then asks
+`vet_and_audit("network.egress", <host>, agent=<calling agent>, fail_closed=True)`.
+The calling agent is captured by `AcpProvider` and carried through proxy startup
+into the channel, never taken from a guest frame. An absent identity refuses
+proxy startup and forwarding; a task-bound agent profile still intersects the
+policy ceiling even on an unrestricted dashboard surface. A push asks no one:
+before a `git-receive-pack` POST goes upstream, the channel reads its
+ref-update commands (`PushCommands`: optional `shallow` lines, then
+`<old> <new> <ref>` pkt-lines up to the flush, capped at 8 MiB) and refuses the
+whole push when any command updates or deletes a protected branch
+(`is_protected_ref`, which reuses the local git-publish floor's
+`_PROTECTED_BRANCHES` and `_normalize_ref` on the lower-cased ref, so
+`refs/heads/main`, `refs/remotes/<r>/main` and any case of them match exactly
+as `git push origin <ref>` does locally; parity is at the destination-ref
+level, since the local check's refusals of unresolvable spellings such as a
+bare push or `--all` reach the proxy already resolved to concrete refs). The refusal is a receive-pack result
+that marks every command `ng` (in the side band the client asked for, every
+packet within its size limit, with the reason on a `remote:` line), so git prints `! [remote rejected]` per ref; a
+client that asked for no report gets a 403. Nothing of a refused push goes
+upstream. A body that cannot be read (a bad pkt-line, a short ref name, a
+compressed body, a body that ends before its flush, a signed push's
+certificate) is refused with a 403. Every other push, a force-push or delete
+of a feature branch included, goes through unprompted, as it would locally,
+and any process in the workspace can make one, as any local process can. Every
+push decision writes one SEL `governance_decision` row (`_audit_push`: scope
+`git.push`, the repository and refs as the item, outcome `allowed` or
+`denied`, rule `no-protected-branch`, `protected-branch`, `unreadable-push` or
+`strict-sandbox`), best-effort, so a failed write never changes the answer. A
+request refused before the egress check (a host or endpoint the proxy does not
+carry, or a channel with no calling agent) writes one denied row too (scope
+`git.request`, rule `not-proxied` or `no-agent`). The
+channel then takes the credential from that host's sources on this
+machine, in order (`host_credential`): `gh auth token` for GitHub (Basic
+`x-access-token`), `glab config get token` then git's credential helper for
+GitLab (Basic `oauth2`), git's credential helper for Bitbucket (Basic
+user:password, an app password or API token), and `az account get-access-token`
+for the Azure DevOps resource then the helper for Azure (Bearer, or a PAT as
+Basic). The helper is asked with `GIT_TERMINAL_PROMPT=0` and
+`GCM_INTERACTIVE=never`, so it answers from what is stored and never opens a
+prompt or a browser on the gateway. Under the `strict` agent sandbox tier, which
+hides those logins from local agents, the proxy lends none
+(`gateway_logins_lent`: the configured tier and its readability from one
+`KiroCrewConfig.load()`, with the governance floor applied, read per request; an unreadable tier counts as strict, and so does a
+load that `KiroCrewConfig.load()` marked degraded -- an unparseable
+`config.json` or `config.local.json`, or a degraded `agent` section -- because
+that load stands field defaults in rather than raising). Under `strict` the
+guest routes nothing here (the published list is empty); a request that still
+arrives, from a list published before the tier changed, is read upstream
+anonymously, a private read's 401 reaching git as a 403 naming the strict tier,
+and a push is refused with that message before its body is read. Other tiers
+lend as described here, by the maintainer's choice of "strict lends no gateway
+git login at all" over per-tier lending: under `standard` and `cc` a remote
+session is also lent logins those tiers hide from local agents (`~/.azure`
+under both, `~/.git-credentials` under `cc`), so its git reach can exceed a
+local agent's on the same tier.
+Each host's value is cached in memory for
+five minutes, never logged or framed, sent upstream only, with no redirect
+followed, and the response is streamed back. An upstream 401 drops the cached
+value. For a push it reaches git as a 403 naming that host's sign-in step; a
+read retries once anonymously (so a public repository still clones), and if
+that also gets a 401 it reaches git as that 401, which prompts no one because
+the proxy's URL has its own `quit` credential helper. Azure's legacy `ORG.visualstudio.com` URLs and clone
+URLs carrying a user (`https://ORG@dev.azure.com/...`) are not rewritten. The proxy lives as long as the session's CURRENT
+workspace relay: a start can make more than one (an early tools probe, a
+respawn), so the git relay's `close` stops the proxy only when the closing relay is
+the newest one `workspace_server` made (`_git_proxy_relay`, which survives
+`close_relay` forgetting `launch.relay` at a runtime's normal end; a restart's
+replacement close leaves the proxy to the restart's own `begin_git_proxy`),
+ending its input first so it removes its own port file,
+so an older relay idling out cannot leave a live session without git. The agent's
+remote-workspace notice says git to the four hosts works as usual: through the
+gateway, with its login, for a host it can lend for, and with the workspace's
+own login otherwise (only that under `strict`), and that a protected-branch
+push through the gateway is refused; it tells the agent not to hunt for keys or
+unset the rewrites, and does not mention `GIT_ASKPASS`, which stays the
+workspace's. `git_proxy.py` ships in the installed worker
+files, and the gateway starts it with `--build`, the SHA-256 of its own copy:
+a guest of another build (or started without one) exits before it frames
+anything, and a guest link that ends before its first frame marks its start
+failed, so version skew ends git's wait at once instead of hanging. A
+request's upload flows on credit: the guest sends at most
+`git_proxy.UPLOAD_WINDOW` body frames ahead of the `credit` frames the gateway
+returns as it takes each piece, so the gateway's frame reader never waits on
+one request and a stalled upload cannot hold back its own `cancel` or another
+request; a guest past its window fails only that request. Pinned end to end by `test_remote_git_proxy.py`,
+which runs a real `git` clone and push through the real proxy and channel
+against `git http-backend`, and asserts the token never crosses to the guest.
+The git-only `GitProxyLink` binds its output reader to a byte watermark: when
+unread bytes fill the reader, it stops feeding the wire endpoint before more
+output can be acknowledged. It pauses through the base link's own consumer
+gate, so the link's stall check counts a busy git reader as reading, not as a
+silent connection. The worker's unacknowledged-byte limit then stops
+the guest producer, including when an upstream push stops draining its body.
+If the guest cannot finish delivering the response (or uploading its request),
+it sends a `cancel` frame for that request id. The channel cancels and awaits
+only that request's task, closing its upstream response and releasing its
+live-request slot without waiting for the rest of a repository download.
+
+Git LFS inherits the same URL aliases. Its batch and lock-verification POSTs
+receive a 307 redirect to their original HTTPS endpoint after the egress check,
+without reading or attaching a gateway credential. Object transfers run directly
+from the workspace: public LFS remains anonymous, while private LFS requires
+workspace-side authentication. `test_remote_git_channel_bounds.py` verifies real LFS
+clone/smudge and pre-push upload through this exclusion, as well as bounded wire
+receive flow.
+
 A vendor tunnel is not assumed to deliver ACP byte for byte (an SSM port forward
 rewrote LF into CR; ECS Exec does not forward piped stdin), so tunnels use
 integrity-checked framing with no fixed per-message timeouts, in
@@ -195,9 +378,11 @@ session has a message the choice is locked unless its remote workspace was
 never created (`GET` reports `locked`; a changing `PUT` answers 409
 `environment_locked`), and the composer chip (`SessionEnvironmentChip`) becomes
 a status. A changed choice arms the slot's deferred reset; only a choice back to
-this machine prewarms. A bound session bypasses the warm pool, whose children
-are local engines (`kirocrew.session.pool.decision` outcome
-`bypass_remote_environment`).
+this machine prewarms. `session_environments.default_profile` binds a new owner
+dashboard chat (`apply_default_environment`, only while it has no choice and no
+messages; any failure leaves it local); scheduled jobs, channels and peer chats
+are untouched. A bound session bypasses the warm pool, whose children are local
+engines (`kirocrew.session.pool.decision` outcome `bypass_remote_environment`).
 
 Preparing reserves a row in the Coder ownership registry before any compute
 exists (a non-empty `deployment_id` is required and never retargeted; rows of
@@ -211,7 +396,26 @@ session with history gets a new workspace (`PreparedRemoteSession.created`),
 `mark_workspace_recreated` makes the next `[PROJECT]` rail say once that it is
 empty. The per-message context names the guest directory instead of the
 gateway project (`remember_remote_workspace`), and
-`ResourceStatus.context_line(remote=True)` scopes `[RESOURCES]` to the gateway.
+`ResourceStatus.context_line(remote=True, workspace_memory=...)` judges each
+machine on its own reading in `[RESOURCES]`. A tight gateway, which runs the
+engine and its subagents, only flags sub-agent waves. The workspace's memory is
+the last `session_health` reading (`remember_remote_memory`), read from cache
+and refreshed in the background at most once a minute per session whatever the
+read found, and never while the `[RESOURCES]` line is switched off
+(`refresh_remote_memory_soon`) on the gateway loop `remember_remote_workspace`
+recorded, through the health read the session's provider registered
+(`register_remote_health`; Coder registers `session_health` when it prepares the
+session, and a session with none is never read; the read belongs to the session's
+placement, so a runtime's end, including a resume respawn that registers none,
+keeps it and only a session switched back to local or a finished subagent drops it;
+when the table is full a session with no live runtime is evicted first), so a turn never waits on the
+remote machine and a stopped one is
+never woken. A reading older than five minutes is ignored. A workspace is tight
+when its free memory is at or below the smaller of the gateway's pressure floor
+and a quarter of its own total, so a small idle workspace is not. A tight workspace
+gets the "targeted tests, serialize builds" advice, a healthy one reports its
+free memory, an unmeasured one says so, and the line is silent when both
+machines are clear.
 
 A subagent of a remote session inherits its environment:
 `inherit_environment_for_subagent` writes the child's choice with a `parent`
@@ -220,8 +424,19 @@ owner's workspace. The child takes the dedicated-process arm with its own
 worker and fence; an unreadable choice or a malformed `parent` refuses the run.
 Its spawn owes only the local engine's reserve ([subagent](subagent.md)).
 
-Coder lifecycle calls run under the Coder client's output and timeout bounds,
-not the 64 KB guest-command bound.
+### Start progress
+
+A first start can take minutes, so `session_environment.report_start_stage`
+records `checking`, `provisioning` (only when compute is created or started),
+`connecting` and `starting_agent`, plus `entered` (stages so far) and
+`reconnect` (this gateway already had the session attached). The record is in
+memory, bounded, and cleared in the `finally` of
+`AcpProvider._start_kiro_runtime`. `GET /api/chat/slots/{slot}/environment`
+returns it as `starting`; the chip polls once a second only while a turn runs.
+The setup card shows every stage before the current one as done, and appears
+only for a first connection or a restart that enters `provisioning`. Coder
+lifecycle calls run under the Coder client's output and timeout bounds, not the
+64 KB guest-command bound.
 
 ### Archive, retention and shutdown
 
@@ -257,6 +472,40 @@ pending approvals are dropped and their commands never ran remotely. An active
 orphans; detached background processes are not tracked. The next message
 reconnects to the same workspace.
 
+### Dashboard views
+
+Views that read the gateway's project switch on `useSlotRemoteEnvironment`:
+the composer drops the project chip, the Git view gets no folder, and the Files
+tab renders `RemoteFilesPanel`. It reads through
+`GET /api/chat/slots/{slot}/environment/browse?op=list|read&path=`
+(owner-only; `coder.session_browse` runs `workspace_tools.py --browse` with the
+request on stdin and the tools' confinement and caps) and saves through
+`PUT /api/chat/slots/{slot}/environment/file` `{path, content, expected}`
+(owner-only, SEL-audited, the separate `--write` mode). A save whose `expected`
+differs from the file answers 409 `file_changed`, a truncated or binary read is
+not offered for saving, a stopped workspace answers 409 `workspace_stopped`, and
+outdated guest files are reinstalled once before a retry. A terminal opened
+from a remote chat carries `remote_slot` and opens
+`coder ssh --disable-autostart <workspace>`, or closes the socket with a coded
+error (`terminal_wrong_machine`, or `terminal_placement_unavailable` while the
+chat's placement cannot be read) rather than opening a local shell.
+
+Once a remote session is fixed, its chip opens `EnvironmentHealthCard` on hover
+(or focus and click): workspace name, guest directory, state, CPU cores and
+architecture, load averages, memory and disk meters, and uptime. It reads
+`GET /api/chat/slots/{slot}/environment/health` (owner-only), which runs the
+browse mode's read-only `stats` op (no environment, process list or paths),
+polling every 15 seconds only while the card is open. A guest whose files
+predate `stats` answers with an unknown-op error, so `session_health` installs
+the current worker files once and asks again. Its header says it is a read-only
+status. An unavailable read leads with a plain "isn't responding" title over
+the guest's own reason, kept for the agent hand-off; an oversized or
+undecodable memory sample is omitted rather than published partially; in a
+container workspace the cgroup memory limit and CPU quota replace the host
+node's figures when they are lower, usage being the working set without
+reclaimable page cache, and the node's load average and uptime are left out; a
+stopped workspace reports `state: stopped` and is never started to be measured.
+
 ### Provider requirements
 
 Every provider meets these before a session is offered on it. A worker serves
@@ -283,6 +532,56 @@ sandbox. The guest-script rule covers only execution inside the guest
 import the gateway sandbox), never a gateway CLI reaching a guest; gateway-side
 agent-influenced commands use the sandbox chokepoint. The two `main` entries
 are in-process `asyncio.run`. No directory-wide exemption exists.
+
+The gateway's Git credential and readiness CLI calls also have individual audit
+entries: their verbs and host names come from the fixed credential-source and
+host tables, never guest argv. Every CLI and Git helper executable passes
+`github_runner.validate_provider_executable(require_protected=True)` off-loop:
+user-writable installs and overrides are refused, even outside a project. Children
+receive a minimal environment with a trusted system PATH, no interpreter injection,
+and a non-project cwd. Git helper discovery uses protected Git in its installation
+directory and stops repository discovery there. Global/system config is read only
+as data: fixed helper selectors (`store`, `cache`, `osxkeychain`, `manager`,
+`manager-core`, `libsecret`, `wincred`, or the exact `gh auth git-credential` shape)
+are rebuilt with protected absolute executables, found in Git's exec-path or, for a
+helper installed outside it (Git Credential Manager in `/usr/local/bin`), in the
+trusted system directories. Shell snippets, configured paths
+and extra arguments are not executed. `store` and `cache` run only Git's `get`
+action against their default locations, never a write. Host-scoped keys and helper
+resets are retained and passed to `credential fill` as `GIT_CONFIG_KEY_n` /
+`GIT_CONFIG_VALUE_n` pairs, never as `-c key=value` text (a free-text subsection
+can hold `=`, which git would split at; a key holding `=` or a control character
+is skipped). `credential fill` reads only that synthesized configuration,
+with the original global/system files disabled, preventing a config swap from
+changing what executes. A host with no usable protected helper fails to authenticate;
+readiness still discards every output stream without reading a secret.
+Known limitation: the helper is asked per host, with no repository path, so a
+helper set for one path under a host (`credential.https://dev.azure.com/<org>.helper`)
+is not matched; a helper set for the host (`credential.https://dev.azure.com.helper`
+or `credential.helper`) is. In that case the host is not lent (its git uses the
+workspace's own login), and the refusal and the gateway log name the setting to use.
+On a Windows gateway the same validated helpers are run without git's shell:
+git runs every helper through `sh -c`, and Git for Windows keeps `sh` in its own
+`usr\bin`, which is not on the trusted `PATH`. `_fill_directly` runs each
+helper's validated executable with `get`, in git's config order, honouring an
+empty value's list reset and the host-scoped keys `credential.https://<host>.helper`
+(`_helper_applies`), and speaks the helper protocol itself: a user name one helper
+returns goes to the next, an expired password is dropped, `quit` stops. The secret
+is read from the helper's stdout pipe only; it is in no argv, environment or
+file. Git Credential Manager, which Git for Windows ships beside `git.exe`
+(`mingw64\bin`), is a candidate there under the same protected-install walk. A
+lookup that times out or is cancelled kills the CLI's whole process tree (`az` is
+`az.cmd`). The relay token file gets an owner-only, inheritance-protected DACL
+(Owner Rights and the gateway user's SID), read back before the token is
+written; otherwise the file is removed and the launch fails.
+A Windows gateway that cannot read its own SID or load the security-descriptor
+API lends nothing (`lending_unverifiable`): the lend list is empty,
+`host_credential` and the git-helper source refuse with `WINDOWS_LENDING_UNVERIFIED`,
+a push is refused whole (audited as `windows-unverified`), and readiness reports
+`unsupported`, which the card states in one line. With remote workspace paths
+matched as POSIX on any gateway (#23498), a remote workspace starts on a Windows
+gateway too, so lending works there end to end: workspace, guest proxy, gateway
+lookup and lent login.
 
 ### Template contract
 
@@ -739,6 +1038,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - `context_window_tokens()` → reads `last_prompt_stats.context_window_tokens` (the real served window from `usage_update.size`, 0 if unknown). Used by the dashboard token text instead of re-deriving the window from the model id. A mid-session `set_model` (live switch on both `AcpClient` and `AcpSessionHandle`) rebases these stats via `AcpPromptStats.rebase_to_window`: the window is re-derived from `model_registry.model_window` (0 on a registry miss), `context_used_tokens` is kept, `context_pct` is recomputed and clamped, and `context_tokens_from_usage` is cleared so the next metadata `contextUsagePercentage` can backfill against the NEW model instead of being gated forever by the old model's `usage_update`. The dashboard model-switch endpoint then broadcasts one `context_usage` WS event with `reset: true` (both live-switch and session-reset paths, single and bulk), which lets the frontend reducer replace or delete its stored per-slot token counts — per-turn events without `reset` never delete. The post-compaction pct-0 broadcast carries the same flag.
 - `compact()` → sends `/compact` via `send_command()`. The **dashboard's** manual `/compact` gates on `ACP_BACKENDS_COMPACT` first, as a pre-acquisition local command: the live session's `manual_compact_unsupported_backend` capability property (declared on the `LLMProvider` ABC with a `None` (supported) default per harness-parity H14, answered by the ACP implementations from set membership) is read when the session's provider is positively alive, else for the backend `select_provider_backend` would build (the member backend for a member session, otherwise `agent.acp_backend`) — so a refused `/compact` behaves as if the turn never started (no session created, no Slack OPTIONS expired, no one-shot turn state consumed). The reply is informational — the backend manages compaction automatically, mirroring the `cc_managed` relationship — not an error: kiro-cli answers the prompt with `_kiro.dev/compaction/status`, claude-agent-acp compacts natively in-prompt, and codex-acp intercepts the prompt as the `compact` command it advertises and reports the compaction as a `tool_call` pair, marked `_meta.contextCompaction` on 1.11.0 and unmarked on 2.2.2 (`_dispatch.parse_codex_compaction_update`; the unmarked shape only for `ACP_BACKENDS_UNMARKED_COMPACTION_PAIR`), and on KAS `AcpSessionHandle.prompt` sends the engine's own `_kiro/session/compact` verb in place of the prompt (as prompt text, the KAS model only writes a summary and the context does not shrink). That request's `{success}` answer ends the turn and the turn carries a compaction status: the engine's `summarization_completed`, else a synthesized `completed` (nothing to summarize, meter left alone) or `failed` (refused while a turn or another compaction runs). A backend outside the set would strand `wait_for_compaction()` for the full `COMPACT_WAIT_TIMEOUT_SECS` (#7800). The **auto-compact** path consults the same capability from the compaction gate ladder (`session_compaction._compact_unsupported_backend`) and then takes one of THREE arms, because a backend it cannot dispatch to is not one thing. A member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS, read through `harness_managed_compaction_backend`, so it declines here even though its manual `/compact` is served) declines with `"compact_unsupported"` before the compaction task is scheduled, so no `/compact` is dispatched and the turn semaphore is never acquired — an ungated dispatch stranded the status wait for the whole `COMPACT_WAIT_TIMEOUT_SECS` while HOLDING that semaphore and then recycled the session (#7812) — and declining costs nothing there because its `summarization_completed` frame resets the meter. A member of `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled** instead, via `_recycle_unmanaged`: no compaction reaches it from either side, so a decline bounds nothing and its context grows into the harness's own window. That arm falls THROUGH the decline rung rather than returning from it, so `unconfirmed`, `in_progress` and `cooldown` still run first — an ambiguous reading must not spend a recycle. A backend in NEITHER set declines and is logged at WARNING naming the missing membership, because ending a conversation is not something a harness earns by never having been classified; `compaction_self_managed` is what tells that case apart from KAS's. The callback reports which arm ran (`compacted` / `recycled` / `restarted_uncompactable` / `cancelled`, plus `waiting_for_subagents` during a hold) so a surface cannot announce a summary that never happened, and only `restarted_uncompactable` may say the backend cannot compact — a kiro-cli session whose in-place `/compact` merely timed out reaches `recycled`. `cancelled` means a user Stop ended the compaction: the cooldown is armed and the session is not recycled. Every context restart — a failed in-place `/compact` and an uncompactable restart alike — is first HELD while session-sharing sub-agents still run on the parent's process, because shutting that process down would end them unreported (`CompactionCoordinator._await_cotenants`): the callback reports `waiting_for_subagents` with `success=False`, the hold re-checks every `cotenant_poll_secs` (the manager's per-key completion event is shared, so another waiter may release it), and past `cotenant_wait_secs` only those runs are stopped with the ordinary per-run `SubagentManager.cancel`, bounded and shielded, so each still reports "stopped" into the conversation, which carries on after the restart (the parent-end helper would mark them out of delivery). A user Stop during the hold ends it: the stale restart is abandoned, the sub-agents are not stopped, and the compaction settles `cancelled` (cooldown, no recycle). Channel messages queued behind the held turn are not dropped with the old session: `CompactionCoordinator._restart_held` starts the successor first (past the recycling marker, holding its lease), moves the old session's live queue into the successor's real queue, then recycles the old one and wakes each entry's channel drain before releasing the lease, so queue verbs, teardowns and ordering behave as for any queue. Slack registers a drain for this (`_drain_slack_queue`). If the successor cannot start, the old session, its queue and its resume id are kept and the failure cooldown applies. A report that waits on the parent during the hold cannot reach the old process: every waiting acquire re-validates the session's identity, so it lands on the fresh session. The **messaging-surface** `/compact` commands (Slack, Telegram, Discord, Webex, Teams, Feishu, iMessage, WeCom, Weixin and WhatsApp) gate on the same capability through `messaging.commands.compact_unsupported_backend` before dispatching, answering with `compact_unsupported_reply` (translated on the Chinese-language surfaces, plain-voiced on iMessage and WhatsApp); their context-threshold notices decline silently on such a backend — no forced hard-threshold compaction to run, and no soft nudge whose `/compact` advice cannot work (#8156) — with one exception: a member of `ACP_BACKENDS_CONTEXT_RECYCLE` is WARNED once, before its session is restarted, with a message that offers `/new` instead (`messaging.commands.context_recycle_warning`, `context_recycle_warning_zh` on the Chinese surfaces). That warning is keyed to the session's live `session.autocompact_pct` rather than the channel's `soft_threshold_pct` — it fires in `[threshold - CONTEXT_WARN_MARGIN_PCT, threshold)` (`recycle_warning_due`), because the channel soft default (80) sits above the recycle default (70) and a warning keyed to it would land after the restart — and the per-conversation latch is cleared outside that band so the next fill after a restart warns again (#11948). Gating covers only command dispatch — KAS auto-summarization frames keep mapping to compaction status.
 - Dashboard manual `/compact` while conversation-history replay is still pending (the replay lease is armed and the provider session holds nothing yet): it answers at once with `COMPACT_REPLAY_PENDING_NOTICE` ("Nothing to compact yet: the restored history is delivered with your next message."), awaits no compaction status, does not re-arm skills context, and leaves the replay lease armed for the next prompt.
+- Dashboard manual `/compact` on a fresh provider session no ordinary prompt has reached yet (a brand-new chat; the first-turn history debt `first_turn_history_owed` is still armed) on a backend that does not compact inline: kiro-cli ends that turn with "Conversation too short to compact." and no compaction status, so it answers at once with `COMPACT_FRESH_SESSION_NOTICE` ("Nothing to compact yet: the agent's session starts with your next message."), awaits no compaction status, does not re-arm skills context, and leaves the debt armed for the next prompt (#15722).
 - `cancel()` → sends `session/cancel` notification
 - `supports_effort()` / `change_effort(level)` / `clear_effort()` → reasoning-effort control (see below)
 - `is_alive()` → `AcpClient.is_responsive()` (600s stale threshold)
@@ -751,7 +1051,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - **Why the thresholds are not forced to 0:** deferral costs a round-trip — a deferred tool's spec is absent from the model's tool list, so the first direct call fails with `A tool with the name '<name>' does not exist` and has to be recovered with `tool_search`. That only pays once the specs are genuinely large, which is what the thresholds express (kiro-cli defers when EITHER is exceeded). Setting both to `0` restores unconditional deferral for operators who want it. The thresholds are always written **explicitly** rather than omitted, so a value already in the file is replaced rather than silently kept.
 - Writing both `true` and `false` makes the Kiro Crew toggle authoritative over any value in the user's global `~/.kiro/settings/cli.json`. The write is merge-safe with the effort `chat.modelDefaults` keys in the same file.
 - kiro-cli reads workspace settings only from `<cwd>/.kiro/settings/cli.json`, so the overlay cannot move out of the work dir. When the work dir is a git work-tree top, the shared overlay lock adds the overlay and its lock to the repository's local `info/exclude`, keeping the user's `git status` clean (see [acp-client](acp-client.md)); an already-tracked `cli.json` is not hidden.
-- **KAS:** never opens `cli.json`; it reads the setting from the ACP `initialize` request, `clientCapabilities._meta.kiro.settings.toolSearch` — a process-wide channel filled by `AcpRuntime._handshake_client_capabilities`, entered from the spawn path only when the harness answers `client_meta_settings` (the harnesses in `ACP_BACKENDS_CLIENT_META_SETTINGS`; every other host reads its constant with no new step), from the same `agent.tool_search*` values (`agent_sdk/tool_search.py`). KAS defers **every** MCP spec when told to and does not check that a loader is mounted, so the client keeps the invariant: `enabled` is sent as `true` only when the spawn agent's spec grants `tool_search` — named in `tools`, or via `"*"` / `@builtin` — and does not take it back in `excludedTools`; it is sent as an explicit `false` otherwise — never omitted, so a host default cannot flip a session into "deferred, unreachable". The spec judged is the one the KAS projection puts on the wire (`AcpRuntime._projected_spawn_spec`: the freshness gate's snapshot for a derived agent, else `acp/harness/kas.resolve_projected_spec`, the call the projection itself makes, after the same `ensure_agent_materialized` self-heal the projection runs) — so a project checkout's `.kiro/agents` spec is judged exactly when it is the one projected; an unreadable spec grants nothing. The setting is process-wide, so every later `create_session` on a deferral-enabled process judges the payload it is about to send: a projection that grants no loader — another agent, or the same agent whose spec has since lost the grant — is refused with `AcpToolSurfaceBindingError` (an `AcpWorkspaceBindingError`), which the run-runtime caller already answers by giving that session a runtime of its own. The check lives in `AcpRuntime._kas_custom_agents`, the projection seam both `create_session` and `load_session` go through, so a resumed session is judged the same way. It is deliberately one-directional: a process whose handshake sent `enabled: false` may serve a later session whose agent does grant the loader — that session simply runs with full tool specs, today's behaviour and never a loss of tools — whereas the reverse pairing loses every MCP tool, which is the only shape worth a refusal. Every KAS-capable runtime constructor threads the same resolved settings — the foreground provider, its resume-respawn fallback, the companion-runtime kwargs mirror (`session_allocation._collect_parent_runtime_kwargs`, reading the parent's `LLMProvider.tool_search_settings` capability — default `None`, answered by `AcpProvider`; harness-parity H14) and the background runtime (`session_background`) — so no KAS process is left to the host's default. KAS does not honour the two thresholds as an activation floor — deferral there is all-or-nothing, with `toolSearch.neverDefer` as its keep-list — but they are forwarded verbatim so the setting means one thing.
+- **KAS:** never opens `cli.json`; it reads the setting from the ACP `initialize` request, `clientCapabilities._meta.kiro.settings.toolSearch` — a process-wide channel filled by `AcpRuntime._handshake_client_capabilities`, entered from the spawn path only when the harness answers `client_meta_settings` (the harnesses in `ACP_BACKENDS_CLIENT_META_SETTINGS`; every other host reads its constant with no new step), from the same `agent.tool_search*` values (`agent_sdk/tool_search.py`). KAS 2.34's deferral path reads none of `enabled`, `minPct` or `minTokens`: it defers **every** MCP tool whose `<server>::<tool>` id is not on `toolSearch.neverDefer` (and whose server is not an operator mandatory server), and injects its own `tool_load` / `tool_call` to reach them. So the client keeps the invariant: for a spawn agent whose spec grants no `tool_search`, `neverDefer` lists every MCP tool that spec can call (`agent_sdk/tool_search.kas_never_defer_ids`) — `@server/tool` as `server::tool`, a tool glob and a whole-server `@server` grant expanded from the names Crew already holds for that server (`acp/runtime_spawn_launch._known_server_tool_names`: the last probe's `tools/list`, read from the probe cache; it never imports a Crew server's declaration module into the gateway, because that package is writable by the agent's uid), `"*"` as every server in the spec's `mcpServers`; KAS has no server-level or wildcard `neverDefer` form, so a server Crew holds no list for stays deferred and reachable through KAS's `tool_load`, which is the host's behaviour without the list. A spec that grants the loader is sent no `neverDefer`. `enabled` is still sent, as `true` only when the spawn agent's spec grants `tool_search` — named in `tools`, or via `"*"` / `@builtin` — and does not take it back in `excludedTools`; it is sent as an explicit `false` otherwise — never omitted, so a host default cannot flip a session into "deferred, unreachable". The spec judged is the one the KAS projection puts on the wire (`AcpRuntime._projected_spawn_spec`: the freshness gate's snapshot for a derived agent, else `acp/harness/kas.resolve_projected_spec`, the call the projection itself makes, after the same `ensure_agent_materialized` self-heal the projection runs) — so a project checkout's `.kiro/agents` spec is judged exactly when it is the one projected; an unreadable spec grants nothing. The setting is process-wide, so every later `create_session` on a deferral-enabled process judges the payload it is about to send: a projection that grants no loader — another agent, or the same agent whose spec has since lost the grant — is refused with `AcpToolSurfaceBindingError` (an `AcpWorkspaceBindingError`), which the run-runtime caller already answers by giving that session a runtime of its own. The check lives in `AcpRuntime._kas_custom_agents`, the projection seam both `create_session` and `load_session` go through, so a resumed session is judged the same way. It is deliberately one-directional: a process whose handshake sent `enabled: false` may serve a later session whose agent does grant the loader — that session simply runs with full tool specs, today's behaviour and never a loss of tools — whereas the reverse pairing loses every MCP tool, which is the only shape worth a refusal. Every KAS-capable runtime constructor threads the same resolved settings — the foreground provider, its resume-respawn fallback, the companion-runtime kwargs mirror (`session_allocation._collect_parent_runtime_kwargs`, reading the parent's `LLMProvider.tool_search_settings` capability — default `None`, answered by `AcpProvider`; harness-parity H14) and the background runtime (`session_background`) — so no KAS process is left to the host's default. KAS does not honour the toggle or the two thresholds — deferral there is all-or-nothing, with `toolSearch.neverDefer` as its keep-list, so an operator who turns `agent.tool_search` off still gets deferral on KAS for a spec that grants the loader — but they are forwarded verbatim so the setting means one thing.
 - **Non-kiro-family backends** — no-op on both channels. `_apply_tool_search_overlay` returns early when the backend does not read the overlay, the handshake channel is filled only for members of `ACP_BACKENDS_CLIENT_META_SETTINGS`, and both are silent when no toggle value was threaded in (`tool_search is None`).
 - **Native-resume compatibility:** for a direct dashboard turn with Tool Search enabled (dashboard session identity and no resumable linked-channel identity), the kiro backend does not use `session/load`. Before provider acquisition, dashboard chat resolves the slot's dedicated Slack field unconditionally and uses the channel-neutral `SessionMap.mirror` link only when `mirror_accepts_inbound` is true. Thus inbound-capable Telegram/Discord links remain distinguishable when they reuse a `dashboard:*` key after restart, while outbound-only iMessage/WhatsApp mirrors still take the direct-dashboard recovery path. A loaded transcript can return without Tool Search's activated schemas: `tool_search` reports a match, but the next inference still cannot invoke that tool. The provider instead creates a fresh native session and sets `_history_replay_needed`, so `SessionManager` marks conversation replay pending against the rebuilt tool registry. That decision is the pure module-level `resume_takes_tool_search_replay` in `agent_sdk/tool_search.py` — below both callers, because the dashboard may not import the ACP layer (`scripts/check_agent_sdk_boundary.py`) — (Tool Search on, `ACP_BACKEND_KIRO`, no channel identity, a key `telemetry_channel_of` classifies as `dashboard`) — the ONE definition, read by `_start_kiro_runtime_impl` once a resume sid is in hand and by the dashboard's resume prefetch (`chat_turn.eager_spawn._eager_spawn`) BEFORE any runtime exists: a speculative load the provider replaces this way can only come back `resumed=False` and be refused after a full spawn and teardown, so the prefetch logs `left to first turn (tool-search replay)` and spawns nothing, and the first real turn takes the fresh-session path described here. On that turn the replay lease also outranks a `resumed` observation: `chat_runner._run_chat` treats the provider as holding no history whenever the lease is armed (`_replay_pending`), so the turn builds the full first-turn context with the replay and never takes the slim-resume path that tells the model its history was restored. Only this direct-dashboard compatibility branch also makes `defer_replay_sid_promotion` true; `SessionMap` keeps the prior full-history SID durable while that lease is pending, allocation does not publish the fresh SID yet, and `close_all()` refuses to overwrite the retained mapping while `provider_switch_replay` remains armed. Generic `session/load` recovery still requests history replay but publishes its fresh SID immediately because non-dashboard dispatchers do not own the dashboard settlement contract; a later channel restart therefore resumes the recovered native transcript rather than the stale pre-recovery SID. Replay settlement runs from the dashboard turn's `finally`, so exceptions, task cancellation, early returns, and synthetic terminals cannot bypass it. A landed, non-synthetic replay-bearing `end_turn` promotes the fresh SID, as does confirmed `/clear` after native history deletion. Cancellation, incomplete streams, and every other non-committed terminal leave the prior SID in place and re-arm replay, so a second gateway restart cannot strand a slash-only or discarded transcript. That lease drives every replayable dashboard session-start prompt block (history, ContextBuilder, member context, folder, persona, and context telemetry). `AgentSpawn` hooks remain keyed to the actual provider spawn so script side effects execute once; a slash-first turn does not re-fire them during replay. Non-destructive native slash commands bypass `ContextBuilder` and leave the lease intact; a confirmed `/clear` consumes it at `EVENT_CLEAR_STATUS` so later replay cannot restore deleted history. Authorization, shutdown, or pre-dispatch Stop aborts preserve it. Async stream creation is not acceptance: a replay-bearing non-slash turn records acceptance in runner-local state only when its stream yields the first provider event, while the shared lease remains armed throughout the in-flight turn. Empty streams and pre-output failures therefore retain replay without settlement, and a concurrent shutdown can observe only the still-pending old SID. Final settlement synchronously promotes the fresh SID and consumes the lease only for a landed, non-synthetic, non-empty `end_turn`; every empty-response verdict is unlanded for replay durability, including the terminal give-up rung when retry budget is exhausted or auto-continue is disabled. If an accepted turn ends cancelled, the still-armed lease carries forward because kiro-cli discards that turn; the next prompt receives the full older replay plus its cancelled-turn preamble. This trades the native resume latency win for a usable dashboard tool surface without losing prior conversation or undoing an explicit clear. Setting `agent.tool_search=false` keeps dashboard-native `session/load`; a dashboard-keyed resumable channel turn and every channel dispatcher remain on native resume regardless of Tool Search.
 
@@ -770,7 +1070,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 ```
 
 - `agent.provider` is fixed to `"acp"` (enum `["acp"]`); the provider is not a choice.
-- `agent.acp_backend` is the harness choice, resolved through `agent_sdk.backends.resolve_selected_backend` (the top-level `acp_backends` module is a re-export shim kept for existing call sites).
+- `agent.acp_backend` is the harness choice, resolved through `agent_sdk.backends.resolve_selected_backend` (the top-level `acp_backends` module is a re-export shim kept for existing call sites). A stored Kiro CLI pick (`"kiro"`) resolves to KAS once the gateway confirmed the host's kiro-cli offers v3 and while KAS is selectable, so the factory builds a KAS provider for it with KAS's launch, projection, permissions and compaction; it builds the Kiro CLI provider without that confirmation ([harness-parity](harness-parity.md) H1). The Kiro CLI provider, its skill-view aliases and the `cli.json` overlay stay for that case.
 - `create_provider_factory()` returns a `Callable` that builds an `AcpProvider` for the resolved backend.
 
 An agent spec's model is consumed by kiro-cli before Kiro Crew reaches

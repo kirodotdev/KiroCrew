@@ -114,16 +114,14 @@ class TestTranslation:
             "write": {"allowedPaths": ["./out/**"]},
         }
         assert _rules(settings) == []
-        assert _lost(settings) == [
-            "read.allowedPaths",
-            "shell.allowedCommands",
-            "write.allowedPaths",
-        ]
+        # allowedCommands is answered by Crew at the gate, not by a rule
+        # (`test_kas_allowed_commands.py`), so only the path allows are named.
+        assert _lost(settings) == ["read.allowedPaths", "write.allowedPaths"]
 
     def test_deny_by_default_is_reported_not_translated(self):
         settings = {"shell": {"allowedCommands": ["git status"], "denyByDefault": True}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["shell.allowedCommands", "shell.denyByDefault"]
+        assert _lost(settings) == ["shell.denyByDefault"]
 
     def test_write_fallback_deny_is_reported_not_translated(self):
         settings = {"fs_write": {"allowedPaths": ["./out/**"], "fallbackAction": "deny"}}
@@ -138,20 +136,59 @@ class TestTranslation:
         ]
         assert _lost(settings) == ["web_fetch.blocked"]
 
-    def test_available_agents_is_reported_not_translated(self):
-        # An empty list means "spawn nothing", so it is named too.
-        for value in (["rev*"], []):
-            settings = {"subagent": {"availableAgents": value}}
-            assert _rules(settings) == []
-            assert _lost(settings) == ["subagent.availableAgents"]
+    def test_available_agents_deny_every_other_sub_agent(self):
+        # The shape run live: a deny over "*" with the listed names in
+        # `exclude` refuses any other sub-agent and leaves a listed one to its
+        # own permission request.
+        settings = {"subagent": {"availableAgents": ["rev*", "kirocrew-worker", "rev*"]}}
+        assert _rules(settings) == [
+            {
+                "capability": "subagent",
+                "match": ["*"],
+                "exclude": ["rev*", "kirocrew-worker"],
+                "effect": "deny",
+            }
+        ]
+        assert _lost(settings) == []
 
-    def test_allow_lists_are_never_emitted(self):
-        settings = {
-            "web_fetch": {"trusted": [r".*docs\.example\.com.*"]},
-            "subagent": {"trustedAgents": ["reviewer"]},
-        }
+    def test_an_empty_available_agents_spawns_nothing(self):
+        settings = {"subagent": {"availableAgents": []}}
+        assert _rules(settings) == [{"capability": "subagent", "effect": "deny"}]
+        assert _lost(settings) == []
+
+    def test_a_wildcard_available_agents_restricts_nothing(self):
+        assert _rules({"subagent": {"availableAgents": ["x", "*"]}}) == []
+
+    @pytest.mark.parametrize(
+        ("value", "rule"),
+        [
+            # An untranslatable pattern is dropped from the exclusion, so the
+            # session can spawn LESS than kiro-cli would, never more.
+            (
+                ["ok-*", "r[ae]v", 7],
+                {"capability": "subagent", "match": ["*"], "exclude": ["ok-*"], "effect": "deny"},
+            ),
+            (["r?v"], {"capability": "subagent", "effect": "deny"}),
+            ("kirocrew-*", {"capability": "subagent", "effect": "deny"}),
+            ([f"a{i}" for i in range(65)], {"capability": "subagent", "effect": "deny"}),
+        ],
+    )
+    def test_an_available_agents_it_cannot_read_narrows_and_is_named(self, value, rule):
+        settings = {"subagent": {"availableAgents": value}}
+        assert _rules(settings) == [rule]
+        assert _lost(settings) == ["subagent.availableAgents"]
+
+    def test_trusted_agents_become_a_name_scoped_allow(self):
+        settings = {"subagent": {"trustedAgents": ["reviewer", "team-*", "b{a,d}"]}}
+        assert _rules(settings) == [
+            {"capability": "subagent", "match": ["reviewer", "team-*"], "effect": "allow"}
+        ]
+        assert _lost(settings) == ["subagent.trustedAgents"]
+
+    def test_other_allow_lists_are_never_emitted(self):
+        settings = {"web_fetch": {"trusted": [r".*docs\.example\.com.*"]}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["subagent.trustedAgents", "web_fetch.trusted"]
+        assert _lost(settings) == ["web_fetch.trusted"]
 
     def test_an_over_long_pattern_is_reported_and_the_rest_still_travel(self, monkeypatch):
         monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
@@ -198,6 +235,42 @@ class TestWireProjection:
         assert {"capability": "fs_read", "match": ["~/.ssh", "~/.ssh/**"], "effect": "deny"} in out[
             "permissions"
         ]["rules"]
+
+    def test_trusted_agents_travel_only_when_the_ceiling_permits(self, monkeypatch):
+        spec = _spec(toolsSettings={"subagent": {"trustedAgents": ["reviewer"]}})
+        allow = {"capability": "subagent", "match": ["reviewer"], "effect": "allow"}
+
+        def rules(permits):
+            monkeypatch.setattr(kas_agents, "may_skip_gate_now", permits)
+            return to_client_custom_agent("a1", spec, "p").get("permissions", {}).get("rules", [])
+
+        asked: list[str] = []
+        assert allow in rules(lambda ref: asked.append(ref) or True)
+        assert "use_subagent" in asked
+        assert allow not in rules(lambda ref: False)
+        # One sub-agent ref withheld is enough: the allow covers them all.
+        assert allow not in rules(lambda ref: ref != "use_subagent")
+
+    def test_a_pre_tool_hook_on_the_sub_agent_tool_outranks_the_trusted_allow(self, monkeypatch):
+        # An auto-approved call raises no permission request, and the request
+        # is where Crew runs a PreToolUse hook on KAS.
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        spec = _spec(toolsSettings={"subagent": {"trustedAgents": ["reviewer"]}})
+        out = to_client_custom_agent("a1", spec, "p", pre_tool_hook_matchers=("use_subagent",))
+        rules = out.get("permissions", {}).get("rules", [])
+        # KAS resolves the most restrictive match, so the unscoped ask outranks it.
+        assert {"capability": "subagent", "effect": "ask"} in rules
+
+    def test_available_agents_deny_travels_whatever_the_ceiling(self, monkeypatch):
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+        spec = _spec(toolsSettings={"subagent": {"availableAgents": ["reviewer"]}})
+        rules = to_client_custom_agent("a1", spec, "p")["permissions"]["rules"]
+        assert {
+            "capability": "subagent",
+            "match": ["*"],
+            "exclude": ["reviewer"],
+            "effect": "deny",
+        } in rules
 
     def test_a_shell_allow_never_travels(self, monkeypatch):
         monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)

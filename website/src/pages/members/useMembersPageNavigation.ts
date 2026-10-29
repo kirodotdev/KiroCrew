@@ -75,7 +75,7 @@ export function useMembersPageNavigation({
   const { schedGuardRef, schedAtStakeRef } = profileCard
   const { closeRosterDrawer } = drawers
   const { orderedMembers, listedMembers } = rosterView
-  const { crewPreview, mateLandedRef, postThread } = thread
+  const { mateLandedRef, postThread } = thread
   const { showActionError, revealPanelAfterOpen, openArtifact, openArtifactGuarded, focusPanelTab } = sidePanel
   // Open a member's thread and remember it as the last one opened. Called by
   // the URL sync effect only (plus the same-member re-click below), so every
@@ -250,7 +250,7 @@ export function useMembersPageNavigation({
     // Mate's first visit wins first: never chatted with, Mate opens ahead of a
     // remembered or more recently used crewmate. Every rule below is the
     // page's ordinary landing, untouched by Mate.
-    if (!urlMember && crewPreview && !mateLandedRef.current) {
+    if (!urlMember && !mateLandedRef.current) {
       const mate = resolveMateLanding(members)
       if (mate) {
         mateLandedRef.current = true
@@ -321,7 +321,7 @@ export function useMembersPageNavigation({
       goneStandInRef.current = target.name
     }
     setSearchParams({ [MEMBER_PARAM]: target.name }, { replace: true })
-  }, [loaded, loadError, draftRequest, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, orderedMembers, followUp, crewPreview, activeNameRef, goneStandInRef, mateLandedRef, setActiveName, setGone])
+  }, [loaded, loadError, draftRequest, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, orderedMembers, followUp, activeNameRef, goneStandInRef, mateLandedRef, setActiveName, setGone])
 
   return {
     openMember, pickFromRosterDrawer, openArtifactInThread, openArtifactInPanel,

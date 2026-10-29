@@ -23,6 +23,7 @@ from kiro_crew import kiro_prerequisite_agent_specs as _agent_specs
 from kiro_crew import kiro_prerequisite_identity_tracking as _identity_tracking
 from kiro_crew import kiro_prerequisite_probe as _probing
 from kiro_crew import sandbox
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.kiro_prerequisite_agent_specs import _default_spec_lister
@@ -98,23 +99,16 @@ def _resolve_config_set_hints() -> dict[str, Any] | None:
     return config_set_hints_for_launcher(launcher, sys.platform)
 
 
-_OWNER_PREFIX = "kiro_crew.kiro_prerequisite_"
-
-
-def _own_methods(cls: type) -> None:
-    """Make each member *cls* binds from a collaborator read as a method of *cls*.
-
-    A bound function annotates ``self`` so mypy checks its body as a method body;
-    this drops that annotation from the runtime object and names the function after
-    the class attribute (``KiroPrerequisiteService._probe``), so its
-    ``inspect.signature`` and ``__qualname__`` are what the one-module class had. Only
-    ``__module__`` moves: it names the collaborator that holds the body.
-    """
-    for name, member in vars(cls).items():
-        function = getattr(member, "__func__", member)
-        if getattr(function, "__module__", "").startswith(_OWNER_PREFIX):
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
+#: The modules whose functions :class:`KiroPrerequisiteService` binds as its members,
+#: this one included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.kiro_prerequisite_agent_specs",
+        "kiro_crew.kiro_prerequisite_identity_tracking",
+        "kiro_crew.kiro_prerequisite_probe",
+        "kiro_crew.kiro_prerequisite_service",
+    }
+)
 
 
 class KiroPrerequisiteService:
@@ -839,7 +833,7 @@ class KiroPrerequisiteService:
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-_own_methods(KiroPrerequisiteService)
+own_methods(KiroPrerequisiteService, _MEMBER_OWNERS)
 
 
 # The gateway's service, for the ACP layer's failed-prompt check. Set by the

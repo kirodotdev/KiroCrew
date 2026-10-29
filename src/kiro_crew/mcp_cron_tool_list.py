@@ -145,7 +145,9 @@ def _list_tools() -> list[dict[str, Any]]:
                     "agent": {
                         "type": "string",
                         "description": "Agent name for this job (e.g. 'customer360-code-agent'). "
-                        "Empty or omitted uses the default kirocrew agent.",
+                        "Empty or omitted uses agent.default_agent, or the kirocrew "
+                        "agent when that is unset or not eligible (e.g. a default "
+                        "that restricts subagents).",
                     },
                     "member_id": {
                         "type": "string",

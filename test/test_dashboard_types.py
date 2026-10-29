@@ -101,6 +101,46 @@ _DRIVERS: dict[str, list[tuple[str, dict[str, Any]]]] = {
         ("message/sent", {"turn": 1, "step": 1, "text": "an answer"}),
         ("turn/completed", {"turn": 1, "stop_reason": "end_turn"}),
     ],
+    # A session-start turn then an ordinary one, each closed with an occupancy reading,
+    # so ``context.latest`` and ``context.start`` both hold real values.
+    "usage": [
+        ("session/opened", {"session_id": "s-1"}),
+        (
+            "context/composed",
+            {
+                "turn": 1,
+                "phase": "session_start",
+                "chars": 900,
+                "sources": [{"kind": "lessons", "chars": 900}],
+            },
+        ),
+        # A reading on the start turn too, so its ``figure`` holds real values.
+        (
+            "turn/completed",
+            {
+                "turn": 1,
+                "stop_reason": "end_turn",
+                "context": {"used": 900, "window": 200_000},
+            },
+        ),
+        (
+            "context/composed",
+            {
+                "turn": 2,
+                "phase": "per_turn",
+                "chars": 40,
+                "sources": [{"kind": "your_message", "chars": 40}],
+            },
+        ),
+        (
+            "turn/completed",
+            {
+                "turn": 2,
+                "stop_reason": "end_turn",
+                "context": {"used": 1_000, "window": 200_000},
+            },
+        ),
+    ],
     # A depth of 2 so the render holds a real int under ``depth`` and the declared
     # ``number``/``integer`` type can be checked against it.
     "otel_session_tree": [
@@ -156,6 +196,20 @@ def _value_at(value: Any, path: str) -> Any:
             return None
         node = node[part]
     return node
+
+
+def _lookup(value: Any, path: str) -> tuple[bool, Any]:
+    """``(rendered, value)`` at dotted *path*. A walk that reaches a null object stops
+    there as rendered (a nullable parent holds no keys); one that finds a key missing
+    from an object is not rendered."""
+    node = value
+    for part in path.split("."):
+        if node is None:
+            return True, None
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
 
 
 def _by_name(folded_through: Any = None) -> dict[str, Any]:
@@ -383,7 +437,15 @@ class TestTheThreeStates:
                     assert node["type"] == "object", path
                     assert node.get("keyed_by"), f"{path} is opaque and names no key"
                     assert "properties" not in node, path
-        assert found == len(dt._OPAQUE), "an opaque declaration did not reach the shape"
+        # A nullable declaration may carry an opaque object of its own (the engine's
+        # measurement under ``usage.context.latest``), so those count too.
+        declared = sum(
+            1
+            for key, node in dt._NULLABLE.items()
+            for _path, inner in _nodes(node, key)
+            if inner.get("opaque") is True
+        )
+        assert found == len(dt._OPAQUE) + declared, "an opaque declaration did not reach the shape"
 
     def test_every_opaque_declaration_is_a_real_path(self) -> None:
         """The other direction: a stale entry naming a path no fold renders would sit
@@ -457,10 +519,16 @@ class TestDeclaredNullables:
 
         checked: list[str] = []
         wrong: list[str] = []
+        absent: list[str] = []
         for key, node in sorted(dt._NULLABLE.items()):
             fold = key.partition(".")[0]
             for leaf_path, declared in _declared_leaves(key, node):
-                value = _value_at(driven[fold], leaf_path.partition(".")[2])
+                rendered, value = _lookup(driven[fold], leaf_path.partition(".")[2])
+                if not rendered:
+                    # Declared, and the populated render has no such key: a promise the
+                    # fold does not keep, which a null check alone would skip.
+                    absent.append(leaf_path)
+                    continue
                 if value is None:
                     continue
                 checked.append(leaf_path)
@@ -470,6 +538,7 @@ class TestDeclaredNullables:
                         f"{type(value).__name__} ({value!r})"
                     )
         assert wrong == [], "\n".join(wrong)
+        assert absent == [], "declared but never rendered:\n" + "\n".join(absent)
 
         # The five the driver must reach, so this case cannot pass by checking nothing.
         for required in (

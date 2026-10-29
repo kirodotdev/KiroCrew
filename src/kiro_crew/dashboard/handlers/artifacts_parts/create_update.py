@@ -855,7 +855,11 @@ async def api_artifact_update(request: web.Request) -> web.Response:
     # Inert in the public edition (empty registry -> push_version_by_slug's
     # provider resolve raises PublishUnavailableError, swallowed here).
     if content_changed and snapshot and art.publication is not None and art.publication.auto_sync:
-        if _publish_governance_denied(request, art.publication.provider) is None:
+        if (
+            await _run_off_loop(
+                lambda: _publish_governance_denied(request, art.publication.provider)
+            )
+        ) is None:
             try:
                 await publish_sync.push_version_by_slug(art.slug)
             except Exception as exc:  # noqa: BLE001 - best-effort egress

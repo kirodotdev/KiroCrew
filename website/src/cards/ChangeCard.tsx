@@ -27,6 +27,10 @@ import { problemFrom, problemText, wantsRefresh, type CardProblem } from './refu
 import { useCardCorners } from './cardCorners'
 import { useCardAuthor } from './cardAuthor'
 import { MEMBER_GOALS_QUERY_PREFIX, MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
+
+// The card can mount inside a dialog's zoom-in; a layout height ignores that scale.
+const layoutHeight = (node: HTMLElement) => node.offsetHeight
 
 const GOALS_CARD_KINDS = new Set(['crewmate.goal', 'crewmate.key_results', 'crewmate.check_ins'])
 
@@ -76,6 +80,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
   const headingId = useId()
   const rootRef = useRef<HTMLElement>(null)
   const lineRef = useRef<HTMLDivElement>(null)
+  const [contentRef, contentHeight] = useMeasuredHeight<HTMLDivElement>(layoutHeight)
   const [running, setRunning] = useState<null | 'apply' | 'undo'>(null)
   const [problem, setProblem] = useState<CardProblem | null>(null)
   // The stored error the user closed (by content, since a refetch rebuilds it).
@@ -254,17 +259,24 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
   const title = cardTitle(card)
 
   return (
-    <motion.section
+    <section
       ref={rootRef}
-      // Size only: a scroll moves the card inside the virtual list, and
-      // animating that position change would make it jitter.
-      layout={reduce ? false : 'size'}
-      transition={reduce ? { duration: 0 } : { duration: 0.2 }}
       aria-labelledby={headingId}
       data-testid="change-card"
       data-card-status={card.status}
       className={`@container ${corners} border border-border bg-card text-card-fg`}
     >
+      {/* The collapse animates the real height to the measured content, never
+          a layout scale: a scale stretched the text and let the rows below
+          jump over the still-tall card (#24534). */}
+      <motion.div
+        data-testid="change-card-sizer"
+        initial={false}
+        animate={{ height: contentHeight || 'auto' }}
+        transition={reduce ? { duration: 0 } : { duration: 0.2 }}
+        className="overflow-hidden"
+      >
+      <div ref={contentRef}>
       {finished ? (
         <CardResultLine
           ref={lineRef}
@@ -432,6 +444,8 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
           </div>
         </div>
       )}
-    </motion.section>
+      </div>
+      </motion.div>
+    </section>
   )
 }

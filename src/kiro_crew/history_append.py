@@ -18,10 +18,14 @@ import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.atomic_write import append_line
+from kiro_crew.atomic_write import append_line, atomic_write
 from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.history_schema import metadata_now_iso, monotonic_transcript_ts
-from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
+from kiro_crew.owner_only_files import (
+    OWNER_ONLY_FILE_MODE,
+    mkdirs_owner_only,
+    owner_only_opener,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -148,9 +152,13 @@ def append(
             if tab_id:
                 meta["tab_id"] = tab_id
                 created_with_tab_id = True
-            # Created 0600: a transcript is the conversation itself.
-            with open(path, "w", encoding="utf-8", opener=owner_only_opener) as f:
-                f.write(json.dumps(meta) + "\n")
+            # Created 0600: a transcript is the conversation itself. Staged and
+            # renamed into place, never opened by name and then written: a
+            # failure between the create and the write (a full disk, a killed
+            # process) left a file whose first line was empty or cut short,
+            # and the next append stacked a row after it -- a first line no
+            # reader can parse ("session record is unreadable").
+            atomic_write(path, json.dumps(meta) + "\n", mode=OWNER_ONLY_FILE_MODE)
 
         msg: dict = {
             "role": role,

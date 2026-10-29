@@ -577,21 +577,26 @@ class TestPatchReach:
         assert sse.events == [{"type": "failed", "campaign_id": cid}]
 
     @pytest.mark.asyncio
-    async def test_autonudge_patch_reaches_loop_control(self, monkeypatch: pytest.MonkeyPatch):
-        loop = SimpleNamespace(id="L1", active=True, slot_key="research-0123abcd")
-        svc = SimpleNamespace(
-            get_by_slot=MagicMock(return_value=loop),
-            list_all=MagicMock(return_value=[loop]),
-            remove=AsyncMock(),
-            update=AsyncMock(),
-        )
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
-        await h._stop_loop("0123abcd", remove=True)
-        svc.remove.assert_awaited_once_with("L1", stop_reason="")
-        await h._stop_loop("0123abcd", remove=False)
-        svc.update.assert_awaited_once_with("L1", active=False)
-        await h._suspend_research_loops_while_disabled(None)
-        assert svc.update.await_count == 2
+    async def test_autonudge_patch_reaches_loop_control(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        from kiro_crew.autonudge import AutoNudgeService
+
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        try:
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            await svc.add(slot_key="research-0123abcd", message="run", idle_secs=60)
+            await h._stop_loop("0123abcd", remove=True)
+            assert svc.get_by_slot("research-0123abcd") is None
+            paused = await svc.add(slot_key="research-0123abcd", message="run", idle_secs=60)
+            await h._stop_loop("0123abcd", remove=False)
+            assert paused.active is False
+            other = await svc.add(slot_key="research-4567cdef", message="run", idle_secs=60)
+            await h._suspend_research_loops_while_disabled(None)
+            assert other.active is False
+        finally:
+            svc.stop()
 
     def test_advance_patch_reaches_cycle_bookkeeping(self, monkeypatch: pytest.MonkeyPatch):
         cid = _campaign()
@@ -1127,15 +1132,23 @@ class TestLoopStopReasons:
         stop.assert_awaited_once_with(cid, **expected)
 
     @pytest.mark.asyncio
-    async def test_stop_loop_hands_the_reason_to_the_removal(self, monkeypatch: pytest.MonkeyPatch):
-        loop = SimpleNamespace(id="L1", active=True)
-        svc = SimpleNamespace(
-            get_by_slot=MagicMock(return_value=loop), remove=AsyncMock(), update=AsyncMock()
-        )
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
-        await h._stop_loop("0123abcd", remove=True, stop_reason="campaign_deleted")
-        svc.remove.assert_awaited_once_with("L1", stop_reason="campaign_deleted")
-        svc.update.assert_not_awaited()
+    async def test_stop_loop_hands_the_reason_to_the_removal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        from kiro_crew.autonudge import AutoNudgeService
+
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        try:
+            await svc.add(slot_key="research-0123abcd", message="run", idle_secs=60)
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            await h._stop_loop("0123abcd", remove=True, stop_reason="campaign_deleted")
+            assert svc.get_by_slot("research-0123abcd") is None
+        finally:
+            svc.stop()
+        stops = tmp_path / "autonudge" / "logs" / "autonudge_stops.jsonl"
+        records = [json.loads(line) for line in stops.read_text().splitlines()]
+        assert [r["reason"] for r in records] == ["campaign_deleted"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("verdict", ["COMPLETE", "FAILED", "STOPPED"])
@@ -1156,6 +1169,8 @@ class TestLoopStopReasons:
             "L1", active=False, stopped_reason=f"campaign_{status.value}"
         )
         svc.remove.assert_awaited_once_with("L1")
+        settled = await asyncio.to_thread(h.get_campaign, cid)
+        assert settled is not None and settled["status"] == status.value
 
 
 # --- logging -------------------------------------------------------------------

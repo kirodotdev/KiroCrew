@@ -442,10 +442,11 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
     The index file is an agent-WRITABLE crew-home leaf, so a stored row is not
     evidence that anything admitted the path it names. Two things therefore
     stand between a row and a read. Here, every unconfined row must name a path
-    under :meth:`_snapshot_admitted_roots` — lexical, so a whole snapshot is
-    screened without a syscall — and rows that fail are dropped rather than
-    served. Then, because lexical containment does not say where the file
-    resolves now, ``_read_enumerated_skill_bytes`` checks each unconfined path
+    under :meth:`_snapshot_admitted_roots` or under this loader's own roots as
+    the walk spelled them — lexical, so a whole snapshot is screened without a
+    syscall — and a snapshot holding a row that fails is refused whole. Then,
+    because lexical containment does not say where the file resolves now,
+    ``_read_enumerated_skill_bytes`` checks each unconfined path
     before its first read: a stored row is never vetted
     (see :meth:`_vet_unconfined_path`).
     """
@@ -456,8 +457,17 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
     stored = loader._search_index.catalog_snapshot(loader._catalog_scope_id(project_key))
     if stored is None:
         return None
-    admitted_roots = loader._snapshot_admitted_roots()
     own_roots = (loader._dir, *loader._extra_paths)
+    # A walk names its files in the spelling of the root it walked, and a root
+    # under a linked $HOME is not its own realpath. So the screen also admits
+    # those spellings, lexically, or every row a walk stored is refused and a
+    # restarted process serves no skills until a fresh walk finishes. This only
+    # admits a row; the read still vets what it resolves to against the
+    # resolved roots alone (see :meth:`_vet_unconfined_path`).
+    admitted_roots = (
+        *loader._snapshot_admitted_roots(),
+        *(os.path.abspath(root) for root in own_roots),
+    )
     provider_roots = sk._trusted_skill_roots()
     rows: list[tuple[str, Path, str | None]] = []
     for key, path, confine_root in stored.rows:

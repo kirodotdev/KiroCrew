@@ -487,14 +487,13 @@ def test_a_create_question_is_guided_even_though_mate_could_create_it(
 def test_one_label_in_several_places_is_guided_to_the_features_own_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # "New crewmate" is drawn on Customize and on the Crewmates page. The
-    # Crewmates page is still behind its preview, which this tab does not show
-    # as on, so the tie is not settled on it: the user is asked which one,
-    # never sent to the first-ranked Customize button either.
+    # "New mate" is drawn on Customize and on the Mates page. The Mates page
+    # has no preview in front of it, so the tie settles on the feature's own
+    # page, never on the first-ranked Customize button.
     out = _next_for(monkeypatch, "Where do I create a new mate?")
     assert out["ambiguous"] is True and out["tied"] >= 2
     assert out["results"][0]["id"] == "agents.add"
-    assert out["next"] == mcp_guide._AMBIGUOUS_NO_GUIDE_NOTE
+    assert out["next"].startswith("members.add-menu.new has a guide_ref")
 
 
 def test_ties_are_one_guide_only_for_the_same_location_or_the_same_target() -> None:
@@ -982,10 +981,10 @@ def test_guide_start_turns_a_find_for_a_planned_control_into_its_walk(
 
 
 def test_a_page_is_reached_by_its_planned_opener_or_its_rail_entry_else_in_words() -> None:
-    (dev,) = [r for r in _results("developer page") if r["id"] == "page.developer"]
-    assert dev["guide_ref"] == {
+    (bell,) = [r for r in _results("notifications page") if r["id"] == "page.notifications"]
+    assert bell["guide_ref"] == {
         "action_id": "ui.show",
-        "params": {"location_id": "shell.developer"},
+        "params": {"location_id": "shell.notifications"},
     }
     # Logs has no entry anywhere to point at, and a guide never opens a page:
     # no find is handed out, and one the agent writes itself is refused.

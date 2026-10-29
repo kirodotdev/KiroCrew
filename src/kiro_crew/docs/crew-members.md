@@ -14,12 +14,10 @@ one entry in the `agents` map of `~/.kiro/crew/config.json`. This page is the
 user-facing view of them; [agents.md](agents.md) covers the agent JSON and
 markdown specs a mate boots from.
 
-## Turning the page on
+## Where to find it
 
-Mates is a feature preview. Enable **Settings → Developer → Feature
-Previews → Mates** and the **Mates** row appears in the left rail
-at `/members`. The same card has a "See what it looks like" button that shows the
-page before you switch it on.
+The **Mates** row sits in the left rail, under Sessions, and opens
+`/members`.
 
 ## What a mate is made of
 
@@ -72,12 +70,6 @@ every time: closing it, restarting the gateway, or coming back a week later
 reopens the same conversation with its history. That is the point of a mate
 over an ordinary session — the context you built up with it is where you left it.
 
-Opening a thread that is new, or idle for six hours or more, with no goal in
-flight shows a welcome card above the chat: goals the mate left open (in
-this thread or a recent session of its own), then its recent sessions, and a
-prompt to pick one up. It is read from the session ledgers and the session list,
-with no model call and no chat turn, and shows once per idle stretch.
-
 Member threads are deliberately kept out of the Sessions list; the Mates
 page is their only home. The right-hand side panel is the chat page's panel with
 two standing tabs: **Dashboard** (the page the mate publishes itself) and
@@ -107,7 +99,7 @@ press
 **Create** and the mate is made at once. Below the avatar, **Advanced
 settings** unfolds the rest of the form in the same card: what the mate is
 **Built from** (the starting setup it copies; `kirocrew` unless you pick
-another), an optional line on **what it looks after**, and the workspace,
+another), an optional **Goal**, and the workspace,
 model, triggers and session color. Folding it again keeps whatever you set
 there. When a mate suggests a new mate, its link opens this same form
 with the suggested name and goal already filled in; nothing is created until

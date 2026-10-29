@@ -180,7 +180,9 @@ from kiro_crew.context_assembly.output_contract import (  # noqa: F401
     _CRITICAL_RULES,
     _CRITICAL_RULES_CHANNEL,
     _CRITICAL_RULES_HEAD,
+    _CRITICAL_RULES_SUBAGENT,
     _CRITICAL_RULES_TAIL,
+    _CRITICAL_RULES_VARIANTS,
     _DIFF_RULE_CHANNEL,
     _DIFF_RULE_DASHBOARD,
     _UI_LANGUAGE_CATALOGS,
@@ -1142,10 +1144,13 @@ def build_cancelled_turn_preamble(
     is observed on the session.
     """
     try:
-        recent = conversation_log.recent(session_key, max_messages=20)
+        # Whole rows: ``recent()`` keeps only role and content, and the walk reads
+        # ``meta`` to step past a steer the person took back. Both callers run this
+        # in a worker thread, since it reads the whole transcript.
+        rows = _without_warm_task_brief_messages(conversation_log.read_messages(session_key))
     except Exception:
         return ""
-    return _replay.cancelled_turn_preamble(recent, user_cap=user_cap, assist_cap=assist_cap)
+    return _replay.cancelled_turn_preamble(rows[-20:], user_cap=user_cap, assist_cap=assist_cap)
 
 
 # ── Provider-Agnostic Session Replay ──

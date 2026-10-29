@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { autoOpenRows } from '../../lib/crewMode'
 import { unwrapResult } from '@reduxjs/toolkit'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { NavigateFunction, NavigationType } from 'react-router-dom'
@@ -205,8 +206,10 @@ export function useChatPageSessionController({
     if (opts?.background) return
     if (!connectedRef.current) return
     // Foreground open-in-tab is a user gesture on a session reference: the
-    // announced class.
-    if (key !== activeSlotRef.current) dispatch(switchSlot({ key, announceOnMissing: true, ...(opts?.requestSeq !== undefined ? { requestSeq: opts.requestSeq } : {}) }))
+    // announced class. With `requestSeq` it is a create opening the session it
+    // just made when the server answered, not the user opening a chat, so it
+    // is not a `gesture` (#23564).
+    if (key !== activeSlotRef.current) dispatch(switchSlot({ key, announceOnMissing: true, ...(opts?.requestSeq !== undefined ? { requestSeq: opts.requestSeq } : { gesture: true }) }))
     // Depends on the ONE member it calls, not on `sessionTabs` — that hook
     // returns a fresh object literal every render, so the whole object as a dep
     // makes this callback (and thus ChatSidebar's `onOpenSlotInNewTab`, and thus
@@ -235,7 +238,7 @@ export function useChatPageSessionController({
     if (key === activeSlotRef.current || !connectedRef.current) return
     // Tab-strip select is a user gesture on a session reference: the announced
     // class.
-    dispatch(switchSlot({ key, announceOnMissing: true }))
+    dispatch(switchSlot({ key, announceOnMissing: true, gesture: true }))
   }, [dispatch, activeSlotRef])
   const closeSessionTab = useCallback((key: string) => {
     const next = sessionTabs.closeTab(key)
@@ -885,7 +888,7 @@ export function useChatPageSessionController({
     // resumed since the notice appeared, and an open one is switched to.
     const open = filteredSlotsRef.current.some(s => s.key === match.key)
     if (match.stem && !open) void dispatch(resumeFromHistory({ key: match.stem, title: match.title }))
-    else dispatch(switchSlot({ key: match.key, announceOnMissing: true }))
+    else dispatch(switchSlot({ key: match.key, announceOnMissing: true, gesture: true }))
   }, [dispatch, filteredSlotsRef])
   useEffect(() => {
     if (embedded && !embedMode) return
@@ -1141,7 +1144,13 @@ export function useChatPageSessionController({
   // silently undo the link — clicking a session on the System page landed you
   // in whatever chat you had open before. The sid effect's own switchSlot
   // fetches, so nothing is lost by skipping here.
-  useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  //
+  // Also skipped while a switch to that same session is still in flight (an
+  // open from the command palette on another page, which then navigates
+  // here): it already fetches, and a plain re-fetch would supersede it and
+  // drop its gesture flag, so a cron note would never read (#23564).
+  const switchInFlightKey = useAppSelector(s => (s.chat.slotSwitchRequestId !== null ? s.chat.slotSwitchTarget : null))
+  useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && switchInFlightKey !== activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clear activeSlot when it belongs to a different mode (page switch)
   useEffect(() => {
@@ -1216,18 +1225,22 @@ export function useChatPageSessionController({
     // and reopening it would freeze and kill it again (#12907). The user picks.
     // Only the first auto-open is skipped: once the user has opened a chat,
     // closing it moves to a sibling as usual.
-    if (filteredSlots.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
-    if (filteredSlots.length > 0) {
+    // The page's own pick never lands on a crew member (`autoOpenRows`): with only
+    // crew members left, it creates an ordinary chat instead.
+    const eligible = autoOpenRows(filteredSlots)
+    const eligibleKeys = new Set(eligible.map(s => s.key))
+    if (eligible.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
+    if (bound || eligible.length > 0) {
       // The stored key is a refresh memory, read for the first pick only. Every
       // tab and popout rewrites it on each slots frame, so once this window has
       // shown a chat, its own recency stack decides where it lands.
-      const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => listed.has(k)).pop() : undefined
+      const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => eligibleKeys.has(k)).pop() : undefined
       const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
       const target = bound ? bound
         : hint && listed.has(hint) ? hint
-        : recent ?? (saved && listed.has(saved) ? saved : filteredSlots[0].key)
+        : recent ?? (saved && eligibleKeys.has(saved) ? saved : eligible[0].key)
       dispatch(switchSlot({ key: target, automatic: true }))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one

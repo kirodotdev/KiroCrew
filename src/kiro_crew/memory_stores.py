@@ -1158,8 +1158,53 @@ def _legacy_member_database_identity(path: Path, store: str, alias: str) -> str:
     return row[1]
 
 
+def _is_stripped_member_declaration(config, name: str, record: object) -> bool:
+    """Whether *record* is a member store's declaration that lost its identity fields.
+
+    A write that rebuilds ``config.json`` from a schema without the member
+    fields (an older CLI still on ``PATH`` that predates them) leaves a member
+    store's record as a plain V1 declaration: ``memory_version`` falls back to
+    1 and ``owner_member_id`` / ``owner_member`` are gone, while its bound Crew
+    Member loses ``member_id``. The store's ``memory.db`` still carries its
+    ``member_database`` row, so every resolver refuses the store -- V1 cannot
+    open a member database and the record does not declare V2.
+
+    True only when the record is a non-default V1 declaration with no
+    ``owner_member_id``, exactly one Crew Member with an empty ``member_id`` is
+    bound to it, and its ``memory.db`` is a regular single-name file whose
+    ``member_database`` row names THIS store. An ordinary V1 named store has no
+    such row, so it is never a candidate and never warned about. Read-only;
+    every failure reads as "not stripped".
+    """
+    from kiro_crew.vector_memory import read_member_database_identity
+
+    if name == DEFAULT_MEMORY_STORE or getattr(record, "memory_version", 1) == 2:
+        return False
+    if getattr(record, "owner_member_id", ""):
+        return False
+    bound = [
+        agent for agent in config.agents.values() if getattr(agent, "memory_store", None) == name
+    ]
+    if len(bound) != 1 or getattr(bound[0], "member_id", "") != "":
+        return False
+    try:
+        validate_memory_store_name(name)
+        database = _named_store_dir(name) / MEMORY_DB_FILE
+        _require_private_member_database(database)
+        _member_id, store = read_member_database_identity(database)
+    except Exception:
+        return False
+    return store == name
+
+
 def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
-    """Every V2 record with no ``owner_member_id``: ``name -> (alias, member_id, reason)``.
+    """Every member record with no ``owner_member_id``: ``name -> (alias, member_id, reason)``.
+
+    Two shapes are candidates: a V2 record written before identities existed,
+    and a member declaration stripped back to V1 by an older build's save
+    (:func:`_is_stripped_member_declaration`). The second has its identity in
+    the database already, so it resumes with that id exactly as an interrupted
+    upgrade does.
 
     A candidate is UPGRADABLE when *reason* is ``""``; *alias* is then the one
     Crew Member bound to it and *member_id* is the identity an interrupted
@@ -1177,7 +1222,11 @@ def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
             bindings.setdefault(store, []).append(alias)
     for name, record in config.memory_stores.items():
         owner_id = getattr(record, "owner_member_id", "")
-        if getattr(record, "memory_version", 1) != 2 or owner_id:
+        if owner_id:
+            continue
+        if getattr(record, "memory_version", 1) != 2 and not _is_stripped_member_declaration(
+            config, name, record
+        ):
             continue
         bound = bindings.get(name, [])
         try:
@@ -1250,8 +1299,10 @@ def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
 
 
 def legacy_member_store_states(config) -> dict[str, str]:
-    """``store -> reason`` for every V2 record still lacking ``owner_member_id``.
+    """``store -> reason`` for every member record still lacking ``owner_member_id``.
 
+    Covers the pre-identity V2 records and the stripped member declarations
+    :func:`_legacy_member_store_candidates` admits.
     ``""`` means the upgrade will repair it on the next start; anything else is
     why it is left alone, in the words the boot log uses. Read-only, for
     ``kirocrew doctor``.
@@ -1361,12 +1412,18 @@ def complete_legacy_member_directory(directory: Path, *, member_id: str, store: 
         atomic_write(manual / PROJECTS_FILE, "# Member Projects\n", fsync=True)
 
 
-def _publish_legacy_member_identity(alias: str, store: str, member_id: str) -> None:
+def _publish_legacy_member_identity(
+    alias: str, store: str, member_id: str, *, restore_version: bool = False
+) -> None:
     """Write the allocated identity onto the member and its store under the config lock.
 
     Re-checked against the document on disk, so a concurrent writer that already
     published the same identity is a no-op and one that changed the binding or
-    published a different identity refuses rather than overwrites.
+    published a different identity refuses rather than overwrites. With
+    *restore_version* the store's declaration was stripped back to V1 (see
+    :func:`_is_stripped_member_declaration`) and ``memory_version: 2`` is
+    written back with the identity; a declaration that already reads V2 on disk
+    is accepted too, since that is this same write completed concurrently.
     """
     from kiro_crew.config.loader import _invalidate_config_cache, update_config_locked
 
@@ -1381,11 +1438,16 @@ def _publish_legacy_member_identity(alias: str, store: str, member_id: str) -> N
             raise UnknownMemoryStore("the member or its store was removed concurrently")
         if current.get("memory_store", DEFAULT_MEMORY_STORE) != store:
             raise UnknownMemoryStore("the member's memory binding changed concurrently")
-        if entry.get("memory_version") != 2:
+        version = entry.get("memory_version", 1)
+        if version != 2 and not (restore_version and version == 1):
             raise UnknownMemoryStore("the store declaration changed concurrently")
         published_member = current.get("member_id")
         published_store = entry.get("owner_member_id")
-        if published_member == member_id and published_store == member_id:
+        if (
+            published_member == member_id
+            and published_store == member_id
+            and entry.get("memory_version") == 2
+        ):
             return None
         # Refuse a value that DISAGREES, not one that is merely present: the
         # member's identity is written before the store's, so a half-published
@@ -1413,6 +1475,7 @@ def _publish_legacy_member_identity(alias: str, store: str, member_id: str) -> N
                 raise UnknownMemoryStore(f"member identity {member_id!r} was taken concurrently")
         current["member_id"] = member_id
         entry["owner_member_id"] = member_id
+        entry["memory_version"] = 2
         if not entry.get("owner_member"):
             entry["owner_member"] = alias
         return data
@@ -1434,6 +1497,12 @@ def migrate_legacy_member_stores(config) -> list[str]:
     learned rows intact, adds the manual documents, publishes the identity to
     ``config.json`` under the config lock and mirrors it onto *config*.
 
+    A member declaration an older build's save stripped back to V1 (see
+    :func:`_is_stripped_member_declaration`) goes through the same path: its
+    database already records the identity, so only the config half --
+    ``memory_version: 2``, ``owner_member_id``, ``owner_member`` and the
+    member's ``member_id`` -- is written back, and the database is not touched.
+
     One store's failure never touches another: each is its own try, refused ones
     are logged once with the reason and :data:`LEGACY_MEMBER_STORE_REMEDY`, and
     the second run over a repaired install finds nothing to do.
@@ -1451,11 +1520,18 @@ def migrate_legacy_member_stores(config) -> list[str]:
                 )
                 continue
             try:
+                restore_version = config.memory_stores[name].memory_version != 2
                 member_id = existing_id or _allocate_member_id(config, alias, refuse_damaged=False)
-                complete_legacy_member_directory(
-                    _named_store_dir(name), member_id=member_id, store=name
+                if not restore_version:
+                    # A stripped declaration's database is already a complete
+                    # member database (that is what made it a candidate), so
+                    # only the config half is missing; its bytes stay untouched.
+                    complete_legacy_member_directory(
+                        _named_store_dir(name), member_id=member_id, store=name
+                    )
+                _publish_legacy_member_identity(
+                    alias, name, member_id, restore_version=restore_version
                 )
-                _publish_legacy_member_identity(alias, name, member_id)
             except Exception:
                 logger.warning(
                     "memory store %r could not be given its member identity; it stays "
@@ -1467,6 +1543,7 @@ def migrate_legacy_member_stores(config) -> list[str]:
                 continue
             config.agents[alias].member_id = member_id
             config.memory_stores[name].owner_member_id = member_id
+            config.memory_stores[name].memory_version = 2
             if not config.memory_stores[name].owner_member:
                 config.memory_stores[name].owner_member = alias
             repaired.append(name)
@@ -1480,9 +1557,11 @@ def repair_legacy_member_stores() -> list[str]:
     """The start-of-process entry to :func:`migrate_legacy_member_stores`; never raises.
 
     Cheap when there is nothing to do: an install with no pre-identity V2 record
-    takes no lock and opens no file. A config whose memory section degraded is
-    left alone -- writing identities into a document the loader could not fully
-    read would be a guess.
+    and no stripped member declaration takes no lock; only a V1 named store bound
+    to exactly one identity-less member has its database opened, read-only, to
+    tell a stripped member store from an ordinary V1 one. A config whose memory
+    section degraded is left alone -- writing identities into a document the
+    loader could not fully read would be a guess.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -1490,8 +1569,12 @@ def repair_legacy_member_stores() -> list[str]:
 
         config = KiroCrewConfig.load()
         if not any(
-            getattr(record, "memory_version", 1) == 2 and not getattr(record, "owner_member_id", "")
-            for record in config.memory_stores.values()
+            (
+                getattr(record, "memory_version", 1) == 2
+                and not getattr(record, "owner_member_id", "")
+            )
+            or _is_stripped_member_declaration(config, name, record)
+            for name, record in config.memory_stores.items()
         ):
             return []
         if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:

@@ -14,6 +14,7 @@ import pytest
 from kiro_prerequisite_helpers import _agents_dir_never_the_real_home  # noqa: F401
 from kiro_prerequisite_helpers import _isolate_agent_specs  # noqa: F401
 from kiro_prerequisite_helpers import _make_executable, _no_audit
+from named_cases_helpers import named_cases
 
 from kiro_crew import _process_group_supervisor as supervisor
 from kiro_crew import kiro_prerequisite as prerequisite_module
@@ -964,19 +965,43 @@ class TestConfigSetHintsForLauncher:
     @pytest.mark.parametrize(
         ("launcher", "expected_powershell"),
         [
-            (r"C:\100%\kirocrew.cmd", r"& 'C:\100%\kirocrew.cmd'"),
-            (r"C:\%KC_MARK%\kirocrew.cmd", r"& 'C:\%KC_MARK%\kirocrew.cmd'"),
-            (r"C:\%%\kirocrew.cmd", r"& 'C:\%%\kirocrew.cmd'"),
-            (r"C:\a%b\kirocrew.CMD", r"& 'C:\a%b\kirocrew.CMD'"),
-            (r"\\host\share\100%\kirocrew.bat", r"& '\\host\share\100%\kirocrew.bat'"),
-            (
-                r"C:\Program Files\100%\Scripts\kirocrew.exe",
-                r"& 'C:\Program Files\100%\Scripts\kirocrew.exe'",
+            *named_cases(
+                "test_a_percent_in_the_path_leaves_only_the_powershell_row",
+                ("launcher", "expected_powershell"),
+                [
+                    (r"C:\100%\kirocrew.cmd", r"& 'C:\100%\kirocrew.cmd'"),
+                    (r"C:\%KC_MARK%\kirocrew.cmd", r"& 'C:\%KC_MARK%\kirocrew.cmd'"),
+                    (r"C:\%%\kirocrew.cmd", r"& 'C:\%%\kirocrew.cmd'"),
+                    (r"C:\a%b\kirocrew.CMD", r"& 'C:\a%b\kirocrew.CMD'"),
+                    (r"\\host\share\100%\kirocrew.bat", r"& '\\host\share\100%\kirocrew.bat'"),
+                    (
+                        r"C:\Program Files\100%\Scripts\kirocrew.exe",
+                        r"& 'C:\Program Files\100%\Scripts\kirocrew.exe'",
+                    ),
+                    (r"C:\Users\O'Brien%\kirocrew.cmd", r"& 'C:\Users\O''Brien%\kirocrew.cmd'"),
+                ],
             ),
-            (r"C:\Users\O'Brien%\kirocrew.cmd", r"& 'C:\Users\O''Brien%\kirocrew.cmd'"),
+            *named_cases(
+                "test_a_bang_in_the_path_leaves_only_the_powershell_row",
+                ("launcher", "expected_powershell"),
+                [
+                    (r"C:\a!b\kirocrew.cmd", r"& 'C:\a!b\kirocrew.cmd'"),
+                    (r"C:\a!b\kirocrew.bat", r"& 'C:\a!b\kirocrew.bat'"),
+                    (r"C:\a!b\kirocrew.exe", r"& 'C:\a!b\kirocrew.exe'"),
+                    (
+                        r"C:\Program Files\Hi!\Scripts\kirocrew.exe",
+                        r"& 'C:\Program Files\Hi!\Scripts\kirocrew.exe'",
+                    ),
+                    (r"C:\x!y!z\kirocrew.cmd", r"& 'C:\x!y!z\kirocrew.cmd'"),
+                    (r"C:\100%!\kirocrew.cmd", r"& 'C:\100%!\kirocrew.cmd'"),
+                    (r"C:\a%b!c\kirocrew.CMD", r"& 'C:\a%b!c\kirocrew.CMD'"),
+                    (r"C:\100%!\kirocrew.exe", r"& 'C:\100%!\kirocrew.exe'"),
+                    (r"C:\Users\O'Brien!\kirocrew.cmd", r"& 'C:\Users\O''Brien!\kirocrew.cmd'"),
+                ],
+            ),
         ],
     )
-    def test_a_percent_in_the_path_leaves_only_the_powershell_row(
+    def test_a_special_character_in_the_path_leaves_only_the_powershell_row(
         self, launcher: str, expected_powershell: str
     ) -> None:
         hints = self._hints(launcher, "win32")
@@ -1011,31 +1036,6 @@ class TestConfigSetHintsForLauncher:
         prefixes = self._prefixes(self._hints(launcher, "win32"))
 
         assert prefixes["powershell"] == f"& '{launcher}'"
-
-    @pytest.mark.parametrize(
-        ("launcher", "expected_powershell"),
-        [
-            (r"C:\a!b\kirocrew.cmd", r"& 'C:\a!b\kirocrew.cmd'"),
-            (r"C:\a!b\kirocrew.bat", r"& 'C:\a!b\kirocrew.bat'"),
-            (r"C:\a!b\kirocrew.exe", r"& 'C:\a!b\kirocrew.exe'"),
-            (
-                r"C:\Program Files\Hi!\Scripts\kirocrew.exe",
-                r"& 'C:\Program Files\Hi!\Scripts\kirocrew.exe'",
-            ),
-            (r"C:\x!y!z\kirocrew.cmd", r"& 'C:\x!y!z\kirocrew.cmd'"),
-            (r"C:\100%!\kirocrew.cmd", r"& 'C:\100%!\kirocrew.cmd'"),
-            (r"C:\a%b!c\kirocrew.CMD", r"& 'C:\a%b!c\kirocrew.CMD'"),
-            (r"C:\100%!\kirocrew.exe", r"& 'C:\100%!\kirocrew.exe'"),
-            (r"C:\Users\O'Brien!\kirocrew.cmd", r"& 'C:\Users\O''Brien!\kirocrew.cmd'"),
-        ],
-    )
-    def test_a_bang_in_the_path_leaves_only_the_powershell_row(
-        self, launcher: str, expected_powershell: str
-    ) -> None:
-        hints = self._hints(launcher, "win32")
-
-        assert [row["id"] for row in hints["shells"]] == ["powershell"]
-        assert self._prefixes(hints) == {"powershell": expected_powershell}
 
     @pytest.mark.parametrize("platform_name", ["linux", "darwin"])
     def test_a_bang_in_a_posix_path_is_left_to_sh_quoting(self, platform_name: str) -> None:

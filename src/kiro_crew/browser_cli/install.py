@@ -82,6 +82,7 @@ from kiro_crew.browser_cli.install_runner import (
     _run,
     redact_install_output,
 )
+from kiro_crew.browser_cli.managed_launcher import ensure_managed_launcher
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import augmented_path, find_node_tool, node_augmented_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -524,6 +525,10 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
             "path": str(staged_node),
         }
     )
+    # The agent-facing launcher (``managed-bin``), which puts ``attach`` under its
+    # time limit. Written after the staged Node it names; a failure is logged and
+    # leaves npm's own shim in use, and the next gateway start retries it.
+    ensure_managed_launcher()
 
     # Resolved after the global install, not before: the binary does not exist
     # until that step succeeds.

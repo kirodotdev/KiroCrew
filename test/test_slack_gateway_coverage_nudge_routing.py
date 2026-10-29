@@ -751,7 +751,7 @@ class TestFireWebexNudge:
         transport.dispatcher.handle_message.assert_awaited_once()
         inbound = transport.dispatcher.handle_message.await_args.args[0]
         kwargs = transport.dispatcher.handle_message.await_args.kwargs
-        assert kwargs == {"interpret_commands": False}
+        assert kwargs == {"interpret_commands": False, "skill_trigger_text": "keep checking"}
         assert inbound.person_email == "a@b.test"
         assert inbound.text.startswith("[auto-nudge cycle 1]")
         from kiro_crew.webex.transport import ROOM_DIRECT

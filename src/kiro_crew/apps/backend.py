@@ -732,6 +732,12 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # start an app on a host that is running perfectly well.
     if central_ceiling_installed():
         _platform_extra[POLICY_CACHE_ONLY_ENV] = "1"
+        # An enterprise child adopts only the cache for the profile this gateway is
+        # pinned to; minimal_env() would otherwise drop the pin it inherits.
+        from kiro_crew.platform.enterprise_policy_fetch import PROFILE_PIN_ENV
+
+        if os.environ.get(PROFILE_PIN_ENV):
+            _platform_extra[PROFILE_PIN_ENV] = os.environ[PROFILE_PIN_ENV]
         # The EFFECTIVE bound, not the env var: a fleet is just as likely to declare
         # max_cache_age_secs in the published document, and reading only the environment
         # would leave this child with no bound at all — accepting an arbitrarily stale

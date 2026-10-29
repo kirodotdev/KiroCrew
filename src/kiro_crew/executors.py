@@ -113,6 +113,8 @@ __all__ = [
     "cron_gate_budget",
     "run_in_embed_pool",
     "run_in_memory_background_pool",
+    "acquire_embed_admission",
+    "EmbedAdmissionTimeout",
     "run_with_recall_deadline",
     "recall_executor",
     "shutdown_maintenance_executor",
@@ -1270,24 +1272,161 @@ async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:
         embedding_work.reset(token)
 
 
-async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+class EmbedAdmissionTimeout(asyncio.TimeoutError):
+    """The memory-admission semaphore did not free a slot within a caller's deadline.
+
+    Raised by :func:`acquire_embed_admission` when a caller that must bound its wait
+    (the dashboard pre-prompt build) could not enter the embed pool in time, so the
+    caller can surface a visible error instead of waiting unbounded. Subclasses
+    :class:`asyncio.TimeoutError` so a caller that only handles timeouts still
+    catches it.
+    """
+
+
+def _loop_admission(
+    loop: asyncio.AbstractEventLoop, admission_key: str, workers: int
+) -> asyncio.Semaphore:
+    """The per-loop admission semaphore stored under *admission_key*, created once.
+
+    One object per (loop, key), sized to *workers* on first use. Both the direct
+    reserve path (:func:`acquire_embed_admission` via :func:`_memory_admission`)
+    and the submit path (:func:`_run_admitted`) go through here, so a given key's
+    semaphore has exactly ONE creator and a pre-reserved slot and an unreserved
+    build always contend on the same object.
+    """
+    admission = getattr(loop, admission_key, None)
+    if admission is None:
+        admission = asyncio.Semaphore(workers)
+        setattr(loop, admission_key, admission)
+    return admission
+
+
+def _memory_admission(loop: asyncio.AbstractEventLoop) -> asyncio.Semaphore:
+    """The per-loop MEMORY-build admission semaphore, created on first use.
+
+    One shared object per event loop, so :func:`run_in_embed_pool` and
+    :func:`acquire_embed_admission` gate on the SAME semaphore for a given loop.
+    It is the ``_kirocrew_memory_admission`` slot :func:`_run_admitted` also
+    gates on for an unreserved memory build, so a pre-reserved slot and an
+    unreserved build contend on one object. Both reach it through
+    :func:`_loop_admission`, the single creator. Recall work gates on its own
+    ``_kirocrew_recall_admission`` slot inside :func:`_run_admitted`; only the
+    memory build is pre-reserved, so this helper serves that one.
+    """
+    return _loop_admission(loop, "_kirocrew_memory_admission", _MAX_EMBED_WORKERS)
+
+
+class _AdmissionSlot:
+    """A reserved memory-admission slot whose release happens EXACTLY once.
+
+    Ownership of the release moves to the build FUTURE once work is submitted
+    (:meth:`hand_off`), because a submitted future cannot be cancelled once its
+    thread starts: the slot must stay taken until the thread actually finishes
+    (or the queued future is cancelled), which only the future's done-callback
+    waits for. The reservation's owner -- the turn's settle step, which calls
+    :meth:`release` on a pre-submit cleanup path -- releases it ONLY when no
+    future took it (:attr:`handed_off` is False): a timeout, or an error before
+    submit. So a cancelled caller whose build thread is still running does NOT
+    free the slot early; the done-callback does, when the thread ends.
+    :meth:`release` is still idempotent as a backstop.
+    """
+
+    def __init__(self, sem: asyncio.Semaphore) -> None:
+        self._sem = sem
+        self._released = False
+        self._handed_off = False
+
+    def hand_off(self) -> None:
+        """A submitted future now owns the release; the owner must not do it."""
+        self._handed_off = True
+
+    @property
+    def handed_off(self) -> bool:
+        return self._handed_off
+
+    def release(self) -> None:
+        """Release the slot once; later calls are no-ops."""
+        if not self._released:
+            self._released = True
+            self._sem.release()
+
+
+async def acquire_embed_admission(timeout: float) -> _AdmissionSlot:
+    """Reserve one memory embed-pool slot within *timeout* seconds, else raise.
+
+    The bound a caller that cannot afford the pool's unbounded wait uses. It
+    acquires the same per-loop semaphore :func:`run_in_embed_pool` waits on and
+    returns an :class:`_AdmissionSlot` the caller passes as
+    ``run_in_embed_pool(..., _admission_held=slot)`` so the build takes no SECOND
+    slot. The slot is released ONCE -- by the build future's done-callback when
+    the build was submitted (its worker thread can outlive a cancelled caller, so
+    the slot must track the thread), otherwise by the caller on a cleanup path
+    where no build was submitted, gated on ``not slot.handed_off`` so it never
+    frees a slot a running build thread still holds. A saturated pool that never
+    frees a slot raises :class:`EmbedAdmissionTimeout` rather than hanging -- and
+    because this returns before the caller consumes any one-shot input, a timeout
+    leaves nothing to restore. ``release`` is synchronous, so a caller can settle
+    the slot from a suspension-free cleanup path.
+    """
+    loop = asyncio.get_running_loop()
+    sem = _memory_admission(loop)
+    started = loop.time()
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise EmbedAdmissionTimeout(
+            f"memory pool admission not granted within {loop.time() - started:.2f}s"
+        ) from exc
+    return _AdmissionSlot(sem)
+
+
+async def run_in_embed_pool(
+    func: Callable[..., _T],
+    /,
+    *args: Any,
+    _admission_held: _AdmissionSlot | None = None,
+    **kwargs: Any,
+) -> _T:
     """Offload bounded memory work, waiting without rejecting ordinary prompts.
 
     Submission is bounded to the worker count for this gateway event loop. A
     cancelled caller releases a slot only when its underlying thread actually
     finishes (or the queued future is successfully cancelled).
+
+    When *_admission_held* is an :class:`_AdmissionSlot` the caller already holds
+    a slot (through :func:`acquire_embed_admission`), so this acquires no new one:
+    a pre-reserved slot skips the acquire. Once the work is submitted the slot's
+    release is handed off to the build future's done-callback -- which frees the
+    slot when the thread finishes or the queued future is cancelled -- because a
+    submitted future cannot be cancelled once its thread starts, so the slot must
+    track the THREAD. The reservation's owner then skips its own release (gated on
+    ``not slot.handed_off``), so a cancelled caller never frees a slot a running
+    build still holds. If submission never happens (an error before submit) the
+    slot is NOT handed off and only the owner releases it. Used by a caller that
+    must BOUND its admission wait and has taken the slot ahead of the work.
     """
     from contextvars import copy_context
 
     from kiro_crew.embeddings import embedding_work
 
     recall = embedding_work.get() is not None
+
+    # One admission path for both cases. An unreserved call (recall, or a memory
+    # build that did not pre-reserve) acquires the per-loop semaphore keyed on
+    # its kind; a pre-reserved slot skips the acquire. Recall gates on
+    # "_kirocrew_recall_admission", a memory build on "_kirocrew_memory_admission"
+    # -- the same key, and so the same semaphore object, that
+    # acquire_embed_admission reserves on, so a pre-reserved MEMORY slot takes no
+    # second slot. Either way the build future's done-callback frees the slot
+    # when the thread finishes (or the queued future is cancelled), so it tracks
+    # the THREAD, not the awaiting caller.
     return await _run_admitted(
         recall_executor if recall else embed_executor,
         "_kirocrew_recall_admission" if recall else "_kirocrew_memory_admission",
         _MAX_EMBED_WORKERS,
         copy_context(),
         functools.partial(func, *args, **kwargs),
+        held=_admission_held,
     )
 
 
@@ -1317,23 +1456,51 @@ async def _run_admitted(
     workers: int,
     context: Any,
     call: Callable[[], _T],
+    *,
+    held: _AdmissionSlot | None = None,
 ) -> _T:
-    """Submit *call* once this loop's per-pool admission has a free slot."""
+    """Submit *call* once this loop's per-pool admission has a free slot.
+
+    The single admission path. An unreserved call (*held* is ``None``) acquires
+    the per-loop semaphore keyed on *admission_key* and the build future's
+    done-callback releases it. When *held* is an :class:`_AdmissionSlot` the
+    caller already reserved a slot on this same per-loop semaphore (through
+    :func:`acquire_embed_admission`), so this acquires NO new one: a pre-reserved
+    slot just skips the acquire. On submit the slot's release is handed off to
+    the build future's done-callback, which frees it when the thread finishes or
+    the queued future is cancelled -- a submitted future cannot be cancelled once
+    its thread starts, so the slot must track the THREAD. The reservation's owner
+    then skips its own release (gated on ``not slot.handed_off``), so a cancelled
+    caller never frees a slot a running build still holds. If submission never
+    happens (an error before submit) an unreserved call releases the slot it took;
+    a *held* slot is NOT handed off and stays with its owner's cleanup path.
+    """
     loop = asyncio.get_running_loop()
-    admission = getattr(loop, admission_key, None)
-    if admission is None:
-        admission = asyncio.Semaphore(workers)
-        setattr(loop, admission_key, admission)
-    await admission.acquire()
+    if held is None:
+        admission = _loop_admission(loop, admission_key, workers)
+        await admission.acquire()
+        # An unreserved call releases the per-loop semaphore it just acquired.
+        release = admission.release
+    else:
+        # A pre-reserved slot already holds the semaphore; its release runs once
+        # through the slot's guard, handed to the build future below.
+        release = held.release
     try:
         future = executor_of().submit(context.run, call)
     except BaseException:
-        admission.release()
+        # Nothing was submitted. An unreserved call frees the slot it acquired;
+        # a pre-reserved slot stays with its owner's cleanup path to release.
+        if held is None:
+            release()
         raise
+
+    if held is not None:
+        # The future now owns the held slot's release.
+        held.hand_off()
 
     def finished(_future: object) -> None:
         try:
-            loop.call_soon_threadsafe(admission.release)
+            loop.call_soon_threadsafe(release)
         except RuntimeError:
             # The owning loop has closed; no new task can await its admission.
             pass

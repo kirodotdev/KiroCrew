@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from session_helpers import (  # noqa: F401 -- the fixture is requested by name
@@ -258,14 +258,12 @@ class TestSessionManager:
         provider, _, _ = await mgr.get_or_create("thread1")
         key = mgr._fold_key("thread1")
         session = mgr._sessions[key]
-        with (
-            patch.object(mgr._session_map, "clear_sid") as mock_clear,
-            patch.object(mgr._session_map, "delete") as mock_delete,
-        ):
-            await mgr._recycle_held(key, session, 95.0)
+        mgr._session_map.set(key, "sid-overflowed")
+        await mgr._recycle_held(key, session, 95.0)
         provider.shutdown.assert_awaited_once()
-        mock_clear.assert_called_once_with(key)
-        mock_delete.assert_not_called()
+        assert not _raw_sid(mgr, key)
+        # A deleted entry would answer "" here as well; the stash proves it was kept.
+        assert mgr._session_map.get_discarded_sid(key) == "sid-overflowed"
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -857,8 +855,11 @@ class TestWorkflowPoolStateless:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # Spy on the resume lookup: it must never be called for a stateless key.
         mgr._session_map.get = MagicMock(return_value="stale-sid")  # type: ignore[method-assign]
+        mgr._session_map.set_native_fork("wf-pool:run-1:0", "src-sid", "msg-1")
         await mgr.get_or_create("wf-pool:run-1:0")
         mgr._session_map.get.assert_not_called()
+        # The history-restoring fork is read only on the same branch, so it is left unspent.
+        assert mgr._session_map.get_native_fork("wf-pool:run-1:0") == ("src-sid", "msg-1")
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -868,8 +869,11 @@ class TestWorkflowPoolStateless:
         stateless classification, not a blanket no-op."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._session_map.get = MagicMock(return_value=None)  # type: ignore[method-assign]
+        mgr._session_map.set_native_fork("dashboard:chat-9", "src-sid", "msg-1")
         await mgr.get_or_create("dashboard:chat-9")
         assert "dashboard:chat-9" in [c.args[0] for c in mgr._session_map.get.call_args_list]
+        # With no sid to resume, the stored fork is consumed by this one cold start.
+        assert mgr._session_map.get_native_fork("dashboard:chat-9") is None
         await mgr.close_all()
 
 
@@ -897,6 +901,8 @@ class TestHeartbeatStateless:
         """Neither key may consult the session_map for a resume sid."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._session_map.get = MagicMock(return_value="stale-sid")  # type: ignore[method-assign]
+        mgr._session_map.set_native_fork(key, "src-sid", "msg-1")
         await mgr.get_or_create(key)
         mgr._session_map.get.assert_not_called()
+        assert mgr._session_map.get_native_fork(key) == ("src-sid", "msg-1")
         await mgr.close_all()

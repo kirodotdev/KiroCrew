@@ -21,6 +21,7 @@ from kiro_crew.dashboard.chat_utils import (
     _ACTIVITY_NO_REPLY_CONTINUE_MSG,
     _COMPACTION_CONTINUE_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
+    BLOCKED_LINKS_ORDERED_KEY,
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
     EMPTY_RUNG_REPLAY,
@@ -146,7 +147,11 @@ def _log_glued_footer_text(slot: Any, glued: list[str]) -> None:
 
 
 def _segment_row_meta(
-    slot: _ChatSlot, blocked_links: list[dict], redactions: list[dict] | None = None
+    slot: _ChatSlot,
+    blocked_links: list[dict],
+    redactions: list[dict] | None = None,
+    *,
+    links_ordered: bool = False,
 ) -> dict | None:
     """The assistant row's ``meta``: the decision strip, redaction records and the
     segment's native message id, which this consumes.
@@ -155,7 +160,8 @@ def _segment_row_meta(
     dict -- that call broadcasts the live frame from inside itself, so a field
     written onto the row afterwards would persist but be missing from the frame
     an open tab renders. Returns None when there is nothing to carry, which is
-    what ``slot.append`` expects for a row with no meta.
+    what ``slot.append`` expects for a row with no meta. ``links_ordered`` is
+    ``_redact_segment``'s word that ``blocked_links`` are in reply order.
     """
     meta = _decisions_strip_meta(slot)
     message_id = getattr(slot, "segment_message_id", "")
@@ -168,6 +174,8 @@ def _segment_row_meta(
         out["native_message_id"] = message_id
     if blocked_links:
         out["blocked_links"] = blocked_links
+        if links_ordered:
+            out[BLOCKED_LINKS_ORDERED_KEY] = True
     if redactions:
         out["redactions"] = redactions
     return out
@@ -352,7 +360,9 @@ def _give_back_run(
     )
 
 
-def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[dict]]:
+def _redact_segment(
+    slot: _ChatSlot, text: str, *, _ordered_out: list[bool] | None = None
+) -> tuple[str, list[dict], list[dict]]:
     """Redact one assistant segment as one text and describe every placeholder.
 
     ``text`` is the segment as it streamed: each delta redacted on its own.
@@ -390,15 +400,18 @@ def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[d
     With no streamed deltas (an empty raw copy) there is nothing to cut, and
     ``text`` itself is redacted. ``text`` is reflowed and audited here
     (:func:`_reflow_label_and_audit`), so callers pass it as streamed.
-    Returns ``(text, blocked_links, redactions)``.
+    Returns ``(text, blocked_links, redactions)``; ``_ordered_out`` gets whether
+    the links are known to be in reply order (see ``restore_allowed_links``).
     """
+    if _ordered_out is not None:
+        _ordered_out[:] = [False]
     raw = slot.segment_raw_text
     shown_sha = slot.segment_shown_sha
     removed = slot.segment_removed
     _reset_segment_copy(slot)
     shown = _reflow_label_and_audit(slot, text)
     if raw == "":
-        return _redact_segment_text(slot, shown)
+        return _redact_segment_text(slot, shown, _ordered_out=_ordered_out)
     if not text:
         # Streamed deltas with no streamed text left: nothing was shown.
         return "", [], []
@@ -410,7 +423,8 @@ def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[d
     else:
         try:
             whole = reflow_and_label_glued_option_marker(raw)[0]
-            saved = _redact_segment_text(slot, whole)
+            order: list[bool] = []
+            saved = _redact_segment_text(slot, whole, _ordered_out=order)
             if removed:
                 per_delta, _, _ = _redact_segment_text(slot, shown)
                 # Never edit the raw copy to drop such a value: a mask changes
@@ -418,17 +432,30 @@ def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[d
                 # The saved text is one pass over what the model wrote, or the
                 # segment is withheld.
                 reason = _whole_text_refusal(saved, per_delta, removed)
-                if reason and saved[0] != (strict := _redact_segment_text(slot, whole, False))[0]:
+                strict_order: list[bool] = []
+                if (
+                    reason
+                    and saved[0]
+                    != (
+                        strict := _redact_segment_text(
+                            slot, whole, False, _ordered_out=strict_order
+                        )
+                    )[0]
+                ):
                     # A delta boundary split an SRI value, so its delta redacted
                     # the bare digest the whole text keeps. One pass with that
                     # exemption off is main's verdict on the digest; save it if
                     # it passes the same checks, rather than withhold the reply.
                     if not _whole_text_refusal(strict, per_delta, removed):
-                        saved, reason = strict, ""
+                        saved, reason, order = strict, "", strict_order
         except Exception as exc:  # noqa: BLE001 -- any failure must fail closed
             # The type only: a message or traceback could quote the text.
             reason = f"redaction raised {type(exc).__name__}"
         if not reason:
+            if _ordered_out is not None:
+                # One pass wrote these records, and _links_main_shows only drops
+                # some (a count mismatch then keeps that host blocked).
+                _ordered_out[:] = order
             if not removed:
                 return saved
             return saved[0], _links_main_shows(saved[1], saved[0], per_delta, removed), saved[2]
@@ -591,18 +618,38 @@ def _records_hold_removed_credential(
 
 
 def _redact_segment_text(
-    slot: _ChatSlot, text: str, keep_sri_digests: bool = True
+    slot: _ChatSlot,
+    text: str,
+    keep_sri_digests: bool = True,
+    *,
+    _ordered_out: list[bool] | None = None,
 ) -> tuple[str, list[dict], list[dict]]:
-    """Both removers over ``text``, with the records each placeholder needs."""
+    """Both removers over ``text``, with the records each placeholder needs.
+
+    ``_ordered_out`` gets ``[True]``, or ``[False]`` when a record has no
+    placeholder of its own, so the records do not pair with them by order.
+    """
+    if _ordered_out is not None:
+        _ordered_out[:] = [True]
     # Never relaxed by the reader's allowed hosts: what is saved must not depend
     # on the allow-list, so an allowed link is kept as a placeholder with its
     # record and shown again at display time (chat_utils._prepare_messages).
-    redacted, exfil_warnings, blocked_links = redact_exfiltration_urls_with_records(text)
+    redacted, exfil_warnings, blocked_links = redact_exfiltration_urls_with_records(
+        text, _ordered_out=_ordered_out
+    )
     for w in exfil_warnings:
         logger.warning("Exfiltration URL redacted in chat segment: %s", w)
+    links_before = redacted.count(EXFILTRATION_REDACTION_TAG_PREFIX)
     redacted, cred_warnings, matches = redact_credentials_with_records(
         redacted, keep_sri_digests=keep_sri_digests
     )
+    if (
+        _ordered_out is not None
+        and redacted.count(EXFILTRATION_REDACTION_TAG_PREFIX) != links_before
+    ):
+        # A credential span (a PEM block) swallowed a link's placeholder while its
+        # record stays, so the records do not pair with the placeholders by order.
+        _ordered_out[:] = [False]
     for w in cred_warnings:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the redactor's warning names the pattern class, never the matched value; moved verbatim
         logger.warning("Credential redacted in chat segment: %s", w)
@@ -625,10 +672,13 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
     message id and decision strip are left alone: they belong to the model's
     turn, not to a command answered without one.
     """
-    redacted, blocked_links, redactions = _redact_segment_text(slot, text)
+    ordered: list[bool] = []
+    redacted, blocked_links, redactions = _redact_segment_text(slot, text, _ordered_out=ordered)
     meta: dict[str, Any] = {}
     if blocked_links:
         meta["blocked_links"] = blocked_links
+        if ordered == [True]:
+            meta[BLOCKED_LINKS_ORDERED_KEY] = True
     if redactions:
         meta["redactions"] = redactions
     slot.append("assistant", redacted, "msg msg-a", meta=meta or None)
@@ -739,7 +789,10 @@ def _flush_segment(
     # model that later re-reads the line must not take it for an instruction.
     # _redact_segment applies it (_reflow_label_and_audit) to both the streamed
     # text and the raw copy it saves.
-    redacted, blocked_links, redactions = _redact_segment(slot, assistant_text)
+    links_ordered: list[bool] = []
+    redacted, blocked_links, redactions = _redact_segment(
+        slot, assistant_text, _ordered_out=links_ordered
+    )
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
@@ -755,7 +808,9 @@ def _flush_segment(
             # from the redaction above. Passed here rather than written onto the row
             # afterwards so the frame this call broadcasts carries them too -- see
             # _decisions_strip_meta for why that matters.
-            meta=_segment_row_meta(slot, blocked_links, redactions),
+            meta=_segment_row_meta(
+                slot, blocked_links, redactions, links_ordered=links_ordered == [True]
+            ),
         ),
     )
     # The append-only log's copy of the same body. Written here rather than at the
@@ -791,6 +846,8 @@ def _flush_segment(
         newest: dict = {"content": redacted, "ts": last_msg.get("ts", "")}
         if blocked_links:
             newest["blocked_links"] = blocked_links
+            if links_ordered == [True]:
+                newest[BLOCKED_LINKS_ORDERED_KEY] = True
         if redactions:
             newest["redactions"] = redactions
         pending_list.append(newest)

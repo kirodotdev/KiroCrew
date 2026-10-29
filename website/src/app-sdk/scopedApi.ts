@@ -20,6 +20,7 @@ import { noteSessionExpiredResponse } from '../api/sessionExpirySignal'
 import { AcceptedBodyUnreadable, ApiError } from '../api/apiError'
 import { AppApiPermissionError } from './apiError'
 import { useAppIdentity } from './identity'
+import type { SlotPush } from './slotPush'
 
 export interface AppApi {
   /** Unparsed successful response for downloads or streaming; HTTP failures still throw AppApiError.
@@ -51,8 +52,8 @@ export interface AppApiError extends Error {
  *  status, while keeping the `AppApiError` name and `API <status>: <body>`
  *  message apps have always seen. One spelling for "scoped non-2xx". */
 class ScopedApiError extends ApiError implements AppApiError {
-  constructor(status: number, body: string) {
-    super(status, `API ${status}: ${body}`, body)
+  constructor(status: number, body: string, authRequired = false) {
+    super(status, `API ${status}: ${body}`, body, authRequired)
     this.name = 'AppApiError'
   }
 }
@@ -112,6 +113,8 @@ export interface AppSdkContextValue {
   subscribe: (event: string, cb: (data: unknown) => void) => () => void
   navigate: (path: string) => void
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
+  /** The host's per-slot change signal; absent when the host has none (see slotPush.ts). */
+  slotPush?: SlotPush
 }
 
 export const AppSdkContext = createContext<AppSdkContextValue | null>(null)
@@ -190,7 +193,9 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
       // iframe copy of this SDK — detection is a no-op and the throw below is
       // unchanged either way.
       noteStaleOwnerResponse(res.status, text)
-      throw new ScopedApiError(res.status, text)
+      // The gateway's own signed-out 403, read the way api/client reads it, so
+      // a caller can tell "sign in again" from any other refusal (#20398).
+      throw new ScopedApiError(res.status, text, res.status === 403 && res.headers.get('X-Auth-Required') === 'true')
     }
     return res
   }
@@ -294,6 +299,7 @@ export function AppScopedApiProvider({
   subscribeFn = noopSubscribe,
   notifyFn = hostNotify,
   sessionKey,
+  slotPush,
   children,
 }: {
   allowedApiPaths: string[]
@@ -323,6 +329,8 @@ export function AppScopedApiProvider({
    * restricted-session guard fire, since that guard fails open on absence.
    */
   sessionKey?: string
+  /** The host's per-slot change signal (slotPush.ts). Omitted, embeds poll. */
+  slotPush?: SlotPush
   children: ReactNode
 }) {
   const identity = useAppIdentity()
@@ -357,8 +365,9 @@ export function AppScopedApiProvider({
     subscribe: subscribeFn,
     navigate: navigateFn,
     notify: notifyFn,
+    slotPush,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn])
+  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

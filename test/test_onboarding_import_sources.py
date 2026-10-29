@@ -262,9 +262,9 @@ class TestScannerIsolation:
 class TestNormalization:
     """Everything questionable about a descriptor is settled at one boundary.
 
-    Three review rounds each found a different consumer re-deriving a field the
-    registry should have canonicalised, so the invariant under test is that
-    `_normalize_source` is the only place that decides.
+    A consumer that re-derives a field the registry should canonicalise drifts, so
+    the invariant under test is that `_normalize_source` is the only place that
+    decides.
     """
 
     def test_an_env_only_source_with_no_variable_set_is_not_scanned(self, tmp_path):

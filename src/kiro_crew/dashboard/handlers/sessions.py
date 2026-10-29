@@ -30,8 +30,7 @@ if TYPE_CHECKING:
         _MAX_BONUS_DAYS_LEFT,
         _MAX_BONUS_GRANTS,
         _MAX_BONUS_NAME_CHARS,
-        _WHOAMI_UNPROVEN,
-        USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION,
+        USAGE_SCRAPE_ENGINE,
         _safe_float,
         _safe_int,
         _usage_scrape_argv,
@@ -147,8 +146,9 @@ if TYPE_CHECKING:
         _TOOL_POLICY_MEMO,
         _UNREADABLE_SPEC_WARNED,
         _UNREADABLE_SPEC_WARNED_MAX,
+        EXCLUDE_SERVERS_KEY,
         HONOUR_TOOL_REFS_KEY,
-        INCLUDE_LIST_SERVER,
+        INCLUDE_LIST_SERVERS,
         POLICY_INCLUDE_KEY,
         ManagedToolPolicyUnreadable,
         _ambiguous_spec_reason,
@@ -203,12 +203,13 @@ if TYPE_CHECKING:
     from kiro_crew.history import transcript_stem  # noqa: F401
     from kiro_crew.history import transcript_stems  # noqa: F401
     from kiro_crew.history import transcript_withholds_derivation  # noqa: F401
-    from kiro_crew.kiro_cli import kiro_cli_version_at  # noqa: F401
+    from kiro_crew.kiro_cli import chat_agent_engines_at  # noqa: F401
     from kiro_crew.kiro_cli import pin_kiro_cli  # noqa: F401
     from kiro_crew.label_guard import PROSE_OPENERS  # noqa: F401
     from kiro_crew.label_guard import is_verdict_reply  # noqa: F401
     from kiro_crew.label_guard import looks_like_prose  # noqa: F401
     from kiro_crew.llm_helpers import run_bg_oneliner  # noqa: F401
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS  # noqa: F401
     from kiro_crew.mcp_discovery import sync_discovered_servers  # noqa: F401
     from kiro_crew.messaging.link import _in_namespace  # noqa: F401
     from kiro_crew.messaging.link import canonical_key  # noqa: F401
@@ -237,6 +238,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _REASON_ACCOUNT_UNPROVEN,
     _WHOAMI_DIFFERENT,
     _WHOAMI_SAME,
+    _WHOAMI_UNPROVEN,
     _account_type_only,
     _fetch_whoami,
     _fetch_whoami_or_none,
@@ -404,7 +406,8 @@ _usage_fetching = False
 # the same free GetUsageLimits API the primary path uses and prints the usage
 # table, so no prompt reaches a model and the read costs no credits. That holds
 # only on kiro-cli's V2 engine -- the V3 engine sends `/usage` to the model as a
-# prompt -- so the scrape pins V2 (see :func:`_usage_scrape_argv`). It is the
+# prompt -- so the scrape pins V2 while the installed kiro-cli offers it, and
+# does not run at all once V2 is retired (see :func:`_usage_scrape_argv`). It is the
 # automatic fallback whenever the API path returns no plan. What it does cost is
 # a subprocess (whoami + the scrape, up to a minute and a half) on every refresh
 # interval, so a scrape that keeps producing unparseable output (kiro-cli format
@@ -672,9 +675,12 @@ async def _refresh_from_vault() -> None:
     as the after-fingerprint (:func:`vault_identity_snapshot`): once that
     fingerprint matches ``before``, the fields describe the account the
     credential was read for, as the kiro-cli path labels its reading from the
-    whoami adjacent to the publish. The vault stores no e-mail, so none is
-    published; the enterprise profile name rides in from the usage API as it
-    does for the kiro-cli path.
+    whoami adjacent to the publish. Those fields are the ones ``kirocrew kas
+    whoami`` prints (``account_type``, and ``start_url`` when the sign-in recorded
+    its Identity Center portal). The vault stores no e-mail; the e-mail comes
+    from the same GetUsageLimits answer (``isEmailRequired``, as kiro-cli asks),
+    so it describes the credential the fingerprints bracket. The enterprise
+    profile name rides in from the usage API as it does for the kiro-cli path.
     """
     # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
@@ -747,7 +753,7 @@ async def _refresh_from_vault() -> None:
         usage.pop("_profile_arn", None)
         # Whose reading this is: the vault's own claims, from the read whose
         # fingerprint just proved the account unchanged across the credential read.
-        usage.update(identity)
+        usage.update({k: _redact_strings(v) for k, v in identity.items()})
         _publish_usage(usage, vault_fp=before)
         logger.info(
             "Kiro usage refreshed (api, Crew sign-in): %s / %s credits",
@@ -985,8 +991,14 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
 
     async def _run_scrape(
         binary: str, before_spawn: Callable[[], Awaitable[None]] | None = None
-    ) -> str:
+    ) -> str | None:
         """Wrap, spawn and read the ``/usage`` scrape; marks the scrape attempted.
+
+        ``None`` when this kiro-cli has no engine that answers ``/usage`` locally
+        (V2 retired, see :func:`_usage_scrape_argv`): nothing is spawned, the
+        scrape is NOT marked attempted and feeds no back-off, and
+        ``before_spawn`` does not run. A scrape that cannot exist is not one
+        that failed.
 
         The wrap and the spawn stay in this one function so the spawn's argv
         is visibly the sandboxed, cgroup-scoped one. ``before_spawn`` runs
@@ -1010,13 +1022,16 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         every interval. Same form and reason as `papyrus/backend/latex._run`.
         """
         nonlocal proc, sandbox_cleanup, scrape_attempted
-        scrape_attempted = True
-        argv, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
+        prior_attempted, scrape_attempted = scrape_attempted, True
+        wrapped, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
             _wrap_argv_usage_scrape,
             binary,
         )
-        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
+        if wrapped is None:
+            scrape_attempted = prior_attempted
+            return None
+        argv = cgroup_scope_argv(wrapped)  # cgroup DoS ceiling
         if before_spawn is not None:
             await before_spawn()
         proc = await spawn_supervised_oneshot(
@@ -1057,6 +1072,10 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         if _scrape_in_backoff():
             return _REASON_SIGNIN_REQUIRED
         raw = await _run_scrape(binary)
+        if raw is None:
+            # No engine answers `/usage` (V2 retired): nothing corroborates the
+            # missing credential, and `no_credential` alone never decides.
+            return _REASON_ACCOUNT_UNPROVEN
         works = _parse_usage(raw).get("credits_plan") is not None
         _record_scrape_outcome(works)
         return _REASON_ACCOUNT_UNPROVEN if works else _REASON_SIGNIN_REQUIRED
@@ -1094,23 +1113,27 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         # credential from a signed-out profile supplying the numbers. Fetched
         # once here and reused by both the API and text branches below.
         identity = await _fetch_whoami(kiro_bin)
-        # Fail fast on API-key auth. kiro-cli's whoami reports the AuthMethod
-        # enum variant ``ApiKey``; the compare normalizes case and strips
-        # separators so an upstream respelling (``API_KEY``, ``Api-Key``)
-        # still fails fast instead of silently regressing to the slow path —
-        # such accounts hold no SSO/OIDC bearer token, so ``fetch_usage_limits``
-        # would spend its full timeout walking credential stores that cannot
-        # contain one, and the text scrape is no better a source. The
-        # ``reason`` rides the existing unavailable-marker shape so the
-        # frontend can say WHY, with a label specific to this auth type.
-        account_type = identity.get("account_type")
-        if (
-            isinstance(account_type, str)
-            and re.sub(r"[^a-z0-9]", "", account_type.lower()) == "apikey"
-        ):
-            _publish_usage({"available": False, "reason": "api_key_auth"})
-            logger.info("Kiro usage: not available under API key auth; skipping fetch")
-            return None
+
+        # API-key auth: skip the GetUsageLimits API, go straight to the scrape.
+        # kiro-cli's whoami reports the AuthMethod enum variant ``ApiKey``; the
+        # compare normalizes case and strips separators so an upstream respelling
+        # (``API_KEY``, ``Api-Key``) is still recognized. Such accounts hold no
+        # SSO/OIDC bearer token, so ``fetch_usage_limits`` can only 403 after
+        # spending its timeout walking credential stores that cannot contain one
+        # -- but the `/usage` scrape DOES work for them: kiro-cli answers it
+        # locally from its own authenticated client, so the credit table prints
+        # under API-key auth exactly as it does for SSO. So rather than publish
+        # an unavailable marker, skip only the wasted API call and let execution
+        # fall through to the scrape below, which supplies the real number.
+        def _is_api_key(snapshot: dict[str, object]) -> bool:
+            account_type = snapshot.get("account_type")
+            return isinstance(account_type, str) and (
+                re.sub(r"[^a-z0-9]", "", account_type.lower()) == "apikey"
+            )
+
+        skip_usage_api = _is_api_key(identity)
+        if skip_usage_api:
+            logger.info("Kiro usage: API-key auth; skipping the API path, using the /usage scrape")
         # The ExternalIdP type and nothing that names the user: no reading could
         # be tied to this user, so nothing the API returns is published and no
         # number is read from the `/usage` scrape (see _account_type_only). The
@@ -1154,10 +1177,17 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         # handshake, so they are isolated from the maintenance/cron pools. Fails
         # closed (returns None) so we fall through to the text scrape rather than
         # showing a fabricated number.
-        api_result = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            functools.partial(kiro_usage_api.fetch_usage_limits, expected_arn=expected_arn),
-        )
+        if skip_usage_api:
+            # API-key auth has no bearer token the API can use, so the call can
+            # only 403. Synthesize a neutral result (``AUTH_OTHER`` -> no reason)
+            # so a later no-reading does not misadvise "sign in again" on an
+            # account that is signed in fine, and go straight to the scrape.
+            api_result = kiro_usage_api.UsageResult(None, kiro_usage_api.AUTH_OTHER)
+        else:
+            api_result = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(kiro_usage_api.fetch_usage_limits, expected_arn=expected_arn),
+            )
         # ``usage`` is the number; ``auth_state`` is why it is missing when it is,
         # and is only ever consulted to pick the unavailable message below.
         api_usage = api_result.usage
@@ -1253,6 +1283,18 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             before.update((await _adjacent_identity()) or {})
 
         raw = await _run_scrape(kiro_bin, before_spawn=_read_before)
+        if raw is None:
+            # This kiro-cli offers no engine that answers `/usage` locally (V2
+            # retired), so the API was the only source and it gave no plan.
+            # Same outcome as a parked scrape, judged the same way against an
+            # adjacent whoami, but not reported as parked: nothing will lift it.
+            no_scrape_identity = (await _adjacent_identity()) or {}
+            if _whoami_agreement(identity, no_scrape_identity) != _WHOAMI_SAME:
+                api_usage = None
+            _cache_without_scrape(
+                api_usage, no_scrape_identity, reason=_unavailable_reason(api_result)
+            )
+            return None
         after = (await _adjacent_identity()) or {}
         parsed = _parse_usage(raw)
         if parsed.get("credits_plan") is not None:
@@ -1262,14 +1304,28 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             # neither is the scrape being broken).
             _record_scrape_outcome(True)
             agreement = _whoami_agreement(before, after)
-            if agreement != _WHOAMI_SAME:
+            # An API-key sign-in carries no identity (no email / start URL /
+            # profile ARN), so its whoami pair is always `unproven`. That alone
+            # is not a reason to drop its reading: the scrape is kiro-cli's own
+            # `/usage` for the one signed-in key. But `unproven` is also what
+            # any other identity-less sign-in yields (ExternalIdP, a lapsed
+            # type-only sign-in, signed out), and the top-of-refresh whoami says
+            # nothing about who was signed in around the scrape. So `unproven`
+            # publishes only when the whoami on BOTH sides of the scrape is
+            # itself an API-key sign-in; anything else discards, as on the
+            # non-API-key path.
+            unproven_api_key = (
+                agreement == _WHOAMI_UNPROVEN and _is_api_key(before) and _is_api_key(after)
+            )
+            discard = agreement != _WHOAMI_SAME and not unproven_api_key
+            if discard:
                 # `different`: the child ran across a switch, so its numbers
                 # belong to whoever was signed in at that instant -- unknowable,
-                # so unpublishable. `unproven`: no identity either side, so a
-                # switch between the two would be invisible; there is no source
-                # left to fall back to, so this refresh ends with no reading.
-                # Either way the cache is judged against the account signed in
-                # NOW, so nothing of a previous one is kept.
+                # so unpublishable. `unproven` (non-API-key): no identity either
+                # side, so a switch between the two would be invisible; there is
+                # no source left to fall back to, so this refresh ends with no
+                # reading. Either way the cache is judged against the account
+                # signed in NOW, so nothing of a previous one is kept.
                 logger.info(
                     "Kiro usage: the signed-in account could not be proven across "
                     "the /usage scrape (%s); discarding its reading",

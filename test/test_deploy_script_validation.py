@@ -35,17 +35,25 @@ class TestAttachBackendValidation:
     def _mod(self):
         self.mod = _load_script("attach_backend.py")
 
-    def test_valid_args_pass(self):
+    def test_valid_args_pass(self, capsys):
         """Known-good inputs should not raise."""
-        self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
+        assert (
+            self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app") is None
+        )
+        assert capsys.readouterr().err == ""
 
-    def test_sso_plus_profile_passes(self):
+    def test_sso_plus_profile_passes(self, capsys):
         """IAM Identity Center derived names contain '+'."""
-        self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
+        assert (
+            self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
+            is None
+        )
+        assert capsys.readouterr().err == ""
 
-    def test_empty_profile_allowed(self):
+    def test_empty_profile_allowed(self, capsys):
         """Empty profile (default) should pass."""
-        self.mod._validate_args("", "us-east-1", "ABCDEFGHIJKLM", "demo-app")
+        assert self.mod._validate_args("", "us-east-1", "ABCDEFGHIJKLM", "demo-app") is None
+        assert capsys.readouterr().err == ""
 
     def test_invalid_region_rejects(self):
         with pytest.raises(SystemExit) as exc:
@@ -67,9 +75,10 @@ class TestAttachBackendValidation:
             self.mod._validate_args("has spaces!", "us-west-2", "E1A2B3C4D5E6F7", "slug")
         assert exc.value.code == 2
 
-    def test_14_char_dist_id_valid(self):
+    def test_14_char_dist_id_valid(self, capsys):
         """14-char dist IDs are valid."""
-        self.mod._validate_args("", "eu-west-1", "E1A2B3C4D5E6F8", "app")
+        assert self.mod._validate_args("", "eu-west-1", "E1A2B3C4D5E6F8", "app") is None
+        assert capsys.readouterr().err == ""
 
     def test_dist_id_lowercase_rejects(self):
         """Lowercase dist IDs should be rejected."""
@@ -83,15 +92,23 @@ class TestDetachBackendValidation:
     def _mod(self):
         self.mod = _load_script("detach_backend.py")
 
-    def test_valid_args_pass(self):
-        self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
+    def test_valid_args_pass(self, capsys):
+        assert (
+            self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app") is None
+        )
+        assert capsys.readouterr().err == ""
 
-    def test_sso_plus_profile_passes(self):
+    def test_sso_plus_profile_passes(self, capsys):
         """IAM Identity Center derived names contain '+'."""
-        self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
+        assert (
+            self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
+            is None
+        )
+        assert capsys.readouterr().err == ""
 
-    def test_empty_profile_allowed(self):
-        self.mod._validate_args("", "ap-southeast-2", "ABCDEFGHIJKLM", "demo")
+    def test_empty_profile_allowed(self, capsys):
+        assert self.mod._validate_args("", "ap-southeast-2", "ABCDEFGHIJKLM", "demo") is None
+        assert capsys.readouterr().err == ""
 
     def test_invalid_region_rejects(self):
         with pytest.raises(SystemExit) as exc:

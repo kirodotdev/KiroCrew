@@ -128,6 +128,8 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.split import (
     bounded_for_delivery,
+    fence_line_safe_offset,
+    rebalance_fenced_cuts,
     split_markdown_safe,
     split_markdown_safe_with_tier,
 )
@@ -387,11 +389,19 @@ class DiscordRenderer(Renderer):
                     offset = await asyncio.to_thread(
                         safe_split_offset, rest, limit, _redact_all, _delivered_form
                     )
+                    offset = fence_line_safe_offset(rest, offset)
                     if not offset:
                         return
                     graded.append(rest[:offset])
                     rest = rest[offset:]
-                chunks = [*graded, rest]
+                # A piece cut inside an open fence is closed and the next reopened;
+                # the repaired pieces are what the whole-sequence grade below reads.
+                chunks = rebalance_fenced_cuts([*graded, rest])
+                if any(len(chunk) > limit for chunk in chunks):
+                    return
+                # As on the source path: these boundaries are not the ones any
+                # tier analysis read, so nothing of this segment is uploaded.
+                self._segment_uploads_safe = False
                 # The per-step grades are pairwise, and the whole-sequence reading
                 # -- every piece redacted alone, then joined -- is not implied by
                 # them: canonicalising DROPS a link target, so markup spanning a
@@ -498,9 +508,20 @@ class DiscordRenderer(Renderer):
             # answer is one this caller can take -- grading raw and re-checking after
             # would deadlock the segment, since a deterministic search returns the
             # same rejected answer every rotation.
-            offset = await asyncio.to_thread(
-                safe_split_offset, split_source, limit, _redact_all, _delivered_form
-            )
+            #
+            # A cut inside an open fence is closed on the head and reopened on the
+            # tail, the same repair the splitter makes; the budget shrinks by what
+            # that repair adds so the sealed head still fits.
+            budget = limit
+            while True:
+                offset = await asyncio.to_thread(
+                    safe_split_offset, split_source, budget, _redact_all, _delivered_form
+                )
+                offset = fence_line_safe_offset(split_source, offset)
+                head_len = len(rebalance_fenced_cuts([split_source[:offset], "x"])[0])
+                if not offset or head_len <= limit or budget <= 1:
+                    break
+                budget -= head_len - limit
             # The search grades pairs of ``split_source`` alone, but what ships is
             # ``split_source[offset:]`` with the HELD remainder glued on -- the image
             # reference this rotation keeps out of the splitter. So its answer is a
@@ -512,8 +533,12 @@ class DiscordRenderer(Renderer):
             # a longer source the pair it graded ends at ``split_source``, not at the
             # held tail. Re-grade what is actually delivered and withhold when it
             # still severs, exactly as the presentation branch does.
-            candidate_sealed = [split_source[:offset]]
-            candidate_tail = split_source[offset:] + raw[len(split_source) :]
+            candidate_head, candidate_tail = rebalance_fenced_cuts(
+                [split_source[:offset], split_source[offset:] + raw[len(split_source) :]]
+            )
+            candidate_sealed = [candidate_head]
+            if offset and len(candidate_sealed[0]) > limit:
+                offset = 0
             if offset and await asyncio.to_thread(
                 severs_a_credential,
                 [*candidate_sealed, candidate_tail],
@@ -529,6 +554,10 @@ class DiscordRenderer(Renderer):
                 return
             sealed = candidate_sealed
             tail = candidate_tail
+            # The tier analysis that set ``_segment_uploads_safe`` read the
+            # splitter's boundary, not this one: a fenced reference the cut now
+            # crosses can read as real in the tail. Extract nothing from it.
+            self._segment_uploads_safe = False
         for ch in sealed:
             self._buf = [ch]
             self._delivery_text = None

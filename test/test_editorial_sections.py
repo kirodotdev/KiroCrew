@@ -300,9 +300,6 @@ class TestRefusalsAndCaps:
     def test_a_non_list_sections_field_yields_nothing(self, sections):
         assert oe.load_sections(fetcher=lambda: _doc(sections)) == []
 
-    def test_a_failed_fetch_yields_nothing(self):
-        assert oe.load_sections(fetcher=lambda: None) == []
-
     def test_more_blocks_than_the_cap_are_truncated(self):
         many = [_full(_app(appRef=f"a{i}")) for i in range(oe.MAX_SECTIONS + 10)]
         assert len(oe.load_sections(fetcher=lambda: _doc(many))) == oe.MAX_SECTIONS

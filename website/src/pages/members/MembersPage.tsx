@@ -87,7 +87,7 @@ import { MembersPageSidePanel, useMembersPageSidePanel } from './MembersPageSide
 import { MembersPageThreadColumn, useMembersPageThread, useMembersPageThreadView } from './MembersPageThread'
 import { MEMBER_PARAM, ROSTER_DRAWER_UNCOVERED_PX, type GoneNotice, type PostCreateFailure, type ProfileCardOpen } from './membersPageModel'
 import { useMembersPageCrewEditor } from './useMembersPageCrewEditor'
-import { useMembersPageDrawers, useMembersPageDrawerSwipes } from './useMembersPageDrawers'
+import { useMembersPageDrawers, useMembersPageDrawerSwipes, useMembersPageTrackpadSwipe } from './useMembersPageDrawers'
 import { useMembersPageLayout } from './useMembersPageLayout'
 import { useMembersPageNavigation } from './useMembersPageNavigation'
 import { useMembersPageRoster, useMembersPageRosterSignals } from './useMembersPageRoster'
@@ -533,6 +533,9 @@ export default function MembersPage() {
     setSearchParams, profile, setProfile, liveSlots, slotsLoaded, active, activeMemberName,
   })
   const { schedAtStake, schedulesMountedRef, runInTerminalScope } = sidePanel
+  // Desktop: a two-finger trackpad swipe moves the same side panel the phone
+  // drag above does -- left reveals the Dashboard tab, right hides the panel.
+  useMembersPageTrackpadSwipe({ layout, profileCard, sidePanel, drawers, active, createOpen, membersRootRef })
   const schedules = useMembersPageSchedules({
     crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
   })
@@ -856,6 +859,18 @@ export default function MembersPage() {
         existingNames={existingNames}
       />
       </div>
+
+      {/* Desktop trackpad drag of a docked panel: the panel rides as a sheet, and
+          this spacer holds the chat's right edge at the sheet's left edge, so the
+          chat follows the drag and the swap to the docked column is not a step. */}
+      {drawers.deskSlide && layout.beside && (
+        <motion.div
+          aria-hidden="true"
+          data-testid="member-side-panel-spacer"
+          className="h-full shrink-0"
+          style={{ width: drawers.deskSpacerW }}
+        />
+      )}
 
       {/* Side panel — the chat page's tabbed SidePanel, docked to this page.
           Read-only observation lives in its permanent first tab (Crew

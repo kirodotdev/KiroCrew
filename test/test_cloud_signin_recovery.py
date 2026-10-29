@@ -1074,7 +1074,6 @@ class _NoSigninThread(threading.Thread):
         super().start()
 
 
-@pytest.mark.asyncio
 class TestSigninRestartRoute:
     async def _unsigned_job(self, tmp_path):
         state = _state(
@@ -1085,6 +1084,7 @@ class TestSigninRestartRoute:
         )
         return state, _read(resp)["id"]
 
+    @pytest.mark.asyncio
     async def test_it_starts_a_new_sign_in(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         state.cloud_launch_engine = TargetEngine(
@@ -1096,6 +1096,7 @@ class TestSigninRestartRoute:
         assert resp.status == 202
         assert state.cloud_launch_store.get(job_id).signin_detected is True
 
+    @pytest.mark.asyncio
     async def test_the_route_never_re_provisions(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         engine = CountingEngine(FakeHandle(url="https://x/?user_code=B", signed=True))
@@ -1109,6 +1110,7 @@ class TestSigninRestartRoute:
         assert engine.signins == 1
         assert state.cloud_launch_store.get(job_id).instance_id == "i-0abc123456789def0"
 
+    @pytest.mark.asyncio
     async def test_the_claim_adopts_before_it_saves_running(self, tmp_path):
         """`reap_orphans` skips a job only when it is terminal or owned by THIS
         process, so a RUNNING retry that is not yet adopted is what a first-use
@@ -1144,6 +1146,7 @@ class TestSigninRestartRoute:
         assert store.reap_orphans() == []
         assert store.get(job_id).status == lj.RUNNING
 
+    @pytest.mark.asyncio
     async def test_a_confirmed_sign_in_is_not_restarted(self, tmp_path):
         """A stale tab restarting a sign-in another tab already confirmed: the
         claim would reset `signin_detected`, and an SSM failure after it would
@@ -1166,6 +1169,7 @@ class TestSigninRestartRoute:
         assert engine.signins == 0
         assert store.get(job_id).signin_detected is True
 
+    @pytest.mark.asyncio
     async def test_the_reprobe_refuses_a_job_whose_identity_cannot_be_read(self, tmp_path):
         """The recheck is the OTHER way into the same corruption: it probes the box
         with `job.login_target`, which is the substituted DEFAULT when the stored
@@ -1200,6 +1204,7 @@ class TestSigninRestartRoute:
         assert after.signin_detected is False
         assert lj.target_is_unreadable(after), "the unreadable marker was cleared"
 
+    @pytest.mark.asyncio
     async def test_a_job_whose_identity_cannot_be_read_is_refused(self, tmp_path):
         """`LaunchJob.from_dict` substitutes the DEFAULT identity (Builder ID) when
         the persisted `login_target` cannot be parsed, and marks the job FAILED.
@@ -1232,6 +1237,7 @@ class TestSigninRestartRoute:
         assert after.status == lj.FAILED
         assert lj.target_is_unreadable(after)
 
+    @pytest.mark.asyncio
     async def test_an_unknown_job_is_404(self, tmp_path):
         state, _ = await self._unsigned_job(tmp_path)
         resp = await hc.api_cloud_launch_signin_restart(
@@ -1239,6 +1245,7 @@ class TestSigninRestartRoute:
         )
         assert resp.status == 404
 
+    @pytest.mark.asyncio
     async def test_a_launch_that_never_created_a_crew_is_400(self, tmp_path):
         state = _state(tmp_path)
         job = state.cloud_launch_store.create(
@@ -1305,6 +1312,7 @@ class TestSigninRestartRoute:
         assert store.get(job.id).terminal
         assert hc._cancels(state).get(job.id) is later
 
+    @pytest.mark.asyncio
     async def test_the_job_is_claimed_before_the_worker_starts(self, tmp_path, monkeypatch):
         """The guard is only a guard if the state it reads is already written.
 
@@ -1329,6 +1337,7 @@ class TestSigninRestartRoute:
         assert resp.status == 202
         assert observed == [(lj.RUNNING, lj.STEP_ACTIVE)]
 
+    @pytest.mark.asyncio
     async def test_a_second_restart_is_refused_while_the_first_runs(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         job = state.cloud_launch_store.get(job_id)
@@ -1339,6 +1348,7 @@ class TestSigninRestartRoute:
         assert resp.status == 409
         assert _read(resp)["code"] == "launch_already_running"
 
+    @pytest.mark.asyncio
     async def test_a_launch_with_no_instance_yet_still_blocks(self, tmp_path):
         """Until `provision` returns, nothing says which instance a launch will sign
         in on, so a launch that has none yet blocks a restart on every crew."""
@@ -1357,6 +1367,7 @@ class TestSigninRestartRoute:
         assert body["code"] == "launch_already_running"
         assert body["job"]["id"] == other.id
 
+    @pytest.mark.asyncio
     async def test_a_job_on_another_crew_does_not_block_the_restart(self, tmp_path):
         """The sign-in acts on one instance. Crew B's launch, already on its own
         instance and waiting on its own code, cannot race a sign-in on crew A."""
@@ -1385,6 +1396,7 @@ class TestSigninRestartRoute:
         assert untouched.status == lj.AWAITING_SIGNIN
         assert untouched.signin is not None and untouched.signin.code == "B"
 
+    @pytest.mark.asyncio
     async def test_two_restarts_on_one_crew_start_one_login(self, tmp_path):
         """The RUNNING claim is persisted under the launch lock, so of two restarts on
         one crew arriving together one is admitted, the other gets 409, and exactly
@@ -1433,6 +1445,7 @@ class TestSigninRestartRoute:
             hc._start_signin_worker(state, job, state.cloud_launch_engine, threading.Event())
         assert touched == [], f"store I/O on the event loop path: {touched}"
 
+    @pytest.mark.asyncio
     async def test_a_cancel_landing_between_claim_and_worker_is_honoured(
         self, tmp_path, monkeypatch
     ):
@@ -1468,6 +1481,7 @@ class TestSigninRestartRoute:
         assert out.status != lj.DONE or out.signin_detected is False
         assert out.step(lj.STEP_SIGNIN).state != lj.STEP_DONE
 
+    @pytest.mark.asyncio
     async def test_a_failed_thread_start_keeps_the_preserved_code(self, tmp_path, monkeypatch):
         """The claim must not drop the old device code: the box has not replaced the
         login yet, so the old poller is still live and must stay tracked. A 503 on
@@ -1488,6 +1502,7 @@ class TestSigninRestartRoute:
         out = store.get(job_id)
         assert out.signin is not None and out.signin.code == "KEEP", "a live poller lost its record"
 
+    @pytest.mark.asyncio
     async def test_a_failed_thread_start_does_not_wedge_launches(self, tmp_path, monkeypatch):
         """`_claim_signin` persists RUNNING before the worker thread exists. If
         `Thread.start` then raises, nothing would ever move the job off RUNNING --
@@ -1527,6 +1542,7 @@ class TestSigninRestartRoute:
         )
         assert resp2.status == 202
 
+    @pytest.mark.asyncio
     async def test_it_is_owner_only(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         app = web.Application()
@@ -1539,6 +1555,7 @@ class TestSigninRestartRoute:
         resp = await hc.api_cloud_launch_signin_restart(req)
         assert resp.status == 403
 
+    @pytest.mark.asyncio
     async def test_the_route_is_registered(self):
         import inspect
 

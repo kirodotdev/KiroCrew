@@ -1107,11 +1107,10 @@ def _load_evaluator():
 class TestAcceptEvaluatorInvariant:
     """No model-authored argv may reach subprocess.
 
-    This is the property three review rounds converged on: constraining a
-    spec-supplied argv (allowlist, basename check) never closes the class,
-    because the script runs as an approved wrapper and Kiro Crew's
-    denied-command floor cannot see the argv it receives on stdin. The fix was
-    to stop accepting one at all.
+    Constraining a spec-supplied argv (allowlist, basename check) never closes
+    the class, because the script runs as an approved wrapper and Kiro Crew's
+    denied-command floor cannot see the argv it receives on stdin. So the
+    evaluator accepts no argv at all.
     """
 
     def test_pr_checks_builds_its_own_argv(self):

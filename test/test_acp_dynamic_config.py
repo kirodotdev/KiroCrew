@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -164,20 +164,34 @@ class TestSyncEffortLevels:
         client._acp_config_options = [
             {"id": "effort", "options": [{"value": "low"}, {"value": "high"}]},
         ]
-        with patch(
-            "kiro_crew.dashboard.chat_persistence.update_reasoning_effort_values"
-        ) as mock_update:
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_persistence.update_reasoning_effort_values"
+            ) as mock_update,
+            patch(
+                "kiro_crew.dashboard.chat_persistence.register_reasoning_effort_values"
+            ) as mock_register,
+        ):
             client._sync_effort_levels()
-        mock_update.assert_called_once_with(["low", "high"])
+        # kiro's list seeds the global fallback order rather than only joining it.
+        assert mock_update.call_args_list == [call(["low", "high"])]
+        assert mock_register.call_count == 0
 
     def test_does_not_sync_when_no_levels(self):
         client = AcpClient()
         client._acp_config_options = []
-        with patch(
-            "kiro_crew.dashboard.chat_persistence.update_reasoning_effort_values"
-        ) as mock_update:
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_persistence.update_reasoning_effort_values"
+            ) as mock_update,
+            patch(
+                "kiro_crew.dashboard.chat_persistence.register_reasoning_effort_values"
+            ) as mock_register,
+        ):
             client._sync_effort_levels()
-        mock_update.assert_not_called()
+        assert client.get_valid_effort_levels() == []
+        assert mock_update.call_count == 0
+        assert mock_register.call_count == 0
 
 
 # Lists each advertised-option backend can report: pi adds ``minimal``, deepseek

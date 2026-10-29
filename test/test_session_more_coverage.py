@@ -447,6 +447,7 @@ class TestWarmPoolQueueRaces:
         mgr._fill_warm_pool = AsyncMock()
         mgr._discard_pool_provider = AsyncMock()
         await mgr._sweep_warm_pool_once()
+        assert mgr._warm_pool.qsize() == 0  # not re-enqueued as healthy
         mgr._discard_pool_provider.assert_awaited_once()
         assert mgr._discard_pool_provider.await_args.args[0] is dead
 

@@ -90,6 +90,30 @@ on:
       - "PR Readiness Self-Heal Sweep"
       - "Ship Report"
     types: [completed]
+    # MUST equal the repository default branch, and a rename that misses this
+    # line silences the watcher rather than breaking it: every `schedule:` run
+    # would then carry the new name, this filter would drop all of them, and no
+    # red scheduled run would ever be surfaced again. A `branches:` filter
+    # cannot evaluate `${{ }}`, so the name has to be written out here;
+    # test_scheduled_failure_watch.py ties it to ci.yml's own filter so the
+    # rename fails a test instead of going quiet.
+    #
+    # Why filter at all: the job below admits only
+    # `workflow_run.event == 'schedule'`, and a `schedule:` run always runs on
+    # the default branch, so a run from any other branch can only evaluate that
+    # gate as false. `branches` matches the UPSTREAM run's head branch, so a
+    # watched workflow's pull-request run -- CodeQL and Fork PR Label fire on
+    # every pull request -- is not dispatched at all instead of being dispatched
+    # and skipped.
+    #
+    # Two things it does not remove. GitHub stamps a `workflow_run`-triggered
+    # run with the default branch whatever triggered it, so "CI Runner Watchdog"
+    # (itself `workflow_run`-driven) still dispatches on every completion and
+    # still skips; narrowing that one needs its own failure-issue step, not a
+    # trigger filter. And a pull request whose HEAD branch is itself named
+    # `main`, which a fork contributor's default branch commonly is, still
+    # matches this filter and is still skipped by the event gate.
+    branches: [main]
 
 permissions:
   issues: write

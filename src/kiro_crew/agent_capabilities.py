@@ -222,14 +222,14 @@ def _materialize(base: dict, rows: dict[str, dict], catalog: dict[str, str]) -> 
             result["mcpServers"][server].setdefault("autoApprove", []).append(tool)
     for section in ("tools", "allowedTools"):
         result[section] = list(rows[section])
+    # Ambient loading serves the global mcp.json, whose servers can back a grant too.
+    ambient, servers = result.get("includeMcpJson", True) is not False, result["mcpServers"]
     result["allowedTools"] = [
         ref
         for ref in result["allowedTools"]
         if not ref.startswith("@")
-        or (
-            ref[1:].split("/", 1)[0] in result["mcpServers"]
-            and not result["mcpServers"][ref[1:].split("/", 1)[0]].get("disabled")
-        )
+        or (ambient and ref[1:].split("/", 1)[0] not in servers)
+        or not servers.get(ref[1:].split("/", 1)[0], {"disabled": True}).get("disabled")
     ]
     # Preserve the relative order of all surviving custom resource entries.
     wanted = list(rows["resources"].values()) + list(rows["skills"].values())
@@ -961,7 +961,7 @@ class CapabilityService:
         error = ""
         try:
             parent_path, parent, descriptor = _source(parent_name, project)
-            if intent and descriptor != intent["parent"]:
+            if intent and _parent_identity(descriptor) != _parent_identity(intent["parent"]):
                 raise CapabilityError("parent_identity_changed")
         except CapabilityError as exc:
             if not lineage:
@@ -1835,14 +1835,14 @@ def require_unmanaged_template(name: str) -> None:
 
 
 def _parent_identity(descriptor: dict) -> dict:
-    """The Parent file a descriptor names, without the project it was resolved from.
+    """The Parent file a descriptor names, as two resolutions of it are compared.
 
-    ``_source`` records the project it searched in, but a global Parent is the
-    same file from every project that does not shadow its name, so that field
-    alone never makes two resolutions different Parents. Name, scope, source and
-    resolved path still must all match.
+    A global Parent is the same file from every project that does not shadow its
+    name, so there the project never counts; a project Parent belongs to its own
+    project, so it does. Name, scope, source and resolved path must all match.
     """
-    return {key: value for key, value in descriptor.items() if key != "project"}
+    glob = descriptor.get("scope") == "global"
+    return {key: value for key, value in descriptor.items() if key != "project" or not glob}
 
 
 def prepare_member_capabilities(member: str, project_dir: str | Path | None = None) -> dict:

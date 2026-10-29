@@ -121,7 +121,7 @@ def refresh_after_rebuild(
             # Recorded as a pass-level failure FIRST: with no pass ever run,
             # an open gate over an empty failure set would spawn forks on
             # never-re-filtered grants — the one fail-open among siblings
-            # that all record "*" (Opus round-47).
+            # that all record "*".
             global _fork_refresh_failed
             _fork_refresh_failed = frozenset({"*"})
             _fork_refresh_settled.set()

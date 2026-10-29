@@ -12,6 +12,7 @@ shared fixture and stand-ins live in ``session_pool_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import threading
@@ -434,7 +435,7 @@ class TestDiscardReaping:
         assert mgr._warm_pool.qsize() == 0
 
     @pytest.mark.asyncio
-    async def test_hard_kill_never_signals_mock_or_sentinel_pids(self):
+    async def test_hard_kill_never_signals_mock_or_sentinel_pids(self, caplog):
         """A provider stand-in whose pid resolves to a non-int (Mock coerces
         to 1 via __index__) or to pid<=1 must never be signaled — an unguarded
         kill would SIGTERM init / the CI container entrypoint."""
@@ -444,11 +445,21 @@ class TestDiscardReaping:
         pid_one = _make_provider()
         pid_one._client = SimpleNamespace(_pid=1)
 
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.session_pid")
         with patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill:
             _sync_kill_provider(mock_provider)
             _sync_kill_provider(pid_one)
 
         mock_kill.assert_not_called()
+        refusals = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "kiro_crew.session_pid"
+            and r.getMessage().startswith("_sync_kill_provider: refusing to signal invalid pid")
+        ]
+        # Both stand-ins were turned away by the pid guard, not by some later gate.
+        assert len(refusals) == 2
+        assert refusals[1].endswith(" 1")
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX signal semantics")
     @pytest.mark.asyncio

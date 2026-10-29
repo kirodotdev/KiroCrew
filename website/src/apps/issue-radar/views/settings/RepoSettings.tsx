@@ -664,7 +664,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
             <button
               onClick={() => disconnectMutation.mutate()}
               disabled={disconnectMutation.isPending}
-              className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md bg-danger text-white hover:opacity-90 disabled:opacity-40 cursor-pointer"
+              className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md bg-danger text-danger-fg hover:opacity-90 disabled:opacity-40 cursor-pointer"
             >
               <Trash2 size={13} /> {disconnectMutation.isPending ? i18nT('apps.issueRadar.views.settings.repoSettings.disconnecting') : i18nT('apps.issueRadar.views.settings.repoSettings.confirm_disconnect')}
             </button>

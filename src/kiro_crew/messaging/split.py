@@ -64,7 +64,7 @@ source, and UTF-16 length limits.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 from kiro_crew.messaging.display_safety import (
@@ -87,6 +87,8 @@ __all__ = [
     "bounded_for_delivery",
     "iter_fence_spans",
     "iter_fence_lines",
+    "rebalance_fenced_cuts",
+    "fence_line_safe_offset",
     "truncate_utf8",
     "FENCE_OUTSIDE",
     "FENCE_OPEN",
@@ -1104,6 +1106,77 @@ def iter_fence_spans(text: str) -> Iterator[tuple[int, int]]:
         fence = after
     if fence is not None:
         yield open_at, len(text)
+
+
+#: The start of a line that is, or could become, a fence delimiter: up to three
+#: spaces, then a backtick or tilde. A cut after this prefix splits a delimiter.
+_DELIMITER_PREFIX_RE = re.compile(r" {0,3}[`~]")
+
+
+def fence_line_safe_offset(text: str, offset: int) -> int:
+    """*offset*, moved back to its line's start when the cut would split a delimiter.
+
+    :func:`rebalance_fenced_cuts` reads fence state only from finished lines, so a
+    cut that lands inside a delimiter line breaks the fence it repairs: half a
+    closer leaves the reopened block unclosed, and half of a nested ```` ```lang ````
+    line reads as a closer on one side and loses its backticks on the other. The
+    cut moves to the start of its line when the part before the cut starts like a
+    delimiter, or when a mid-line cut leaves the part after it starting like one
+    (that part opens the next piece's first line). The answer can be ``0``, which callers
+    already read as "no cut". A moved cut is a NEW boundary: the caller grades
+    what it sends again, as it does for every repaired pair.
+    """
+    if offset <= 0 or offset >= len(text):
+        return offset
+    line_start = text.rfind("\n", 0, offset) + 1
+    partial = text[line_start:offset]
+    if _DELIMITER_PREFIX_RE.match(partial):
+        return line_start
+    # The rest of a cut line starts the next piece's first line, after the reopener,
+    # so a mid-line cut right before a backtick or tilde run turns body text into a
+    # delimiter there.
+    if partial and _DELIMITER_PREFIX_RE.match(text, offset):
+        return line_start
+    return offset
+
+
+def rebalance_fenced_cuts(pieces: Sequence[str]) -> list[str]:
+    """*pieces* (consecutive SOURCE slices) with every cut through a fence sealed.
+
+    A caller that cuts raw source at an offset of its own choosing -- a
+    credential-graded boundary rather than one :func:`split_markdown_safe` chose --
+    can land inside an open fence. Sent as is, the head carries an opener with no
+    closer and the next piece starts mid-block, so the code shows as prose and the
+    next piece's real closer opens a block that never ends. Each piece that ends
+    inside a fence gets the fence's own closer on a new line, and the piece after
+    it is reopened with the original opener line, the same repair the splitter
+    makes at its own cuts. The last piece is never closed: it may still be
+    streaming toward its real closer.
+
+    The fence state at a cut is read from the whole source up to it, through
+    :func:`_advance`, and only from lines that end before the cut: a line split
+    by the cut has not finished, so it has not opened or closed anything yet.
+    """
+    out: list[str] = []
+    fence: _Fence | None = None
+    carry = ""
+    reopen = ""
+    last = len(pieces) - 1
+    for i, piece in enumerate(pieces):
+        body = reopen + piece
+        carry += piece
+        *done, carry = carry.split("\n")
+        for line in done:
+            fence = _advance(fence, line + "\n")
+        if i == last or fence is None:
+            out.append(body)
+            reopen = ""
+            continue
+        if not body.endswith("\n"):
+            body += "\n"
+        out.append(body + fence.closer)
+        reopen = fence.opener + "\n"
+    return out
 
 
 def iter_fence_lines(text: str) -> Iterator[tuple[str, str]]:

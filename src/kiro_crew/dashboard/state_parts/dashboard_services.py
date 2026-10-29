@@ -46,6 +46,7 @@ from kiro_crew.dashboard.state_parts.notification_log import (
     sweep_expired_notifications,
 )
 from kiro_crew.dashboard.state_parts.transcript_rows import _mark_permission_resolved
+from kiro_crew.dashboard.turn_dispatch import BackgroundTurnAbandoned, mark_turn_unstarted
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.preview_text import strip_markdown_preview
@@ -355,20 +356,21 @@ async def run_background_turn(self: DashboardState, slot: "_ChatSlot", coro: Any
         await asyncio.wait_for(sema.acquire(), timeout=self._BACKGROUND_QUEUE_WAIT_SECS)
     except asyncio.TimeoutError:
         coro.close()
+        mark_turn_unstarted(slot)
         self._log.warning(
             "background turn abandoned after waiting %ds for a permit: slot=%s cap=%d",
             self._BACKGROUND_QUEUE_WAIT_SECS,
             slot.key,
             self._bg_turn_cap,
         )
-        raise TimeoutError(
-            f"queued {self._BACKGROUND_QUEUE_WAIT_SECS}s behind the background-turn "
-            f"cap ({self._bg_turn_cap} concurrent) without a free slot"
-        ) from None
+        # Its own TimeoutError, so the dispatch reports a turn that never ran
+        # rather than one the turn ceiling stopped.
+        raise BackgroundTurnAbandoned(self._BACKGROUND_QUEUE_WAIT_SECS, self._bg_turn_cap) from None
     except BaseException:
         # Cancelled while queued: the turn never ran, so close its coroutine
         # rather than leaving an un-awaited coroutine warning behind.
         coro.close()
+        mark_turn_unstarted(slot)
         raise
     finally:
         if queued:

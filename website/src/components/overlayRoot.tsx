@@ -133,6 +133,14 @@ export function MountAfterCommit({ children }: { children: ReactNode }) {
   return mounted ? children : null
 }
 
+/** The local pane's overlay container, for a layer that renders OUTSIDE the
+ *  local pane's React tree yet belongs to the local Crew (the enterprise relock
+ *  notice, drawn by the gate that wraps App). Null before App mounts it, and in
+ *  an embedded or test tree that has none. */
+export function localOverlayContainer(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-local-overlay-root]')
+}
+
 /** Owns the local pane's overlay container and hides it while `hidden`. */
 export function LocalOverlayRoot({ hidden, children }: { hidden: boolean; children: ReactNode }) {
   const [container] = useState(() => {

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.steer_queue import _requeue_unconsumed_steers
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+    from kiro_crew.dashboard.chat_turn.turn_marker import _gateway_shutdown_requested
 
 
 async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
@@ -662,6 +663,77 @@ async def _end_turn_tail(
         predecessor_actor=turn_exit.actor,
         predecessor_turn_id=turn_exit.turn_id,
     )
+
+
+def _hand_off_unstarted_turn(
+    state: DashboardState,
+    slot: _ChatSlot,
+    task: "asyncio.Task",  # type: ignore[type-arg]
+) -> None:
+    """End the queue cycle of a dispatch that held *slot* but never started its turn.
+
+    Every ``_run_chat`` exit hands the queue off (:func:`_end_turn_tail`), but a
+    dispatch can end without entering ``_run_chat``: a dashboard monitor wake
+    refused before its runner (``nudge_dashboard_fire._run_dashboard_turn``), or
+    an unattended turn whose wait for a background-turn permit gave up or was
+    cancelled (``DashboardState.run_background_turn``). It held ``slot.task``
+    while it waited, so a send queued behind it; without this, that entry waits
+    for the next send (on an app-owned slot with no other sender, indefinitely)
+    and the cycle never sends ``chat_done``.
+
+    Called from the dispatch's done callback (``turn_dispatch.spawn_guarded_turn``),
+    so *task* has ended. Owed only while *task* still holds ``slot.task``, the
+    exit marked its turn unstarted (``turn_dispatch.mark_turn_unstarted``), no
+    send has reserved the floor, and the slot is still the registered, open,
+    local one. Never while the gateway is going away: the queue stays for the
+    history save, as the parked drain leaves it. The cycle's end runs on a task
+    that takes ``slot.task`` before this returns, as :func:`_launch_synthesis`
+    does, so a send arriving meanwhile queues behind it and
+    :func:`_finish_queue_cycle` hands it the floor.
+    """
+    if (
+        slot.task is not task
+        or slot._unstarted_generation != slot._turn_generation
+        # *task* has ended, so this reads a send's admission reservation.
+        or slot.running
+        or state._slots.get(slot.key) is not slot
+        or slot.is_closing
+        or slot.executor == "remote"
+        or _gateway_shutdown_requested(state)
+    ):
+        return
+    cycle_end = asyncio.create_task(_end_unstarted_cycle(state, slot))
+    slot.task = cycle_end
+    state._background_tasks.add(cycle_end)
+    cycle_end.add_done_callback(state._background_tasks.discard)
+
+
+async def _end_unstarted_cycle(state: DashboardState, slot: _ChatSlot) -> None:
+    """The queue hand-off :func:`_end_turn_tail` gives a turn with no outcome, alone.
+
+    The rest of that tail does not apply: no session was acquired, so there is
+    no reset to consume, wait to retire or sign-in outcome to record, and the
+    AutoNudge re-arm stays with the fire that dispatched the turn, which settles
+    its own result. The holds are the tail's: memory preparation that is still
+    running or did not succeed holds the queue and parks it for preparation's
+    end, and a recorded sign-in failure holds it until the next send.
+    """
+    try:
+        memory_admitted = _memory_preparation_settled(state)
+        if slot._queue and not memory_admitted:
+            _arm_parked_queue_drain(state, slot, notice=False)
+        await _hand_off_queue(
+            state,
+            slot,
+            drain=memory_admitted and not slot._last_turn_auth_required,
+            allow_automatic_successor=memory_admitted,
+        )
+    except Exception:
+        logger.warning(
+            "queue hand-off after an unstarted turn failed for slot %s",
+            slot.key,
+            exc_info=True,
+        )
 
 
 #: Meta key on the error row of a turn that raised before its main ``try``. The

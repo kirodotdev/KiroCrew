@@ -129,6 +129,12 @@ class ChannelTurn:
     note nobody asked for is an unsolicited post into the room, and it would
     start the unprompted cooldown for a turn that never ran. Defaults False."""
 
+    skill_trigger_text: Optional[str] = None
+    """What skill triggers match instead of ``user_text``. A turn Kiro Crew
+    generated (an auto-nudge cycle) puts its own header before the words the
+    operator wrote, and a trigger must not fire on that header. ``None`` matches
+    ``user_text``, so every existing adopter is byte-identical."""
+
     bind_provider: Optional[Callable[[Any], None]] = None
     """``(provider) -> None``, called once the session's provider exists.
 

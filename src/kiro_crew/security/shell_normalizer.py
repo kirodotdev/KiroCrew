@@ -1024,11 +1024,11 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
     for idx, token in enumerate(tokens):
         assign = _LOCAL_ASSIGN_RE.match(token)
         # ``NAME+=tail`` APPENDS, and the pattern above cannot match it at all (``+`` is
-        # not a name character), so an appended PROGRAM word was invisible here: `F=fi;
-        # F+=nd; $F <fenced> -exec cat {} +` ran a `find` this resolver never saw, while
-        # its single-assignment twin `F=fin; ${F}d` -- closed in an earlier round --
-        # denied (found in review). Seven spellings did it, including an empty initial
-        # value, repeated appends, a quoted tail and an append feeding a braced use.
+        # not a name character), so an appended PROGRAM word would be invisible here:
+        # `F=fi; F+=nd; $F <fenced> -exec cat {} +` runs a `find` this resolver would never
+        # see, while its single-assignment twin `F=fin; ${F}d` is denied. The spellings
+        # include an empty initial value, repeated appends, a quoted tail and an append
+        # feeding a braced use.
         #
         # Append is in the same closed class as those: the tail is a LITERAL, so what the
         # shell will run is decided by the text alone. That is what separates it from

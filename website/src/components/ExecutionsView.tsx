@@ -23,7 +23,8 @@ const PAGE_SIZE = 20
 
 const fmtDuration = (ms: number) => {
   if (ms < 1000) return fmtUnit(ms, 'millisecond', { maximumFractionDigits: 0 })
-  const s = ms / 1000
+  // Round to the tenth shown before the minute test, so 59.96s reads `1m 0s`, not `60.0s`.
+  const s = Math.round(ms / 100) / 10
   if (s < 60) return fmtUnit(s, 'second', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
   return fmtDurationParts([[Math.floor(s / 60), 'minute'], [Math.floor(s % 60), 'second']])
 }

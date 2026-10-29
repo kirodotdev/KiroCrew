@@ -186,9 +186,9 @@ def open_dir_pinned(
             refusal=refusal,
         )
     except OSError as exc:
-        # Same translation as `create_and_open_dir_pinned`. Review found this sibling
-        # still leaking the raw errno: `O_NOFOLLOW` refuses the link correctly, but a
-        # direct caller (the data home, a backup root, a restore destination) got an
+        # Same translation as `create_and_open_dir_pinned`. Without it the raw errno
+        # leaks: `O_NOFOLLOW` refuses the link correctly, but a direct caller (the data
+        # home, a backup root, a restore destination) would get an
         # `ELOOP`/`ENOTDIR` traceback instead of the one refusal type every other path on
         # this surface produces and the CLI boundary contains.
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):
@@ -323,11 +323,10 @@ def stage_tree_pinned(
                         # Only a merge legitimately meets an existing destination
                         # directory. Anywhere else the destination tree is one this
                         # process just created, so a name already occupying it is a
-                        # planted link or file -- and swallowing that made the pinned
-                        # open below refuse the subtree and the whole restore report
-                        # success with the archive's subtree missing. Raised in
-                        # review, and the same silent-partial shape this change fixes
-                        # elsewhere, so it is now a refusal rather than a skip.
+                        # planted link or file -- and swallowing that would make the
+                        # pinned open below refuse the subtree and the whole restore
+                        # report success with the archive's subtree missing. That is
+                        # a silent partial, so it is a refusal rather than a skip.
                         if not skip_existing:
                             raise refusal(
                                 f"refusing to stage into {path!r}: a name already "
@@ -342,7 +341,7 @@ def stage_tree_pinned(
                         # there is nothing left to copy. A DESTINATION that stopped
                         # being one is different: the archive's subtree still exists
                         # and now has nowhere to go, so continuing would report success
-                        # with that subtree missing. Raised in review. A merge is the
+                        # with that subtree missing. A merge is the
                         # one caller that may legitimately meet a foreign destination
                         # tree, so it keeps the skip.
                         if not skip_existing:
@@ -387,8 +386,7 @@ def stage_tree_pinned(
                         # either.
                         #
                         # So the fidelity is given up on purpose: a restored tree keeps its
-                        # default directory mode and a current mtime. That partly gives
-                        # back a fidelity fix made earlier in this change, and it is the
+                        # default directory mode and a current mtime. That is the
                         # right trade -- applying untrusted archive metadata to a live
                         # directory is the hazard this module exists to refuse.
                     finally:
@@ -417,8 +415,8 @@ def stage_tree_pinned(
                     # The destination name was taken between this walk starting and the
                     # publish. Without `skip_existing` that is not a merge -- the caller
                     # believes the tree it is writing into is free -- so it is a real
-                    # condition, but it escaped as a bare traceback out of a restore.
-                    # Review found it. Translated to this module's refusal type, the same
+                    # condition, and must not escape as a bare traceback out of a restore.
+                    # Translated to this module's refusal type, the same
                     # way ELOOP/ENOTDIR already are, so callers have one type to contain
                     # and the message says which name is occupied.
                     raise refusal(
@@ -437,9 +435,9 @@ def stage_tree_pinned(
         # A SOURCE root that was swapped or removed after the caller's listing-time
         # screen is omitted, not fatal -- the same treatment every other unusable source
         # entry gets, and it now reaches MANIFEST.json rather than only the console. The
-        # refusal type is caught alongside the raw errno because `open_dir_pinned` now
-        # translates ELOOP/ENOTDIR (review asked for that so DIRECT callers stop getting
-        # tracebacks); this call site is the one place that wants the softer outcome.
+        # refusal type is caught alongside the raw errno because `open_dir_pinned`
+        # translates ELOOP/ENOTDIR (so DIRECT callers get no tracebacks); this call site
+        # is the one place that wants the softer outcome.
         if isinstance(exc, OSError) and exc.errno not in (
             errno.ELOOP,
             errno.ENOTDIR,
@@ -464,18 +462,17 @@ def stage_tree_pinned(
         # pointing somewhere it has not validated, and that should surface rather than
         # be materialised through whatever the path resolves to.
         # Whether the ROOT is ours to stamp comes from the kernel, not from a name.
-        # `not dst.exists()` was a check with a window after it: a forced restore removes
+        # `not dst.exists()` is a check with a window after it: a forced restore removes
         # the workspace, the gateway recreates it before the mkdir, and the live directory
-        # is then stamped with the archive's metadata. Review caught it, and it is the
-        # third instance of this change's first invariant -- no write, and no decision
-        # governing a write, may be made through a path name.
+        # is then stamped with the archive's metadata. This module's first invariant:
+        # no write, and no decision governing a write, may be made through a path name.
         root_dst = create_and_open_dir_pinned(
             dst,
             what=f"{what} destination",
-            # Stated by the caller, NOT derived. Deriving it from `skip_existing` was the
+            # Stated by the caller, NOT derived. Deriving it from `skip_existing` is the
             # obvious guess and it is wrong: the snapshot's own staging destination already
             # exists when the walk starts, and it has no `skip_existing` either, so that
-            # derivation refused every snapshot. The pre-existing snapshot suite caught it.
+            # derivation would refuse every snapshot.
             # Only a REPLACE knows it removed the tree it is about to write.
             must_create=must_create,
             refusal=refusal,

@@ -16,6 +16,7 @@ from kiro_crew.cli import main
 from kiro_crew.config.paths import data_home
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
+    MAX_SHORT_STRING,
     MODEL_NAME_HINT,
     TEMPLATE_NAME_HINT,
     TEMPLATE_NAME_RE,
@@ -795,7 +796,26 @@ class TestAgentModel:
         # The default row's " *" marker is one extra token before MODEL.
         assert rows["default"][column + 1] == "(inherit)"
 
-    @pytest.mark.parametrize("bad", ["-rf", "a b", "x" * 501, "../model"])
+    def test_an_over_long_model_is_refused_naming_the_length_cap(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Well-formed but over the cap: the shape hint would describe a shape it has.
+        bad = "x" * (MAX_SHORT_STRING + 1)
+        assert _MODEL_NAME_RE.match(bad)
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", f"--model={bad}")
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert f"invalid model format (expected at most {MAX_SHORT_STRING} characters)" in err
+        assert MODEL_NAME_HINT not in err
+        assert bad not in err
+        assert cfg_path.read_text(encoding="utf-8") == before
+
+    @pytest.mark.parametrize("bad", ["-rf", "a b", "../model", "a/" + "b" * 255])
     def test_a_malformed_model_is_refused_without_echoing_it(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
     ) -> None:
@@ -928,3 +948,9 @@ class TestRefusalHintsMatchTheirGrammar:
     def test_model_hint_names_auto_and_the_qualified_form(self) -> None:
         assert "'auto'" in MODEL_NAME_HINT
         assert "provider/model" in MODEL_NAME_HINT
+
+    def test_model_hint_states_the_qualified_length_bound(self) -> None:
+        # The bound the hint names is the one the pattern enforces.
+        assert "at most 256 characters" in MODEL_NAME_HINT
+        assert _MODEL_NAME_RE.match("a/" + "b" * 254)
+        assert not _MODEL_NAME_RE.match("a/" + "b" * 255)

@@ -60,6 +60,13 @@ export const ImageVersionCtx = createContext<string | null>(null)
  *  that happens to contain `%XX` (which must be preserved verbatim). */
 export const MdSourceCtx = createContext<string | null>(null)
 
+/** The document line the block handed to ReactMarkdown starts on. The renderer
+ *  splits a document into blocks at code fences and parses each on its own, so
+ *  a node's `position.start.line` counts from its block. Text comments add this
+ *  offset through `data-block-start`; ImgWithFallback adds it from here, so an
+ *  image below a fence gets its document line. */
+export const MdBlockStartCtx = createContext(1)
+
 /**
  * Per-consumer override for rendered markdown LINKS.
  *

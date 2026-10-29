@@ -431,6 +431,11 @@ class TestMarkMcpOauthCompleted:
 
         chat_runner._mark_mcp_oauth_completed(state, slot, "github", True)
 
+        assert slot.messages[-1] == {
+            "role": "mcp_oauth",
+            "content": "legacy",
+            "meta": {"server_name": "github"},
+        }
         assert not any(
             call.args and call.args[0] == "chat_message_update"
             for call in state.broadcast_ws.call_args_list

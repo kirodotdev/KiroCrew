@@ -61,6 +61,9 @@ RADAR_ENTRY_TYPE = "radar/recorded"
 #: the type the fold matches on and the type the registry declares are one value.
 WORK_ENTRY_TYPE = "work/recorded"
 
+#: One worker charge relayed into the board's own log (see the type's note below).
+WORK_CHARGE_ENTRY_TYPE = "work/charged"
+
 #: Work-item phases. Two classifications hang off this enum and do not coincide:
 #: the TTL-active phases age toward the claim TTL, and the editing phases are the
 #: ones a crew may hold at most ONE item in. Neither can be collapsed into a bool
@@ -679,15 +682,86 @@ TYPES: tuple[EntryType, ...] = (
                 enum_closed=True,
                 note="Which kind of item event this is; absent only for goal.",
             ),
+            Field(
+                "board_copy",
+                JSON_BOOL,
+                note=(
+                    "True on the copy of a worker's report the gateway wrote into the "
+                    "board's own log. A report without it is a worker-log copy, which the "
+                    "rebuild's join of worker logs never lets undo a board copy."
+                ),
+            ),
+            Field(
+                "mirror",
+                JSON_BOOL,
+                note=(
+                    "True on the worker's own copy of a report whose board copy landed. "
+                    "The work and worktree folds skip it (the board copy is the record); "
+                    "the workers fold reads it as the worker's own report."
+                ),
+            ),
+            Field(
+                "relay",
+                JSON_STRING,
+                note=(
+                    "Set on a copy the gateway relayed up from a sub-board's log into its "
+                    "parent board's log: the origin entry as '<unit>:<seq>'. A relayed "
+                    "copy is relayed again only upward, so a chain cannot loop."
+                ),
+            ),
         ),
         note=(
             "One entry per work-ledger write, appended to the ACTING session's log and "
             "keyed by the conductor's slot. A conductor action and a worker report are "
-            "the two writers, each sets only its own fields, and the work fold rebuilds "
-            "the board from these entries across the conductor's and its bound workers' "
-            "units, so the ledger's files are a cache of the crew log rather than a "
-            "record beside it. The work ledger therefore DEPENDS on this log: with the "
+            "the two writers, each sets only its own fields. A worker report is also "
+            "written into the conductor's own log, and a sub-board's entries are relayed "
+            "into its parent board's log, so the work fold rebuilds a board from the "
+            "conductor's own units alone and the ledger's files are a cache of the crew "
+            "log rather than a record beside it. The work ledger therefore DEPENDS on this log: with the "
             "emitter off the tools refuse rather than keeping a document of their own."
+        ),
+    ),
+    EntryType(
+        WORK_CHARGE_ENTRY_TYPE,
+        "One bound worker's charge, relayed by the gateway into the board's own log.",
+        (
+            Field(
+                "slot",
+                JSON_STRING,
+                required=True,
+                note="The board whose log this copy lands in: the conductor slot.",
+            ),
+            Field(
+                "by",
+                JSON_STRING,
+                required=True,
+                note="The worker session key that incurred the charge.",
+            ),
+            Field(
+                "source",
+                JSON_STRING,
+                required=True,
+                enum=("turn", "subagent", "background"),
+                enum_closed=True,
+                note="Which kind of closer in the worker's log carried the charge.",
+            ),
+            Field(
+                "closer",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The closer this charge copies, as '<unit>:<seq>' of the worker's log. "
+                    "A reader counts one closer once however many copies it meets."
+                ),
+            ),
+            Field("credits", JSON_FLOAT, note="What the closer billed. Absent is not zero."),
+            Field("duration_ms", JSON_INT, note="How long the closer's work ran."),
+        ),
+        note=(
+            "Written when a turn, subagent or background closer lands in a session bound "
+            "to a work item, into the newest unit of the board that bound it; a board "
+            "bound to a parent board relays it up again. The project-report fold costs "
+            "tasks from these, so it reads only the board's own units."
         ),
     ),
 )

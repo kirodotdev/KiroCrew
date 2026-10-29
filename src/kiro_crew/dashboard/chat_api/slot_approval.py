@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         sel,
         session_grant,
         slot_not_found,
+        trust_carries,
         yolo_policy_permits,
     )
 
@@ -522,6 +523,7 @@ async def apply_approval_mode(
             for _sharing in state._slots.values():
                 if effective_session_key(_sharing) == _granted_key:
                     _sharing._trust = True
+                    _sharing._trust_card_scoped = False
             state.sessions.set_approval_policy(_granted_key, "auto")
             linked_ch = getattr(slot, "_slack_channel", None)
             if (
@@ -536,6 +538,7 @@ async def apply_approval_mode(
         else:
             for s in state._slots.values():
                 s._trust = True
+                s._trust_card_scoped = False
                 state.sessions.set_approval_policy(effective_session_key(s), "auto")
             if mgr:
                 for ch in mgr._channels.values():
@@ -706,7 +709,7 @@ async def apply_approval_mode(
     # to every slot sharing a session, so two slots addressing one key always agree
     # by the time this runs and iteration order cannot pick a winner.
     for slot in state._slots.values():
-        policy = "auto" if slot._trust or safety_override().is_active() else ""
+        policy = "auto" if trust_carries(slot) or safety_override().is_active() else ""
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
     state.push_slots_update()
@@ -816,7 +819,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     request_app = str(request.get("app") or "")
-    name = request.match_info["slot"]
+    # A Crew Mode conductor's approval card decides a WORKER's request through this
+    # same route (``crew_workers.api_crew_worker_approve``): that route gates the
+    # owner, refuses app tokens and other roots' workers, reads and narrows the
+    # body, and hands over ``(worker slot key, body)``. Nothing else sets it.
+    delegated = request.get("kirocrew_crew_worker_approve")
+    name = delegated[0] if delegated else request.match_info["slot"]
 
     def audit_caller() -> str:
         return f"app:{request_app}" if request_app else f"dashboard:{name}"
@@ -824,7 +832,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return slot_not_found()
-    body, body_err = await read_bounded_json(request)
+    body: dict[str, Any] | None
+    body_err: web.Response | None
+    if delegated:
+        body, body_err = dict(delegated[1]), None
+    else:
+        body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
@@ -979,7 +992,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
         else:
             owner._trust = True
-            state.sessions.set_approval_policy(effective_session_key(owner), "auto")
+            # A conductor card's "Trust this worker" trusts THAT worker only; a
+            # trust pressed in the slot's own pane keeps the usual inheritance.
+            owner._trust_card_scoped = bool(delegated)
+            state.sessions.set_approval_policy(
+                effective_session_key(owner), "auto" if trust_carries(owner) else ""
+            )
             action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
     # Defer setting _trust_reads until after the approval future is consumed
@@ -1072,7 +1090,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # longer-lived decision that no yolo deny expires.
         if not yolo_policy_permits():
             for s in state._slots.values():
-                if not (s._trust or s._trust_reads):
+                if not (trust_carries(s) or s._trust_reads):
                     state.sessions.set_approval_policy(effective_session_key(s), "")
             state.push_slots_update()
         action = "approved"

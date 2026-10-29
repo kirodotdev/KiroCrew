@@ -299,6 +299,7 @@ class McpServerInfo:
     scopes: list[str] = field(default_factory=list)
     client_id: str = ""
     # unknown | ok | error | probing | outdated | disabled | needs_auth | registry
+    # | routed (a secret:// server the running gateway starts; not probed here)
     status: str = "unknown"
     tools: list[str] = field(default_factory=list)
     error: str = ""

@@ -133,6 +133,7 @@ from kiro_crew.vector_memory_runtime import recall as _recall
 from kiro_crew.vector_memory_runtime import retirement as _retirement
 from kiro_crew.vector_memory_runtime import semantic as _semantic
 from kiro_crew.vector_memory_runtime import store_bookkeeping as _store_bookkeeping
+from kiro_crew.vector_memory_runtime import term_index as _term_index  # noqa: F401
 from kiro_crew.vector_memory_runtime.embedding import (  # noqa: F401
     _EmbeddingVector,
     _RecallQuery,
@@ -244,6 +245,7 @@ _AUDITABLE_REJECT_CODES = {
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
     SemanticRejectCode.VALUE_EMPTY,
+    SemanticRejectCode.WORK_STATE,
 }
 
 _SECURITY_REJECT_CODES = {
@@ -1321,10 +1323,17 @@ class VectorMemoryStore:
         return _lessons.has_any_decodable_lesson(self)
 
     def delete_lesson(
-        self, rule_substring: str, repo_scope: str | None = None, *, exact: bool = False
+        self,
+        rule_substring: str,
+        repo_scope: str | None = None,
+        *,
+        exact: bool = False,
+        keep_one: bool = False,
     ) -> bool:
         """Delete lessons whose value contains rule_substring."""
-        return _lessons.delete_lesson(self, rule_substring, repo_scope, exact=exact)
+        return _lessons.delete_lesson(
+            self, rule_substring, repo_scope, exact=exact, keep_one=keep_one
+        )
 
     def get_lessons_context(
         self,

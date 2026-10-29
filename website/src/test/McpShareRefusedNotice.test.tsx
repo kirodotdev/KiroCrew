@@ -2,9 +2,8 @@
 //
 // Contract under test:
 // - a server on the share list whose launch the gateway refused is named, with
-//   the restart line and a link to Developer > MCP Management, where it is approved.
-// - the link lands on /developer?tab=mcp-pool, a route served whether or not
-//   Developer Mode shows it in the side rail.
+//   the restart line and a link to Settings > Developer > MCP Management, where it is approved.
+// - the link lands on /settings/developer/mcp-pool.
 // - the list comes from the gateway's `share_refused`, which matches a refusal
 //   recorded under a slash-named server's alias.
 // - a failed status read renders an error notice; a 403 for a non-owner is silent;
@@ -63,7 +62,7 @@ function mount(ui: React.ReactNode) {
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/capabilities" element={ui} />
-          <Route path="/developer" element={<Where />} />
+          <Route path="/settings/*" element={<Where />} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -95,7 +94,7 @@ describe('McpShareRefusedNotice', () => {
     const link = screen.getByRole('link', { name: 'Review in MCP Management' })
     expect(link).toHaveAttribute('href', MCP_MANAGEMENT_PATH)
     fireEvent.click(link)
-    expect(await screen.findByTestId('where')).toHaveTextContent('/developer?tab=mcp-pool')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/settings/developer/mcp-pool')
   })
 
   it('opens MCP Management in a new tab while the page holds staged edits', async () => {
@@ -117,6 +116,25 @@ describe('McpShareRefusedNotice', () => {
     mount(<McpShareRefusedNotice />)
     await screen.findByTestId('mcp-share-refused', undefined, WAIT)
     expect(screen.getByRole('link', { name: 'Review in MCP Management' })).not.toHaveAttribute('target')
+  })
+
+  it('renders the refusal as an error notice with the agent hand-off', async () => {
+    mockApi.mcpGatewayStatus.mockResolvedValue(
+      status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
+    )
+    mount(<McpShareRefusedNotice />)
+    const notice = await screen.findByTestId('mcp-share-refused', undefined, WAIT)
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('offers no agent hand-off while the page holds staged edits', async () => {
+    mockApi.mcpGatewayStatus.mockResolvedValue(
+      status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
+    )
+    mount(<McpShareRefusedNotice stagedChanges />)
+    await screen.findByTestId('mcp-share-refused', undefined, WAIT)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
   })
 
   it('uses the singular form for one server', async () => {

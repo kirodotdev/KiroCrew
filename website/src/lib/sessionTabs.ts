@@ -275,5 +275,10 @@ export function tabStatusPulses(status: TabStatus): boolean {
 
 /** Ellipsize a tab label. Returns the input untouched when it already fits. */
 export function truncateTabTitle(title: string, max: number = TAB_TITLE_MAX): string {
-  return title.length > max ? title.slice(0, max) + '…' : title
+  if (title.length <= max) return title
+  // Cut on a code-point boundary: a UTF-16 slice through an emoji would leave
+  // its lone high surrogate, which renders as a replacement glyph.
+  const head = title.slice(0, max)
+  const last = head.charCodeAt(head.length - 1)
+  return (last >= 0xd800 && last <= 0xdbff ? head.slice(0, -1) : head) + '…'
 }

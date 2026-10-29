@@ -62,6 +62,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     _failed_write_calls = turn._failed_write_calls
     _native_card_output = turn._native_card_output
     _native_card_output_len = turn._native_card_output_len
+    _native_child_tc = turn._native_child_tc
     _native_result_seen = turn._native_result_seen
     _native_tc_card = turn._native_tc_card
     _pending_dir_for_digest = turn._pending_dir_for_digest
@@ -324,8 +325,9 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     # for a genuine MCP call, NOT model-authored result/title text —
     # so a forged marker under a shell/non-directive tool is ignored.
     # A native sub-agent's tool calls DO surface here (flat events
-    # tagged in _native_tc_card) but have no independently bindable
-    # slot, so they are refused rather than applied to the parent —
+    # tagged in _native_child_tc, whether or not the child has a card)
+    # but have no independently bindable slot, so they are refused
+    # rather than applied to the parent —
     # combined with spawn_run sub-agents running their own loop, no
     # sub-agent can ever arm/mutate its parent (isolation).
     _dir_tool = _pending_dir_tool.get(event.tool_call_id, "")
@@ -384,7 +386,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         #
         # ISOLATION FIRST, though: a NATIVE sub-agent's tool calls
         # surface as flat events on this parent stream (tagged in
-        # _native_tc_card) and have no independently bindable slot of
+        # _native_child_tc) and have no independently bindable slot of
         # their own. On a backend that emits no ``_meta.kiro`` such a
         # frame reaches here with _dir_tool == "", while the record the
         # child's tool parked is keyed by the PARENT's session — so
@@ -395,7 +397,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # ordering the check first also keeps a legitimate parent
         # directive from being consumed by a child's frame.
         _in_digest = _pending_input_digest.get(event.tool_call_id, "")
-        if event.tool_call_id in _native_tc_card:
+        if event.tool_call_id in _native_child_tc:
             # The identity gate files an identified call under
             # _pending_dir_tool, not _seen_tool_identity, so the
             # directive name for the audit row is _dir_tool.
@@ -432,7 +434,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             _oob = None
         elif _in_digest and any(
             _pending_input_digest.get(_ntc) == _in_digest
-            for _ntc in _native_tc_card
+            for _ntc in _native_child_tc
             if _ntc != event.tool_call_id
         ):
             # PROVENANCE AMBIGUOUS: a native sub-agent call in this
@@ -560,7 +562,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # text overwrite the applied outcome in the transcript.
         _out = _dir_consumed_out[event.tool_call_id]
     elif _dir_tool:
-        if event.tool_call_id in _native_tc_card:
+        if event.tool_call_id in _native_child_tc:
             # SINGLE-CONSUME: one tool call can surface MORE THAN ONE
             # result frame (a mid-stream content frame and the final
             # status=completed rawOutput frame — the same reason the
@@ -904,18 +906,28 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 # The stored rows are already correct; a client
                 # reconciles from slot detail on its next fetch.
                 logger.debug("mcp-app flag broadcast failed", exc_info=True)
-    # Fire PostToolUse hooks
-    _tool_name = _pending_tools.pop(event.tool_call_id, "")
-    try:
-        _redacted_out_bounded = _redacted_out[:2000]
-        await _fire(
-            turn,
-            HOOK_EVENT_POST_TOOL_USE,
-            tool_name=_tool_name,
-            tool_response={"output": _redacted_out_bounded},
-        )
-    except Exception:
-        logger.debug("PostToolUse hook error", exc_info=True)
+    # Fire PostToolUse hooks, once per call, on its terminal result: a
+    # progress frame that carries partial output (opencode sends one) is not
+    # the finished call, and retiring the call's name on it would leave the
+    # finished result with none.
+    if _tool_terminal:
+        _tool_name = _pending_tools.pop(event.tool_call_id, "")
+        # The spec's own hooks match a tool in kiro-cli's names, which KAS's
+        # call title is not; the id the turn learned for the call names it.
+        _post_identity = turn._pending_tool_ids.pop(event.tool_call_id, None)
+        try:
+            _redacted_out_bounded = _redacted_out[:2000]
+            await _fire(
+                turn,
+                HOOK_EVENT_POST_TOOL_USE,
+                tool_name=_tool_name,
+                tool_response={"output": _redacted_out_bounded},
+                tool_id=(_post_identity.tool_id or None) if _post_identity else None,
+                tool_identity=_post_identity.tool_identity if _post_identity else "",
+                mcp_server=_post_identity.mcp_server if _post_identity else "",
+            )
+        except Exception:
+            logger.debug("PostToolUse hook error", exc_info=True)
     if (
         _tool_terminal
         and not _compact_after_turn_noticed

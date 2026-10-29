@@ -118,7 +118,7 @@ TAB_REFUSE_REASONS = frozenset({REASON_BUILD_MISMATCH})
 #: ``target_missing`` because a runtime predicate the step's control needs
 #: (``UI_RUNTIME_PREDICATES``) is unmet, so the control cannot be drawn.
 REASON_PREDICATE_UNMET = "predicate_unmet"
-#: ``target_missing`` on a ``gate`` step: the gate (developer mode, a preview
+#: ``target_missing`` on a ``gate`` step: the gate (the terminal, a preview
 #: flag) is off. The guide carries ``blocker: {kind, gate, setting_id}`` so the
 #: agent can propose turning it on; the guide resumes once it is on.
 REASON_GATE_OFF = "gate_off"

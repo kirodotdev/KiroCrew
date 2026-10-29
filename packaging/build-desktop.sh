@@ -771,6 +771,13 @@ build_backend_windows() {
   # interactive cmd window keeps their own PYTHONPATH afterwards.
   mkdir -p "$out/bin"
   printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/bin/kirocrew.cmd"
+  # pip also dropped Scripts\kirocrew.exe, whose embedded shebang is THIS build
+  # machine's absolute python.exe path, so it dies with "Fatal error in
+  # launcher" once the bundle is installed anywhere else. Replace it
+  # with the same relocatable shim: Scripts\ is one level below the bundle
+  # root like bin\, so "%~dp0..\python.exe" resolves the same interpreter.
+  rm -f "$out/Scripts/kirocrew.exe" "$out/Scripts/kirocrew-script.py"
+  printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/Scripts/kirocrew.cmd"
 
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/python.exe" -s -P -m kiro_crew --version >/dev/null \
@@ -785,6 +792,7 @@ build_backend_windows() {
     rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 \
            include libs tcl \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64 \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64_dotprod \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_x86_64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_arm64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_x86_64 \
@@ -1283,33 +1291,44 @@ print(p["sha256"])' "$cache/manifest.json" "$file")"
     # Stage the four beside the executable, where the loader looks first. This
     # is the deployment the bundle already relies on elsewhere: the Python
     # runtime it ships carries vcruntime140.dll next to its own interpreter,
-    # for the same reason.
+    # for the same reason. They come from Microsoft's redistributable, pinned
+    # in packaging/vc-runtime-pin.json (installer and each DLL sha256-verified,
+    # fail closed), never from this build host's System32: the application
+    # directory wins over System32, so a stale host copy would shadow a user's
+    # newer runtime. vc_runtime.py also records the version in
+    # VC-RUNTIME-VERSION beside BUNDLED-VERSION.
     #
     # The runtime is one of two things the executable needs and the MSI does not
     # bring. The other is DirectML: it imports DMLCreateDevice1 from
     # directml.dll as a static import, so the loader resolves it before main.
-    # That one is left to the host because it is an OS component on desktop
-    # Windows, which is where the app runs and what an unbundled kiro-cli
-    # install already relies on -- but a build host without it (a Windows Server
-    # Core image carries none) needs it supplied, and the probe below is where
-    # that shows up.
-    local crt_dir crt
-    local -a crt_missing=()
-    crt_dir="$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:\\Windows}}")/System32"
-    for crt in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
-      if [ -f "$crt_dir/$crt" ]; then
-        cp -a "$crt_dir/$crt" "$dest/$crt"
-      else
-        crt_missing+=("$crt")
-      fi
-    done
-    if [ "${#crt_missing[@]}" -ne 0 ]; then
-      echo "ERROR: this build host has no Visual C++ runtime to stage beside kiro-cli" >&2
-      echo "       $crt_dir lacks: ${crt_missing[*]}" >&2
-      echo "       kiro-cli.exe imports them and cannot start without them." >&2
-      echo "       Install the Visual C++ 2015-2022 x64 redistributable." >&2
-      exit 1
+    # DirectML is deliberately NOT bundled: it is an OS component on desktop
+    # Windows, which is where the app runs and what upstream's own standalone
+    # kiro-cli installer relies on too. A build host without it (a Windows
+    # Server Core image carries none) needs it supplied, and the probe below is
+    # where that shows up.
+    #
+    # Fetched exactly like the kiro-cli archive above: a sha-verified cache
+    # entry, else a fresh download into a cache-local temp file renamed into
+    # place only once it verifies.
+    local vcrt_cache vcrt_source vcrt_sha vcrt_url vcrt_bundle vcrt_fresh
+    vcrt_cache="$HOME/.cache/kirocrew-build/vc-runtime"
+    mkdir -p "$vcrt_cache"
+    vcrt_source="$(python3 "$ROOT/packaging/vc_runtime.py" source)"
+    # Native Windows Python prints CRLF; command substitution removes only LF.
+    vcrt_source="${vcrt_source%$'\r'}"
+    vcrt_sha="${vcrt_source%% *}"
+    vcrt_url="${vcrt_source#* }"
+    vcrt_bundle="$vcrt_cache/$vcrt_sha-VC_redist.x64.exe"
+    if [ ! -f "$vcrt_bundle" ] || ! kiro_cli_sha_ok "$vcrt_sha" "$vcrt_bundle"; then
+      vcrt_fresh="$(mktemp "$vcrt_cache/.download.XXXXXX")"
+      curl --proto '=https' --tlsv1.2 -fsSL "$vcrt_url" -o "$vcrt_fresh"
+      kiro_cli_sha_ok "$vcrt_sha" "$vcrt_fresh" \
+        || { rm -f "$vcrt_fresh"; echo "ERROR: VC++ redistributable sha256 mismatch: refusing to bundle" >&2; exit 1; }
+      rm -f "$vcrt_bundle"
+      mv -f "$vcrt_fresh" "$vcrt_bundle"
     fi
+    python3 "$ROOT/packaging/vc_runtime.py" stage "$(cygpath -w "$dest")" \
+      --bundle "$(cygpath -w "$vcrt_bundle")"
   else
     local tmp
     tmp="$(mktemp -d)"

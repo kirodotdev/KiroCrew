@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from body_stream_helpers import attach_body
+from named_cases_helpers import named_cases
 
 from kiro_crew import model_registry
 from kiro_crew.acp_backends import model_registry_namespace
@@ -114,28 +115,32 @@ def _qualified_of_length(n: int) -> str:
 
 
 class TestGrammar:
-    @pytest.mark.parametrize("name", QUALIFIED)
-    def test_qualified_nested_and_colon_ids_are_accepted(self, name):
+    @pytest.mark.parametrize(
+        "name",
+        [
+            *named_cases("test_qualified_nested_and_colon_ids_are_accepted", "name", QUALIFIED),
+            *named_cases("test_legacy_and_bracket_names_are_unchanged", "name", UNCHANGED),
+        ],
+    )
+    def test_an_accepted_name_matches(self, name):
         assert _MODEL_NAME_RE.match(name)
 
-    @pytest.mark.parametrize("name", UNCHANGED)
-    def test_legacy_and_bracket_names_are_unchanged(self, name):
-        assert _MODEL_NAME_RE.match(name)
-
-    @pytest.mark.parametrize("name", SEGMENT_MUST_START_ALPHANUMERIC)
-    def test_a_segment_must_start_alphanumeric(self, name):
-        assert not _MODEL_NAME_RE.match(name)
-
-    @pytest.mark.parametrize("name", NO_EMPTY_SEGMENT)
-    def test_no_segment_is_empty(self, name):
-        assert not _MODEL_NAME_RE.match(name)
-
-    @pytest.mark.parametrize("name", COLON_ONLY_AS_TRAILING_TAG_AFTER_A_SLASH)
-    def test_a_colon_is_only_a_trailing_tag_of_a_qualified_id(self, name):
-        assert not _MODEL_NAME_RE.match(name)
-
-    @pytest.mark.parametrize("name", CHARSET_IS_CLOSED)
-    def test_the_charset_is_closed(self, name):
+    @pytest.mark.parametrize(
+        "name",
+        [
+            *named_cases(
+                "test_a_segment_must_start_alphanumeric", "name", SEGMENT_MUST_START_ALPHANUMERIC
+            ),
+            *named_cases("test_no_segment_is_empty", "name", NO_EMPTY_SEGMENT),
+            *named_cases(
+                "test_a_colon_is_only_a_trailing_tag_of_a_qualified_id",
+                "name",
+                COLON_ONLY_AS_TRAILING_TAG_AFTER_A_SLASH,
+            ),
+            *named_cases("test_the_charset_is_closed", "name", CHARSET_IS_CLOSED),
+        ],
+    )
+    def test_a_malformed_name_does_not_match(self, name):
         assert not _MODEL_NAME_RE.match(name)
 
     @pytest.mark.parametrize("name", CONTROL_CHARACTERS)
@@ -221,13 +226,14 @@ SCHEMA_IDS = [s[0] for s in SCHEMAS]
 
 class TestSchemas:
     @pytest.mark.parametrize("label,schema,make,read", SCHEMAS, ids=SCHEMA_IDS)
-    @pytest.mark.parametrize("name", QUALIFIED)
-    def test_a_qualified_id_passes_unchanged(self, label, schema, make, read, name):
-        assert read(validate_tool_args(make(name), schema)) == name
-
-    @pytest.mark.parametrize("label,schema,make,read", SCHEMAS, ids=SCHEMA_IDS)
-    @pytest.mark.parametrize("name", UNCHANGED)
-    def test_legacy_names_pass_unchanged(self, label, schema, make, read, name):
+    @pytest.mark.parametrize(
+        "name",
+        [
+            *named_cases("test_a_qualified_id_passes_unchanged", "name", QUALIFIED),
+            *named_cases("test_legacy_names_pass_unchanged", "name", UNCHANGED),
+        ],
+    )
+    def test_an_accepted_name_passes_unchanged(self, label, schema, make, read, name):
         assert read(validate_tool_args(make(name), schema)) == name
 
     @pytest.mark.parametrize("label,schema,make,read", SCHEMAS, ids=SCHEMA_IDS)

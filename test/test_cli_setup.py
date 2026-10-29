@@ -627,7 +627,7 @@ class TestSetupChannelGating:
     into the guided Slack credential + slash-command steps.
     """
 
-    def _run_setup(self, monkeypatch, tmp_path, **kwargs):
+    def _run_setup(self, monkeypatch, tmp_path, argv=None, **kwargs):
         import kiro_crew.cli_setup as cs
 
         calls: list[str] = []
@@ -663,7 +663,13 @@ class TestSetupChannelGating:
         # Keep the macOS-only desktop-app input() prompt off the path.
         monkeypatch.setattr(cs.platform, "system", lambda: "Linux")
 
-        cs._setup_impl(**kwargs)
+        if argv is None:
+            cs._setup_impl(**kwargs)
+        else:
+            from kiro_crew.cli import main
+
+            monkeypatch.setattr("sys.argv", argv)
+            main()
         return calls
 
     def test_default_setup_skips_slack_steps(self, tmp_path, monkeypatch, capsys):
@@ -715,18 +721,12 @@ class TestSetupChannelGating:
         calls = self._run_setup(monkeypatch, tmp_path, slack=True, whatsapp=True)
         assert calls == ["slack_tokens", "slash_command", "whatsapp"]
 
-    def test_the_whatsapp_flag_reaches_setup_from_the_command_line(self):
+    def test_the_whatsapp_flag_reaches_setup_from_the_command_line(self, tmp_path, monkeypatch):
         """The wizard-level tests call ``_setup_impl`` directly, so the argparse
         flag and its plumbing need their own guard: without them
         ``kirocrew setup --whatsapp`` exits 2 instead of running anything."""
-        import sys
-
-        argv = ["kirocrew", "setup", "--whatsapp"]
-        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._setup") as mock_setup:
-            from kiro_crew.cli import main
-
-            main()
-            assert mock_setup.call_args.kwargs["whatsapp"] is True
+        calls = self._run_setup(monkeypatch, tmp_path, argv=["kirocrew", "setup", "--whatsapp"])
+        assert calls == ["whatsapp"]
 
     def test_agent_only_with_whatsapp_warns_and_skips_the_step(self, tmp_path, monkeypatch, capsys):
         """--agent-only --whatsapp: the step is skipped, and the notice names the

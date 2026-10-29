@@ -10,9 +10,12 @@
 // file is read here.
 //
 // Anything but a regular file whose text is exactly "enterprise" (trailing
-// newline allowed) reads as "oss": the only behaviour an enterprise build
-// changes here is a longer gateway wait, so reading oss on a damaged file only
-// shortens a wait.
+// newline allowed) reads as "oss". An enterprise build changes two things here:
+// a longer gateway wait, and the update channel lock
+// (runtime/update/policy-channel.js). A damaged file therefore also reopens the
+// Settings channel switcher. The file is packed into the signed, write-protected
+// app.asar (RFC crew-enterprise-edition, Security considerations), so damaging
+// it means modifying the signed app itself.
 const fs = require("fs");
 const path = require("path");
 

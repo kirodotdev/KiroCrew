@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { sortSkills } from '../pages/overview/skillSort'
+import { pendingCreatedAt, sortByCreated, sortSkills } from '../pages/overview/skillSort'
 import type { Skill } from '../types'
 
 /* ── Mocks: must run before importing the component ── */
@@ -54,6 +54,23 @@ function mount(skills: Skill[]) {
     </QueryClientProvider>,
   )
 }
+
+const dated = (key: string, createdAt: number | null): Skill => ({ ...skill(key, null, null), created_at: createdAt })
+
+const pending = (slug: string, createdAt: string | undefined) => ({
+  slug, name: slug, description: `${slug} candidate`, has_scripts: false, created_at: createdAt,
+})
+
+async function openSort() {
+  fireEvent.pointerDown(await screen.findByRole('combobox', { name: 'Sort skills' }), {
+    pointerType: 'mouse', button: 0, ctrlKey: false,
+  })
+}
+
+const pendingOrder = () => ['older', 'undated', 'newer']
+  .map(n => [n, screen.getByText(n)] as const)
+  .sort(([, a], [, b]) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+  .map(([n]) => n)
 
 const rowOrder = () =>
   screen.getAllByRole('button', { name: /^Select / }).map(r => r.getAttribute('aria-label')?.replace('Select ', ''))
@@ -116,13 +133,38 @@ describe('Skills list sort', () => {
     expect(rowOrder()).toEqual(['Charlie', 'Delta', 'Alpha', 'Bravo'])
   })
 
-  it('offers the three orders', async () => {
+  it('offers the four orders', async () => {
     mount([ALPHA])
     fireEvent.pointerDown(await screen.findByRole('combobox', { name: 'Sort skills' }), {
       pointerType: 'mouse', button: 0, ctrlKey: false,
     })
     const options = await screen.findAllByRole('option')
-    expect(options.map(o => o.textContent)).toEqual(['Default order', 'Most used', 'Recently used'])
+    expect(options.map(o => o.textContent)).toEqual(['Default order', 'Most used', 'Recently used', 'Newest first'])
+  })
+
+  it('puts the newest recorded skill first and undated ones last, in server order', async () => {
+    mount([
+      dated('alpha', null), dated('bravo', 100), dated('charlie', null), dated('delta', 300), dated('echo', 200),
+    ])
+    await screen.findByRole('button', { name: 'Select Alpha' })
+    await openSort()
+    fireEvent.click(await screen.findByRole('option', { name: 'Newest first' }))
+    expect(rowOrder()).toEqual(['Delta', 'Echo', 'Bravo', 'Alpha', 'Charlie'])
+  })
+
+  it('orders Pending review newest first too, and back again on Default order', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [
+      pending('older', '2026-10-01T00:00:00Z'), pending('undated', undefined), pending('newer', '2026-10-02T00:00:00Z'),
+    ] })
+    mount([ALPHA])
+    await screen.findByText('older')
+    expect(pendingOrder()).toEqual(['older', 'undated', 'newer'])
+    await openSort()
+    fireEvent.click(await screen.findByRole('option', { name: 'Newest first' }))
+    expect(pendingOrder()).toEqual(['newer', 'older', 'undated'])
+    await openSort()
+    fireEvent.click(await screen.findByRole('option', { name: 'Default order' }))
+    expect(pendingOrder()).toEqual(['older', 'undated', 'newer'])
   })
 })
 
@@ -152,5 +194,21 @@ describe('sortSkills', () => {
     const input = [...rows]
     sortSkills(input, 'used')
     expect(keys(input)).toEqual(keys(rows))
+  })
+
+  it('reads only the recorded creation time for Newest first', () => {
+    // Usage must not leak into the order: the most used skill is undated here.
+    const input = [{ ...CHARLIE, created_at: null }, { ...BRAVO, created_at: 50 }, { ...DELTA, created_at: 90 }]
+    expect(keys(sortSkills(input, 'created'))).toEqual(['delta', 'bravo', 'charlie'])
+  })
+})
+
+describe('sortByCreated', () => {
+  it('treats a missing or unparseable pending time as undated, not oldest', () => {
+    const rows = [
+      { slug: 'bad', created_at: 'not a date' }, { slug: 'old', created_at: '2020-01-01T00:00:00Z' },
+      { slug: 'none' }, { slug: 'new', created_at: '2026-01-01T00:00:00Z' },
+    ]
+    expect(sortByCreated(rows, pendingCreatedAt).map(r => r.slug)).toEqual(['new', 'old', 'bad', 'none'])
   })
 })

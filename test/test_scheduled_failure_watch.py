@@ -136,6 +136,27 @@ def test_the_watcher_fires_only_on_completion() -> None:
     assert _triggers(_load(WATCHER))["workflow_run"]["types"] == ["completed"]
 
 
+def test_the_trigger_is_filtered_to_the_default_branch() -> None:
+    """The job admits only `workflow_run.event == 'schedule'`, and a scheduled
+    run always runs on the default branch, so a dispatch from any other branch
+    can only evaluate that gate as false. Dropping the filter silently restores
+    a dispatch on every PULL-REQUEST run of a watched workflow -- CodeQL and
+    Fork PR Label fire on each one -- which is thousands of runs a day that
+    exist only to skip. Pinned because the gate it depends on sits elsewhere in
+    the file, so neither one reads as load-bearing on its own.
+
+    Compared against ci.yml's filter rather than a literal branch name. A
+    `branches:` filter cannot evaluate `${{ }}`, so both files write the name
+    out; tying them together means a default-branch rename that misses the
+    watcher fails here, instead of leaving this test green while the filter
+    quietly drops every scheduled run."""
+    central_gate = _triggers(_load(WORKFLOWS / "ci.yml"))["pull_request"]["branches"]
+    assert (
+        central_gate
+    ), "ci.yml declares no pull_request branch filter; this test must not pass vacuously"
+    assert _triggers(_load(WATCHER))["workflow_run"]["branches"] == central_gate
+
+
 def test_the_job_is_gated_on_a_red_or_timed_out_scheduled_run() -> None:
     (job,) = _load(WATCHER)["jobs"].values()
     condition = " ".join(str(job["if"]).split())

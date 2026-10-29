@@ -264,7 +264,40 @@ def _match_package_row(
 
 
 async def api_skill_detail(request: web.Request) -> web.Response:
-    """GET/PUT/DELETE /api/skills/{name} — get, update, or delete a skill."""
+    """GET/PUT/DELETE /api/skills/{name} — get, update, or delete a skill.
+
+    The URL name reaches the loader unbounded, and the loader joins it onto a
+    skills root before its first ``exists()`` / ``is_dir()``. A name the
+    filesystem refuses for its LENGTH raises there, which escaped as an uncoded
+    500. It is mapped onto the same coded 400 ``POST /api/skills`` answers, through
+    the same predicate, rather than a pre-flight length: a skill that is readable
+    on disk must stay readable here, and only the host knows which paths fit.
+    Every other ``OSError`` keeps its current handling.
+    """
+    try:
+        return await _skill_detail_verbs(request)
+    except OSError as exc:
+        if not _is_path_too_long_error(exc):
+            raise
+        if request.method in ("PUT", "DELETE"):
+            try:
+                _sel().log_tool_invocation(
+                    session_key="",
+                    agent="api",
+                    source="dashboard",
+                    tool_name="api_skill_update" if request.method == "PUT" else "api_skill_delete",
+                    tool_kind="skill",
+                    outcome="rejected",
+                    metadata={"name": request.match_info["name"], "reason": "name_too_long"},
+                )
+            except Exception:  # noqa: BLE001 — the refusal is decided; never 500 on an audit write
+                logger.debug("Could not audit skill name_too_long refusal", exc_info=True)
+        return web.json_response(
+            {"error": "skill name is too long", "code": "name_too_long"}, status=400
+        )
+
+
+async def _skill_detail_verbs(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     name = request.match_info["name"]
     skills = _get_skills(state)

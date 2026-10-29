@@ -63,8 +63,9 @@ CPU-only (the evidence string says so — there is no per-process IO counter to
 read). libproc's socket fd info feeds only the ``remote_flat`` scan of the
 in-flight tool's own server. What has no libproc equivalent stays exactly as
 absent: no model-wait socket evidence (so a flat model wait is UNKNOWN, never
-DEAD, and never tagged ``established_flat``), no wchan / blocked-fd evidence (so
-STUCK_INPUT is never claimed — a live tracked child whose subtree is flat is
+DEAD, and never tagged ``established_flat``; it is tagged ``platform_limited``
+and the caller gives it the same model-silent window), no wchan / blocked-fd
+evidence (so STUCK_INPUT is never claimed — a live tracked child whose subtree is flat is
 UNKNOWN tagged ``platform_limited`` instead of WORKING, so it is bounded rather
 than deferred forever). The backend is injectable (``darwin_backend`` ctor arg),
 and the Linux path is untouched by its presence.
@@ -85,13 +86,14 @@ process tree            ``task/*/children``         ``proc_listchildpids``      
                                                                                 verdict UNKNOWN, tagged
                                                                                 ``platform_limited``
 shell child match/exit  cmdline + ``starttime``     argv/path + start time      absent
-subtree movement        CPU jiffies + IO bytes      CPU ns only (no IO)         root-pid CPU only
-                                                                                (model-wait probe)
+subtree movement        CPU jiffies + IO bytes      CPU ns only (no IO), at     root-pid CPU only
+                                                    least one 10 ms tick        (model-wait probe)
 blocked on stdin        ``wchan`` + blocked fd →    absent → live+flat child    absent
 (STUCK_INPUT)           STUCK_INPUT                 is UNKNOWN tagged
                                                     ``platform_limited``
 socket / LLM wait       ``/proc/net`` established   absent → flat model wait    absent
-(``established_flat``)  → UNKNOWN or DEAD           is plain UNKNOWN,
+(``established_flat``)  → UNKNOWN or DEAD           is UNKNOWN tagged
+                                                    ``platform_limited``,
                                                     never DEAD
 business progress       stream events, ``kirocrew/status`` (platform-independent; outranks all rows)
 ======================  ==========================  ==========================  ==========================
@@ -222,6 +224,7 @@ from kiro_crew.acp.liveness_interactive import (  # noqa: F401 - re-exported for
     non_interactive_hint,
 )
 from kiro_crew.acp.liveness_proc import (  # noqa: F401 - re-exported for existing importers
+    _DARWIN_CPU_FLOOR_NANOS,
     _DARWIN_CPU_KEY,
     _DARWIN_CPU_LABEL,
     DarwinProcessBackend,
@@ -920,10 +923,15 @@ class LivenessOracle:
         if self._darwin is not None:
             # A genuinely flat subtree, but the split below rests on socket
             # evidence that only ``/proc`` carries. Without it a flat wait is
-            # neither the lost-frame wedge nor a probable think: UNKNOWN with
-            # plain evidence, so the caller's timeout policy governs and
-            # nothing is invented in either direction.
-            return VERDICT_UNKNOWN, f"backend subtree flat ({evidence})"
+            # neither the lost-frame wedge nor a provable think: UNKNOWN, never
+            # DEAD. Tagged platform_limited so the caller gives it the
+            # model-silent window rather than the ordinary stale window: a
+            # long non-streamed think looks exactly like this here, and a probe
+            # would cancel and restart it.
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: backend subtree flat ({evidence})",
+            )
         # Flat counters: distinguish the done-but-lost-frame wedge (no backend
         # connection at all) from a probably-thinking server-side silence
         # (established socket, nothing flowing yet).
@@ -986,6 +994,14 @@ class LivenessOracle:
         moved, evidence = self._portable_movement(runtime_pid)
         if moved and platform_compat.pid_exists(runtime_pid):
             return VERDICT_WORKING, f"backend activity ({evidence}, pid alive)"
+        if (
+            not moved
+            and self._darwin is not None
+            and evidence not in (EVIDENCE_SAMPLING, "no readable counters")
+        ):
+            # A real flat delta on macOS: the same absent socket evidence as
+            # the subtree branch, so the same tag and the same window.
+            return VERDICT_UNKNOWN, f"{EVIDENCE_PLATFORM_LIMITED}: backend flat ({evidence})"
         return VERDICT_UNKNOWN, evidence
 
     def _any_established(self, runtime_pid: int) -> bool:
@@ -1076,9 +1092,11 @@ class LivenessOracle:
         if now - prev[0] < self._sample_min_secs:
             # Too soon for a fresh delta — report against the stored baseline
             # without advancing it.
-            return cpu_delta != 0, f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL}, early)"
+            return _darwin_cpu_moved(cpu_delta), (
+                f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL}, early)"
+            )
         self._samples[key] = (now, cpu_total)
-        return cpu_delta != 0, f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL})"
+        return _darwin_cpu_moved(cpu_delta), f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL})"
 
     def _portable_movement(self, root_pid: int) -> tuple[bool, str]:
         """(moved, evidence) for *root_pid*'s CPU delta, without ``/proc``.
@@ -1105,10 +1123,25 @@ class LivenessOracle:
         if prev is None:
             self._samples[_PORTABLE_CPU_KEY] = (now, cpu)
             return False, EVIDENCE_SAMPLING
+        delta = cpu - prev[1]
+        # On macOS this counter has the darwin backend's nanosecond resolution,
+        # so it takes that backend's floor too. Elsewhere it keeps its
+        # historical any-change reading.
+        moved = _darwin_cpu_moved(delta) if self._darwin is not None else delta != 0
         if now - prev[0] < self._sample_min_secs:
-            return cpu != prev[1], f"cpu {cpu - prev[1]:+d}ns (early)"
+            return moved, f"cpu {delta:+d}ns (early)"
         self._samples[_PORTABLE_CPU_KEY] = (now, cpu)
-        return cpu != prev[1], f"cpu {cpu - prev[1]:+d}ns"
+        return moved, f"cpu {delta:+d}ns"
+
+
+def _darwin_cpu_moved(cpu_delta: int) -> bool:
+    """Whether a darwin CPU delta in nanoseconds counts as movement.
+
+    A shrinking total is a process leaving the tree, which is movement in its
+    own right, as on the ``/proc`` walk. A growing one counts only from
+    :data:`_DARWIN_CPU_FLOOR_NANOS` up, so idle housekeeping reads flat.
+    """
+    return cpu_delta < 0 or cpu_delta >= _DARWIN_CPU_FLOOR_NANOS
 
 
 # ── Offloaded-consult guard (shared by AcpClient and AcpSessionHandle) ──

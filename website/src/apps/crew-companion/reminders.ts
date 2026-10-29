@@ -33,6 +33,11 @@ function sameDay(a: Date, b: Date): boolean {
     && a.getDate() === b.getDate()
 }
 
+/** Epoch ms of `d`'s local midnight, for counting calendar days between dates. */
+export function localMidnight(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
 /** The dashboard's active BCP-47 tag, for Intl date/time formatting. */
 function activeLocale(): string | undefined {
   return i18next.language || undefined
@@ -65,7 +70,9 @@ export function labelFor(fireAt: string, now: Date): { absLabel?: string; relLab
       relLabel: m ? i18nT('apps.crewCompanion.time.in_hm', { h, m }) : i18nT('apps.crewCompanion.time.in_h', { h }),
     }
   }
-  const days = Math.round((at.getTime() - now.getTime()) / 86_400_000)
+  // Calendar days crossed, not elapsed 24h periods: late tomorrow is still
+  // "tomorrow". Rounding absorbs the 23h/25h days around a DST change.
+  const days = Math.round((localMidnight(at) - localMidnight(now)) / 86_400_000)
   return {
     absLabel: days <= 1
       ? clockLabel(at)

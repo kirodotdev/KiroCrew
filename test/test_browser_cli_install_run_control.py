@@ -141,6 +141,41 @@ class TestInstallStages:
         assert mod.install(on_stage=events.append)["ok"] is False
         assert events == ["installing_cli", "downloading_browser"]
 
+    @pytest.mark.skipif(os.name == "nt", reason="the managed launcher is POSIX only")
+    def test_install_writes_the_managed_launcher(self, monkeypatch, tmp_path):
+        """npm and the Node staging are faked to leave what they really leave (the
+        package entrypoint and ``gateway-node``); the launcher write is real."""
+        from kiro_crew.browser_cli import managed_launcher
+
+        _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+        crew = tmp_path / "crew"
+        root = crew / "playwright-cli"
+        entry = root / "lib" / "node_modules" / "@playwright" / "cli" / "playwright-cli.js"
+        entry.parent.mkdir(parents=True)
+        entry.write_text("// cli\n", encoding="utf-8")
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+
+        def stage(source: str) -> Path:
+            staged = root / "gateway-node"
+            staged.write_bytes(b"node")
+            return staged
+
+        monkeypatch.setattr(mod, "_stage_managed_node", stage)
+
+        assert mod.install()["ok"] is True
+
+        resolved = root.resolve()
+        launcher = resolved / "managed-bin" / "playwright-cli"
+        assert launcher.read_text(encoding="utf-8") == managed_launcher._render_posix_launcher(
+            str(resolved / "gateway-node"),
+            str(resolved / "lib" / "node_modules" / "@playwright" / "cli" / "playwright-cli.js"),
+            str(resolved / managed_launcher.GUARD_NAME),
+        )
+        assert (resolved / managed_launcher.GUARD_NAME).read_text(
+            encoding="utf-8"
+        ) == managed_launcher.ATTACH_GUARD_JS
+
 
 _POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
 

@@ -1614,6 +1614,48 @@ class SessionTree:
                 del self._edges[gone]
         return out, edges, faulted, over_cap
 
+    def read_named(self, unit_id: str) -> tuple[OpenedRecord | None, bool]:
+        """One NAMED unit's record and whether its read faulted: one directory lookup
+        and :meth:`_read` (one ``stat`` on a cache hit), never a listing. No directory
+        is the store answering "none", not a fault."""
+        directory = unit_dir_for(KIND_SESSION, unit_id) if unit_id else None
+        if directory is None:
+            return None, False
+        with self._lock:
+            record, faulted = self._read(directory)
+            self._trim_heads_locked()
+        return record, faulted
+
+    def _chain_records(self, head_sid: str) -> tuple[list[OpenedRecord], bool]:
+        """*head_sid*, then each ``previous_sid`` cited while the walk stays on the
+        head's slot, read by name: at most :data:`SLOT_CHAIN_CAP` units, the most
+        :func:`fold_slot_chain` follows. A foreign step is read so the fold refuses it."""
+        records: list[OpenedRecord] = []
+        faulted = False
+        seen: set[str] = set()
+        sid: str | None = head_sid
+        for _ in range(SLOT_CHAIN_CAP):
+            if not sid or sid in seen:
+                break
+            seen.add(sid)
+            record, read_faulted = self.read_named(sid)
+            faulted = faulted or read_faulted
+            if record is None:
+                break
+            records.append(record)
+            if record.slot != records[0].slot:
+                break
+            sid = record.previous_sid
+        return records, faulted
+
+    def _trim_heads_locked(self) -> None:
+        """Keep the head cache within :data:`TREE_UNIT_CAP` entries, oldest first: a
+        named read has no scan's admitted set to evict against."""
+        excess = len(self._heads) - TREE_UNIT_CAP
+        if excess > 0:
+            for name in list(islice(self._heads, excess)):
+                del self._heads[name]
+
     def _read_edge(self, directory: Path, head: OpenedRecord) -> tuple[EdgeRecord | None, bool]:
         """One unit's newest DECISION, from the cache when its newest segment is
         byte-identical to the one read, and whether the read FAULTED. Caller holds
@@ -1837,27 +1879,22 @@ class SessionTree:
         the whole store.
 
         *head_sid* is the log to walk back from -- for a dashboard caller, the unit
-        a slot key resolves to. It is admitted FIRST, ahead of *preferred*, because
-        a walk that cannot read its own starting log answers
-        :data:`CHAIN_END_UNKNOWN` and nothing else is worth scanning for.
+        a slot key resolves to. *preferred* is accepted for compatibility and not read.
+        The records are the chain's own units, read by name (:meth:`_chain_records`),
+        so a request costs the chain's length, never a listing, and a cited id with no
+        log really has none.
 
-        ``incomplete`` matters more here than it does for the tree, and a caller
-        must not collapse it into ``ended``. A predecessor this scan did not admit
-        -- past :data:`TREE_UNIT_CAP`, or a unit whose bytes faulted -- is absent
-        from the records, so the walk reports :data:`CHAIN_END_MISSING` for a log
-        that is on disk and readable. The walk cannot tell those apart; only the
-        scan can, and it says so here. So an incomplete reading downgrades every
-        end reason except :data:`CHAIN_END_FIRST` to "this is where MY scan
-        stopped", which is why the two travel in one object taken from one call.
+        ``incomplete`` is set when a predecessor's bytes FAULTED: the walk then reports
+        :data:`CHAIN_END_MISSING` for a log on disk, so a caller must not collapse the
+        bit into ``ended``; it downgrades every end but :data:`CHAIN_END_FIRST` to
+        "this is where MY read stopped".
 
         Never raises, for the reason :meth:`snapshot` does not: a whole-life figure
         is an enrichment, and a store fault must not take its page down.
         """
         try:
-            records, _, faulted, over_cap = self._records_with_fault([head_sid, *preferred])
-            return ChainReading(
-                chain=fold_slot_chain(records, head_sid), incomplete=faulted or over_cap
-            )
+            records, faulted = self._chain_records(head_sid)
+            return ChainReading(chain=fold_slot_chain(records, head_sid), incomplete=faulted)
         except Exception:  # pragma: no cover -- defensive; the store calls are guarded
             logger.warning(
                 "session chain scan failed for %s; reporting no succession",

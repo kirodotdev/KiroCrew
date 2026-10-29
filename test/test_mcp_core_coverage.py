@@ -480,8 +480,9 @@ class TestSpawnRunArgumentHandling:
     def test_counted_rejection_is_not_double_reconciled(self):
         rejected = {"error": "at capacity", "counted": True}
         with patch.object(mcp_core, "_post", return_value=rejected) as m:
-            _call_tool("spawn_run", {"tasks": ["one", "two"]})
+            out = _call_tool("spawn_run", {"tasks": ["one", "two"]})
         assert all(c[0][0] != "/api/spawn/lost" for c in m.call_args_list)
+        assert "none of the requested subagents were started" in out
 
     def test_lost_reconcile_delivery_failure_is_swallowed(self):
         def _post(path: str, body: dict | None = None, **_kw: object) -> dict:
@@ -529,8 +530,9 @@ class TestSpawnRunArgumentHandling:
     def test_approval_mode_env_is_forwarded(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("KIROCREW_APPROVAL_MODE", "auto")
         with patch.object(mcp_core, "_post", return_value={"id": "ag1"}) as m:
-            _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
+            out = _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
         assert m.call_args[0][1]["approval_mode"] == "auto"
+        assert "ag1" in out
 
 
 class TestSpawnLifecycleTools:
@@ -726,7 +728,8 @@ class TestWorkflowRun:
 
     def test_source_wins_over_intent(self):
         with patch.object(mcp_core, "_post", return_value={"run_id": "r4"}) as m:
-            _call_tool("workflow_run", {"source": "ctx.agent('x')", "intent": "ignored"})
+            out = _call_tool("workflow_run", {"source": "ctx.agent('x')", "intent": "ignored"})
+        assert "`r4`" in out
         assert m.call_args[0][0] == "/api/workflows/run"
         assert "intent" not in m.call_args[0][1]
 
@@ -915,8 +918,9 @@ class TestWorkflowListCancelRerun:
 
     def test_rerun_defaults_from_index_to_zero(self):
         with patch.object(mcp_core, "_post", return_value={"run_id": "r9"}) as m:
-            _call_tool("workflow_rerun_subtree", {"run_id": "r1"})
+            out = _call_tool("workflow_rerun_subtree", {"run_id": "r1"})
         assert m.call_args[0][1] == {"from_index": 0}
+        assert "Re-running `r1` as `r9`" in out
 
     def test_rerun_rejects_a_non_int_from_index(self):
         out = _call_tool("workflow_rerun_subtree", {"run_id": "r1", "from_index": "nope"})
@@ -1308,17 +1312,15 @@ class TestFileSend:
         out = _call_tool("file_send", {"path": str(tmp_path / "nope.txt")})
         assert "file not found or access denied" in out
 
-    def test_sensitive_content_aborts_the_send(self, tmp_path):
+    def test_sensitive_content_is_delivered_to_the_outbox(self, tmp_path):
+        # The owner's own outbox gets the bytes as-is; the Slack and channel
+        # upload legs scan on their own, server-side.
         src = tmp_path / "creds.txt"
         src.write_text("AKIA" + "P" * 16)
-        out = _call_tool("file_send", {"path": str(src)})
-        assert out.startswith("Error: file content contains sensitive data; send aborted")
-        # The refusal now names the remedy. A wall that does not say a consented
-        # path exists is the reported complaint, so this
-        # asserts MORE than the previous exact-equality pin, not less -- and it
-        # asserts the never-grantable legs are named as such.
-        assert "/api/file-delivery/consent" in out
-        assert "can never be granted" in out
+        with patch.object(mcp_core, "_post", return_value={"ok": True}):
+            out = _call_tool("file_send", {"path": str(src)})
+        assert out.startswith("File sent: creds.txt")
+        assert (mcp_core.outbox_dir() / "creds.txt").read_text() == "AKIA" + "P" * 16
 
     def test_disallowed_binary_mime_is_refused(self, tmp_path):
         src = tmp_path / "payload.bin"

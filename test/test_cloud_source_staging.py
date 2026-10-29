@@ -29,6 +29,15 @@ from kiro_crew.cloud import aws, source
 from kiro_crew.config import ensure_data_home
 
 
+@pytest.fixture(autouse=True)
+def _no_git_attributes(_floor_monkeypatch):
+    """These rows build tarballs from plain directories with a stubbed tracked list,
+    so there is no repository to ask about ``export-ignore``/``filter``: no path
+    carries either. The real query is covered in test_host_git_repo_exec_neutralization.
+    """
+    _floor_monkeypatch.setattr(source, "_tracked_attr_values", lambda root, names, attr: {})
+
+
 class TestTarballStagingDirectory:
     """Where the source tarball is built, not what goes into it.
 

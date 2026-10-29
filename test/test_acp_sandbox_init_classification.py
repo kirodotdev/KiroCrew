@@ -34,7 +34,7 @@ retries that work today.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -979,7 +979,10 @@ async def test_the_failed_start_cleanup_still_kills_when_it_is_cancelled_in_the_
         await asyncio.sleep(0.1)
         cleanup.cancel()
         await _settled(cleanup)
-        runtime.kill.assert_awaited_once()
+        # The cancel ended the settle only; the task finished its own steps.
+        assert not cleanup.cancelled()
+        assert runtime._record_tree_before_failed_start_kill.await_count == 1
+        assert runtime.kill.await_args_list == [call(reason="failed init handshake cleanup")]
     finally:
         runtime._stderr_task.cancel()
         if not cleanup.done():

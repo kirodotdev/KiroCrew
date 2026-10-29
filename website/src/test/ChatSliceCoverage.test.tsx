@@ -1322,7 +1322,7 @@ describe('chatSlice thunks', () => {
     apiMock.stopChatSlot.mockResolvedValueOnce({ ok: false, error: 'could not reach the crew running this session to stop it', code: 'remote_stop_unreachable' })
     const store = makeStore()
     const res = await store.dispatch(requestStop({ slotId: 'member-a', force: false }))
-    expect(res.payload).toEqual({ error: 'could not reach the crew running this session to stop it' })
+    expect(res.payload).toEqual({ error: 'could not reach the crew running this session to stop it', code: 'remote_stop_unreachable' })
     expect(chat(store).stopPressedAt['member-a']).toBe(0)
   })
 

@@ -143,6 +143,26 @@ describe('ChatInput optimize: the in-flight overlay can be cancelled', () => {
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).readOnly).toBe(true)
   })
 
+  it('cancels on Escape in the prompt box, and that Escape does not stop the running turn', async () => {
+    const signals: AbortSignal[] = []
+    const onStop = vi.fn()
+    vi.stubGlobal('fetch', hangingOptimizer(signals))
+    const props = { value: ORIGINAL, onChange: vi.fn(), onSend: vi.fn(), connected: true, onStop }
+    const { rerender } = renderWithProviders(<ChatInput {...props} />)
+    clickOptimize()
+    await screen.findByRole('button', { name: 'Cancel optimizing' })
+    // A turn starts on the slot (a queued send) while the optimize is in flight.
+    rerender(<ChatInput {...props} isRunning />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+    await act(async () => { fireEvent.keyDown(textbox, { key: 'Escape' }) })
+
+    expect(signals).toHaveLength(1)
+    expect(signals[0].aborted).toBe(true)
+    expect(onStop).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel optimizing' })).toBeNull())
+    expect(textbox.readOnly).toBe(false)
+  })
+
   it('drops a rewrite whose body was already read when Cancel landed', async () => {
     const onChange = vi.fn()
     let answer: (v: unknown) => void = () => {}

@@ -34,7 +34,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
     _redact_text,
 )
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.publish_governance import publish_denied_reason
+from kiro_crew.publish_governance import bind_egress_session, publish_denied_reason
 from kiro_crew.validation import infer_use_case
 
 
@@ -87,7 +87,12 @@ async def _non_owner_refusal(request: web.Request, operation: str) -> web.Respon
     tools, the CLI and app drivers use. That transport leaves ``app`` absent
     and marks ``internal_auth``, so it is admitted on that mark rather than
     refused by the owner check, which needs a present empty app claim.
+
+    Being first on every write route, it is also where the request's session is
+    bound for the enterprise check each publish send runs at dispatch
+    (``publish_governance.dispatch_denied_reason``).
     """
+    bind_egress_session(request)
     if request.get("app") or request.get("internal_auth") is True:
         return None
     return await require_owner_dashboard_request(request, operation)

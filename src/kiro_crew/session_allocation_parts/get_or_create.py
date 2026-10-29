@@ -434,6 +434,10 @@ async def _get_or_create_impl(
     # no provider factory is handed a key it does not know; each retry below
     # hands it back.
     app_name = str(extra_factory_kwargs.pop("app_name", "") or "")
+    # The app whose governance profile the session runs under, for a caller
+    # (a subagent's spawn) that must carry an app's governance without taking
+    # its model. Defaults to ``app_name``: an app slot's own session is both.
+    owning_app = str(extra_factory_kwargs.pop("owning_app", "") or "") or app_name
     # The app launch copy kiro-cli is asked for in place of ``agent``
     # (``apps.agent_launch``); ``agent`` stays the session's identity. Stamped
     # on the cold-started provider below, never handed to a factory.
@@ -569,6 +573,7 @@ async def _get_or_create_impl(
             start_priority=start_priority,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
             **extra_factory_kwargs,
         )
 
@@ -745,6 +750,8 @@ async def _get_or_create_impl(
         cast(Any, provider).memory_mode = memory_mode
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = owning_app
         try:
             if self._deps.is_acp_provider(provider):
                 claim_kwarg = extra_factory_kwargs.get("crew_agent")
@@ -880,6 +887,10 @@ async def _get_or_create_impl(
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
         await await_kas_floor_verdict(member=_is_member_key(key))
+        # The verdict can install a new factory before it releases this wait (a
+        # confirmed v3 reloads the live config), so a waiting spawn takes the
+        # factory in force now, not the one it copied before waiting.
+        factory = owner._provider_factory or factory
         provider = factory(
             key,
             agent=agent,
@@ -893,6 +904,8 @@ async def _get_or_create_impl(
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
             cast(Any, provider).app_launch_agent = app_launch_agent
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = owning_app
         if memory_mode != "persistent":
             resume_sid = None
         provider_switched = False
@@ -1149,7 +1162,7 @@ async def _get_or_create_impl(
                 # earlier cleanup path may kill unconditionally.
                 await acquire_session_lease(provider)
                 try:
-                    await record_session_started(key)
+                    await record_session_started(key, provider)
                 except BaseException:
                     # See open_task_session: a cancellation here would leave a
                     # registered session whose provider the caller is about to
@@ -1281,6 +1294,7 @@ async def _get_or_create_impl(
             start_priority=start_priority,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
             **extra_factory_kwargs,
         )
 

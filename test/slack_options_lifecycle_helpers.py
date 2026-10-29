@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.slack.format import OPTIONS_CHECKBOXES_ACTION, OPTIONS_SUBMIT_ACTION
+from kiro_crew.slack.format import is_options_actions_block
 
 
 def _recs(state, key):
@@ -45,12 +45,7 @@ def _set_recs(state, key, records):
 
 def _is_live_control(blocks: list[dict]) -> bool:
     """True when *blocks* contain a clickable OPTIONS control."""
-    return any(
-        el.get("action_id") in (OPTIONS_CHECKBOXES_ACTION, OPTIONS_SUBMIT_ACTION)
-        for b in blocks
-        if b.get("type") == "actions"
-        for el in b.get("elements", [])
-    )
+    return any(is_options_actions_block(b) for b in blocks)
 
 
 def _context_text(blocks: list[dict]) -> str:

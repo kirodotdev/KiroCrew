@@ -142,6 +142,11 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "(self, info: 'SubagentInfo', unfinished: 'str') -> 'None'",
         "run_lifecycle",
     ),
+    "_leave_for_next_start_impl": (
+        "function",
+        "(self, info: 'SubagentInfo', *, stop_reason: 'str | None' = None) -> 'bool'",
+        "run_lifecycle",
+    ),
     "_run_impl": ("coroutine", "(self, info: 'SubagentInfo') -> 'None'", "run_lifecycle"),
     "_touch_activity_impl": (
         "coroutine",

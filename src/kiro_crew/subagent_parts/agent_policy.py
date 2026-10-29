@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         read_session_execution,
         readonly_base_name,
         redact_via_context,
+        sandbox_plan,
         sel,
     )
 
@@ -938,6 +939,8 @@ def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:
         return ("", "cwd does not exist or is not a directory")
     resolved_roots = [os.path.realpath(os.path.expanduser(r)) for r in allowed_roots]
     for root in resolved_roots:
-        if resolved == root or resolved.startswith(root + os.sep):
+        # ``path_within`` strips a trailing separator before adding one, so a
+        # filesystem-root entry (``/``, ``H:\``) admits the directories below it.
+        if sandbox_plan.path_within(resolved, root):
             return (resolved, "")
     return ("", f"cwd is not under any allowed root: {allowed_roots}")

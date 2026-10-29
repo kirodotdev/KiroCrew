@@ -466,6 +466,47 @@ async def test_upload_cnab_rem_ret_is_accepted_as_text(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extension", "payload"),
+    [
+        (".php", b"<?php echo '<script>alert(1)</script>'; ?>\n"),
+        (".sql", b"SELECT id, name FROM users WHERE id = 1;\n"),
+        (".kt", b'fun main() { println("hi") }\n'),
+        (".swift", b'print("hi")\n'),
+        (".cs", b'class P { static void Main() { System.Console.WriteLine("hi"); } }\n'),
+        (".vue", b"<template><div>{{ msg }}</div></template>\n<script>export default {}</script>\n"),
+        (".toml", b'[package]\nname = "demo"\nversion = "0.1.0"\n'),
+    ],
+    ids=[".php", ".sql", ".kt", ".swift", ".cs", ".vue", ".toml"],
+)
+async def test_upload_source_and_config_text_is_accepted_as_text(
+    upload_dir: Path,
+    mock_sel,
+    extension: str,
+    payload: bytes,
+) -> None:
+    """Source and config files with no magic-byte signature upload as text.
+
+    The ``.php`` and ``.vue`` payloads carry markup on purpose: the upload
+    boundary stores the bytes exactly as sent and does not interpret them.
+    """
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename=f"sample{extension}",
+        content_type="application/octet-stream",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith(f"_sample{extension}")
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
 async def test_upload_unrelated_extension_still_rejected(
     upload_dir: Path,
     mock_sel,

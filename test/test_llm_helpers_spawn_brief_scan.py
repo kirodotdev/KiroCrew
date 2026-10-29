@@ -11,6 +11,11 @@ trusted core-server identity: the brief skips the command-text rules and keeps
 the path tier and the size ceiling, every other field keeps the full scan, and
 an unknown tool or identity keeps the full scan. Whatever the sub-agent then
 runs is its own tool call and meets the deny rules there.
+
+The other core prose fields (a cron job's agent prompt, a message for a
+person, a workflow intent, a monitor instruction, a lesson, a comment) are
+listed the same way and are pinned per field below, each with a case showing
+the tool's executable or routing fields still meet the rule.
 """
 
 from __future__ import annotations
@@ -195,7 +200,8 @@ class TestEverythingElseKeepsTheFullScan:
 
     @pytest.mark.asyncio
     async def test_an_unlisted_core_tool_is_denied(self) -> None:
-        approved, _rows = await _resolve(_event({"task": _BRIEF}, tool_name="cron_add"))
+        # Artifact content can be deployable code, so it is deliberately unlisted.
+        approved, _rows = await _resolve(_event({"content": _BRIEF}, tool_name="artifact_save"))
         assert approved is False
 
     @pytest.mark.asyncio
@@ -273,3 +279,108 @@ class TestTheRefusalNamesTheRule:
         tally = _GateTally()
         tally.note("@kirocrew-core/spawn_run", False, True)
         assert tally.refusal_summary().endswith("spawn_run")
+
+
+_CRON = "kirocrew-cron"
+
+# (server, tool, prose field, other params, a NON-prose field of the same tool)
+_PROSE_FIELDS = [
+    (_CRON, "cron_add", "message", {"name": "nightly", "every": 3600}, "name"),
+    (_CORE, "send_message", "text", {}, "channel"),
+    (_CORE, "send_message", "title", {"text": "hi"}, "channel"),
+    (_CORE, "update_message", "text", {"channel": "C1", "ts": "1.2"}, "ts"),
+    (_CORE, "send_notification", "title", {"body": "b"}, "url"),
+    (_CORE, "send_notification", "body", {"title": "t"}, "group_key"),
+    (_CORE, "workflow_run", "intent", {}, "source"),
+    (_CORE, "workflow_author", "intent", {}, "source"),
+    (_CORE, "monitor_start", "message", {"interval_secs": 300}, "banner"),
+    (_CORE, "monitor_update", "message", {}, "target"),
+    (_CORE, "learn_add", "rule", {}, "category"),
+    (_CORE, "learn_add", "negative", {"rule": "r"}, "repo_scope"),
+    (_CORE, "artifact_post_comment", "text", {"slug": "s"}, "slug"),
+    (_CORE, "artifact_reply_comment", "text", {"slug": "s", "parent_id": "p"}, "parent_id"),
+]
+_PROSE_IDS = [f"{tool}.{field}" for _s, tool, field, _p, _o in _PROSE_FIELDS]
+
+
+class TestOtherCoreProseFields:
+    @pytest.mark.parametrize(
+        ("server", "tool", "field", "base", "other"), _PROSE_FIELDS, ids=_PROSE_IDS
+    )
+    def test_the_field_is_listed(
+        self, server: str, tool: str, field: str, base: dict, other: str
+    ) -> None:
+        assert field in mcp_document_body_keys(tool, server, base)
+        assert other not in mcp_document_body_keys(tool, server, base)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("server", "tool", "field", "base", "other"), _PROSE_FIELDS, ids=_PROSE_IDS
+    )
+    async def test_prose_describing_a_denied_step_is_allowed(
+        self, server: str, tool: str, field: str, base: dict, other: str
+    ) -> None:
+        approved, rows = await _resolve(
+            _event({**base, field: _BRIEF}, tool_name=tool, server=server)
+        )
+        assert approved is True, _error(rows)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("server", "tool", "field", "base", "other"), _PROSE_FIELDS, ids=_PROSE_IDS
+    )
+    async def test_the_same_step_in_another_field_is_denied_and_named(
+        self, server: str, tool: str, field: str, base: dict, other: str
+    ) -> None:
+        params = {**base, field: "fine", other: _DENIED_STEP}
+        approved, rows = await _resolve(_event(params, tool_name=tool, server=server))
+        assert approved is False
+        assert "Blocked by security policy: git reset --hard" in _error(rows)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("server", "tool", "field", "base", "other"), _PROSE_FIELDS, ids=_PROSE_IDS
+    )
+    async def test_on_another_server_the_field_is_still_scanned(
+        self, server: str, tool: str, field: str, base: dict, other: str
+    ) -> None:
+        wrong = _CORE if server == _CRON else _CRON
+        approved, _rows = await _resolve(
+            _event({**base, field: _BRIEF}, tool_name=tool, server=wrong)
+        )
+        assert approved is False
+
+    @pytest.mark.asyncio
+    async def test_a_credential_path_in_a_prose_field_is_still_denied(self) -> None:
+        approved, rows = await _resolve(
+            _event({"message": "~/.aws/credentials"}, tool_name="monitor_start")
+        )
+        assert approved is False
+        assert "sensitive path" in _error(rows)
+
+
+class TestACronScriptJobKeepsTheFullScan:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["script", "command"])
+    async def test_message_on_a_script_or_command_job_is_scanned(self, key: str) -> None:
+        # A script job reads ``message`` as its arguments, not as a prompt.
+        params = {"name": "n", "every": 3600, key: "jobs.nightly:run", "message": _BRIEF}
+        approved, rows = await _resolve(_event(params, tool_name="cron_add", server=_CRON))
+        assert approved is False
+        assert "git reset --hard" in _error(rows)
+
+    @pytest.mark.asyncio
+    async def test_a_command_job_running_the_step_is_denied(self) -> None:
+        params = {"name": "n", "every": 3600, "command": _DENIED_STEP, "message": "nightly"}
+        approved, rows = await _resolve(_event(params, tool_name="cron_add", server=_CRON))
+        assert approved is False
+        assert "Blocked by security policy: git reset --hard" in _error(rows)
+
+    def test_without_the_params_the_exemption_fails_closed(self) -> None:
+        assert mcp_document_body_keys("cron_add", _CRON) == frozenset()
+        assert mcp_document_body_keys("cron_add", _CRON, {"message": "m"}) == {"message"}
+        assert mcp_document_body_keys("cron_add", _CRON, {"script": None}) == frozenset()
+
+    def test_cron_update_is_not_listed(self) -> None:
+        # It can retarget an existing script job, whose kind the gate cannot see.
+        assert mcp_document_body_keys("cron_update", _CRON, {"message": "m"}) == frozenset()

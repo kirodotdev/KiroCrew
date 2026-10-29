@@ -60,8 +60,16 @@ class TestAutoApplyUpdateResetPath:
         Windows install) made every test here pass or fail on the refusal branch
         instead of the sequence it covers. A test about the resolver itself
         patches it again explicitly, and that inner patch wins.
+
+        The network fetch now goes through the shared isolated helper
+        ``fetch_and_pin_upstream`` (its isolation is covered against real git in
+        ``test_update_check_git_exec_neutralized``). Here it is stubbed to a
+        fixed fetched OID so these tests keep their subject -- the reset flow
+        after the fetch. ``self._fetch_and_pin`` exposes the stub.
         """
+        self._fetch_and_pin = AsyncMock(return_value="0" * 40)
         with (
+            patch("kiro_crew.slack.gateway.fetch_and_pin_upstream", self._fetch_and_pin),
             patch("kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]),
             patch(
                 "kiro_crew.slack.gateway.repo_exec_config_reason",
@@ -1256,17 +1264,17 @@ class TestAutoApplyUpdateResetPath:
         assert "restarting" not in steps
 
     @pytest.mark.asyncio
-    async def test_reset_target_is_resolved_through_the_full_remote_ref(self):
-        """The target capture must spell `refs/remotes/origin/<branch>`.
+    async def test_reset_target_is_the_isolated_fetch_oid_not_a_resolved_ref(self):
+        """The reset target is the OID the isolated fetch returned, resolved from
+        no ref name at all.
 
-        The short `origin/<branch>` is ambiguous in the attacker's favour:
-        rev-parse's disambiguation order checks `refs/tags/<name>` BEFORE
-        `refs/remotes/<name>`, so a tag literally named `origin/main` resolves
-        instead of the remote-tracking branch. The update's own fetch auto-follows
-        tags, so publishing that tag upstream creates it locally. git writes
-        "refname is ambiguous" to stderr and still prints the TAG's OID on stdout,
-        which is the stream this capture reads -- so the short form does not fail
-        loudly, it resets to attacker code.
+        The old flow resolved ``refs/remotes/origin/<branch>`` with ``rev-parse
+        --verify`` after an inline fetch, which carried a tag-ambiguity hazard (a
+        tag literally named ``origin/main`` could win). The shared isolated
+        helper (``fetch_and_pin_upstream``, stubbed by the autouse fixture)
+        returns the fetched commit id directly, so the reset targets that OID and
+        no ``origin/<branch>`` ref is resolved to get it -- the ambiguity cannot
+        arise. The helper is asked for ``origin`` and the current branch.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1283,16 +1291,22 @@ class TestAutoApplyUpdateResetPath:
                         with patch("shutil.which", return_value=None):
                             await orch._auto_apply_update()
 
+        # The helper was asked for origin + the current branch.
+        _, args, kwargs = self._fetch_and_pin.mock_calls[0]
+        assert args[1:3] == ("origin", "main"), args
+
+        # The reset targets exactly the helper's returned OID.
+        resets = [[str(a) for a in args] for args in spawned if "reset" in [str(a) for a in args]]
+        assert resets, spawned
+        assert self._fetch_and_pin.return_value in resets[0], resets
+        # No ref name is resolved to get the target: the ambiguity is gone.
         revparses = [
             [str(a) for a in args]
             for args in spawned
             if "rev-parse" in [str(a) for a in args]
             and "--abbrev-ref" not in [str(a) for a in args]
         ]
-        assert revparses, spawned
-        assert any("refs/remotes/origin/main^{commit}" in argv for argv in revparses), revparses
-        # The bare form must not be what git is asked to resolve.
-        assert not any("origin/main^{commit}" in argv for argv in revparses), revparses
+        assert not any("refs/remotes/origin" in " ".join(argv) for argv in revparses), revparses
 
     @pytest.mark.asyncio
     async def test_no_restart_after_any_unclean_sync_even_when_the_repair_works(self):

@@ -10,6 +10,7 @@ const {
   scaleRect,
   computeVisible,
   viewHoldsFocus,
+  focusHandBackMessage,
   createBrowserViewManager,
 } = require("../browser-view");
 
@@ -173,6 +174,7 @@ function harness(content = { width: 1280, height: 860 }) {
   const attached = [];
   const events = [];
   const focusHost = [];
+  const logLines = [];
   const mgr = createBrowserViewManager({
     createView: () => view,
     getContentBounds: () => box.content,
@@ -180,8 +182,9 @@ function harness(content = { width: 1280, height: 860 }) {
     removeView: () => { attached.pop(); log.push(["removeView"]); },
     onEvent: (n, p) => events.push([n, p]),
     focusHost: () => { focusHost.push(Date.now()); log.push(["focusHost"]); },
+    log: (m) => logLines.push(m),
   });
-  return { mgr, view, attached, events, box, focusHost, log };
+  return { mgr, view, attached, events, box, focusHost, log, logLines };
 }
 
 test("manager: view is created lazily on first open", () => {
@@ -580,4 +583,221 @@ test("focus: a manager built without focusHost still hides and closes", () => {
   assert.doesNotThrow(() => mgr.setOverlayActive(true));
   assert.strictEqual(view.visible.at(-1), false);
   assert.doesNotThrow(() => mgr.close());
+});
+
+// Focus arriving on a view that is ALREADY hidden: no hide follows, so the
+// view's own focus event (and a finished load) must trigger the hand-back.
+
+/** Fire one of the embedded webContents' registered events. */
+function fire(h, name, ...args) {
+  const fn = h.view.webContents.handlers[name];
+  assert.strictEqual(typeof fn, "function", `${name} handler registered`);
+  fn(...args);
+}
+
+/** The focus hand-back is deferred one tick (setImmediate); let it run. */
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("focus: a HIDDEN view gaining focus hands it back to the host", async () => {
+  const h = harness();
+  h.mgr.open("https://example.com/"); // no rect yet: added hidden (agent bootstrap shape)
+  assert.strictEqual(h.mgr.getState().visible, false);
+  h.view.webContents.focused = true;
+  fire(h, "focus");
+  // Not from inside the event: in a real Electron window the native focus
+  // change still in progress overrides a synchronous hand-back.
+  assert.strictEqual(h.focusHost.length, 0, "deferred past the focus event");
+  await tick();
+  assert.strictEqual(h.focusHost.length, 1);
+});
+
+test("focus: a view hidden by an inactive tab gaining focus hands it back, even when isFocused reads false", async () => {
+  // The event itself is the signal; isFocused can lag on a hidden view.
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  h.mgr.setInactive(true);
+  assert.strictEqual(h.focusHost.length, 0);
+  fire(h, "focus");
+  await tick();
+  assert.strictEqual(h.focusHost.length, 1);
+});
+
+test("focus: a VISIBLE view gaining focus keeps it (unchanged behaviour)", async () => {
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  h.view.webContents.focused = true;
+  fire(h, "focus");
+  await tick();
+  fire(h, "did-stop-loading");
+  assert.strictEqual(h.mgr.getState().visible, true);
+  assert.strictEqual(h.focusHost.length, 0, "the user is in the page");
+  assert.deepStrictEqual(h.logLines, []);
+});
+
+test("focus: a load finishing in a hidden view hands focus back only when the view holds it", () => {
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  fire(h, "did-stop-loading");
+  assert.strictEqual(h.focusHost.length, 0, "unfocused: left alone");
+  h.view.webContents.focused = true;
+  fire(h, "did-stop-loading");
+  assert.strictEqual(h.focusHost.length, 1);
+});
+
+test("focus: events from a released view never hand focus back", async () => {
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.close();
+  h.view.webContents.focused = true;
+  fire(h, "focus");
+  await tick();
+  fire(h, "did-stop-loading");
+  assert.strictEqual(h.focusHost.length, 0);
+});
+
+test("focus: a hand-back logs one line naming the focus owner and trigger", async () => {
+  const h = harness();
+  h.mgr.open("https://example.com/secret-path?q=private");
+  fire(h, "focus");
+  await tick();
+  assert.strictEqual(h.logLines.length, 1);
+  assert.match(h.logLines[0], /embedded browser view while off screen/);
+  assert.match(h.logLines[0], /dashboard view/);
+  assert.match(h.logLines[0], /trigger=hidden-view-focus/);
+  assert.doesNotMatch(h.logLines[0], /example\.com|secret|private|Example/, "no page URL or title");
+});
+
+test("focus: every hand-back path logs its own trigger", () => {
+  const hide = focusedPanel();
+  hide.mgr.setOverlayActive(true);
+  assert.deepStrictEqual(hide.logLines, [focusHandBackMessage("hide")]);
+
+  const close = focusedPanel();
+  close.mgr.close();
+  assert.deepStrictEqual(close.logLines, [focusHandBackMessage("close")]);
+
+  const win = focusedPanel();
+  win.view.webContents.focused = false;
+  win.mgr.setInactive(true);
+  win.view.webContents.focused = true;
+  win.mgr.reclaimFocus();
+  assert.deepStrictEqual(win.logLines, [focusHandBackMessage("window-focus")]);
+
+  const load = harness();
+  load.mgr.open("https://example.com/");
+  load.view.webContents.focused = true;
+  fire(load, "did-stop-loading");
+  assert.deepStrictEqual(load.logLines, [focusHandBackMessage("hidden-view-load")]);
+});
+
+test("focus: no log line when nothing is handed back", () => {
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  h.mgr.setOverlayActive(true);
+  h.mgr.close();
+  assert.strictEqual(h.focusHost.length, 0);
+  assert.deepStrictEqual(h.logLines, []);
+});
+
+test("focus: focusHandBackMessage never echoes an unknown trigger", () => {
+  assert.match(focusHandBackMessage("https://example.com/x"), /trigger=unknown\)$/);
+  assert.match(focusHandBackMessage(undefined), /trigger=unknown\)$/);
+});
+
+test("focus: a log sink that throws does not stop the hand-back", async () => {
+  const h = harness();
+  const view = h.view;
+  const handed = [];
+  const mgr = createBrowserViewManager({
+    createView: () => view,
+    getContentBounds: () => h.box.content,
+    addView: () => {},
+    removeView: () => {},
+    focusHost: () => handed.push(1),
+    log: () => { throw new Error("log closed"); },
+  });
+  mgr.open("https://example.com/");
+  assert.doesNotThrow(() => fire(h, "focus"));
+  await tick();
+  assert.strictEqual(handed.length, 1);
+});
+
+test("focus: a hidden view gaining focus while the host window is NOT active is left for reclaimFocus", async () => {
+  // Focusing the host from the background could bring the window forward.
+  const h = harness();
+  const view = h.view;
+  const handed = [];
+  const active = { value: false };
+  const mgr = createBrowserViewManager({
+    createView: () => view,
+    getContentBounds: () => h.box.content,
+    addView: () => {},
+    removeView: () => {},
+    focusHost: () => handed.push(1),
+    hostActive: () => active.value,
+  });
+  mgr.open("https://example.com/");
+  view.webContents.focused = true;
+  fire(h, "focus");
+  await tick();
+  fire(h, "did-stop-loading");
+  assert.strictEqual(handed.length, 0, "background window: no hand-back");
+  active.value = true; // the user comes back: the window-focus heal runs
+  assert.strictEqual(mgr.reclaimFocus(), true);
+  assert.strictEqual(handed.length, 1);
+});
+
+test("focus: a hostActive probe that throws reads as inactive", async () => {
+  const h = harness();
+  const view = h.view;
+  const handed = [];
+  const mgr = createBrowserViewManager({
+    createView: () => view,
+    getContentBounds: () => h.box.content,
+    addView: () => {},
+    removeView: () => {},
+    focusHost: () => handed.push(1),
+    hostActive: () => { throw new Error("window destroyed"); },
+  });
+  mgr.open("https://example.com/");
+  assert.doesNotThrow(() => fire(h, "focus"));
+  await tick();
+  assert.strictEqual(handed.length, 0);
+});
+
+test("focus: events from a previous view's webContents are ignored after a reopen", async () => {
+  const make = () => {
+    const wc = {
+      handlers: {}, focused: false,
+      loadURL() {}, close() {}, isFocused() { return this.focused; },
+      getTitle: () => "", setWindowOpenHandler() {}, on(n, fn) { this.handlers[n] = fn; },
+    };
+    return { setBounds() {}, setVisible() {}, webContents: wc };
+  };
+  const views = [make(), make()];
+  let next = 0;
+  const handed = [];
+  const mgr = createBrowserViewManager({
+    createView: () => views[next++],
+    getContentBounds: () => ({ width: 1280, height: 860 }),
+    addView: () => {},
+    removeView: () => {},
+    focusHost: () => handed.push(1),
+  });
+  mgr.open("https://example.com/");
+  mgr.close();
+  mgr.open("https://example.com/"); // a fresh, hidden view
+  assert.strictEqual(mgr._view(), views[1]);
+  assert.strictEqual(handed.length, 0, "precondition: nothing handed back yet");
+  views[0].webContents.focused = true;
+  views[0].webContents.handlers.focus();
+  await tick();
+  views[0].webContents.handlers["did-stop-loading"]();
+  assert.strictEqual(handed.length, 0, "the released view is never acted on");
+  views[1].webContents.handlers.focus();
+  await tick();
+  assert.strictEqual(handed.length, 1, "the live view still is");
 });

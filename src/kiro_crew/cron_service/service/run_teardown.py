@@ -515,9 +515,10 @@ async def cancel(self: CronService, job_id: str) -> bool:
             # the job leaves the schedule in this process at once, so the next
             # tick does not run it while the save below is pending, but
             # ``user_paused`` is set only by the save that lands the park. A
-            # delete_after_run one-shot is left to _execute_with_timeout,
-            # whose failed-run auto-pause parks it.
-            park_one_shot = job.schedule.kind == "at" and not job.delete_after_run
+            # delete_after_run one-shot is parked too: _execute_with_timeout's
+            # failed-run auto-pause only reaches a run whose payload started,
+            # so a cancel that lands before that would leave it due.
+            park_one_shot = job.schedule.kind == "at"
             if park_one_shot:
                 job.enabled = False
             # Why the park was not saved, or None once a store write that

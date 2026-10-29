@@ -127,10 +127,14 @@ def register(app: web.Application) -> None:
     )
     app.router.add_patch("/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_edit)
     app.router.add_put("/api/chat/slots/{slot}/queue/order", chat.api_chat_slot_queue_reorder)
+    app.router.add_post(
+        "/api/chat/slots/{slot}/steers/{mid}/retract", chat.api_chat_slot_steer_retract
+    )
     app.router.add_delete("/api/chat/slots/{slot}", chat.api_chat_slot_delete)
     app.router.add_post(
         "/api/chat/slots/{slot}/reset-conversation", chat.api_chat_slot_reset_conversation
     )
+    app.router.add_post("/api/chat/slots/{slot}/repair-images", chat.api_chat_slot_repair_images)
     app.router.add_post("/api/chat/slots/{slot}/agent", chat.api_chat_slot_agent)
 
     # Optimizer

@@ -20,11 +20,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.acp import client_transport
 from kiro_crew.acp.client import _CLIENT_OWNERS, AcpClient, AcpError
 from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
+    EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
+    METHOD_SESSION_STEERING,
     JsonRpcMessage,
 )
 from kiro_crew.agent_sdk.backends import (
@@ -82,14 +85,15 @@ def _chunk(text: str) -> dict:
     )
 
 
-def _usage(origin: dict | None = None) -> dict:
-    update: dict = {"sessionUpdate": "usage_update", "used": 10, "size": 100}
+def _usage(origin: dict | None = None, *, used: int = 10) -> dict:
+    update: dict = {"sessionUpdate": "usage_update", "used": used, "size": 100}
     if origin is not None:
         update["_meta"] = {"_claude/origin": origin}
     return _update(update)
 
 
-_AUTONOMOUS_END = _usage({"kind": "task-notification", "producer": "session-task", "runId": "r"})
+_AUTONOMOUS_ORIGIN = {"kind": "task-notification", "producer": "session-task", "runId": "r"}
+_AUTONOMOUS_END = _usage(_AUTONOMOUS_ORIGIN)
 _HUMAN_END = _usage({"kind": "human"})
 _SESSION_INFO = _update({"sessionUpdate": "session_info_update", "title": "probe"})
 _PERMISSION = {
@@ -209,16 +213,234 @@ async def test_the_reader_stops_at_the_buffer_bound_and_leaves_the_rest_in_the_p
     client, reader, _proc = _client(on_turn=turns.append)
     client._buffer = deque(maxlen=3)
     client._maybe_start_idle_reader()
-    _feed(reader, _usage(), _usage(), _usage(), _chunk("late"))
+    _feed(reader, _SESSION_INFO, _SESSION_INFO, _SESSION_INFO, _chunk("late"))
 
     await _reader_exits(client)
 
     assert turns == []
-    assert _kinds(client) == ["usage_update"] * 3
+    assert _kinds(client) == ["session_info_update"] * 3
     left = await await_until(
         asyncio.ensure_future(reader.readline()), what="the line left in the pipe"
     )
     assert left == _line(_chunk("late"))
+
+
+# ── Snapshot frames while the reader waits ──
+
+
+def _commands(*names: str) -> dict:
+    return _update(
+        {
+            "sessionUpdate": "available_commands_update",
+            "availableCommands": [{"name": name, "description": ""} for name in names],
+        }
+    )
+
+
+def _costed_usage(amount: float, *, used: int) -> dict:
+    frame = _usage(used=used)
+    frame["params"]["update"]["cost"] = {"amount": amount, "currency": "USD"}
+    return frame
+
+
+def _in_session(frame: dict, session_id: str) -> dict:
+    return {**frame, "params": {**frame["params"], "sessionId": session_id}}
+
+
+def _with_meta(frame: dict, meta: dict) -> dict:
+    update = {**frame["params"]["update"], "_meta": meta}
+    return {**frame, "params": {**frame["params"], "update": update}}
+
+
+def _config(value: str) -> dict:
+    return _update(
+        {
+            "sessionUpdate": "config_option_update",
+            "configOptions": [{"id": "effort", "currentValue": value, "options": []}],
+        }
+    )
+
+
+def _frames(client: AcpClient) -> list[tuple]:
+    return [(m.id, m.params) for m in client._buffer]
+
+
+def _wire(*frames: dict) -> list[tuple]:
+    return [(frame.get("id"), frame.get("params")) for frame in frames]
+
+
+@pytest.mark.parametrize(
+    ("older", "newer"),
+    [
+        (_usage(used=10), _usage(used=90)),
+        (_costed_usage(0.5, used=10), _costed_usage(0.5, used=90)),
+        (_AUTONOMOUS_END, _usage(_AUTONOMOUS_ORIGIN, used=90)),
+        (_commands("review"), _commands("review", "deploy")),
+    ],
+)
+def test_a_later_snapshot_supersedes_one_that_differs_only_in_its_snapshot_fields(
+    older: dict, newer: dict
+) -> None:
+    assert client_transport._supersedes(
+        JsonRpcMessage.from_dict(newer), JsonRpcMessage.from_dict(older)
+    )
+
+
+@pytest.mark.parametrize(
+    ("older", "newer"),
+    [
+        (_costed_usage(0.5, used=10), _costed_usage(0.7, used=10)),
+        (_costed_usage(0.5, used=10), _usage(used=90)),
+        (_usage(used=10), _in_session(_usage(used=90), "child")),
+        (
+            _with_meta(_usage(used=10), {"_claude/rateLimit": {"status": "allowed"}}),
+            _with_meta(_usage(used=10), {"_claude/rateLimit": {"status": "rejected"}}),
+        ),
+        (_HUMAN_END, _AUTONOMOUS_END),
+        (_config("low"), _config("high")),
+        (_SESSION_INFO, _update({"sessionUpdate": "session_info_update", "title": "next"})),
+        (_update({"sessionUpdate": "future_update"}), _update({"sessionUpdate": "future_update"})),
+        (_usage(used=10), _commands("review")),
+    ],
+)
+def test_a_frame_that_differs_outside_the_snapshot_fields_supersedes_nothing(
+    older: dict, newer: dict
+) -> None:
+    assert not client_transport._supersedes(
+        JsonRpcMessage.from_dict(newer), JsonRpcMessage.from_dict(older)
+    )
+
+
+@pytest.mark.asyncio
+async def test_more_snapshot_frames_than_the_buffer_holds_still_hand_off_the_turn() -> None:
+    turns: list[AcpClient] = []
+    client, reader, _proc = _client(on_turn=turns.append)
+    client._maybe_start_idle_reader()
+    for used in range(1, 151):
+        _feed(reader, _usage(used=used), _commands(f"skill-{used}"))
+
+    _feed(reader, _chunk("background done"))
+    await _reader_exits(client)
+
+    assert turns == [client]
+    assert _frames(client) == _wire(
+        _usage(used=150), _commands("skill-150"), _chunk("background done")
+    )
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        first = await stream.__anext__()
+        # The usage frame was read before the chunk, so its count is applied by now.
+        assert client.last_prompt_stats.context_used_tokens == 150
+        _feed(reader, _AUTONOMOUS_END)
+        rest = [e async for e in stream]
+
+    assert (first.kind, first.text) == (EVENT_TEXT_CHUNK, "background done")
+    assert [e.kind for e in rest] == [EVENT_COMPLETE]
+    await _stop_restarted_reader(client)
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_after_a_run_of_snapshots_reads_only_the_latest() -> None:
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    client._maybe_start_idle_reader()
+    _feed(reader, *[_usage(used=used) for used in range(1, 121)])
+    await async_wait_until(lambda: reader._buffer == b"", timeout=5)
+    await _parked(reader)
+
+    _feed(reader, {"jsonrpc": "2.0", "id": 9, "result": {"stopReason": "end_turn"}})
+    read: list[tuple[str, object]] = []
+    async with contextlib.aclosing(client._prompt_loop(9, 5.0)) as loop:
+        async for action, msg in loop:
+            read.append((action, msg.params["update"]["used"] if msg.params else msg.id))
+            if action == "complete":
+                break
+
+    assert read == [("update", 120), ("complete", 9)]
+    await _stop_restarted_reader(client)
+
+
+@pytest.mark.asyncio
+async def test_frames_no_snapshot_supersedes_are_kept_in_arrival_order() -> None:
+    turns: list[AcpClient] = []
+    client, reader, _proc = _client(on_turn=turns.append)
+    client._maybe_start_idle_reader()
+    future = _update({"sessionUpdate": "future_update", "detail": "x"})
+    response = {"jsonrpc": "2.0", "id": 9, "result": {}}
+    metadata = {"jsonrpc": "2.0", "method": "_kiro.dev/metadata", "params": {"sessionId": "s1"}}
+    _feed(
+        reader,
+        _usage(used=1),
+        _config("low"),
+        _costed_usage(0.5, used=2),
+        future,
+        response,
+        metadata,
+        _usage(used=3),
+        _config("high"),
+        _costed_usage(0.5, used=4),
+        _costed_usage(0.7, used=5),
+        future,
+        _chunk("reply"),
+    )
+
+    await _reader_exits(client)
+
+    assert turns == [client]
+    # Only the plain usage at 1 and the costed usage at 2 were superseded.
+    assert _frames(client) == _wire(
+        _config("low"),
+        future,
+        response,
+        metadata,
+        _usage(used=3),
+        _config("high"),
+        _costed_usage(0.5, used=4),
+        _costed_usage(0.7, used=5),
+        future,
+        _chunk("reply"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_superseded_end_markers_between_turns_do_not_change_where_the_turn_ends() -> None:
+    turns: list[AcpClient] = []
+    client, reader, _proc = _client(on_turn=turns.append)
+    markers = [_usage(_AUTONOMOUS_ORIGIN, used=used) for used in range(1, 121)]
+
+    await _handed_off(client, reader, *markers, _chunk("real "))
+    assert _frames(client) == _wire(markers[-1], _chunk("real "))
+    _feed(reader, _chunk("reply"), _AUTONOMOUS_END, _chunk("next turn"))
+
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        events = [e async for e in stream]
+
+    # The kept marker precedes the turn's first activity, so only the closing one ends it.
+    assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["real ", "reply"]
+    assert [e.kind for e in events].count(EVENT_COMPLETE) == 1
+    await async_wait_until(lambda: len(turns) == 2, timeout=5)
+    assert client._buffer[0].params["update"]["content"]["text"] == "next turn"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_frames_do_not_pile_up_across_reader_restarts() -> None:
+    turns: list[AcpClient] = []
+    client, reader, _proc = _client(on_turn=turns.append)
+    client._maybe_start_idle_reader()
+    used = 0
+    for _ in range(3):
+        _feed(reader, *[_usage(used=used + step) for step in range(1, 61)])
+        used += 60
+        await async_wait_until(lambda: reader._buffer == b"", timeout=5)
+        await _parked(reader)
+        # A claim puts the held frames back in _buffer; its release restarts the reader.
+        await client._claim_stdout()
+        assert _frames(client) == _wire(_usage(used=used))
+        client._release_stdout()
+
+    _feed(reader, _chunk("after 180 usage frames"))
+    await _reader_exits(client)
+
+    assert turns == [client]
+    assert _frames(client) == _wire(_usage(used=180), _chunk("after 180 usage frames"))
 
 
 @pytest.mark.asyncio
@@ -726,3 +948,112 @@ async def test_a_prompt_past_the_gate_keeps_stream_unsolicited_out(monkeypatch) 
         await prompt
     assert client._prompts_in_flight == 0
     await client._stop_idle_reader()
+
+
+# ── Steers ──
+
+
+_PROMPT_END = {"jsonrpc": "2.0", "id": 8, "result": {"stopReason": "end_turn"}}
+
+
+def _steering_client(*, on_turn=None) -> tuple[AcpClient, asyncio.StreamReader, list[dict]]:
+    """A claude client whose adapter takes ``_session/steering``, and the frames it writes."""
+    client, reader, _proc = _client(on_turn=on_turn or (lambda _c: None))
+    client._session_id = "s1"
+    client._agent_version = "0.89.1"
+    client._steering_advertised = True
+    client.ensure_ready = AsyncMock()
+    client._send_prompt = AsyncMock(return_value=8)
+    client._next_id = 9  # the prompt was request 8
+    sent: list[dict] = []
+
+    async def _write(data: bytes, request_id: int, method: str) -> None:
+        sent.append(json.loads(data))
+
+    client._write_request_bounded = _write
+    return client, reader, sent
+
+
+def _steering_ids(sent: list[dict]) -> list[int]:
+    return [frame["id"] for frame in sent if frame.get("method") == METHOD_SESSION_STEERING]
+
+
+def _steering_answer(request_id: int, outcome: str) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}}
+
+
+async def _user_turn(client: AcpClient) -> asyncio.Future[list]:
+    """Read a user turn in the background, returned once it takes steers."""
+
+    async def _read() -> list:
+        async with contextlib.aclosing(client.stream_events("first", timeout=30)) as events:
+            return [event async for event in events]
+
+    turn = asyncio.ensure_future(_read())
+    await async_wait_until(lambda: client._steering_turn_req == 8 or turn.done(), timeout=5)
+    return turn
+
+
+@pytest.mark.asyncio
+async def test_an_agent_started_turn_takes_no_steer_and_the_next_user_turn_does() -> None:
+    client, reader, sent = _steering_client()
+    await _handed_off(client, reader, _chunk("background "))
+
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        assert (await stream.__anext__()).kind == EVENT_TEXT_CHUNK
+        # False sends the caller down its queue path.
+        assert await client.steer("change course") is False
+        _feed(reader, _AUTONOMOUS_END)
+        rest = [e async for e in stream]
+
+    assert rest[-1].kind == EVENT_COMPLETE
+    assert sent == []
+    await async_wait_until(lambda: client._stdout_claims == 0, timeout=5)
+    turn = await _user_turn(client)
+    steer = asyncio.ensure_future(client.steer("change course"))
+    [steering_id] = await async_wait_until(lambda: _steering_ids(sent), timeout=5)
+    _feed(reader, _steering_answer(steering_id, "injected"))
+    assert await await_until(steer, what="the steer") is True
+    _feed(reader, _HUMAN_END, _PROMPT_END)
+    events = await await_until(turn, what="the user turn")
+
+    assert [e.kind for e in events][-2:] == [EVENT_STEER_CONSUMED, EVENT_COMPLETE]
+    assert client._unanswered_steering_ids() == set()
+    await _stop_restarted_reader(client)
+
+
+@pytest.mark.parametrize(
+    ("stopped_waiting_on", "outcome"), [("timeout", "injected"), ("turn_end", "promptRequired")]
+)
+@pytest.mark.asyncio
+async def test_a_late_steering_answer_does_not_end_the_agent_started_turn(
+    monkeypatch, stopped_waiting_on: str, outcome: str
+) -> None:
+    """A steer sent in a user turn stops waiting; its answer lands in the next turn."""
+    from kiro_crew.acp import client as acp_client
+
+    if stopped_waiting_on == "timeout":
+        monkeypatch.setattr(acp_client, "STEERING_ANSWER_WAIT_SECS", 0.0)
+    turns: list[AcpClient] = []
+    client, reader, sent = _steering_client(on_turn=turns.append)
+    turn = await _user_turn(client)
+    steer = asyncio.ensure_future(client.steer("change course"))
+    [steering_id] = await async_wait_until(lambda: _steering_ids(sent), timeout=5)
+    if stopped_waiting_on == "timeout":
+        assert await await_until(steer, what="the steer") is False
+    _feed(reader, _HUMAN_END, _PROMPT_END)
+    await await_until(turn, what="the user turn")
+    assert await await_until(steer, what="the steer") is False
+
+    await async_wait_until(lambda: client._stdout_claims == 0, timeout=5)
+    await _handed_off(client, reader, _chunk("background "))
+    _feed(reader, _steering_answer(steering_id, outcome), _chunk("finished"), _AUTONOMOUS_END)
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        events = [e async for e in stream]
+
+    assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["background ", "finished"]
+    assert [e.kind for e in events].count(EVENT_COMPLETE) == 1
+    assert events[-1].stop_reason == "end_turn"
+    assert turns == [client]
+    assert client._unanswered_steering_ids() == set()
+    await _stop_restarted_reader(client)

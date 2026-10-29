@@ -53,6 +53,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``token_auth.middleware`` treats ``/api/computer-use/invoke/...`` as
         # strict too, which is correct — nothing else lives under it.
         "/api/computer-use/invoke",
+        # Mediated-secret egress. The only legitimate caller is the in-sandbox
+        # ``kirocrew-secrets`` MCP subprocess over loopback with the internal
+        # secret; no browser ever posts to these, and keeping them strict means a
+        # dashboard cookie cannot reach the handler that resolves a vault secret
+        # and performs a credential-bearing egress.
+        "/api/mediated-secret-capability",
+        "/api/mediated-secret-request",
         # Computer use: the live-view (PiP) frame ingress. STRICT for the same
         # reason as ``invoke`` — its body is a frame of the operator's own desktop
         # and its only caller is this gateway's own capture thread, so no browser
@@ -90,18 +97,6 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # boundary, and the handler re-asserts host-locality itself because a
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
-        # Flagged-file delivery approval step-up, the exact mirror
-        # of /api/update/approve above and STRICT for the identical reason: its
-        # only legitimate caller is `kirocrew file-delivery approve` on the gateway
-        # host presenting the sandbox-masked nonce plus X-Internal-Secret. As with
-        # update approve, "no browser ever posts to it -- the SPA can only ARM;
-        # keeping it off the cookie fall-through means a dashboard bearer cannot
-        # even reach the handler whose refusal is the boundary". The handler
-        # (api_file_delivery_consent_approve -> _approve_is_local) re-asserts
-        # host-locality itself, so the STRICT entry is the outer of two fences and
-        # a local_only=False deployment that reclassifies strict paths as mixed is
-        # still caught by the handler's own check.
-        "/api/file-delivery/consent/approve",
         # Dev Fleet pod lifecycle — the agent surface behind the ``pod_up`` /
         # ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
         # runs behind a sandbox with its own user namespace, so its shells cannot

@@ -54,7 +54,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   btnAccent: {
     padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
-    border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff',
+    border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-text)',
   },
   petRow: {
     display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',

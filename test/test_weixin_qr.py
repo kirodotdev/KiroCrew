@@ -29,6 +29,26 @@ def test_atomic_write_secret_round_trips(tmp_path):
     assert target.read_text() == "WEIXIN=abc\n"
 
 
+def test_atomic_write_secret_lands_byte_for_byte(tmp_path, monkeypatch):
+    """The .env text is handed to publish_env as UTF-8 bytes, which are never
+    newline-translated, so the file holds exactly the text the rollback later
+    compares against and restores. A str would be text-mode written, turning
+    each \\n into \\r\\n on Windows."""
+    seen: list[object] = []
+    real = qr.publish_env
+
+    def capture(path, content, **kw):
+        seen.append(content)
+        return real(path, content, **kw)
+
+    monkeypatch.setattr(qr, "publish_env", capture)
+    target = tmp_path / ".env"
+    qr._atomic_write(target, "\ufeffA=1\r\nB=caf\u00e9\n", secret=True)
+
+    assert seen == ["\ufeffA=1\r\nB=caf\u00e9\n".encode("utf-8")]
+    assert target.read_bytes() == b"\xef\xbb\xbfA=1\r\nB=caf\xc3\xa9\n"
+
+
 @posix_only
 def test_atomic_write_secret_is_owner_only(tmp_path):
     target = tmp_path / ".env"
@@ -168,6 +188,36 @@ def test_successful_commit_replaces_the_credential_boot_propagated(tmp_path, mon
 
     assert os.environ["WEIXIN_TOKEN"] == "brand-new"
     assert KiroCrewConfig().load_credentials(propagate=False)["WEIXIN_TOKEN"] == "brand-new"
+
+
+def test_first_sign_in_owns_the_token_so_removing_the_line_revokes_it(tmp_path, monkeypatch):
+    """A first sign-in (no token at boot) writes the token into ``os.environ``.
+    That write must record ``.env`` ownership like every other live write: the
+    watcher's next tick then sees ``prior == value`` and leaves ownership alone,
+    and when the operator later deletes the ``.env`` line the live applier pops
+    the token instead of leaving the revoked credential in force until a full
+    restart. (Fixes the Opus Weixin ownership finding.)"""
+    from kiro_crew.config import loader
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setenv("WEIXIN_TOKEN", "x")
+    monkeypatch.delenv("WEIXIN_TOKEN")
+    monkeypatch.delenv("_KIROCREW_CREDS_SCRUBBED", raising=False)
+    loader.discard_env_owned_key("WEIXIN_TOKEN")
+    try:
+        qr._commit_credential_and_config(tmp_path / "config.json", '{"weixin": {}}', "brand-new")
+        assert os.environ["WEIXIN_TOKEN"] == "brand-new"
+        assert loader.env_owns_key("WEIXIN_TOKEN")
+
+        # The watcher's tick after the sign-in: same value, ownership kept.
+        loader.apply_env_credential_changes({"WEIXIN_TOKEN"}, {"WEIXIN_TOKEN": "brand-new"}, {})
+        assert loader.env_owns_key("WEIXIN_TOKEN")
+
+        # The operator deletes the line: the token is revoked in-process.
+        loader.apply_env_credential_changes({"WEIXIN_TOKEN"}, {}, {"WEIXIN_TOKEN": "brand-new"})
+        assert "WEIXIN_TOKEN" not in os.environ
+    finally:
+        loader.discard_env_owned_key("WEIXIN_TOKEN")
 
 
 def test_successful_commit_keeps_a_scrubbed_environ_free_of_the_credential(tmp_path, monkeypatch):
@@ -527,3 +577,344 @@ def test_config_save_answers_only_after_the_watcher_applied_it(tmp_path, monkeyp
     assert status == 200 and body["ok"] is True
     applied.assert_awaited_once()
     assert json.loads(cp.read_text(encoding="utf-8"))["weixin"]["allowed_user_ids"] == ["u-1"]
+
+
+# ── the confirmed sign-in persists under a live-config hold ────────────────
+
+
+class _ConfirmedClient:
+    """A QR session whose poll reports a confirmed sign-in with credentials."""
+
+    closed = False
+
+    async def get_qrcode_status(self, qrcode):
+        return {"status": "confirmed", "bot_token": "tok", "ilink_bot_id": "acct-new"}
+
+    async def close(self):
+        self.closed = True
+
+
+def _confirmed_session(monkeypatch):
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(qr, "is_direct_local_request", lambda request: True)
+    client = _ConfirmedClient()
+    monkeypatch.setattr(
+        qr, "_SESSIONS", {"s1": {"client": client, "qrcode": "q", "created_at": time.time()}}
+    )
+    monkeypatch.setattr(qr, "_stage_weixin_config", lambda **kw: (Path("config.json"), "{}"))
+    return SimpleNamespace(query={"session_id": "s1"}), client
+
+
+def test_a_confirmed_sign_in_persists_while_the_config_watcher_is_held(monkeypatch):
+    """``.env`` and ``config.json`` commit separately, so a watcher poll between
+    them could restart Weixin with the new token and the previous account id.
+    The whole persistence runs under ``live.hold()``, like every sibling channel
+    saver, and the hold is released afterwards. (Fixes the GPT Weixin-relink
+    finding.)"""
+    import asyncio
+
+    from kiro_crew.config import live
+
+    request, client = _confirmed_session(monkeypatch)
+    depths: list[int] = []
+    monkeypatch.setattr(
+        qr,
+        "_commit_credential_and_config",
+        lambda cp, serialized, token: depths.append(live.watch()._hold_depth),
+    )
+
+    resp = asyncio.run(qr.weixin_qr_status(request))
+
+    assert resp.status == 200
+    assert depths == [1], "the credential+config commit must run under the hold"
+    assert live.watch()._hold_depth == 0
+    assert client.closed
+
+
+def test_a_cancelled_sign_in_keeps_the_hold_until_the_write_finishes(monkeypatch):
+    """A cancelled request must not release the hold while the worker thread is
+    still writing: the watcher would then apply a half-committed pair. The hold
+    stays until the write finishes, and the cancellation is still raised."""
+    import asyncio
+    import threading
+
+    from kiro_crew.config import live
+
+    request, _client = _confirmed_session(monkeypatch)
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_commit(cp, serialized, token):
+        started.set()
+        release.wait(timeout=10)
+        finished.set()
+
+    monkeypatch.setattr(qr, "_commit_credential_and_config", slow_commit)
+
+    async def run():
+        from kiro_crew.testing.wait import async_wait_until
+
+        task = asyncio.ensure_future(qr.weixin_qr_status(request))
+        # Wait on the state, not the clock: the worker is inside the write.
+        await async_wait_until(started.is_set, describe=lambda: "commit never started")
+        task.cancel()
+        # ``cancel()`` schedules the task's next step; one zero-length yield runs
+        # exactly that step, which delivers the CancelledError to the handler.
+        await asyncio.sleep(0)
+        # Cancelled, but the write is still in flight: the hold must stand.
+        assert not task.done()
+        assert live.watch()._hold_depth == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+        assert live.watch()._hold_depth == 0
+
+    asyncio.run(run())
+
+
+def test_a_boot_record_from_another_env_file_is_not_adopted(tmp_path):
+    """The boot ``.env`` record is tied to the file it was read from: a watcher
+    resolving a different data home refuses it (and it is consumed either way),
+    while the same file adopts it. (Fixes the Opus boot-record leak finding.)"""
+    from kiro_crew.config import loader_credentials as lc
+
+    here, elsewhere = tmp_path / "a" / ".env", tmp_path / "b" / ".env"
+
+    lc.record_boot_raw_env({"TELEGRAM_BOT_TOKEN": "x"}, path=here)
+    assert lc.take_boot_raw_env(path=elsewhere) is None
+    assert lc.take_boot_raw_env(path=here) is None, "a refused record is still consumed"
+
+    lc.record_boot_raw_env({"TELEGRAM_BOT_TOKEN": "x"}, path=here)
+    assert lc.take_boot_raw_env(path=here) == {"TELEGRAM_BOT_TOKEN": "x"}
+
+
+# ── case-equivalent .env spellings (Windows os.environ is case-insensitive) ──
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_the_sign_in_writer_handles_a_lowercase_spelling_per_platform(
+    tmp_path, monkeypatch, windows
+):
+    """On Windows ``weixin_token`` and ``WEIXIN_TOKEN`` are one os.environ entry:
+    a sign-in must replace the hand-typed lowercase line, or boot's / the
+    watcher's first-spelling rule would keep the OLD token in force. On POSIX the
+    lowercase name is a different variable and is left alone. (Fixes the GPT
+    Windows case-spelling finding, same class as the dashboard writer.)"""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows, raising=False)
+    ep = tmp_path / ".env"
+    ep.write_text("weixin_token=old\nOTHER=keep\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    qr._write_env_secret("WEIXIN_TOKEN", "new")
+
+    lines = ep.read_text(encoding="utf-8").splitlines()
+    if windows:
+        assert lines == ["WEIXIN_TOKEN=new", "OTHER=keep"]
+    else:
+        assert lines == ["weixin_token=old", "OTHER=keep", "WEIXIN_TOKEN=new"]
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_the_rollback_delete_removes_case_spellings_per_platform(tmp_path, monkeypatch, windows):
+    """Rolling back a first-time sign-in removes the key; on Windows that means
+    every case-equivalent spelling, on POSIX only the exact name."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows, raising=False)
+    ep = tmp_path / ".env"
+    ep.write_text("weixin_token=a\nOTHER=keep\nWEIXIN_TOKEN=b\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    assert qr._read_env_value("WEIXIN_TOKEN") == ("a" if windows else "b")
+    qr._delete_env_key("WEIXIN_TOKEN")
+
+    lines = ep.read_text(encoding="utf-8").splitlines()
+    assert lines == (["OTHER=keep"] if windows else ["weixin_token=a", "OTHER=keep"])
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_a_failed_commit_restores_every_spelling_byte_for_byte(tmp_path, monkeypatch, windows):
+    """A failed config write must put .env back exactly as boot read it.
+
+    On Windows the sign-in collapses every case spelling of the key into one
+    line, so a single-value rollback could not rebuild the original layout: an
+    EMPTY lowercase alias ahead of the working uppercase token (boot skips the
+    empty one and runs on the token) came back as the only line, and the working
+    token was gone. (Fixes the GPT 6.1 Windows rollback finding.)"""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows, raising=False)
+    ep = tmp_path / ".env"
+    original = "# keep me\nweixin_token=\nOTHER=keep\nWEIXIN_TOKEN=working\n"
+    ep.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    _fail_config_writes(monkeypatch, ep)
+
+    with pytest.raises(OSError):
+        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+
+    assert ep.read_text(encoding="utf-8") == original
+    assert qr._read_env_value("WEIXIN_TOKEN") == "working"
+
+
+def test_a_failed_commit_keeps_a_utf8_bom(tmp_path, monkeypatch):
+    """The restored snapshot keeps the file's BOM, so it still decodes as UTF-8."""
+    ep = tmp_path / ".env"
+    ep.write_bytes(b"\xef\xbb\xbfWEIXIN_TOKEN=working\nNAME=caf\xc3\xa9\n")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    _fail_config_writes(monkeypatch, ep)
+
+    with pytest.raises(OSError):
+        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+
+    assert ep.read_bytes() == b"\xef\xbb\xbfWEIXIN_TOKEN=working\nNAME=caf\xc3\xa9\n"
+
+
+def test_a_failed_commit_restores_crlf_line_endings_byte_for_byte(tmp_path, monkeypatch):
+    """A .env saved with CRLF line endings comes back with exactly those bytes,
+    with no carriage return doubled or dropped."""
+    ep = tmp_path / ".env"
+    original = b"# keep me\r\nWEIXIN_TOKEN=working\r\nOTHER=keep\r\n"
+    ep.write_bytes(original)
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    _fail_config_writes(monkeypatch, ep)
+
+    with pytest.raises(OSError):
+        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+
+    assert ep.read_bytes() == original
+
+
+def test_read_env_value_skips_an_empty_case_spelling_on_windows(tmp_path, monkeypatch):
+    """Boot propagates the first NON-EMPTY spelling, so that is the value in force."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True, raising=False)
+    ep = tmp_path / ".env"
+    ep.write_text("weixin_token=\nWEIXIN_TOKEN=working\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    assert qr._read_env_value("WEIXIN_TOKEN") == "working"
+    ep.write_text("weixin_token=\n", encoding="utf-8")
+    assert qr._read_env_value("WEIXIN_TOKEN") == ""
+
+
+# ── the rollback restores only the token's own lines ────────────────────────
+
+
+def _edit_env_then_fail_config(monkeypatch, env_file, edit):
+    """Let the .env write through, apply *edit* to .env (an operator's editor
+    save landing after the sign-in's write), then fail the config.json write."""
+    real = qr._atomic_write
+
+    def selective(path, text, **kw):
+        if path == env_file:
+            return real(path, text, **kw)
+        edit(env_file)
+        raise OSError("sharing violation")
+
+    monkeypatch.setattr(qr, "_atomic_write", selective)
+
+
+def test_rollback_keeps_an_unrelated_edit_saved_after_the_token_write(tmp_path, monkeypatch):
+    """The advisory lock does not exclude an operator's editor. A config failure
+    must restore the previous token without deleting an unrelated line saved in
+    between. (Fixes the GPT full-file-rollback finding.)"""
+    ep = tmp_path / ".env"
+    ep.write_text("OTHER=keepme\nWEIXIN_TOKEN=previous\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    def operator_save(path):
+        path.write_text(path.read_text(encoding="utf-8") + "NEW_SETTING=added\n", encoding="utf-8")
+
+    _edit_env_then_fail_config(monkeypatch, ep, operator_save)
+
+    with pytest.raises(OSError):
+        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+
+    assert ep.read_text(encoding="utf-8").splitlines() == [
+        "OTHER=keepme",
+        "WEIXIN_TOKEN=previous",
+        "NEW_SETTING=added",
+    ]
+
+
+def test_rollback_refuses_when_the_token_entry_was_changed_independently(
+    tmp_path, monkeypatch, caplog
+):
+    """If someone rewrote the token line itself after the sign-in, the rollback
+    leaves their value in place (and logs) rather than overwriting it."""
+    ep = tmp_path / ".env"
+    ep.write_text("WEIXIN_TOKEN=previous\nOTHER=keep\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    def operator_rewrites_token(path):
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace("WEIXIN_TOKEN=brand-new", "WEIXIN_TOKEN=hand"), encoding="utf-8"
+        )
+
+    _edit_env_then_fail_config(monkeypatch, ep, operator_rewrites_token)
+
+    with caplog.at_level("ERROR"), pytest.raises(OSError):
+        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+
+    assert ep.read_text(encoding="utf-8").splitlines() == ["WEIXIN_TOKEN=hand", "OTHER=keep"]
+    assert any("rollback failed" in r.getMessage() for r in caplog.records)
+
+
+def test_write_env_secret_returns_its_own_read_and_what_it_published(tmp_path, monkeypatch):
+    """The rollback snapshot and the published text come from the write's single
+    read, so the snapshot holds every edit the write kept. (Fixes the GPT
+    snapshot-before-write finding.)"""
+    ep = tmp_path / ".env"
+    ep.write_bytes(b"\xef\xbb\xbfOTHER=keep\nWEIXIN_TOKEN=old\n")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    prior, published = qr._write_env_secret("WEIXIN_TOKEN", "new")
+
+    assert prior == "\ufeffOTHER=keep\nWEIXIN_TOKEN=old\n"
+    assert published == "\ufeffOTHER=keep\nWEIXIN_TOKEN=new\n"
+    assert qr._env_file_text(ep) == published
+
+
+def test_write_env_secret_on_an_absent_file_reports_no_prior(tmp_path, monkeypatch):
+    ep = tmp_path / ".env"
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    prior, published = qr._write_env_secret("WEIXIN_TOKEN", "new")
+
+    assert prior is None
+    assert published == "WEIXIN_TOKEN=new\n"
+
+
+def test_a_read_failure_after_the_token_write_cannot_escape_the_commit(tmp_path, monkeypatch):
+    """No read of .env may run between the token write and the rollback-protected
+    config write: a transient failure there would escape with the new token
+    persisted and nothing rolled back. The commit reads .env exactly once,
+    inside the write."""
+    ep = tmp_path / ".env"
+    ep.write_text("WEIXIN_TOKEN=previous\n", encoding="utf-8")
+    cp = tmp_path / "config.json"
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    real = qr.read_env_text
+    calls = {"n": 0}
+
+    def flaky(path, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("sharing violation")
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(qr, "read_env_text", flaky)
+
+    qr._commit_credential_and_config(cp, '{"weixin": {}}', "brand-new")
+
+    assert calls["n"] == 1
+    assert ep.read_text(encoding="utf-8") == "WEIXIN_TOKEN=brand-new\n"
+    assert json.loads(cp.read_text(encoding="utf-8")) == {"weixin": {}}

@@ -471,7 +471,7 @@ def test_write_layer_b_files_returns_none_on_failure(monkeypatch, tmp_path):
 
 
 def test_join_layer_b_goes_through_the_live_manager():
-    """Regression guard for the review finding: constructing ``SessionMap()``
+    """Constructing a fresh ``SessionMap()``
     writes a correct file that the live map then clobbers, because its ``_data``
     is a startup snapshot and every ``set`` rewrites the whole file.
 

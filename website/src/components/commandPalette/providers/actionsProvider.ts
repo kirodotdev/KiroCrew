@@ -1,18 +1,19 @@
 import { createElement } from 'react'
 import type { ReactNode } from 'react'
 import { useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { Command, MessageSquarePlus, SunMoon, Keyboard, Pin } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { createChatForView, showCreatedChat } from '../../../lib/createdChatView'
+import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { useSessionActions } from '../../../hooks/useSessionActions'
 import { useTheme } from '../../../hooks/useTheme'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import type { ResourceProvider, Result } from '../types'
 
 import { i18nT } from '../../../i18n/t'
+import { slotRowByKey } from '../../../store/slotIndex'
 
 /**
  * Actions provider (Search Everywhere).
@@ -177,14 +178,14 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
 export function useActionsProvider(opts: { openShortcuts: () => void }): ResourceProvider {
   const dispatch = useAppDispatch()
   const store = useAppStore()
-  const navigate = useNavigate()
+  const navigate = useAskingNavigate()
   const { cycle } = useTheme()
   const { openShortcuts } = opts
 
   const { togglePin } = useSessionActions()
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
   const activePinned = useAppSelector(
-    (s) => s.dashboard.slots.find((slot) => slot.key === activeSlot)?.pinned ?? false,
+    (s) => slotRowByKey(s.dashboard.slots, activeSlot)?.pinned ?? false,
   )
 
   // "New session" is a write (createSlot); route it through useMutation for

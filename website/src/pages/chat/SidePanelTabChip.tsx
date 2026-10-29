@@ -3,53 +3,19 @@
  *
  * `TabChip` (glyph, label, badge, close control and middle-click close),
  * `DraggableTabItem` (a reorderable chip with its press-and-hold drag and its
- * close menu), `TerminalTabTitle` (a terminal chip's live title) and the
- * tab-kind glyphs (`KIND_ICON`, `iconForKind`). `SidePanel.tsx` lays out the
- * strip and renders these chips; this module never imports it.
+ * close menu). `SidePanel.tsx` lays out the strip and renders these chips;
+ * this module never imports it.
  */
 import TabCloseMenu, { openTabCloseMenu } from '../../components/TabCloseMenu'
 import type { ReactNode } from 'react'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, FileDiff, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, History, X, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin } from 'lucide-react'
-import { useTerminalTitle } from '../../utils/terminalRegistry'
-import type { PanelTab, TabKind } from '../../hooks/usePanelTabs'
-import { usePanelTabDescriptors, panelTabDescriptor, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
-import { appIcon } from '../../apps/appIcons'
+import { X } from 'lucide-react'
+import type { PanelTab } from '../../hooks/usePanelTabs'
+import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { i18nT } from '../../i18n/t'
-
-// Every non-app tab kind maps to a glyph; app-contributed kinds (`app:<…>`) are
-// excluded so this stays an EXHAUSTIVE map a forgotten built-in fails to satisfy
-// — their icon comes from the manifest descriptor via `iconForKind` instead.
-type BuiltinTabKind = Exclude<TabKind, `app:${string}`>
-const KIND_ICON: Record<BuiltinTabKind, ReactNode> = {
-  'command-center': <PanelRight size={16} />,
-  changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
-  logs: <ScrollText size={16} />, crewlog: <History size={16} />, context: <Layers size={16} />, side: <MessageCircleQuestionMark size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
-  summary: <ListTree size={16} />,
-  pins: <Pin size={16} />,
-  file: <FileText size={16} />, diff: <GitCompare size={16} />, wtdiff: <FileDiff size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
-  app: <PanelRight size={16} />, git: <GitBranch size={16} />,
-}
-
-/** The strip/menu glyph for a tab kind. A built-in reads `KIND_ICON`; an
- *  app-contributed kind resolves its manifest lucide icon NAME through the
- *  app-facing icon set, falling back to a generic panel glyph. */
-function iconForKind(kind: TabKind, descriptors: readonly PanelTabDescriptor[]): ReactNode {
-  if (isPanelTabKind(kind)) {
-    return appIcon(panelTabDescriptor(kind, descriptors)?.icon)
-  }
-  return KIND_ICON[kind]
-}
-
-/** Live terminal tab title — subscribes to the session's title (running command
- *  / cwd basename) pushed by the backend poller; falls back to the tab's default
- *  cwd title until the first frame arrives. Module-scope so it isn't redefined
- *  per render. */
-function TerminalTabTitle({ sessionId, fallback }: { sessionId: string; fallback: string }) {
-  const live = useTerminalTitle(sessionId)
-  return <>{live || fallback}</>
-}
+import { iconForKind } from './SidePanelTabIcons'
+import { TAB_CHIP_ID_ATTR, TerminalTabTitle } from './SidePanelTabNav'
 
 /** One reorderable chip in the dynamic half of the strip.
  *
@@ -98,13 +64,15 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
         // Centered in the group's gap-2.
         <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
       )}
-      <TabChip tab={tab} active={active} onSelect={onSelect} onClose={onCloseDirect} />
+      <TabChip chipId={tab.id} tab={tab} active={active} onSelect={onSelect} onClose={onCloseDirect} />
     </Reorder.Item>
     </TabCloseMenu>
   )
 }
 
-function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = false, host = false, icon, badge, testId }: {
+function TabChip({ chipId, tab, active, onSelect, onClose, closable = true, pinned = false, host = false, icon, badge, testId }: {
+  /** The tab's id, read by the strip's reveal and the menu's re-reveal to find this chip. */
+  chipId?: string
   /** A stored tab, or — for the host's leading tab — just a title: that chip has
    *  no `kind` (it is not a `PanelTab`) and brings its own `icon`. */
   tab: Pick<PanelTab, 'title'> & Partial<Pick<PanelTab, 'kind' | 'sessionId' | 'path'>>
@@ -131,6 +99,7 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
   return (
     <div
       role="tab"
+      {...{ [TAB_CHIP_ID_ATTR]: chipId }}
       aria-selected={active}
       tabIndex={0}
       onClick={onSelect}
@@ -173,7 +142,9 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // .side-tab-active in index.css). Inactive = muted text with a hover wash.
       // This deliberately supersedes the earlier Figma "Side Navigation" pill
       // spec (28px, 6px all-corner radius, --border active fill).
-      className={`${narrowIconOnly ? 'side-tab-pinned-idle ' : ''}group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors ${
+      // The keyboard ring is drawn inset: each chip group is an unpadded
+      // horizontal scroller, which clips an outset ring.
+      className={`${narrowIconOnly ? 'side-tab-pinned-idle ' : ''}group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors focus-visible:outline-offset-[-2px] ${
         `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}`
       } ${
         active ? 'side-tab-active bg-bg text-accent border-x-border border-t-border border-b-transparent' : 'side-tab-inactive border-transparent text-muted hover:text-text'

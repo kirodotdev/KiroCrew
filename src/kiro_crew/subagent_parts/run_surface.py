@@ -188,6 +188,12 @@ def _record_reap_ending(self: SubagentManager, info: SubagentInfo, unfinished: s
     self._run_events._record_reap_ending_impl(info, unfinished)
 
 
+def _leave_for_next_start(
+    self: SubagentManager, info: SubagentInfo, *, stop_reason: str | None = None
+) -> bool:
+    return self._run_events._leave_for_next_start_impl(info, stop_reason=stop_reason)
+
+
 async def _run_inner(self: SubagentManager, info: SubagentInfo, session_key: str) -> None:
     usage = _RunCreditAccounting(info)
     info._credit_accounting = usage

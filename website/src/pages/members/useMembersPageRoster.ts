@@ -204,8 +204,13 @@ export function useMembersPageRosterSignals({ rosterRead, rosterView, slotKeyOf 
     },
     [slotKeyOf, liveAutomations, legacyAutomations],
   )
+  // On watch: the member will act again without being asked. Two sources, one
+  // reading -- an active monitor loop on its slot (live automation frames, the
+  // legacy registry as the cold-start fallback) or its heartbeat on (the roster
+  // row's `heartbeat_on`, off the member's goal record). The row's badge, the
+  // avatar ring and the status filter all read this one predicate.
   const isLoopOn = useCallback(
-    (m: MemberRosterRow) => isAutomationActive(automationOf(m)),
+    (m: MemberRosterRow) => isAutomationActive(automationOf(m)) || !!m.heartbeat_on,
     [automationOf],
   )
   // The live facts the status filters read, resolved per row from the same
@@ -218,6 +223,7 @@ export function useMembersPageRosterSignals({ rosterRead, rosterView, slotKeyOf 
         needsYou: !!key && !!liveNeedsYou[key],
         unread: isUnread(m),
         patrolling: isLoopOn(m),
+        goal: !!m.has_goal,
       }
     },
     [slotKeyOf, isRunning, liveNeedsYou, isUnread, isLoopOn],

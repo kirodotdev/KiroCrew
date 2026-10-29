@@ -1,0 +1,247 @@
+name: Main Red Watch
+
+# `main-macos-failure-watch.yml` pages a red macOS leg and nothing else. With the
+# merge queue off, the push run of `CI` on main runs the whole matrix, and a red
+# Linux or Windows test shard there reaches nobody: GitHub's failure e-mail goes
+# to the push actor, and the next PR author finds main red only after their own
+# run fails the same way. This watcher is the missing notice for that red.
+#
+# WHAT IT DOES: when a PUSH run of `CI` on main ends `failure` or `timed_out`, it
+# reads the log of every failed job, collects the `FAILED <node id> - <message>`
+# lines of pytest's short test summary, and opens or updates ONE issue titled
+# `Main is red: <first node id>` under the `main-red` label. The body holds the
+# set {node id: first 80 characters of the message}, the first-red SHA and the
+# streak, and one line, `Fix in progress: ...`, that it rewrites on every main run
+# from the open pull requests that cross-reference the issue. When a later push
+# run of `CI` ends green, it comments on the issue and closes it.
+#
+# WARN ONLY: it writes an issue and nothing else. It comments on no pull request,
+# assigns nobody and mentions nobody but the author of a pull request that
+# cross-references the issue (the line names who is fixing it). No check of any
+# pull request changes. Reverting this one file set removes it.
+#
+# WHEN IT WRITES NOTHING: a failed run with no pytest node id in any failed job
+# log. That covers a Fast Gate barrier timeout (the job waited, no test ran), a
+# Coverage Gate failure and a run that failed before the tests started. A
+# cancelled run never reaches the job (the gate below). A green run closes an
+# issue only when the full backend suite ran in it (the `Backend Tests` shards'
+# coverage upload ran, which `ci.yml` skips on a frontend-only or leaf-only
+# reduced scope), so a run that skipped or reduced the tests (a docs-only push, the
+# merge queue's macOS-only push path) cannot close a red it never tried.
+#
+# STREAK: the issue stays open while main stays red. Each later red run that
+# names failing tests replaces the set, keeps the first-red SHA and adds one to
+# the streak. A re-run of the same run id does not add one, and a run older than
+# the last red one that finishes late changes nothing. The record is a JSON
+# comment at the end of the body (`main-red-state`); the issue is found by its
+# author (the Actions token), that comment and the title prefix, so it works
+# whether or not the label exists and an issue a person writes is never trusted.
+#
+# DEDUPE: the same shape as `main-macos-failure-watch.yml`. Open issues are read
+# through `gh issue list` (the issues API), never `--search`, whose index lags a
+# create. The label is created with `--force` when the repository allows it; if
+# not, the lookup drops the label and relies on the title prefix and the record.
+#
+# UNTRUSTED TEXT: a pytest message is whatever a test printed. It is written to
+# files by `gh`, read by `.github/scripts/main_red_nodeids.py`, cut to printable
+# ASCII with backticks removed, and placed in code spans in the issue body. It is
+# never part of a shell command or a `${{ }}` expression. The script is read from
+# main's default-branch checkout, never from the failing commit.
+#
+# PERMISSIONS: `actions: read` for the run's jobs and their logs; `issues: write`
+# to read, open, edit, comment on and close the issue and to create its label;
+# `contents: read` for the sparse checkout of `.github/scripts`. No pull-request
+# scope: the fix line reads the issue's own timeline.
+#
+# RUNNER: `ubuntu-latest`, for the reason `main-macos-failure-watch.yml` gives: a
+# `workflow_run` completion has no live collaborator actor for the AWS webhook
+# allowlist.
+#
+# `test/test_main_red_watch.py` pins the watched name, the gate, the permissions
+# and the untrusted-text rule, and runs the step with `gh` stubbed.
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+# One watcher at a time, never killed: two side by side is how the issue lookup
+# passes twice and files two. Only a run the job gate takes joins the shared
+# group; every pull_request and merge_group completion of `CI` also starts this
+# workflow (the job is skipped) and gets a group of its own, so it cannot evict a
+# pending push watcher. A third push completion inside one watcher's run evicts
+# the queued one; the newest red run supersedes the older one's set anyway.
+concurrency:
+  group: >-
+    ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
+    && 'main-red-watch'
+    || format('main-red-watch-skip-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Open, update or close the main-red issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+       github.event.workflow_run.conclusion == 'timed_out' ||
+       github.event.workflow_run.conclusion == 'success')
+    steps:
+      # `workflow_run` checks out the default branch, so the script is main's own.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Open, update or close the main-red issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          # A green run closes the issue only if every job with this name prefix
+          # that has a step of this name passed that step, and at least one did.
+          # `ci.yml` skips that step on a reduced backend scope. `test_main_red_watch.py`
+          # pins both names against `ci.yml`.
+          PROOF_JOB_PREFIX: Backend Tests
+          PROOF_STEP_NAME: Upload shard coverage
+        run: |
+          set -euo pipefail
+          script=.github/scripts/main_red_nodeids.py
+          work="$RUNNER_TEMP/main-red"
+          mkdir -p "$work/logs"
+          short_sha="${HEAD_SHA:0:12}"
+
+          # The label is a courtesy. Without it the lookup relies on the title
+          # prefix and the state record in the body.
+          have_label=0
+          if gh label create main-red --repo "$REPO" --force --color B60205 \
+            --description "Main's CI is red on a named test; filed by main-red-watch.yml" >/dev/null 2>&1; then
+            have_label=1
+          else
+            echo "::notice::Could not ensure the main-red label; looking up the issue by title prefix."
+          fi
+
+          # Sets `existing` (an issue number or empty) and writes its body to
+          # $work/prev-body.md. The labelled list is tried first; if it holds no
+          # watcher issue, the unlabelled list is too, so an issue filed while the
+          # label could not be created is still found once the label exists.
+          find_open_issue() {
+            : > "$work/prev-body.md"
+            existing=""
+            if [ "$have_label" = 1 ]; then
+              gh issue list --repo "$REPO" --state open --label main-red --limit 100 \
+                --json number,title,body,author > "$work/issues.json"
+              existing="$(python3 "$script" pick-issue "$work/issues.json" --body-out "$work/prev-body.md")"
+            fi
+            if [ -z "$existing" ]; then
+              gh issue list --repo "$REPO" --state open --limit 200 \
+                --json number,title,body,author > "$work/issues.json"
+              existing="$(python3 "$script" pick-issue "$work/issues.json" --body-out "$work/prev-body.md")"
+            fi
+          }
+
+          if [ "$CONCLUSION" = "success" ]; then
+            # The proof is a full backend run: the shard coverage upload only runs
+            # when the scope step did not reduce the run (a frontend-only or
+            # leaf-only push), so a skipped upload means the reported tests were
+            # not tried.
+            gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+              --jq '.jobs[] | select(.name | startswith(env.PROOF_JOB_PREFIX)) | .steps[]? | select(.name == env.PROOF_STEP_NAME) | .conclusion' \
+              > "$work/proof-steps.txt"
+            if ! grep -qx success "$work/proof-steps.txt" || grep -qxv success "$work/proof-steps.txt"; then
+              echo "$RUN_URL did not run the full backend suite ($PROOF_JOB_PREFIX / $PROOF_STEP_NAME not passed in every job); a reduced green run closes nothing."
+              exit 0
+            fi
+            find_open_issue
+            if [ -z "$existing" ]; then
+              echo "Green run and no open main-red issue."
+              exit 0
+            fi
+            if ! python3 "$script" should-close --prev-body "$work/prev-body.md" --run-id "$RUN_ID"; then
+              echo "Issue #$existing records a red run newer than $RUN_URL; leaving it open."
+              exit 0
+            fi
+            gh issue comment "$existing" --repo "$REPO" \
+              --body "Main is green again: the \`CI\` push run for \`$short_sha\` passed its tests ($RUN_URL). Closing. If a test is still flaky, the next red run opens a fresh issue."
+            gh issue close "$existing" --repo "$REPO" --reason completed
+            exit 0
+          fi
+
+          # Red: read the log of each failed job (newest cap 20), as files.
+          gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .id' \
+            > "$work/failed-jobs.txt"
+          fetched=0
+          while read -r job_id; do
+            case "$job_id" in ''|*[!0-9]*) continue ;; esac
+            if [ "$fetched" -ge 20 ]; then
+              echo "::notice::More than 20 failed jobs; reading the first 20 logs."
+              break
+            fi
+            fetched=$((fetched + 1))
+            gh api "repos/$REPO/actions/jobs/$job_id/logs" > "$work/logs/$job_id.log" 2>/dev/null \
+              || { echo "::notice::Could not read the log of job $job_id; skipping it."; rm -f "$work/logs/$job_id.log"; }
+          done < "$work/failed-jobs.txt"
+
+          python3 "$script" extract "$work/logs" > "$work/failures.json"
+          if [ "$(jq 'length' "$work/failures.json")" = "0" ]; then
+            echo "No failing pytest node id in $RUN_URL (a barrier timeout, a coverage gate or an early failure); writing nothing."
+            exit 0
+          fi
+
+          find_open_issue
+          render() {
+            # $1: the issue number or empty. Exit 10 means an older run finished late.
+            rc=0
+            python3 "$script" render --failures "$work/failures.json" \
+              --prev-body "$work/prev-body.md" ${2:+--timeline "$2"} \
+              --repo "$REPO" --sha "$HEAD_SHA" --run-id "$RUN_ID" --run-url "$RUN_URL" \
+              ${1:+--issue-number "$1"} --out-title "$work/title.txt" --out-body "$work/body.md" || rc=$?
+            if [ "$rc" = 10 ]; then
+              exit 0
+            fi
+            return "$rc"
+          }
+
+          if [ -n "$existing" ]; then
+            # Open pull requests that cross-reference the issue.
+            if gh api "repos/$REPO/issues/$existing/timeline?per_page=100" --paginate \
+              --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at}' \
+              > "$work/timeline.ndjson"; then
+              render "$existing" "$work/timeline.ndjson"
+            else
+              echo "::notice::Could not read the timeline of #$existing; the fix line shows none."
+              render "$existing"
+            fi
+            gh issue edit "$existing" --repo "$REPO" --body-file "$work/body.md"
+            echo "Updated #$existing."
+          else
+            : > "$work/prev-body.md"
+            render ""
+            if [ "$have_label" = 1 ]; then
+              created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" --body-file "$work/body.md" --label main-red)"
+            else
+              created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" --body-file "$work/body.md")"
+            fi
+            printf '%s\n' "$created"
+            # The body names the issue in its `Fixes #N` hint once the number exists.
+            new_number="$(printf '%s' "$created" | sed -nE 's#.*/issues/([0-9]+)[[:space:]]*$#\1#p')"
+            if [ -n "$new_number" ]; then
+              render "$new_number"
+              gh issue edit "$new_number" --repo "$REPO" --body-file "$work/body.md" >/dev/null \
+                || echo "::notice::Could not add the issue number to the body of #$new_number (continuing)."
+            fi
+          fi

@@ -9,7 +9,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard.body_numbers import body_int
-from kiro_crew.dashboard.chat_delivery import queued_text_for_display
+from kiro_crew.dashboard.chat_delivery import is_retracted_steer_row, queued_text_for_display
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
@@ -34,6 +34,35 @@ from kiro_crew.sel import sel
 logger = logging.getLogger(__name__)
 
 _MAX_VARIANTS = 20
+
+
+def _cap_keeping_shown(variants: list[dict], shown: str, shown_idx: object) -> list[dict]:
+    """The newest ``_MAX_VARIANTS`` versions, keeping the one on screen.
+
+    The version on screen when Regenerate is pressed is the reply being
+    replaced. A user who switched back to an old version and regenerated it
+    must still find it among the versions afterwards, so the cap drops the
+    oldest OTHER versions. *shown_idx* is the row's ``variant_idx``; when it
+    does not point at the shown text, the newest entry holding it is kept.
+    """
+    if isinstance(shown_idx, int) and 0 <= shown_idx < len(variants):
+        keep = shown_idx if variants[shown_idx].get("content") == shown else None
+    else:
+        keep = None
+    if keep is None:
+        keep = next(
+            (i for i in range(len(variants) - 1, -1, -1) if variants[i].get("content") == shown),
+            None,
+        )
+    excess = len(variants) - _MAX_VARIANTS
+    kept: list[dict] = []
+    for i, entry in enumerate(variants):
+        if excess > 0 and i != keep:
+            excess -= 1
+            continue
+        kept.append(entry)
+    return kept
+
 
 # Longest replacement prompt edit-resend accepts, in characters. Named here
 # rather than inlined so the endpoint's cap is greppable; the value matches the
@@ -114,6 +143,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         ai_idx = -1
         for i in range(len(msgs) - 1, -1, -1):
             role = msgs[i].get("role")
+            # A taken-back steer keeps its row, text cleared, inside the turn it
+            # was sent into. The turn never read it, so it is not a user turn.
+            if is_retracted_steer_row(msgs[i]):
+                continue
             # Never cross a real user turn: the truncation below deletes
             # everything after the target reply's user row, so a reply found
             # PAST a newer user row (e.g. a /compact row awaiting only its
@@ -137,7 +170,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             )
         u_idx = -1
         for i in range(ai_idx - 1, -1, -1):
-            if msgs[i].get("role") == "user":
+            if msgs[i].get("role") == "user" and not is_retracted_steer_row(msgs[i]):
                 u_idx = i
                 break
         if u_idx < 0:
@@ -158,7 +191,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         if not any(v.get("content") == current_entry["content"] for v in variants):
             variants.append(current_entry)
         if len(variants) > _MAX_VARIANTS:
-            variants = variants[-_MAX_VARIANTS:]
+            variants = _cap_keeping_shown(
+                variants, current_entry["content"], ai_msg.get("variant_idx")
+            )
 
         del slot.messages[u_idx + 1 :]
         slot.invalidate_source_links()

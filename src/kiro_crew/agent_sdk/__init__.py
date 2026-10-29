@@ -106,6 +106,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     finish_suspended_spawn,
     kas_engine_gap,
     kas_engine_unsupported_reason,
+    kas_engine_verdict,
 )
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
@@ -198,6 +199,7 @@ __all__ = [
     "forget_for_recheck",
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
+    "kas_engine_verdict",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",

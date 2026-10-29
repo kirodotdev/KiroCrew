@@ -476,6 +476,9 @@ _MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
 #: by construction rather than by which opener happens to carry the guard.
 MARKER_OPENERS = "[\u3010\uff3b\u3014"
 _MARKER_OPEN_CLASS = "[" + re.escape(MARKER_OPENERS) + "]"
+#: Its negation, derived from the same string: what a pattern that must apply a
+#: per-opener rule may consume WITHOUT applying it. Closers are not excluded.
+_MARKER_NON_OPEN_CLASS = "[^" + re.escape(MARKER_OPENERS) + "]"
 #: Every bracket the grammar knows -- all openers and all closers -- as the
 #: characters the body's NEGATED classes exclude. This is the disjointness
 #: invariant in one place: a character that can START a bracket form (an opener)
@@ -1303,8 +1306,8 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: :func:`split_trailing_protocol_suffix`'s unfinished-marker probe: a tail is
 #: a STILL-STREAMING marker only when every byte it holds so far could extend
 #: into a complete marker. ``[OPTIONS`` must be followed by ``:`` and then a
-#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; ``[`` admitted
-#: only when not opening a nested ``[OPTIONS:``) -- deliberately LOOSER than
+#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; EVERY opener
+#: admitted only when not opening a nested ``[OPTIONS:``) -- deliberately LOOSER than
 #: that body, and the one place the "spelled once" rule in
 #: :data:`_MARKER_BODY_LINE` does not apply. It has to be: a prefix of a legal
 #: body need not itself be a legal body. ``[OPTIONS: A ]`` mid-stream holds a
@@ -1313,6 +1316,8 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: that tail dead and publish the marker as raw text. Widening this to the
 #: grammar is what ``test_options_marker_closers.py``'s
 #: ``test_closer_inside_an_unfinished_label_is_still_unfinished`` forbids.
+#: The nested-head guard is the one part that must AGREE: the body refuses a head
+#: after every opener, so a tail holding one can never become legal.
 #: ``[STEERING`` follows the steer-ack
 #: grammar (``messaging/driver.py``): whitespace gap, literal ``steer-``, a
 #: nonempty hex/dash id, then an optional ``:`` summary -- spelled as nested
@@ -1321,7 +1326,7 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: acknowledgment``, ``steer-:``) is prose and stays visible. Case-sensitive
 #: on purpose: these probe the exact sentinels the detach walk locates.
 _OPTIONS_TAIL_PREFIX_RE = re.compile(
-    r"\[OPTIONS(?::(?:[^[]|\[(?!OPTIONS:))*)?\Z",
+    rf"\[OPTIONS(?::(?:{_MARKER_NON_OPEN_CLASS}|{_MARKER_OPEN_CLASS}(?!OPTIONS:))*)?\Z",
     re.DOTALL,
 )
 _STEERING_TAIL_PREFIX_RE = re.compile(
@@ -1534,6 +1539,20 @@ NO_TOOL_CALLS_NOTE = (
     "made no tool calls in this run, so it did not itself write a file, run a "
     "command or make a commit. Treat any such change it reports as a claim: check "
     "it on disk before relying on it."
+)
+
+#: What a parent is told beside the result of a sub-agent run that ended
+#: normally but whose final text carries a tool call written as prose instead
+#: of executed (``SubagentInfo.leaked_tool_call``). That call never ran, so the
+#: output it was meant to produce may be missing even though the run reads as
+#: completed. Notice-only, like the dashboard's mixed-turn leak notice: calls
+#: earlier in the run may already have taken effect, so the run is not marked
+#: failed and nothing is re-issued. Prefixed with the agent's label by each caller.
+LEAKED_TOOL_CALL_NOTE = (
+    "ended with a tool call written as text instead of run, so that last call "
+    "did not execute and the output it was meant to produce may be missing. "
+    "Earlier calls in the run may have taken effect. Check the result before "
+    "treating this step as done."
 )
 
 # Key under a completion message's ``meta`` where the gateway stamps the

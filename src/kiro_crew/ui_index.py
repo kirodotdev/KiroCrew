@@ -774,9 +774,9 @@ AREAS: dict[str, _Area] = {
         related=("customize",),
     ),
     "developer": _Area(
-        "the Developer, Logs, Webhooks and Task Runner pages",
-        title="page.developer",
-        anchors=("page.developer", "page.logs", "page.webhooks", "page.projects"),
+        "the Logs, Webhooks and Task Runner pages (the developer tools are settings.developer)",
+        title="page.logs",
+        anchors=("page.logs", "page.webhooks", "page.projects"),
     ),
 }
 #: The area split into sub-areas, and the tab-id prefix each sub-area is named from.

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
 import { Search, Mail, Pencil, Trash2, Check, X, ArrowUpRight, ChevronLeft, ChevronRight, Lightbulb, ShieldCheck, History, ListFilter, Replace } from 'lucide-react'
 import { api } from '../../api/client'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { Badge, Btn, Card, EmptyState, Input, PanelSectionHeader, Skeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -20,7 +21,7 @@ export const MEMORY_RECORD_LABELS = { fact: 'memoryV2.fact', directive: 'memoryV
 const TINTS = { fact: 'bg-accent-subtle text-accent', directive: 'bg-info/10 text-info-text', episode: 'bg-warn-subtle text-warn-text' }
 const identity = (row: { kind: string; id: string }) => `${row.kind}:${row.id}`
 // A button names the value it brings back; a long value is cut so the label stays one line.
-const shortBody = (text: string) => { const flat = text.replace(/\s+/g, ' ').trim(); return flat.length > 40 ? `${flat.slice(0, 39)}…` : flat }
+const shortBody = (text: string) => { const flat = text.replace(/\s+/g, ' ').trim(); return flat.length > 40 ? `${sliceCodePoints(flat, 0, 39)}…` : flat }
 const errorText = (error: unknown) => error instanceof Error ? error.message : error ? String(error) : ''
 const decoded = (row: MemoryRecord): unknown => {
   if (typeof row.value_json !== 'string') return row.value_json

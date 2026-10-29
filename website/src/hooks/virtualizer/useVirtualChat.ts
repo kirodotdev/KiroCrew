@@ -110,7 +110,7 @@ import type {
 } from './types'
 import { useScrollerElement, useScrollListener, useResizeObserver } from './observers'
 import { useFollowState, usePinning, useFollowPlacementPins } from './followPolicy'
-import { useWindowState, useWindowOperations, useCoverageWatchdog, useWindowEdgeTriggers } from './windowRange'
+import { useWindowState, useWindowOperations, useCoverageWatchdog, useWindowEdgeTriggers, useTailAppendMount } from './windowRange'
 import { useShiftCapture, useShiftCompensation } from './shiftCompensation'
 import { useReadingPositionEntry, useVisibilityReplacement, useReadingPositionRestore } from './readingPosition'
 import { useHeightOwner, useRowMeasurement, useMeasurementScopeReseed } from './measurement'
@@ -279,6 +279,7 @@ export function useVirtualChat<T>(
     shift.rebasedInRenderRef.current = true
     if (windowRange.start !== target.start || windowRange.end !== target.end) setWindowRange(() => target)
   }
+  useTailAppendMount({ items, getKey, itemCount, overscan, sessionId, windowRange, setWindowRange, resolveWindowRange, scrollerRef, shift, follow })
   // The committed-window mirror advances at COMMIT, right after the shift
   // capture's own baseline mirror and for the same reason: a discarded
   // concurrent attempt advancing it in render made the committing attempt's
@@ -342,7 +343,7 @@ export function useVirtualChat<T>(
   useResizeObserver({ scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef, measurement, compensation, sync, pinning, ops })
   useWindowEdgeTriggers({
     windowRange, itemCount, overscan, prefetchStartIndex, sessionId, scrollerRef, scrollerEl,
-    topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange,
+    topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange, ops,
   })
 
   // The slot-entry placement: the last layout effect that can place the reader,

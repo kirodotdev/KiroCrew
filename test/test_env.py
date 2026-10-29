@@ -81,9 +81,12 @@ class TestAugmentedPath:
         result = augmented_path("/usr/bin")
         dirs = result.split(os.pathsep)
         # base_path sits after the well-known extras but BEFORE the
-        # interpreter-dir fallback (the final entry).
-        assert dirs[-2] == "/usr/bin"
-        assert dirs[-1] == str(Path(sys.executable).parent)
+        # interpreter fallback: its own folder, then its scripts folder when
+        # that is a different one (a system interpreter without a venv).
+        tail = env_mod._interpreter_script_dirs()
+        assert dirs[-len(tail) :] == tail
+        assert dirs[-len(tail) - 1] == "/usr/bin"
+        assert tail[0] == str(Path(sys.executable).parent)
         assert any(".local/bin" in d for d in dirs)
 
     def test_appends_running_interpreter_bin_dir_last(self, monkeypatch) -> None:
@@ -100,10 +103,58 @@ class TestAugmentedPath:
         """
         fake_exe = "/opt/venv/Scripts/python.exe"
         monkeypatch.setattr(sys, "executable", fake_exe)
+        monkeypatch.setattr(env_mod, "_INTERPRETER_SCRIPTS_DIR", str(Path(fake_exe).parent))
         dirs = augmented_path("/usr/bin").split(os.pathsep)
         assert dirs[-1] == str(Path(fake_exe).parent)
         # base_path still outranks the interpreter dir.
         assert dirs.index("/usr/bin") < dirs.index(str(Path(fake_exe).parent))
+
+    def test_finds_a_console_script_beside_a_root_level_interpreter(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The Windows desktop layout: interpreter at the tree root, scripts in ``Scripts``.
+
+        A python-build-standalone tree keeps ``python.exe`` at its root and pip
+        installs ``uv.exe`` / ``uvx.exe`` into ``Scripts``; the interpreter's
+        own folder alone does not reach them. Every executable check outside
+        ``tmp_path`` reports absent, so a ``uvx`` the host has in an earlier
+        folder (``~/.local/bin``) cannot change the verdict.
+        """
+        root = os.path.normcase(os.path.abspath(str(tmp_path))) + os.sep
+        real_access = os.access
+
+        def _access_under_tmp_only(path, mode, *args, **kwargs):
+            if not os.path.normcase(os.path.abspath(os.fspath(path))).startswith(root):
+                return False
+            return real_access(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "access", _access_under_tmp_only)
+        backend = tmp_path / "kirocrew-backend"
+        scripts = backend / "Scripts"
+        scripts.mkdir(parents=True)
+        win = sys.platform == "win32"
+        exe = backend / ("python.exe" if win else "python")
+        exe.write_text("")
+        uvx = scripts / ("uvx.exe" if win else "uvx")
+        uvx.write_text("")
+        uvx.chmod(0o755)
+        monkeypatch.setattr(sys, "executable", str(exe))
+        monkeypatch.setattr(env_mod, "_INTERPRETER_SCRIPTS_DIR", str(scripts))
+        searched = augmented_path(str(tmp_path / "empty"))
+        dirs = searched.split(os.pathsep)
+        assert dirs[-2:] == [str(backend), str(scripts)]
+        found = shutil.which("uvx", path=searched)
+        assert found is not None
+        assert os.path.normcase(found) == os.path.normcase(str(uvx))
+
+    def test_a_scripts_dir_that_is_the_interpreter_dir_is_listed_once(self, monkeypatch) -> None:
+        """A venv's ``Scripts``/``bin`` is both directories; it is not repeated."""
+        fake_exe = str(Path("/opt/venv/bin/python"))
+        monkeypatch.setattr(sys, "executable", fake_exe)
+        monkeypatch.setattr(env_mod, "_INTERPRETER_SCRIPTS_DIR", str(Path(fake_exe).parent))
+        dirs = augmented_path("/usr/bin").split(os.pathsep)
+        assert dirs[-1] == str(Path(fake_exe).parent)
+        assert dirs.count(str(Path(fake_exe).parent)) == 1
 
     def test_local_bin_before_toolbox(self) -> None:
         result = augmented_path("")
@@ -111,6 +162,32 @@ class TestAugmentedPath:
         local_idx = next(i for i, d in enumerate(dirs) if ".local/bin" in d)
         toolbox_idx = next(i for i, d in enumerate(dirs) if ".toolbox/bin" in d)
         assert local_idx < toolbox_idx
+
+    def test_windows_searches_the_toolbox_localappdata_bin(self, monkeypatch, tmp_path) -> None:
+        """Toolbox on Windows installs tools in ``%LOCALAPPDATA%\\Toolbox\\bin``.
+
+        Without it a Toolbox-installed ``claude`` the inherited PATH lacks is
+        reported as not installed by the Agent Harness probe.
+        """
+        local = tmp_path / "Local"
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        dirs = augmented_path("").split(os.pathsep)
+        assert str(local / "Toolbox" / "bin") in dirs
+
+    def test_windows_toolbox_bin_follows_a_pinned_home(self, monkeypatch, tmp_path) -> None:
+        """A pinned home is another account: its own ``AppData\\Local``, not ours."""
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "mine"))
+        home = tmp_path / "other"
+        dirs = augmented_path("", home=str(home)).split(os.pathsep)
+        assert str(home / "AppData" / "Local" / "Toolbox" / "bin") in dirs
+        assert str(tmp_path / "mine" / "Toolbox" / "bin") not in dirs
+
+    def test_posix_does_not_add_the_windows_toolbox_dir(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+        assert not any("Toolbox" + os.sep + "bin" in d for d in augmented_path("").split(os.pathsep))
 
     def test_includes_both_macos_install_prefixes(self) -> None:
         """``/usr/local/bin`` belongs beside ``/opt/homebrew/bin``, not instead of it.

@@ -15,7 +15,8 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.auth.bridge import vault_identity_claims, vault_identity_fingerprint
-from kiro_crew.auth.store import KasToken, TokenStore
+from kiro_crew.auth.store import KNOWN_IDENTITIES, KasToken, TokenStore
+from kiro_crew.auth.whoami import START_URL_EXTRA_KEY, whoami_document
 from kiro_crew.dashboard.handlers import kiro_vault_identity as kvi
 
 
@@ -76,6 +77,59 @@ class TestAccountTypeVocabulary:
         assert kvi.identity_fields({}) == {}
 
 
+#: The provider classes the vault records beside each store slot. The social slot
+#: is tried once per provider it can hold and once provider-less.
+_PROVIDERS_BY_SLOT = {
+    "builder_id": ("BuilderId",),
+    "identity_center": ("Enterprise",),
+    "external_idp": ("ExternalIdp",),
+    "social": ("Google", "Github", ""),
+}
+#: Every store slot with every provider class above. Built from
+#: ``KNOWN_IDENTITIES`` so a slot added to the store fails here until it is listed.
+_EVERY_SLOT = tuple(
+    (identity, provider)
+    for identity in KNOWN_IDENTITIES
+    for provider in _PROVIDERS_BY_SLOT[identity]
+)
+
+
+class TestOneMappingWithWhoami:
+    """The dashboard and ``kirocrew kas whoami`` spell every slot from ONE table.
+
+    The account modal's badge (``identity_fields``) and the remote sign-in's
+    identity match (``whoami_document``) read the same vault; if their
+    ``accountType`` spellings ever differed, ``identity_matches_target`` would
+    refuse an organisation the dashboard labels correctly.
+    """
+
+    @pytest.mark.parametrize(("identity", "provider"), _EVERY_SLOT)
+    def test_every_slot_renders_the_same_account_type(self, identity, provider):
+        doc = whoami_document(_token(identity, provider=provider, profile_arn=None))
+        fields = kvi.identity_fields({"identity": identity, "provider": provider})
+        assert fields.get("account_type", "") == doc["accountType"]
+        if identity == "social" and not provider:
+            assert fields == {} and doc["accountType"] == ""
+        else:
+            assert fields["account_type"]
+
+    def test_the_dashboard_spells_from_the_auth_table_not_a_copy(self):
+        # Respell one slot in auth/whoami's table: the dashboard reading MUST follow,
+        # which it cannot if it keeps a table of its own that happens to agree today.
+        with patch.dict(
+            "kiro_crew.auth.whoami._ACCOUNT_TYPE_BY_SLOT", {"identity_center": "Respelled"}
+        ):
+            doc = whoami_document(
+                _token("identity_center", provider="Enterprise", profile_arn=None)
+            )
+            assert doc["accountType"] == "Respelled"
+            assert kvi.account_type_from_claims("identity_center", "Enterprise") == "Respelled"
+            assert kvi.identity_fields(
+                {"identity": "identity_center", "provider": "Enterprise"}
+            ) == {"account_type": "Respelled"}
+        assert not hasattr(kvi, "_ACCOUNT_TYPE_BY_SLOT"), "the handler grew a second table back"
+
+
 class TestVaultClaims:
     """One vault read yields the fingerprint and the public claims together."""
 
@@ -105,6 +159,61 @@ class TestVaultClaims:
         fingerprint, fields = await kvi.vault_identity_snapshot()
         assert fingerprint == vault_identity_fingerprint()
         assert fields == {"account_type": "BuilderId"}
+
+
+_PORTAL = "https://acme.awsapps.com/start"
+
+
+def _idc_token(**extra) -> KasToken:
+    return _token("identity_center", provider="Enterprise", extra=dict(extra))
+
+
+class TestStartUrlParity:
+    """The account modal shows the Identity Center portal ``kirocrew kas whoami`` prints.
+
+    The sign-in records the start URL on the token (``START_URL_EXTRA_KEY``);
+    the dashboard's vault reading must carry it as ``start_url`` -- the field
+    the modal's provider badge reads for its portal host -- exactly as whoami's
+    ``startUrl``, so the two readers of one sign-in cannot disagree.
+    """
+
+    def test_recorded_start_url_reaches_the_snapshot(self, data_home):
+        TokenStore(data_home).save(_idc_token(**{START_URL_EXTRA_KEY: _PORTAL}))
+        fingerprint, fields = kvi.vault_identity_snapshot_sync()
+        assert fingerprint
+        assert fields == {"account_type": "IamIdentityCenter", "start_url": _PORTAL}
+        assert kvi.vault_identity_sync() == fields
+
+    def test_snapshot_matches_the_whoami_document(self, data_home):
+        token = _idc_token(**{START_URL_EXTRA_KEY: _PORTAL})
+        TokenStore(data_home).save(token)
+        doc = whoami_document(token)
+        _, fields = kvi.vault_identity_snapshot_sync()
+        assert fields == {"account_type": doc["accountType"], "start_url": doc["startUrl"]}
+
+    def test_start_url_does_not_move_the_fingerprint(self, data_home):
+        # A token minted before the URL was recorded is the same account.
+        TokenStore(data_home).save(_idc_token())
+        before = vault_identity_fingerprint()
+        TokenStore(data_home).save(_idc_token(**{START_URL_EXTRA_KEY: _PORTAL}))
+        assert vault_identity_fingerprint() == before
+
+    @pytest.mark.parametrize("value", [None, "", 42])
+    def test_no_recorded_start_url_publishes_no_key(self, data_home, value):
+        extra = {} if value is None else {START_URL_EXTRA_KEY: value}
+        TokenStore(data_home).save(_idc_token(**extra))
+        _, fields = kvi.vault_identity_snapshot_sync()
+        assert fields == {"account_type": "IamIdentityCenter"}
+
+    def test_start_url_without_a_labelable_kind_is_nothing(self):
+        assert kvi.identity_fields({"identity": "social", "start_url": _PORTAL}) == {}
+
+    def test_start_url_is_bounded_like_parse_whoami_output(self):
+        long_url = _PORTAL + "/" + "x" * 400
+        fields = kvi.identity_fields(
+            {"identity": "identity_center", "provider": "Enterprise", "start_url": long_url}
+        )
+        assert fields["start_url"] == long_url[:200]
 
 
 class TestIdentityDoorAnswer:

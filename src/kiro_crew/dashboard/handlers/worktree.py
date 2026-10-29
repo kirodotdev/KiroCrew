@@ -132,7 +132,7 @@ _MAX_DIR_SLUG = 60
 # Repo-local config keys that would hand git a program to run during checkout.
 # `-c` cannot generically disable these (the driver name is arbitrary), so a repo
 # declaring one is refused outright — see `_checkout_filter`.
-_FILTER_KEY_RE = re.compile(r"^filter\.(?P<name>.+)\.(process|smudge|clean)$", re.IGNORECASE)
+_FILTER_KEY_RE = re.compile(r"^filter\.(?P<name>.*)\.(process|smudge|clean)$", re.IGNORECASE)
 
 # Returned instead of a key name when a config scope could not be read at all.
 # Treated as "refuse": an unreadable scope cannot be proven filter-free.

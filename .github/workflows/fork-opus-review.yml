@@ -57,7 +57,11 @@ concurrency:
 jobs:
   fork-opus-review:
     name: Fork Opus 5.5 Review
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # Runaway/hang backstop only, NOT a per-review budget: the review
     # self-terminates well before this. Set at 120 min (matches
     # claude-review.yml) so it never cuts a completing --max-turns 180 review --

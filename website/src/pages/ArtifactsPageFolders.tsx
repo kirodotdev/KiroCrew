@@ -2,6 +2,7 @@
  *  the card grid that aligns with the gallery's columns, the breadcrumb, and
  *  the drag geometry the library's `DndContext` uses (pointer-containment
  *  collision, the cursor-centred overlay). */
+import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { FolderOpen, ChevronRight } from 'lucide-react'
 import { pointerWithin, type CollisionDetection, type Modifier } from '@dnd-kit/core'
@@ -73,13 +74,17 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
   const stats = folderSubtreeStats(folders, folder.id)
   const renaming = actions.renamingId === folder.id
   const preview = previewArtifacts.slice(0, 3)
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  const restoreCardFocus = (reason: 'enter' | 'escape' | 'blur') => {
+    if (reason !== 'blur') requestAnimationFrame(() => cardRef.current?.focus({ preventScroll: true }))
+  }
   return (
     <DndDroppable id={`folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
       {({ setNodeRef: setDropRef, isOver }) => (
         <DndDraggable id={`folder:${folder.id}`} data={{ type: 'folder', id: folder.id, name: folder.name } satisfies LibraryDrag}>
           {({ setNodeRef: setDragRef, listeners, isDragging }) => (
             <div
-              ref={(el) => { setDropRef(el); setDragRef(el) }}
+              ref={(el) => { setDropRef(el); setDragRef(el); cardRef.current = el }}
               {...(renaming ? {} : listeners)}
               onClick={() => { if (!renaming) actions.onOpen(folder.id) }}
               role="button"
@@ -113,6 +118,7 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
                       placeholder={i18nT('pages.artifactsPage.rename_folder')}
                       onCommit={(name) => actions.onRenameSubmit(folder, name)}
                       onCancel={actions.onRenameCancel}
+                      onClose={restoreCardFocus}
                     />
                   ) : (
                     <div className="text-[15px] leading-tight text-text-strong font-semibold truncate">{folder.name}</div>

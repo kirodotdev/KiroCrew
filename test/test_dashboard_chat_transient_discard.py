@@ -546,8 +546,8 @@ class TestRunChatTransientRetryPoisonedDiscard:
         """Regression: the poisoned-discard one-shot re-arms only on a LANDED
         turn. But the STREAK is evidence-based: a cancelled turn that EMITTED
         output proves the backend accepts this conversation, so it breaks the
-        streak (GPT review finding — without this, exhaustion → stopped-but-
-        streaming turn → exhaustion would discard a healthy conversation),
+        streak (without this, exhaustion → stopped-but-streaming turn →
+        exhaustion would discard a healthy conversation),
         while a cancelled turn with NO output proves nothing and preserves
         it. In both cases the spent one-shot stays consumed."""
         from kiro_crew.acp.types import STOP_REASON_CANCELLED

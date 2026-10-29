@@ -117,7 +117,7 @@ definitions — returns eleven, at `e6b06685e`:
 | `setup.configSchema` | `manifest.py:515` | Parsed, serialized, no reader. |
 | `platform.arch` | `manifest.py:712` | No reader. Only `os` is gated (`manifest.py:718-763`). |
 | `platform.clientInstall.postInstall` | `manifest.py:664` | Parsed, serialized, no reader. |
-| `ui.pages[].iconInactiveUrl` | `manifest.py:247` | No reader outside serialization. |
+| `ui.pages[].iconInactiveUrl` | `manifest.py:247` | No reader outside serialization. Since given one: the sidebar's not-selected icon (#21344), so Phase 1 no longer removes it. |
 | `ui.pages[].mountFunction` | `manifest.py:249` | No reader outside serialization. |
 
 The whole of `src/kiro_crew/apps/permissions.py` is dead in production:
@@ -358,7 +358,7 @@ if the tenet is declined, and the tenet stands on its own if these phases are.
 ### Phase 1 — subtract what nothing will read
 
 Remove `sops`, `backend.routes`, `setup.configSchema`, `platform.arch`,
-`platform.clientInstall.postInstall`, `ui.pages[].iconInactiveUrl`,
+`platform.clientInstall.postInstall`,
 `ui.pages[].mountFunction`, the dead `apps/permissions.py` module, and
 `governance.register_matcher` / `register_scope`. Give `lifecycle`, `resources`,
 `openCommand` and `heroImage*` real dataclass fields with validation, since they

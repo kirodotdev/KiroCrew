@@ -32,6 +32,7 @@ from enum import Enum
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -42,6 +43,7 @@ from kiro_crew.acp_backends import (
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
+from kiro_crew.providers.mirrors.copilot import CopilotMirror
 from kiro_crew.providers.mirrors.deepseek import DeepSeekMirror
 from kiro_crew.providers.mirrors.goose import GooseMirror
 from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
@@ -222,6 +224,7 @@ MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_OPENCODE: OpenCodeMirror,
     ACP_BACKEND_GOOSE: GooseMirror,
     ACP_BACKEND_DEEPSEEK: DeepSeekMirror,
+    ACP_BACKEND_COPILOT: CopilotMirror,
 }
 
 #: Every backend this build can spell, and how its MCP surface is reached.
@@ -373,6 +376,19 @@ PROJECTIONS: dict[str, McpProjection] = {
         "commonest cause, a command that does not exist, before the request: "
         "acp.mcp_startable leaves the element out and the session's MCP report names it "
         "as failed (ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP)",
+        # No per-call deny path is verified for this harness, so a narrowed server is
+        # withheld whole, the direction that cannot leave a switched-off tool reachable.
+        per_tool_deny=PerToolDeny.WHOLE_SERVER,
+    ),
+    ACP_BACKEND_COPILOT: McpProjection(
+        kind=ProjectionKind.MIRROR,
+        reason="copilot.py -- the session/new mcpServers array, whose stdio half is "
+        "mounted from the launch instead: Copilot CLI 1.0.100 drops a stdio element sent "
+        "on session/new and serves one named in --additional-mcp-config, so the spawn "
+        "writes that half to an owner-only launch file (acp/harness/copilot.py). Measured "
+        "end to end in test/fixtures/acp_frames/copilot/mcp-stdio-mount-live.jsonl "
+        "(initialize, tools/list and tools/call asked by the harness itself, the call "
+        "gated by session/request_permission first)",
         # No per-call deny path is verified for this harness, so a narrowed server is
         # withheld whole, the direction that cannot leave a switched-off tool reachable.
         per_tool_deny=PerToolDeny.WHOLE_SERVER,

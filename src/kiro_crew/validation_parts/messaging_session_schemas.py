@@ -523,6 +523,7 @@ SESSION_SEND_SCHEMA = ToolSchema(
     ],
 )
 
+
 SESSION_BROADCAST_SCHEMA = ToolSchema(
     tool_name="session_broadcast",
     fields=[
@@ -539,9 +540,11 @@ SESSION_BROADCAST_SCHEMA = ToolSchema(
             allowed=frozenset({"queue", "steer"}),
             max_len=MAX_SHORT_STRING,
         ),
-        # Omitted means every session this caller created. Bounded to the same
-        # number the API enforces, so an oversized list is refused at the schema
-        # with the field named rather than after a round trip.
+        # Names the audience. An absent, null or empty list selects nobody: the
+        # backend (``broadcast_to_targets``) is the one place that refuses a call
+        # with no audience, so the rule cannot drift between two copies. Bounded to
+        # the same number the API enforces, so an oversized list is refused at the
+        # schema with the field named rather than after a round trip.
         FieldSpec(
             "targets",
             list,
@@ -550,6 +553,9 @@ SESSION_BROADCAST_SCHEMA = ToolSchema(
             item_max_len=MAX_SHORT_STRING,
             max_items=MAX_BROADCAST_TARGETS,
         ),
+        # The explicit opt-in to every session this caller created. A boolean is a
+        # scalar, so it survives clients that drop empty containers.
+        FieldSpec("all", bool),
     ],
 )
 

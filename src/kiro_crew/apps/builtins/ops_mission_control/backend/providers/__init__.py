@@ -106,11 +106,10 @@ def read_config() -> dict[str, Any]:
     if isinstance(data, dict):
         return data
     # A non-object root (`[]`, a bare string, `null`) parses fine, so no handler above fires
-    # -- and this branch answered `{}` in silence while the docstring above promised
-    # "anything else is logged". Worse than an ordinary stale comment: the sentence it
-    # contradicts is the one arguing that THIS degradation must not be quiet, because every
-    # provider stops polling while Settings still shows them configured. Found in review
-    # (GPT 5.6). The index display read grew the same warning a head earlier; this is its twin.
+    # -- so this branch must log rather than answer `{}` in silence: the docstring above
+    # promises "anything else is logged", and THIS degradation must not be quiet, because
+    # every provider stops polling while Settings still shows them configured. The index
+    # display read carries the twin of this warning.
     logger.warning(
         "ops-mission-control: app config root is not an object; every provider will read as "
         "unconfigured and polling will stop",
@@ -153,7 +152,7 @@ def _read_config_for_update() -> dict[str, Any]:
     except UnicodeDecodeError as exc:
         # Not valid UTF-8, so `json.loads` never runs. `UnicodeDecodeError` is a `ValueError`
         # but not a `JSONDecodeError`, so unwrapped it would slip past every corruption clause
-        # into the tolerant arms and be swallowed. Found in review (GPT 5.6).
+        # into the tolerant arms and be swallowed.
         raise CorruptDocumentError(
             f"app config is not valid UTF-8: {exc.reason}",
             exc.object.decode("utf-8", "replace")[:120],
@@ -165,7 +164,7 @@ def _read_config_for_update() -> dict[str, Any]:
         # file from empty and destroy a config nobody could read. That is the same loss this
         # reader exists to prevent, reached without a parse failure. Reported as a decode
         # error because the document IS unusable, and because every caller already routes
-        # that correctly. Found in review (GPT 5.6).
+        # that correctly.
         raise CorruptDocumentError("app config root is not a JSON object", str(data)[:120], 0)
     return data
 
@@ -280,8 +279,7 @@ def merge_provider_config(provider_id: str, updates: dict[str, Any]) -> dict[str
             # list or a string was normalized to `{}` right here -- and since this function
             # rewrites the whole file, that wiped every provider slot on the next merge.
             # Exactly the loss `_coerce_index(strict=True)` closed on the index side, one
-            # level down. Found in review (Design Review), which noticed the description
-            # claimed per-row refusal while the config only had it at the root.
+            # level down: refusal is per row, not only at the root.
             raise CorruptDocumentError(
                 "app config 'providers' is not an object", str(providers)[:120], 0
             )

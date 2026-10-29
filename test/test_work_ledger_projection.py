@@ -86,9 +86,21 @@ async def test_each_write_records_one_entry_with_the_fields_it_set(recorded):
     status, body = await _report(WORKER, {"status": "progress", "summary": "half way", "pr": 12})
     assert status == 200, body
 
-    assert [data["action"] for _unit, data in recorded] == ["goal", "create", "bind", "report"]
-    assert [unit for unit, _data in recorded] == [f"unit:{CONDUCTOR}"] * 3 + [f"unit:{WORKER}"]
-    goal, create, bind, report = (data for _unit, data in recorded)
+    # A report is recorded twice: the board's copy in the conductor's log first (the one
+    # the board's fold reads), then the worker's own copy.
+    assert [data["action"] for _unit, data in recorded] == [
+        "goal",
+        "create",
+        "bind",
+        "report",
+        "report",
+    ]
+    assert [unit for unit, _data in recorded] == [f"unit:{CONDUCTOR}"] * 4 + [f"unit:{WORKER}"]
+    # The two copies are one entry, each marked as which copy it is.
+    board_side, worker_side = dict(recorded[3][1]), dict(recorded[4][1])
+    assert (board_side.pop("board_copy"), worker_side.pop("mirror")) == (True, True)
+    assert board_side == worker_side
+    goal, create, bind, report, _board_copy = (data for _unit, data in recorded)
 
     assert (goal["slot"], goal["by"], goal["actor"]) == (CONDUCTOR, CONDUCTOR, "conductor")
     assert (goal["goal"], goal["round"], goal["depth"]) == ("ship it", 1, 0)
@@ -483,10 +495,10 @@ def test_a_dirty_rebuild_drops_a_refused_goal_writes_caps_and_count_start(monkey
     assert header.goal_items_used == header.created_total == 1
 
 
-def test_a_bound_workers_real_unit_joins_the_fold_and_its_report_is_rebuilt():
-    """The report lives in the WORKER's log, whose header names the worker's own
-    slot; the fold reaches it through the conductor's ``bind`` entry, and another
-    board's entry in that same worker log stays out."""
+def test_the_board_reads_its_own_log_and_never_the_workers():
+    """A report only in the WORKER's log is not read: the board's fold reads the
+    conductor's units alone, so the open bound item waits for its next report. The
+    board's own copy in the conductor's log is what the fold rebuilds the report from."""
     from kiro_crew import crew_log as lg
     from kiro_crew.crew_log import CrewLog
 
@@ -561,6 +573,26 @@ def test_a_bound_workers_real_unit_joins_the_fold_and_its_report_is_rebuilt():
         src="gateway",
     )
 
+    folded = projection.read_slot_projection(CONDUCTOR, "work").value
+    [item] = folded["items"]
+    assert (item["status"], item["summary"]) == (None, projection.WORK_AWAITING_REPORT)
+
+    conductor.append(
+        "work/recorded",
+        {
+            "slot": CONDUCTOR,
+            "actor": "worker",
+            "by": WORKER,
+            "action": "report",
+            "item_id": item_id,
+            "status": "progress",
+            "summary": "half way",
+            "pr": 12,
+            "event": "half way",
+            "event_kind": "report",
+        },
+        src="gateway",
+    )
     folded = projection.read_slot_projection(CONDUCTOR, "work").value
     [item] = folded["items"]
     assert (item["item_id"], item["status"], item["summary"], item["pr"]) == (
@@ -760,6 +792,72 @@ async def test_a_mutation_whose_record_would_not_fit_a_log_line_is_refused_whole
 
 
 @pytest.mark.asyncio
+async def test_a_board_copy_the_live_unit_refuses_lands_in_the_boards_newest_unit(
+    recorded, monkeypatch
+):
+    """A conductor session just switched agents has no log until its first turn; the
+    board's copy then goes to the slot's newest unit that takes it."""
+    item_id = await _board()
+    from kiro_crew import session_ledger
+
+    real = routes.crew_log_emit.on_work_recorded
+    monkeypatch.setattr(
+        routes.crew_log_emit,
+        "on_work_recorded",
+        lambda unit, data: unit != f"unit:{CONDUCTOR}" and real(unit, data),
+    )
+    monkeypatch.setattr(session_ledger, "newest_work_unit", lambda key: "u-board-older")
+    recorded.clear()
+    status, body = await _report(WORKER, {"status": "progress", "summary": "still heard"})
+    assert status == 200, body
+    assert [unit for unit, _data in recorded] == ["u-board-older", f"unit:{WORKER}"]
+    assert recorded[0][1]["board_copy"] is True
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.summary == "still heard"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_board_copy_with_no_older_board_unit_lands_in_the_workers_log(
+    recorded, monkeypatch
+):
+    """A live conductor session with no log and no older board unit: the worker's copy
+    is the record, as when the board names no unit at all."""
+    item_id = await _board()
+    from kiro_crew import session_ledger
+
+    real = routes.crew_log_emit.on_work_recorded
+    monkeypatch.setattr(
+        routes.crew_log_emit,
+        "on_work_recorded",
+        lambda unit, data: unit != f"unit:{CONDUCTOR}" and real(unit, data),
+    )
+    monkeypatch.setattr(session_ledger, "newest_work_unit", lambda key: "")
+    recorded.clear()
+    status, body = await _report(WORKER, {"status": "progress", "summary": "still heard"})
+    assert status == 200, body
+    assert [unit for unit, _data in recorded] == [f"unit:{WORKER}"]
+    assert "board_copy" not in recorded[0][1] and "mirror" not in recorded[0][1]
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.summary == "still heard"
+
+
+@pytest.mark.asyncio
+async def test_a_report_with_no_board_unit_lands_in_the_workers_log(recorded, monkeypatch):
+    """A board whose conductor has no unit left to record into still takes reports: the
+    worker's copy is the record, as it was before the board's copy existed."""
+    item_id = await _board()
+    from kiro_crew.dashboard.handlers import work_ledger as work_ledger_handlers
+
+    monkeypatch.setattr(work_ledger_handlers, "_conductor_unit", lambda state, key: "")
+    recorded.clear()
+    status, body = await _report(WORKER, {"status": "progress", "summary": "still heard"})
+    assert status == 200, body
+    assert [unit for unit, _data in recorded] == [f"unit:{WORKER}"]
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.summary == "still heard"
+
+
+@pytest.mark.asyncio
 async def test_the_entry_carries_the_committed_values_not_the_request(recorded):
     """An omitted `artifacts` CLEARS the map at commit and an omitted `pr` keeps the
     earlier one; the entry says exactly that, so the fold rebuilds the cache."""
@@ -772,7 +870,8 @@ async def test_the_entry_carries_the_committed_values_not_the_request(recorded):
     status, body = await _report(WORKER, {"status": "progress", "summary": "second"})
     assert status == 200, body
 
-    first, second = (data for _unit, data in recorded[-2:])
+    # Each report is two copies (the board's, then the worker's); take the board's.
+    first, second = (data for _unit, data in recorded[-4::2])
     assert (first["artifacts"], first["pr"]) == ({"repo": "a/b"}, 7)
     assert (second["artifacts"], second["pr"], second["summary"]) == ({}, 7, "second")
     item = wl.read_work_item(CONDUCTOR, item_id)
@@ -1038,13 +1137,14 @@ async def test_an_unconfirmed_write_is_undone_from_the_record_in_the_same_reques
         lg.KIND_SESSION, "u-conductor", owner="raymond", agent="kirocrew", slot=CONDUCTOR
     )
     CrewLog.create(lg.KIND_SESSION, "u-worker", owner="raymond", agent="kirocrew", slot=WORKER)
-    # The conductor's writes land in the record; the worker's append will not.
+    # The conductor's writes land in the record; the worker's report will not, in
+    # either copy.
     monkeypatch.setattr(
         routes.crew_log_emit,
         "on_work_recorded",
         lambda unit, data: (
             bool(projection.open_session_log(unit).append("work/recorded", data, src="gateway"))
-            if unit == "u-conductor"
+            if data.get("actor") != "worker"
             else False
         ),
     )

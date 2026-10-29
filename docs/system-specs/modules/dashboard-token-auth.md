@@ -370,7 +370,8 @@ Request flow:
 5. Check IP binding
 6. On query-param use: mint a SEPARATE session token, bind it to the peer key, add the link token's own nonce to the persisted denylist so the link string can never be presented as a cookie, and set `mc_token_{port}` with `max_age` derived from `session_exp`
 7. Log to SEL
-8. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
+9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
 
 #### Link re-exchange is deliberately allowed (the link is not single-use)
 
@@ -705,6 +706,14 @@ either auth flavor can grant (see `_verify_unix_peer`):
    the MAC).
 4. Resolved key **differs** from the declared header → **403** + SEL
    `dashboard.peer-identity-mismatch` (outcome=denied, peer pid recorded).
+   One exception: a complete roster that omits the declared key while the
+   ownership tables (`_bound_session_keys_on_chain`) bind that key to the
+   peer's process chain. That is a `spawn_run` shared subagent, whose session
+   the manager never registers, so the roster names only its parent. Such a
+   declaration takes the step 5 token demand instead of the flat denial:
+   without a token naming the declared key it is still refused
+   `peer_session_unattested`, and a key the tables do not bind there is still
+   `peer_session_mismatch`.
    Resolved and equal → proceed with `request["peer_verified"] = True`.
    Unresolvable (warm-pool runtime before claim, cron scripts, pooled MCP
    backends — no pidfile in the ancestry; or a mapping published unsigned) →

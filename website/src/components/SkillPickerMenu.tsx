@@ -162,7 +162,7 @@ export default function SkillPickerMenu({
   const releaseKeysWhenEmpty = !isFetching && (data !== undefined || isError) && matched.length === 0
 
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
-  const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
+  const { selected, setSelected, selectedRef, itemRefs, hoverSelect } = useListKeyboardNav({
     open,
     count: results.length,
     onChoose: choose,
@@ -285,7 +285,7 @@ export default function SkillPickerMenu({
               ref={el => { itemRefs.current[i] = el }}
               className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
               title={s.key}
-              onMouseEnter={() => setSelected(i)}
+              onMouseMove={e => hoverSelect(i, e)}
               onMouseDown={e => {
                 e.preventDefault()
                 if (gated && onTrustRequest) onTrustRequest(info)

@@ -31,19 +31,22 @@ function lum(css: string | undefined): number | null {
   return c ? relativeLuminance(c.r, c.g, c.b) : null
 }
 
-const TIERS = ['accent', 'warn', 'danger'] as const
+const TIERS = ['accent', 'warn', 'danger', 'ok', 'info'] as const
 const AA_SMALL_TEXT = 4.5
 
 /*
- * SCOPE: the three tiers the meter bars paint. `index.css` declares four more
- * `-fg` pairs (`ok`, `info`, `aim`, `muted`) with their own consumers, and they
- * are NOT covered here — deliberately, not by oversight. Measured at the time
- * this test was written: extending it would red `amoled-grey-calm-light` ok
- * (3.30:1), `amoled-midnight-light` ok (3.77:1) and `amoled-light` aim (4.13:1),
- * and `muted` fails in 20+ themes (`highcontrast-light` measures 1.32:1). Those
- * are real defects in their own right, but fixing them means editing tokens no
- * meter bar reads, so they belong to their own change rather than riding along
- * with this one.
+ * SCOPE: the three tiers the meter bars paint, plus `ok` and `info`, the fills
+ * the Approve, Update and status-pill buttons paint. Those two joined once
+ * kiro-dark and kiro-light declared their own `--ok-fg` (and kiro-light its
+ * `--info-fg`): undeclared, they inherited the `:root` dark defaults' black,
+ * 4.44:1 on Kiro's `--ok` and 2.65:1 on kiro-light's `--info`, below the white
+ * those buttons painted. `index.css` declares two more `-fg` pairs (`aim`,
+ * `muted`) with their own consumers, and they are NOT covered here —
+ * deliberately, not by oversight: `aim` fails in seven themes (kiro-light
+ * 3.82:1, `amoled-light` 4.13:1) and `muted` in 20+ (`highcontrast-light`
+ * measures 1.32:1). Those are real defects in their own right, but fixing them
+ * means editing tokens no filled button reads, so they belong to their own
+ * change rather than riding along with this one.
  *
  * KNOWN_BELOW_AA below is the same judgement applied to four pairs this file
  * DOES cover. They were passing only because the shared resolver was measuring
@@ -54,7 +57,10 @@ const AA_SMALL_TEXT = 4.5
  * family. Retuning a shipped theme's `--accent-fg` / `--danger-fg` is a visible
  * change to those themes and is not this file's business, so each is recorded
  * with its measured ratio and asserted to STILL be failing — a palette fix must
- * delete its entry rather than leave a stale exemption behind.
+ * delete its entry rather than leave a stale exemption behind. The `ok` and
+ * `info` entries are the same family and the same judgement: amoled declares
+ * white for those pairs, and trading it for black is that palette's call.
+ * Kiro's were different in kind: undeclared, they inherited black by accident.
  */
 
 describe('theme fill/foreground pairs', () => {
@@ -68,6 +74,9 @@ describe('theme fill/foreground pairs', () => {
     ['amoled-grey-calm-dark:danger', 3.67],
     ['amoled-midnight-dark:accent', 3.85],
     ['amoled-midnight-dark:danger', 3.76],
+    ['amoled-grey-calm-light:ok', 3.30],
+    ['amoled-midnight-light:ok', 3.77],
+    ['amoled-midnight-dark:info', 4.47],
   ])
 
   it('covers every theme in the stylesheet', () => {

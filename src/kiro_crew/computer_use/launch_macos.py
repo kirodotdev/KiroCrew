@@ -33,13 +33,16 @@ target rather than trust the lookup. Two conditions here, mirroring what
   **not** one of them — it is writable by the same user the agent runs as, so including
   it would let a planted ``~/Applications/Anything.app`` be launched;
 * the bundle's own parent directory must not be writable by this process
-  (:func:`_directory_is_writable`), which catches a ``/Applications`` that is
-  group-writable on a machine whose admin group has been widened. An unwritable ROOT can
-  still contain a writable child, so the root list alone is not the check.
+  (:func:`_directory_is_writable`). On a stock macOS install ``/Applications`` is
+  ``drwxrwxr-x root admin`` — the same mode that allows drag-installs without an
+  authentication prompt — so this probe refuses every third-party bundle under
+  ``/Applications`` for any admin user, and the primary account on a Mac is an admin
+  by default. An unwritable ROOT can still contain a writable child, so the root list
+  alone is not the check.
 
 The cost is stated rather than hidden: an application a user installed only for
-themselves cannot be launched by name. The refusal says so and names the remedy (move
-the bundle, or open it by hand), which is recoverable — where a launch verb that runs
+themselves cannot be launched by name. The refusal names the reason and tells the user
+to open the application themselves, which is recoverable — where a launch verb that runs
 whatever the agent wrote is not.
 
 The no-arguments rule holds on top of both: ``open -a`` opens an application and can
@@ -73,7 +76,7 @@ logger = logging.getLogger(__name__)
 #: an explicit ``"/"`` rather than ``os.path.join``. Two reasons, and the second is why
 #: the obvious form is wrong:
 #:
-#: * ``cross-platform.yml``'s portability gate rejects an added absolute POSIX path
+#: * The ``Cross-Platform Portability`` gate in ``pr-policy.yml`` rejects an added absolute POSIX path
 #:   literal, because on Windows such a path names nothing and a hardcoded one is how a
 #:   POSIX-only assumption reaches shared code. This module IS macOS-only so the path is
 #:   correct here, but the gate scans added lines and cannot know that;
@@ -94,10 +97,9 @@ _OPEN_BIN = "/".join(("", "usr", "bin", "open"))
 #: root, not for trusting it.
 #:
 #: The cost is real and is the right trade: an application a user installed only for
-#: themselves cannot be launched, and the refusal names the catalog rule so the user can
-#: move the bundle to ``/Applications`` (or open it themselves) rather than being left
-#: guessing. Losing one install location is recoverable; a launch verb that
-#: runs whatever the agent wrote is not.
+#: themselves cannot be launched. The refusal names the reason and tells the user to
+#: open the application themselves rather than being left guessing. Losing one install
+#: location is recoverable; a launch verb that runs whatever the agent wrote is not.
 _APP_ROOTS: tuple[str, ...] = (
     "/System/Applications",
     "/System/Applications/Utilities",
@@ -139,7 +141,7 @@ _REFUSED_BUNDLES: frozenset[str] = frozenset(
 _ERR_WRITABLE_ROOT = (
     "'{name}' is installed in a directory this user can write, so it was not launched: "
     "a bundle anyone can drop there is indistinguishable from one the operator "
-    "installed. Move it under /Applications, or open it yourself"
+    "installed. Open the application yourself"
 )
 _ERR_SHELL_TARGET = (
     "'{name}' is a terminal, so it is not a launch target: a shell takes its "
@@ -191,10 +193,10 @@ def _directory_is_writable(directory: str) -> bool:
 
     The macOS twin of ``launch_windows._directory_is_writable``, and needed for the same
     reason: an unwritable ROOT can contain writable children. Excluding
-    ``~/Applications`` from :data:`_APP_ROOTS` removes the obvious case, but
-    ``/Applications`` itself is group-writable on a machine whose admin group has been
-    widened, and a bundle dropped there would otherwise be indistinguishable from an
-    installed one.
+    ``~/Applications`` from :data:`_APP_ROOTS` removes the obvious case, but on a stock
+    macOS install ``/Applications`` is ``drwxrwxr-x root admin``, so any admin user can
+    create files there, and a bundle dropped there is indistinguishable from an installed
+    one.
 
     A real create-and-delete rather than a permission computation: modelling effective
     access on macOS means group membership plus ACLs plus SIP, and a subtly wrong model
@@ -299,11 +301,13 @@ def _writable_component(app: InstalledApp) -> bool:
       ``CFBundleIdentifier`` and defeats :func:`target_identity`'s pre-spawn deny;
     * ``Contents/MacOS`` — the binary itself swapped in place.
 
-    None of this is hypothetical or exotic. ``/Applications`` is root-owned and unwritable,
-    but a bundle installed there by a user-space installer — every drag-install and every
-    Homebrew cask — is owned by the installing user, so the agent runs as someone who can
-    replace its executable. A parent-only probe passes that bundle and launches whatever
-    was written into it.
+    None of this is hypothetical or exotic. A bundle installed under ``/Applications``
+    by a user-space installer — every drag-install and every Homebrew cask — is owned by
+    the installing user, so the agent runs as someone who can replace its executable.
+    On a stock macOS install the parent-directory probe catches these bundles too
+    (``/Applications`` is admin-writable by default), but the two probes are independent:
+    an unwritable parent is not evidence of an unwritable bundle. A parent-only probe
+    passes that bundle and launches whatever was written into it.
 
     **The directories are FIXED, never read from the bundle.** Asking the bundle's own
     ``Info.plist`` where its executable lives is the obvious refinement and it is the wrong
@@ -460,17 +464,17 @@ def resolve_target(query: str) -> "tuple[str, str]":
     # is what the ABC contract means by "verify what the catalog returned". Three
     # directories, and the first alone was not enough:
     #
-    # * the bundle's PARENT — excluding ``~/Applications`` handles the obvious case; this
-    #   catches a ``/Applications`` that is group-writable on a machine whose admin group
-    #   has been widened, where a dropped bundle would be indistinguishable from an
-    #   installed one;
-    # * the bundle ITSELF and the directory holding its main executable. This is the case
-    #   the parent-only probe missed, and it is the COMMON one rather than a corner:
-    #   ``/Applications`` is unwritable, but a bundle installed there by a user-space
-    #   installer (any drag-install, and every Homebrew cask) is owned by that user, so
-    #   ``Foo.app/Contents/MacOS/Foo`` can be REPLACED without touching ``/Applications``
-    #   at all. The bundle would then pass every check here while running agent-authored
-    #   native code — the exact hole the root list exists to close, one level down.
+    # * the bundle's PARENT — excluding ``~/Applications`` handles the per-user case; on
+    #   a stock macOS install ``/Applications`` is ``drwxrwxr-x root admin`` so this probe
+    #   fires for every admin user (the default for a Mac's primary account), and a bundle
+    #   dropped there is indistinguishable from an installed one;
+    # * the bundle ITSELF and the directory holding its main executable. The parent probe
+    #   and the bundle probes are independent: an unwritable parent is not evidence of an
+    #   unwritable bundle. A bundle installed by a user-space installer (any drag-install,
+    #   and every Homebrew cask) is owned by that user, so ``Foo.app/Contents/MacOS/Foo``
+    #   can be REPLACED even when the parent denies creates. The bundle would then pass
+    #   every check here while running agent-authored native code — the exact hole the
+    #   root list exists to close, one level down.
     if _writable_component(app):
         raise ComputerUseError(_ERR_WRITABLE_ROOT.format(name=app.name))
     # The verified PATH, not the name. Returning the name would throw the verification

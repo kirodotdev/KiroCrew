@@ -97,6 +97,12 @@ except ImportError:  # pragma: no cover
 # they are emitted on the loader's logger channel (see module docstring).
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: What a present non-string ``agent.acp_backend`` is replaced with in the loaded
+#: data: the Kiro CLI floor for an unusable value, kept apart from a stored Kiro
+#: CLI pick (``"kiro"``). Never written to disk: full-document saves restore the
+#: harness fields from the file (``_restore_stored_harness_fields``).
+MALFORMED_BACKEND_FLOOR = "\x00malformed-acp-backend"
+
 # Deprecated fields survive load and save, so repeated config reads cannot clear
 # their warning. A digest remembers each observed field value for this process
 # without retaining configured credentials in the warning registry.
@@ -647,6 +653,14 @@ def validate_config_data(data: dict) -> dict:
     agent = data.get("agent")
     if isinstance(agent, dict) and isinstance(agent.get("log_level"), str):
         agent["log_level"] = agent["log_level"].upper()
+    # These two loaders fold case (and, for the heartbeat key, spaces) before
+    # matching, so a stored "Dashboard" or "WAL" is a valid value; spelled the
+    # loader's way here, the enum check keeps it instead of popping it.
+    if isinstance(agent, dict) and isinstance(agent.get("task_store_journal_mode"), str):
+        agent["task_store_journal_mode"] = agent["task_store_journal_mode"].lower()
+    heartbeat = data.get("heartbeat")
+    if isinstance(heartbeat, dict) and isinstance(heartbeat.get("default_deliver"), str):
+        heartbeat["default_deliver"] = heartbeat["default_deliver"].strip().lower()
 
     # 3b. ``auto_update`` decides whether an unattended installer runs, and its
     # two wrong answers are not symmetric, so a type mismatch must not be
@@ -726,7 +740,15 @@ def validate_config_data(data: dict) -> dict:
                     harness_key,
                     agent[harness_key],
                 )
-                agent[harness_key] = backend_to_stored(GOVERNANCE_FLOOR_BACKEND)
+                # ``agent.acp_backend`` gets a marker, not ``"kiro"``: a stored Kiro
+                # CLI pick can run on KAS (``KIRO_SELECTION_BACKEND``), and this is
+                # the floor for an unusable value, not that pick. The loader reads
+                # the marker as the floor (``_read_backend_choice``).
+                agent[harness_key] = (
+                    MALFORMED_BACKEND_FLOOR
+                    if harness_key == "acp_backend"
+                    else backend_to_stored(GOVERNANCE_FLOOR_BACKEND)
+                )
 
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)

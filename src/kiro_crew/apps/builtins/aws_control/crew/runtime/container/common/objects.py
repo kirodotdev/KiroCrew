@@ -46,6 +46,7 @@ __all__ = [
     "PreconditionFailed",
     "classify_permanent",
     "read_bounded",
+    "caller_account",
 ]
 
 #: How much is read per chunk when a GET's ceiling is enforced. Small enough that the
@@ -392,6 +393,35 @@ def is_precondition_failed(exc: Exception) -> bool:
         if isinstance(meta, dict) and meta.get("HTTPStatusCode") == 412:
             return True
     return False
+
+
+def caller_account(config=None) -> str:
+    """The AWS account the task's own credentials belong to.
+
+    Both processes pass it to S3 as ``ExpectedBucketOwner``, so a bucket name that
+    now belongs to another account is refused instead of read from or written to.
+    Raises when STS gives no account, so a caller never sends an empty pin.
+
+    Cached for the life of the process: the task role cannot change account, and the
+    supervisor builds a fresh store for each cycle, so without the cache the final
+    cycle would spend part of its drain window on STS.
+    """
+    global _caller_account
+    with _caller_account_lock:
+        if _caller_account is not None:
+            return _caller_account
+        import boto3  # local import: keep the package importable without AWS
+
+        client = boto3.client("sts") if config is None else boto3.client("sts", config=config)
+        account = client.get_caller_identity().get("Account")
+        if not isinstance(account, str) or not account:
+            raise RuntimeError("STS GetCallerIdentity returned no account")
+        _caller_account = account
+        return account
+
+
+_caller_account: str | None = None
+_caller_account_lock = threading.Lock()
 
 
 def classify_permanent(exc: Exception, *, bucket: str, key: str, verb: str) -> None:

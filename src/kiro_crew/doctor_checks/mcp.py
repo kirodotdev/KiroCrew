@@ -105,6 +105,32 @@ def _doctor_unresolved_mcp_refs() -> None:
         )
 
 
+def _doctor_template_mcp_additions() -> None:
+    """One row per template that carries MCP servers the user approved on a card.
+
+    Lists each template's additions (``template_mcp_additions``) by server name with
+    the card and date that approved them, so a user can see what was added and
+    where to take it away. Silent when there are none, which is the stock state.
+    Reports only and appends no issue: an addition is a choice the user made, not a
+    fault. The values come off a user-writable file, so every one is printed through
+    ``_safe_display``.
+    """
+    from kiro_crew import template_mcp_additions
+
+    try:
+        additions = template_mcp_additions.list_additions()
+    except Exception:
+        # Triage must survive an unreadable record; the rows are advisory.
+        return
+    for template, servers in additions.items():
+        listed = ", ".join(
+            f"{render._safe_display(name)} (card {render._safe_display(add.card_id)}, "
+            f"{render._safe_display(add.approved_at)})"
+            for name, add in servers.items()
+        )
+        print(f"  mcp additions: {render._safe_display(template)} \u2014 {listed}")
+
+
 def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     """One row for the SELECTED backend when its declaration says ``no-channel``.
 
@@ -469,10 +495,9 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     print(f"  mcp sharing: ⚠ not shared, one copy per chat: {rows}")
     render._print_wrapped(
         "Config asks to share these servers, but the gateway refused their launch "
-        "until it is approved on the dashboard. Open the dashboard's Developer page, "
-        "MCP Management tab (/developer?tab=mcp-pool; Developer Mode does not need "
-        "to be on) and approve each one, then run `kirocrew restart` so new chats "
-        "use the shared copy."
+        "until it is approved on the dashboard. Open the dashboard's Settings > "
+        "Developer > MCP Management (/settings/developer/mcp-pool) and approve each "
+        "one, then run `kirocrew restart` so new chats use the shared copy."
     )
     issues.append(f"{len(hits)} MCP server(s) set to share are not shared: launch not approved")
 

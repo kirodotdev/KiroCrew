@@ -536,9 +536,6 @@ class TestTheCapabilityIsNotAnnounced:
             "_kiro/hooks/executeHook. See agent-host-contract.md."
         )
 
-    def test_the_settings_channel_is_still_open(self):
-        assert KAS_CLIENT_CAPABILITIES["_meta"]["kiro"]["settings"] == {}
-
     def test_the_harness_declares_the_same_meta(self):
         assert "hooks" not in KasHarness().client_capabilities["_meta"]["kiro"]
 

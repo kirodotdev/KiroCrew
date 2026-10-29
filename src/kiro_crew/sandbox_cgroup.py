@@ -186,6 +186,14 @@ _CGROUP_SCOPE_PROBE_AT = 0.0
 # reads and one non-blocking connect(), so once a minute costs nothing.
 _CGROUP_SCOPE_PROBE_TTL_SECONDS = 60.0
 _CGROUP_SCOPE_PROBE_LOCK = threading.Lock()
+# Counts the user-manager sessions this process has seen enforcement in: it goes
+# up each time the probe computes "available" for the first time, after an
+# "unavailable" answer, or under a new session fingerprint. The slice-level
+# ceilings are ``--runtime`` properties that vanish with the login session, so
+# state recorded for an earlier epoch (an applied value, a failed apply) says
+# nothing about the current user manager; the slice reconcilers compare their
+# stamp with :func:`_cgroup_scope_epoch` to re-apply after a re-login.
+_CGROUP_SCOPE_EPOCH = 0
 _CGROUP_WARNED = False
 # Appended to every "no reachable user manager" reason, so both the one-time
 # warning and the mid-run transition warning name the fix an operator can apply.
@@ -210,12 +218,41 @@ def _warn_cgroup_unavailable(reason: str) -> None:
         return
     _CGROUP_WARNED = True
     logger.warning(
-        "SECURITY: cgroup v2 scope enforcement unavailable (%s); agent "
-        "subprocess fork-bomb / memory-DoS ceilings are NOT enforced on "
-        "this host. RLIMIT_NOFILE still applies. See "
+        "SECURITY: cgroup v2 scope enforcement unavailable (%s); %s See "
         "docs/architecture/resource-protection.md.",
         reason,
+        _cgroup_unavailable_effect(),
     )
+
+
+def _cgroup_unavailable_effect() -> str:
+    """What the warning says is and is not enforced, read from what is live here.
+
+    On Windows a per-spawn Job object (``apply_windows_resource_ceiling``) caps the
+    processes and memory of the ACP agent runtime and of pod gateways only; a pod's
+    descendants inherit its Job. Outside a pod, other subprocesses -- cron scripts,
+    app backends -- get no Job of their own, so the warning must not say "each agent
+    tree is capped". ``RLIMIT_NOFILE`` is named only where
+    the ``resource`` module exists to install it -- not on Windows.
+    """
+    try:
+        import resource  # noqa: F401 -- presence is the question: POSIX only
+    except ImportError:
+        rlimit_live = False
+    else:
+        rlimit_live = True
+    if platform_compat.IS_WINDOWS:
+        effect = (
+            "agent subprocess fork-bomb / memory-DoS ceilings are NOT enforced on this "
+            "host, except under a per-spawn Job object: it caps the ACP agent runtime's "
+            "processes and memory, and in a pod the gateway's Job also covers what it "
+            "launches; other subprocesses get no ceiling of their own."
+        )
+    else:
+        effect = "agent subprocess fork-bomb / memory-DoS ceilings are NOT enforced on this host."
+    if rlimit_live:
+        effect += " RLIMIT_NOFILE still applies."
+    return effect
 
 
 def _user_slice_controllers_path() -> str:
@@ -333,7 +370,7 @@ def _probe_cgroup_scope() -> tuple[bool, str]:
     :func:`_log_cgroup_scope_transition`), so the ceiling is never lost quietly.
     """
     global _CGROUP_SCOPE_PROBE, _CGROUP_SCOPE_PROBE_SESSION, _CGROUP_SCOPE_PROBE_AT
-    global _CPU_DELEGATED
+    global _CPU_DELEGATED, _CGROUP_SCOPE_EPOCH
     session = _cgroup_scope_session_fingerprint()
     now = time.monotonic()
     cached = _CGROUP_SCOPE_PROBE
@@ -351,7 +388,10 @@ def _probe_cgroup_scope() -> tuple[bool, str]:
             and now - _CGROUP_SCOPE_PROBE_AT < _CGROUP_SCOPE_PROBE_TTL_SECONDS
         ):
             return cached
+        previous_session = _CGROUP_SCOPE_PROBE_SESSION
         result = _compute_cgroup_scope_probe()
+        if result[0] and (cached is None or not cached[0] or session != previous_session):
+            _CGROUP_SCOPE_EPOCH += 1
         _CGROUP_SCOPE_PROBE = result
         _CGROUP_SCOPE_PROBE_SESSION = session
         _CGROUP_SCOPE_PROBE_AT = now
@@ -360,6 +400,15 @@ def _probe_cgroup_scope() -> tuple[bool, str]:
     if cached is not None and cached[0] != result[0]:
         _log_cgroup_scope_transition(result)
     return result
+
+
+def _cgroup_scope_epoch() -> int:
+    """Return the current enforcement epoch (see :data:`_CGROUP_SCOPE_EPOCH`).
+
+    Read through this function, not by importing the name, so a caller in
+    another module always sees the value the last probe wrote.
+    """
+    return _CGROUP_SCOPE_EPOCH
 
 
 def _log_cgroup_scope_transition(result: tuple[bool, str]) -> None:

@@ -213,6 +213,16 @@ three of them:
   read the reply with `session_read_message`.
 - **`progress`** — informational. Do nothing.
 
+**A person's steer outranks your decision.** When the person types into a crew
+member from the Crew panel, the item gets a `steer` event (`kind: steer`, the
+person's own words). Before any `action=decide` or any instruction you send a
+crew member, read that item's events (`work_ledger_read` with `item_id=<id>`, no
+`compact`) and look for `steer` events newer than your last decision. Follow
+them; never overrule, undo or re-send against them. If a steer conflicts with
+your plan, the steer wins and you re-plan around it. A steer never changes the
+acceptance bar: the verdict still comes from `accept_eval.py`, never from a
+steer.
+
 **A claimed `pr` is not an acceptance condition.** When a worker reports a pull
 request while the item's stored `acceptance` still holds a placeholder, the batch
 deliberately leaves that item out rather than reading the claim as the bar.
@@ -236,7 +246,9 @@ The person in this chat may not be an engineer: they may have turned on
 **Crew Mode**, the dashboard switch that runs a chat on you. Talk to them in
 plain words and in their language. Say "a separate chat", not "a session";
 "a task", not "a work item"; "check on", not "patrol". Engineering words stay
-in the ledger, the seeds and the tool calls. Skip the introduction and the board
+in the ledger, the seeds and the tool calls. Never put item ids or session ids
+in a worker's messages or in a reply to the person: keep them in the ledger only
+(a worker's `work_brief` finds its own item). Skip the introduction and the board
 below when a conductor dispatched you: your reader is then that conductor, and
 it reads your `work_report`, not your widgets.
 

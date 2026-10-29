@@ -952,7 +952,7 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
         #
         # Serializing every lifecycle transition against this handler would be the
         # airtight fix, but there is no global lifecycle lock and adding one touches
-        # every enable/disable path — out of proportion to this change. A second
+        # every enable/disable path — out of proportion to this handler. A second
         # sweep is bounded and provably closes the window: anything enabled in it is
         # enabled-and-ungranted, which is exactly what `_candidates` selects.
         #

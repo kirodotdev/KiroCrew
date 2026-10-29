@@ -14,6 +14,7 @@ import { localizeCrewMainData } from './crewMainPhrases'
 import type { DynamicDashboardCard } from '../../../types/dynamicDashboard'
 import { useAppSelector } from '../../../store'
 import { canCarryCard } from './model'
+import { slotRowByKey } from '../../../store/slotIndex'
 
 const STATUS_KEYS: Record<Exclude<DynamicDashboardCard['status'], 'published'>, string> = {
   disabled: 'commandCenter.card_disabled', waiting: 'commandCenter.card_waiting',
@@ -31,7 +32,7 @@ export const TASK_DASHBOARD_SANDBOX = ''
 export default function SessionStatusFrame({ slot, title, active }: { slot: string; title: string; active: boolean }) {
   const { t, i18n } = useTranslation()
   const { theme, colorTheme, themeVersion } = useTheme()
-  const owner = useAppSelector(s => s.dashboard.slots.find(item => item.key === slot))
+  const owner = useAppSelector(s => slotRowByKey(s.dashboard.slots, slot))
   // Mirrors the backend's _derived_allowed on the privacy half (privacy and remoteness),
   // and drops only the CREATOR-link cost term: a spawned conductor (`created_by` set) still
   // owns a DERIVED board, which the read route serves before the cost gate, so we must fetch

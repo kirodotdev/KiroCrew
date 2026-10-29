@@ -34,9 +34,6 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.dashboard.handlers import agent_panel as routes
 
-pytestmark = pytest.mark.asyncio
-
-
 # ------------------------------------------------- through a real allocation
 
 
@@ -98,6 +95,7 @@ def test_the_registry_key_is_the_slot_key_behind_a_transport_prefix():
     assert _normalize_slot_key(registry_key) != registry_key
 
 
+@pytest.mark.asyncio
 async def test_a_real_member_allocation_can_publish(vetted):
     """The accepting path against a real allocation, which nothing covered.
 
@@ -173,6 +171,7 @@ def test_every_refusal_in_the_crew_resolver_audits_its_denial():
     assert audits(tree.body[0].body) == []
 
 
+@pytest.mark.asyncio
 async def test_the_unresolved_session_denial_is_audited(vetted, monkeypatch):
     """The finding's own case, exercised rather than only asserted structurally."""
     events: list[dict[str, Any]] = []
@@ -196,6 +195,7 @@ async def test_the_unresolved_session_denial_is_audited(vetted, monkeypatch):
     assert denied[-1]["error"] == "caller's allocation could not be resolved"
 
 
+@pytest.mark.asyncio
 async def test_a_bare_slot_key_is_refused_rather_than_re_prefixed(vetted):
     """A bare slot name resolves to nothing, and that refusal is deliberate.
 
@@ -217,6 +217,7 @@ async def test_a_bare_slot_key_is_refused_rather_than_re_prefixed(vetted):
     assert _folded() is None
 
 
+@pytest.mark.asyncio
 async def test_a_real_allocation_that_selected_a_template_is_refused_no_crew(vetted):
     """The other cause the issue names, and it keeps the ``no_crew`` message.
 
@@ -237,6 +238,7 @@ async def test_a_real_allocation_that_selected_a_template_is_refused_no_crew(vet
     assert _folded() is None
 
 
+@pytest.mark.asyncio
 async def test_a_key_the_registry_does_not_hold_is_refused_as_unresolved(vetted):
     """A live member allocation exists, but not under the key the caller presents.
 
@@ -256,6 +258,7 @@ async def test_a_key_the_registry_does_not_hold_is_refused_as_unresolved(vetted)
     assert _folded() is None
 
 
+@pytest.mark.asyncio
 async def test_a_degraded_roster_refuses_takeover_rather_than_granting_it(vetted, monkeypatch):
     """ "Cannot read the roster" must not answer "the owner is gone".
 
@@ -300,6 +303,7 @@ async def test_a_degraded_roster_refuses_takeover_rather_than_granting_it(vetted
     assert kept["data"] == {"cycle": 47}
 
 
+@pytest.mark.asyncio
 async def test_a_free_form_name_can_read_its_panel(vetted):
     name = "dr. eggbot"
     slug = members_mod.slug_for_name(name)
@@ -315,6 +319,7 @@ async def test_a_free_form_name_can_read_its_panel(vetted):
         assert (await read_response.json())["panel"]["crew"] == name
 
 
+@pytest.mark.asyncio
 async def test_an_invalid_legacy_name_still_holds_its_panel(vetted, monkeypatch):
     legacy_name = "Cafe\u0301"
     legacy_slug = members_mod.slug_for_name(legacy_name)
@@ -361,6 +366,7 @@ async def test_an_invalid_legacy_name_still_holds_its_panel(vetted, monkeypatch)
     assert after["data"] == {"cycle": 47}
 
 
+@pytest.mark.asyncio
 async def test_a_v2_member_round_trips_through_the_resolving_slot(vetted):
     """The publish slot and the read slot must agree on the NON-FALLBACK branch.
 
@@ -401,6 +407,7 @@ async def test_a_v2_member_round_trips_through_the_resolving_slot(vetted):
         assert body["html"]
 
 
+@pytest.mark.asyncio
 async def test_a_publish_whose_append_is_skipped_is_still_what_a_reader_gets(vetted):
     """An accepted publish must never be shadowed by an older logged one.
 
@@ -464,6 +471,7 @@ async def test_a_publish_whose_append_is_skipped_is_still_what_a_reader_gets(vet
     assert record["history"][-1]["title"] == "logged-one"
 
 
+@pytest.mark.asyncio
 async def test_a_colliding_crews_newer_file_is_not_served_to_this_crew(vetted):
     """The file is keyed by SLUG alone, so it may hold the OTHER crew's panel.
 
@@ -505,6 +513,7 @@ async def test_a_colliding_crews_newer_file_is_not_served_to_this_crew(vetted):
         assert body["panel"]["title"] == "mine"
 
 
+@pytest.mark.asyncio
 async def test_a_colliding_crew_cannot_read_the_other_crews_panel(vetted):
     """The READ half of the ownership guard.
 
@@ -537,6 +546,7 @@ async def test_a_colliding_crew_cannot_read_the_other_crews_panel(vetted):
         assert body["html"] is None
 
 
+@pytest.mark.asyncio
 async def test_the_read_requires_the_exact_crew_name(vetted):
     """Required, not optional, so a mixed read is impossible by construction.
 
@@ -555,6 +565,7 @@ async def test_the_read_requires_the_exact_crew_name(vetted):
         assert (await resp.json())["code"] == "missing_member"
 
 
+@pytest.mark.asyncio
 async def test_a_hostile_member_name_is_refused_on_the_read(vetted):
     """The name is validated, not just compared."""
     async with _client() as c:
@@ -570,6 +581,7 @@ async def test_a_hostile_member_name_is_refused_on_the_read(vetted):
             assert resp.status == 400, f"{hostile!r} was accepted"
 
 
+@pytest.mark.asyncio
 async def test_a_credential_shaped_legacy_crew_can_read_its_redacted_panel(vetted):
     shaped = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
     assert agent_panel._scrub(shaped) != shaped, "fixture is no longer redacted"
@@ -595,6 +607,7 @@ async def test_a_credential_shaped_legacy_crew_can_read_its_redacted_panel(vette
     assert stored["crew_key"] == agent_panel.crew_key(shaped)
 
 
+@pytest.mark.asyncio
 async def test_a_linked_record_is_a_coded_refusal_not_a_500(vetted):
     """The store refuses to write through an alias; the route must say so with a code.
 
@@ -639,6 +652,7 @@ async def test_a_linked_record_is_a_coded_refusal_not_a_500(vetted):
         assert body["html"]
 
 
+@pytest.mark.asyncio
 async def test_a_linked_legacy_record_is_never_followed_on_the_read(vetted):
     """A LINKED legacy record reads as the empty state, not as an error.
 
@@ -674,6 +688,7 @@ async def test_a_linked_legacy_record_is_never_followed_on_the_read(vetted):
         assert body["panel"] is None and body["html"] is None
 
 
+@pytest.mark.asyncio
 async def test_an_unowned_record_is_not_served_to_anyone(vetted):
     """The read guard must fail CLOSED when ownership cannot be established.
 
@@ -712,6 +727,7 @@ async def test_an_unowned_record_is_not_served_to_anyone(vetted):
         assert "planted" not in json.dumps(body)
 
 
+@pytest.mark.asyncio
 async def test_publishing_pushes_a_refresh_to_open_drawers(vetted):
     """The drawer showed its first read forever without this.
 
@@ -731,6 +747,7 @@ async def test_publishing_pushes_a_refresh_to_open_drawers(vetted):
         assert ("panel_published", {"slug": SLUG}) in sent, f"no refresh pushed: {sent}"
 
 
+@pytest.mark.asyncio
 async def test_the_refresh_frame_carries_no_ownership_digest(vetted):
     """The frame says "re-read this slug" and nothing more.
 
@@ -750,6 +767,7 @@ async def test_the_refresh_frame_carries_no_ownership_digest(vetted):
         assert "crew_key" not in blob
 
 
+@pytest.mark.asyncio
 async def test_the_ownership_digest_never_reaches_the_client(vetted):
     """It is derived from a name that may itself be credential-shaped."""
     async with _client() as c:
@@ -763,6 +781,7 @@ async def test_the_ownership_digest_never_reaches_the_client(vetted):
         assert agent_panel.crew_key(CREW) not in json.dumps(body)
 
 
+@pytest.mark.asyncio
 async def test_an_app_identified_internal_caller_cannot_publish(vetted):
     """The secret gate does NOT imply "not an app".
 
@@ -794,6 +813,7 @@ async def test_an_app_identified_internal_caller_cannot_publish(vetted):
         assert agent_panel.read(SLUG) is None, "an app's data landed in a crew's panel"
 
 
+@pytest.mark.asyncio
 async def test_an_app_token_caller_is_denied_the_panel(vetted):
     """``/api/members/{slug}/panel`` is a CHILD of ``/api/members``.
 
@@ -833,6 +853,7 @@ async def test_an_app_token_caller_is_denied_the_panel(vetted):
             assert "cycle" not in body, "panel data leaked to an app-token caller"
 
 
+@pytest.mark.asyncio
 async def test_no_route_here_writes_from_the_browser_surface():
     """Everything under /api/members here is a read; writes are MCP-only."""
     member_routes = [
@@ -844,6 +865,7 @@ async def test_no_route_here_writes_from_the_browser_surface():
     assert {r.method for r in member_routes} <= {"GET", "HEAD"}
 
 
+@pytest.mark.asyncio
 async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
     """The boot path binds these routes DEFERRED, so the paths are written twice.
 

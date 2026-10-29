@@ -20,6 +20,7 @@ class _State:
         self._warm_task_brief_tasks = {}
         self._warm_task_brief_model_active: set[str] = set()
         self._warm_task_brief_abandoned: set[str] = set()
+        self._warm_task_brief_opened: set[str] = set()
         self.frames: list[tuple[str, dict]] = []
         self.preparing_pushes: list[dict[str, bool]] = []
         # The real registry is ``_slots``; one dict serves both names.
@@ -342,27 +343,75 @@ async def test_hidden_and_null_frames_never_start_work(monkeypatch):
     assert log.reads == 0
 
 
-@pytest.mark.asyncio
-async def test_leave_and_return_during_the_model_call_posts_no_result(monkeypatch):
-    state, slot, _ = _thread(monkeypatch, user_ago=2 * 3600)
+async def _brief_in_model_call(monkeypatch, state: _State, slot: _Slot):
+    """Start a brief on window 1 and hold it inside its model call.
+
+    Returns the brief task and the event that lets the model answer.
+    """
     entered = asyncio.Event()
     release = asyncio.Event()
 
     async def run_model(*args, **kwargs):
         entered.set()
         await asyncio.wait_for(release.wait(), timeout=30)
-        return '{"message":"Old return."}'
+        return '{"headline":"The fix is in review.","status":"on_track"}'
 
     monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
     warm_task_brief.handle_focus_frame(state, 1, slot.key)
     slot_retention.note_foreground(state, 1, slot.key)
     task = state._warm_task_brief_tasks[slot.key]
+    await asyncio.wait_for(entered.wait(), timeout=30)
+    assert _brief_kinds(slot) == ["warm_task_brief_claim", "warm_task_brief_preparing"]
+    return task, release
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leave", [None, "thread-y"], ids=["tab_hidden", "other_chat"])
+async def test_leaving_after_the_opener_still_publishes_the_card(monkeypatch, leave):
+    state, slot, _ = _thread(monkeypatch, user_ago=2 * 3600)
+    task, release = await _brief_in_model_call(monkeypatch, state, slot)
     try:
-        await asyncio.wait_for(entered.wait(), timeout=30)
-        # The last window switches away and back without typing.
-        await _focus(state, 1, "thread-y")
+        # The owner hides the tab or opens another chat and stays there.
+        await _focus(state, 1, leave)
+        assert state._warm_task_brief_tasks.get(slot.key) is task
+    finally:
+        release.set()
+    await asyncio.wait_for(task, timeout=30)
+
+    assert _brief_kinds(slot) == _FULL_BRIEF
+    assert state._warm_task_brief_opened == set()
+
+
+@pytest.mark.asyncio
+async def test_quick_leave_and_return_during_the_model_call_posts_one_card(monkeypatch):
+    state, slot, _ = _thread(monkeypatch, user_ago=2 * 3600)
+    task, release = await _brief_in_model_call(monkeypatch, state, slot)
+    try:
+        # A two-second trip away and back without typing.
+        await _focus(state, 1, None)
         warm_task_brief.handle_focus_frame(state, 1, slot.key)
         slot_retention.note_foreground(state, 1, slot.key)
+        assert state._warm_task_brief_tasks.get(slot.key) is task
+    finally:
+        release.set()
+    await asyncio.wait_for(task, timeout=30)
+    # Another return after the card landed starts nothing new.
+    await _focus(state, 1, "thread-y")
+    await _focus(state, 1, slot.key)
+
+    assert _brief_kinds(slot) == _FULL_BRIEF
+    assert state._warm_task_brief_abandoned == set()
+
+
+@pytest.mark.asyncio
+async def test_typing_after_leaving_past_the_opener_still_drops_the_card(monkeypatch):
+    state, slot, _ = _thread(monkeypatch, user_ago=2 * 3600)
+    task, release = await _brief_in_model_call(monkeypatch, state, slot)
+    try:
+        await _focus(state, 1, None)
+        warm_task_brief.handle_focus_frame(state, 1, slot.key)
+        slot_retention.note_foreground(state, 1, slot.key)
+        warm_task_brief.cancel_for_live_user_row(state, slot.key, "Actually, stop that.")
     finally:
         release.set()
     await asyncio.wait_for(task, timeout=30)
@@ -540,10 +589,10 @@ async def test_opener_precedes_the_single_model_call_and_result_is_a_structured_
     )
     prompt = call_kwargs["prompt"]
     assert '"original_request": "Fix the failing test"' in prompt
-    # The model sees the gateway's count so its "remaining" line agrees with it.
+    # The model sees the gateway's count so its text agrees with it.
     assert '"progress": {"accepted": 0, "total": 1}' in prompt
-    assert "professional manager" in prompt and "Never invent numbers" in prompt
-    assert '"needs_you"' in prompt and "no markdown, no HTML, no links" in prompt
+    assert "trusted teammate" in prompt and "Never invent numbers" in prompt
+    assert '"needs_you"' in prompt and "no\nmarkdown, HTML or links" in prompt
     # The user's reply-style choice reaches the prompt.
     assert warm_task_brief._STYLE_HINTS["answer_only"] in prompt
 
@@ -924,9 +973,10 @@ async def test_cancel_during_model_suppresses_result_without_cancelling_acquisit
         lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
     )
     task = asyncio.create_task(warm_task_brief._prepare_warm_task_brief(state, slot))
+    state._warm_task_brief_tasks[slot.key] = task
     try:
         await asyncio.wait_for(entered.wait(), timeout=30)
-        state._foreground_slots.clear()
+        # A real cancel (a typed row, a reset, a close) during the model call.
         warm_task_brief.cancel_warm_task_brief(state, slot.key)
 
         assert not task.done()
@@ -1071,10 +1121,10 @@ def _spy_wait(monkeypatch) -> asyncio.Event:
     waiting = asyncio.Event()
     wait = warm_task_brief._wait_for_idle_turn
 
-    async def spy(state, slot, deadline):
+    async def spy(state, slot, deadline, **kwargs):
         if slot.running:
             waiting.set()
-        return await wait(state, slot, deadline)
+        return await wait(state, slot, deadline, **kwargs)
 
     monkeypatch.setattr(warm_task_brief, "_wait_for_idle_turn", spy)
     return waiting

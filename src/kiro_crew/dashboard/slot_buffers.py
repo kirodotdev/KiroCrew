@@ -776,7 +776,15 @@ class SlotBufferCoordinator:
                     # the id so the next full save retires it instead of the
                     # entry replaying (and re-dropping) after every restart
                     # until the hold's ceiling fills with garbage.
+                    #
+                    # Arm the save here: this is a durable-state mutation
+                    # (``_dropped_note_ids`` is persisted in the metadata line).
+                    # The terminal ``done`` row that queue-cycle end appends is
+                    # wire-only and does not mark the slot dirty, so without this
+                    # the retirement would wait for an unrelated durable row and
+                    # a restart could replay the dropped note first.
                     slot._dropped_note_ids.add(dropped_id)
+                    slot._dirty = True
                 continue
 
             # Pop context as a retry-idempotency marker. The except arm below

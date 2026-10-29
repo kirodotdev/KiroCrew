@@ -153,7 +153,19 @@ declarations off-loop, then releases explicitly chosen roles before running the
 probe off-loop. That same declaration read supplies the notice wording: KAS is
 named the default only when every resolved KAS role is undeclared; an explicit
 choice or failed read keeps the selected wording. The floor receives this verdict
-as `kas_defaulted` and does not reread declarations. A defaulted role waits until
+as `kas_defaulted` and does not reread declarations. A main backend that resolved
+to Kiro CLI is armed too; the declaration read releases it at once unless it is
+stored as the Kiro CLI pick (`acp_backend_stored_as_kiro`), which waits for the
+probe like a defaulted role and reaches the floor as `kiro_selected`. A probe that
+ran and names v3 then records `confirm_kiro_cli_offers_kas`, sets the field to KAS and forces one
+config-watcher cycle (`_reconcile_live_config_with_kiro_verdict`) before the floor
+task ends, so `SessionManager` rebuilds its provider factory from a fresh load; one that ran without v3 logs a notice that the pick stays on
+kiro-cli's v2 engine and names `kiro-cli update`; an unknown probe or the bundle
+route leaves the pick on kiro-cli. After `_init_dashboard`,
+`kiro_on_kas_notice.schedule` waits for the floor task, then posts one bell note
+(`system.agent`, linking `/settings/agent`) when the stored pick is Kiro CLI and it
+loads as KAS (`kiro_cli_pick_backend`); an `O_EXCL` marker in the data home makes it once per
+install. A defaulted role waits until
 the floor task finishes, including
 failure or cancellation. Every wait shares the deadline set at arm time, bounded
 by the probe timeout; releasing another role does not reset it. Waiter cancellation
@@ -181,7 +193,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/__init__.py` | Package (no eager imports to avoid aiohttp at import time) |
 | `slack/client.py` | `SlackClientOps` ABC + `RealSlackClient` (slack-sdk wrapper) |
 | `slack/files.py` | Slack adapter over shared attachment ingestion — authenticated downloads, inlineable images/text/documents, and byte-identical opaque files with local path + metadata; caller-owned cleanup and SEL audit |
-| `slack/format.py` | Markdown → Slack mrkdwn conversion (headings, links, strike, tables, mermaid, ANSI strip, truncation). `render_for_slack` is the one way text reaches Slack: `strip_ansi` → redact → pre-split → convert → redact → display-settle → redact → split, with each converted block, split piece and truncation settled under the Slack mrkdwn reading |
+| `slack/format.py` | Markdown → Slack mrkdwn conversion (headings, links, strike, tables, mermaid, ANSI strip, truncation). `render_for_slack` is the one way text reaches Slack: `strip_ansi` → redact → pre-split → convert → redact → display-settle → redact → split, with each converted block, split piece and truncation settled under the Slack mrkdwn reading. Nothing forces a sender to use it yet: `test/test_slack_post_message_call_sites.py` pins each module's count of direct `.post_message(` calls to a baseline with a reason per module, so a new direct send path fails the build |
 | `slack/handler.py` | The native turn path's composition facade: `handle_message()` — admits a message and runs its turn through the phase owners, `handle_interaction()` — button clicks (with None provider guard, in `handler_runtime/permission_ladder.py`), and every name the module exported. See [Native handler composition](#native-handler-composition) |
 | `slack/handler_runtime/` | Private owners the handler facade composes, one responsibility each (see [Native handler composition](#native-handler-composition)); nothing else imports them |
 | `slack/gateway.py` | `GatewayOrchestrator` — the composition facade: the class declares the orchestrator's fields and binds the methods its owners define. Entry point: `run_gateway()`, defined in `gateway_runtime/process_entry.py` and importable from here. See [Composition](#composition) |
@@ -974,33 +986,37 @@ and `message_deleted` cannot disagree.
    `!dashboard` / `!stop` / `!title` open to allowed users)
 5. Check keyword commands (`maybe_handle_keyword_command`: `sessions`,
    `spawn`/`bg`, `cron …`, `task run <spec>`)
-6. Initialize `StatusReactionController` → set phase "queued" (👀)
+6. Initialize `StatusReactionController`, set the native thread status
+   (`assistant.threads.setStatus` "is working on your request"), and only when
+   Slack refused it (no native status on this surface) add the 👀 ack
 7. The answer message opens lazily (`_AnswerStream.ensure_started`); there is no
    "Thinking…" post
 8. Acquire per-session semaphore (via `get_or_create`) to serialize concurrent messages
 9. Create `Task` for lifecycle tracking
 10. Stream events from provider
 11. Progressive message edits (~1/sec) with cursor indicator (▍)
-12. On `text_chunk` event: accumulate response text, set phase "thinking" (🤔)
-13. On `thinking_chunk` event: accumulate thinking separately, set phase "thinking" (🤔)
-14. On `tool_call` event: set phase based on tool type — coding (👨‍💻), browsing (🌐), or generic tool (🔧)
-15. On `permission_request` event: pause stall watchdog, auto-approve or post Block Kit buttons, resume watchdog
+12. On `text_chunk` event: accumulate response text
+13. On `thinking_chunk` event: accumulate thinking separately
+14. On `tool_call` event: show its task card and set the thread status to "is using <tool>"
+15. On `permission_request` event: auto-approve or post Block Kit buttons
 16. On `complete`: record success, check context usage
 17. On error: record a breaker failure (trips at 5 consecutive) only when
     `runtime_death.caused_by_this_session` is true; a shared runtime's
     `AcpProcessDied` is counted on a shared-death streak instead, and at the
     threshold the handler resets the session and clears the streak
-18. Finalize status reactions in `finally` block → done (🦞) or error (😱); release semaphore
+18. Finalize the status reaction in `finally` block: the 👀 ack comes down with
+    nothing in its place (the reply is the done signal), or 😱 on error; release semaphore
 19. Strip inline `<thinking>` tags from accumulated text
 20. Final update with mrkdwn-converted response (split into multiple messages if over 3900 chars by `split_message` in `slack/format.py`)
 21. Post thinking content as 💭 thread reply (if any, and `slack.show_thinking` is true)
 
 ### `StatusReactionController`
-Phase-aware Slack reaction manager with stall detection, defined in `slack/handler_runtime/reactions.py`; the phase table it reads (`_PHASE_EMOJIS`, from `slack.reactions`) is built at import in `slack/handler.py`. Manages emoji lifecycle per message:
-- **Phases**: queued (👀) → thinking (🤔) → coding (👨‍💻) / browsing (🌐) / tool (🔧) → done (🦞) / error (😱). All phase emojis are configurable via `slack.reactions` in `config.json`.
-- **Debouncing**: Intermediate phase transitions debounced at 700ms to prevent flickering from rapid tool calls. Terminal states fire immediately.
-- **Stall detection**: Soft stall (🥱) at 15s, hard stall (😨) at 45s of no progress. Resets on any ACP event. Paused during tool approval waits.
-- **Tool mapping**: `_tool_to_phase(tool_name, tool_kind)` maps tools to phases — prefers `tool_kind` from ACP, falls back to tool name with MCP `__` separator handling.
+The one reaction a Slack turn wears on the message it answers, defined in `slack/handler_runtime/reactions.py`; the table it reads (`_PHASE_EMOJIS`, from `slack.reactions`) is built at import in `slack/handler.py`. Both Slack turn paths (the native handler and `SlackRenderer`) use it:
+- **Progress**: where `assistant.threads.setStatus` accepted the working status (`SlackClientOps.set_thread_status` returns True), that native status is the progress signal and the message gets no reaction. Elsewhere it gets the `queued` ack (👀) while the turn runs (`start(native_status=...)`).
+- **Done**: `finalize()` takes the ack down and adds nothing; the reply is the done signal. There is no `done` reaction and no per-phase trail, debounce or stall reaction on Slack.
+- **Error**: `finalize(error=True)` adds the `error` reaction (😱) on either surface, so a failed turn is never silent. It also upgrades a controller already finalized clean: the turn body finalizes before the reply is delivered, so a reply that then fails to post (`_SlackTurn.book_failure` on the native path, `SlackRenderer.close()` on an un-finalized turn) still shows 😱.
+- The add/remove calls are serialized, so a reply faster than the ack's add still takes it down.
+- `slack.reactions` accepts `queued` and `error` (either may be `null`); keys of the retired trail (`thinking`, `coding`, `browsing`, `tool`, `done`) are accepted and ignored. Other channels' phase ladder (`messaging/status_reactions.py`) is unchanged.
 
 ### LLM-Initiated Commands
 
@@ -1188,7 +1204,7 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - **Thinking/reasoning content** filtered from the main response — accumulated separately and posted as a 💭 thread reply after the main message. Inline `<thinking>` / `</thinking>` tags are also stripped as a safety net. The thread reply is suppressed when `slack.show_thinking` is `false` (default `true`).
 - Final message split into multiple posts if over 3900 chars (via `split_message()`)
 - A top-level reply in a flat DM is not streamed (`chat.startStream` streams only into a thread); it falls back to `chat.update` edits
-- The transport stream holds back a trailing partial word of up to `_WORD_HOLD_MAX` (32) characters until the next chunk or the end (`release_held_word`), so a word is never split across two edits
+- The transport renderer (`slack/renderer.py`) holds the reply until the turn ends and appends it whole: text before a tool call is that call's narration and goes into its task card's details in the plan block, never into the reply, matching the dashboard; the reply is the text after the last tool call (see `messaging.md` → `SlackRenderer`). The native path (`slack/handler_runtime/stream.py`) still streams every text chunk
 - When part of a reply could not be delivered to Slack and not restored, the turn appends a "Part of this reply did not reach Slack…" delivery-debt notice
 - The per-turn wire state -- the stream message and its rotation, the rolling redactor, the delivery debt and the task cards -- is one `_AnswerStream` (`slack/handler_runtime/stream.py`) per turn; the delivery verdict that reads its flags is `_deliver_answer` (`slack/handler_runtime/delivery.py`)
 - **The run the native stream's `StreamRedactor` still holds** is settled where its message ends. At the seal (`settle_tail`) it is sent when the final text is clean and dropped when the final copy replaces the message. Before a tool card it stays held. At a `wait` it is carried (`carried`), so the filter sees it joined to the next text. When that joined text comes out of the filter whole and unchanged, `_give_back` reads the closed message back and edits it with `chat.update` on its own blocks (`markdown` or `rich_text`, plus any `plan` / `task_card` / `divider` after it) with the run added, and the next message, its final copy and the saved answer start after the run. Otherwise -- the filter changed the joined text, the blocks are another shape, or the read or edit fails -- the run opens the next message. A closed message is edited only this way
@@ -1210,7 +1226,7 @@ When a message arrives while a session is actively processing, it's queued inste
 Bidirectional message mirroring between dashboard chat sessions and Slack threads:
 
 - **Slack → Dashboard**: `handle_message()` asks `maybe_route_linked_thread` (`slack/handler_runtime/inbound.py`), which checks `_slack_to_slot` reverse lookup; if linked, routes message to dashboard slot's `_run_chat()` queue
-- **Dashboard → Slack**: the dashboard turn (`_run_chat()` and its phases) mirrors user messages and agent responses to the linked thread via `start_stream()` / `append_task()` / `stop_stream()`. The user-message echo is capped at 500 characters (`_prepare_mirror_msg`), and a cut echo ends in `…` so it does not read as a message that broke mid-word. A turn that ends on an applied quiet end (`nothing_to_do`) with no answer text gets that outcome line (`Nothing new to report.` plus the model's note) posted as its reply (`_turn_stop_hook`), with no options control, and the channel-neutral leg to a linked non-Slack channel sends the same line: the dashboard shows it on the tool card, but on the thread the only other trace is a task step inside the collapsed stream, so a quiet patrol or auto-nudge cycle read there as one that never ran
+- **Dashboard → Slack**: the dashboard turn (`_run_chat()` and its phases) mirrors user messages and agent responses to the linked thread. The prompt echo is the redacted, 500-char `_prepare_mirror_msg` text (a cut echo ends in `…` so it does not read as a message that broke mid-word) rendered by `slack.format.mirror_prompt_echo` as a `> 💬 …` quote: `escape_mrkdwn_keep_links` keeps `<https://…>` / `<https://…|label>` links and `<#C…>` channel refs live, flattens `<@U…>` / `<@W…>` mentions to plain `@…` so the echo never re-pings, and escapes every other entity (`<!channel>`, `<!here>`, `<!subteam^…>`, …) and stray or truncated bracket. Only a prompt a person typed in the dashboard is echoed, by an allowlist (`chat_turn.recipient._prompt_typed_in_dashboard`, which also gates the non-Slack cross-surface echo): the turn must be stamped `_directive_user_origin`, not `_directive_channel_origin`, with actor `user` (no producer `_turn_actor`, not a loop self-wake), and not a runner payload, recovery requeue or disk-restored entry; the one recovery let through is a verbatim replay of a dashboard prompt whose turn died before its echo point (`_recovery_echo_owed`, from the entry's `MIRROR_ECHO_OWED_META_KEY` stamp), so it is echoed exactly once. A script cron's `/api/chat` send is stamped actor `cron` by the send handler. Every input defaults to "not the person", so monitor / work-ledger wakes, cron, sub-agent completions, task-runner turns, `session_send`, app sends and any later producer are never echoed, nor is a message typed in the linked Slack thread or code channel itself (channel origin; a merged queue batch is channel-origin when any entry is). Tool steps with no purpose line are labelled by `tool_call_title.derive_tool_call_title`, the same derivation the dashboard's tool rows use, never the raw `@server/tool` id. A `💭 _Thinking…_` placeholder follows the echo; the task stream (`start_stream()` / `append_task()` / `stop_stream()`) opens on the first mirrored tool call, and the placeholder is deleted when that stream opens, before the answer is posted, or at turn end, so no stale "Thinking…" stays above Slack's plan header. A turn that ends on an applied quiet end (`nothing_to_do`) with no answer text gets that outcome line (`Nothing new to report.` plus the model's note) posted as its reply (`_turn_stop_hook`), with no options control, and the channel-neutral leg to a linked non-Slack channel sends the same line: the dashboard shows it on the tool card, but on the thread the only other trace is a task step inside the collapsed stream, so a quiet patrol or auto-nudge cycle read there as one that never ran
 - **Link to Dashboard button**: `LINK_DASHBOARD_ACTION` in timing footer imports thread history into a new dashboard slot
 - **`!link-to-dashboard` command**: same as button but triggered via bang command inside a thread
 - **Session resume**: shows Thread/DM choice buttons; `_handle_resume_choice()` with per-session lock for idempotency. When the chat being resumed is a dashboard chat whose tab is closed (`DashboardState.slot_exists` is false; a slot still being restored counts as open), the resume still links the Slack thread or DM and replays recent messages, but the confirmation says the dashboard tab stays closed and can be reopened from History instead of saying the session resumed
@@ -1284,16 +1300,16 @@ When kiro-cli reports a prompt is still in flight ("already in progress" — a t
 
 ## OPTIONS Buttons (`format.py`)
 
-LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered as interactive Block Kit checkboxes with a Send button:
+LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered as a card of one-click Block Kit buttons:
 
 1. `extract_options()` parses the `[OPTIONS: ...]` tag from the response text
 2. Tag is stripped from the displayed message
-3. `build_options_blocks()` creates Block Kit checkboxes (max 10) + primary Send button
-4. Checkboxes posted as a follow-up message in the thread
-5. Send click → `_handle_options_submit()` → reads checkbox state → posts styled selection → routes combined selection to handler
-6. Legacy single-choice buttons still supported via `OPTIONS_ACTION_PREFIX`
+3. `build_options_blocks()` creates one plain button per choice (max 10, five to an `actions` row; more wrap into a second row). A label over 75 characters is cut with `…`; the button `value` keeps the full choice. The last row ends in a ⋯ overflow menu with **Choose several…** (only when there are two or more choices). Every row carries the staleness token in its `block_id`; rows after the first add a `~<row>` suffix (`outbound.options_row_block_id`), which `decode_options_token` reads past.
+4. A button click → `_handle_options()` → `_answer_options()`. **Choose several…** → `_open_options_several()` opens a modal of checkboxes (option values are indices; the card is held under a nonce by `outbound.remember_options_several`), and its submission → `_handle_options_several_submission()` → `_answer_options()` with every picked index.
+5. `_answer_options()` is the one answer path: the staleness check, then the once-only claim under the message's edit lock, then the in-place edit that replaces the card's rows with `✅ <@user> chose <choice>[, …] · <time>` (`build_options_answered_blocks`), then the turn: the chosen button values joined with `, `, with an `[OPTIONS multi-select: …]` context entry. A superseded card is struck through and an already-answered one left alone; either way the clicker gets a private "Already answered." and nothing is sent.
+6. Authorization is the dispatcher's allowed-user check for a click; the modal submission re-checks the same `is_allowed_user` and the `channels` governance gate before answering.
 
-Action IDs: `options_checkboxes` (toggle), `options_submit` (send). Checkbox `value` contains the choice text.
+Action IDs: `options_choice_<i>` (a choice), `options_several` (the ⋯ menu); modal callback `options_several_submit` (with `notify_on_close`, so Cancel frees the held card). A Send press on a checkbox card posted before this card replaced it (`options_submit`) gets a private "This card has expired"; its checkbox ticks (`options_checkboxes`) are ignored. When an OPTIONS card ends the footer, the Link to Dashboard button gets its own row, so answering the card leaves it in place.
 
 Beyond the reply-finalization path in `handler_runtime/delivery.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway_runtime/result_egress.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
 
@@ -1303,7 +1319,7 @@ Beyond the reply-finalization path in `handler_runtime/delivery.py`, two other S
 
 Two gates run before any handler: `is_allowed_user(user_id)` on the dispatcher, and `channel_inbound_permitted("slack")` for OPTIONS interactions. Both are load-bearing because the action value becomes agent-visible context and a routed turn.
 
-An OPTIONS choice whose `value` starts with `action::` enters the action branch of `_handle_options`. The remainder of `value` is an opaque payload — the handler neither parses nor requires JSON — and the visible label comes from `action["text"]["text"]`, falling back to the selected overflow option's text. `_route_action_to_session` then performs the shared delivery:
+An `OPTIONS_ACTION_PREFIX` element whose action ID is NOT a numbered card button (`options_choice_<digits>`) and whose `value` starts with `action::` enters the action branch of `_handle_options`. A numbered button is a choice on an OPTIONS card and always answers through `_answer_options`, whatever its value says, so a choice the model wrote as `action::…` cannot skip the staleness check, the once-only claim or the asker pin. The remainder of `value` is an opaque payload — the handler neither parses nor requires JSON — and the visible label comes from `action["text"]["text"]`, falling back to the selected overflow option's text. `_route_action_to_session` then performs the shared delivery:
 
 1. Redact exfiltration URLs and credentials from the label, then attempt to replace matching elements in the source message with a context label.
 2. Post the redacted label as a visible reply in the source thread. A failed post aborts routing, so an agent turn never runs without its visible Slack message; `test_post_message_failure_aborts` locks that ordering.
@@ -1487,7 +1503,7 @@ no `slack.*` write can change the connection. `_on_slack_config_change`
   section-by-section in place so `orch._cfg` and `handler._orch_cfg` cannot
   diverge.
 - `slack.reactions` → `handler.refresh_phase_emojis`, which rebuilds `_PHASE_EMOJIS`
-  in place; the four read sites call `phase_emojis()` rather than the module global,
+  in place; the read sites call `phase_emojis()` rather than the module global,
   so a reaction rename lands on the next status update.
 - `slack.observe_*` → the live `ChannelHistory` caps, and observe-mode registration
   follows the new channel activations.

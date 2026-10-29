@@ -125,10 +125,11 @@ _N_CTX = 2048
 # compute scratch arena and llama.cpp's per-token output buffer (one row per
 # micro-batch token, 610,772 bytes each for the shipped model) without reducing
 # the accepted context. On the shipped Qwen3 file and the vendored Linux CPU
-# runtime, 256, 512 and 2048 produce byte-identical vectors under last-token
-# pooling; 256 holds 317 MiB less anonymous memory than 512 once a long input
-# has run, at the same embed latency.
-_N_UBATCH = 256
+# runtime, 128, 256, 512 and 2048 produce byte-identical vectors under
+# last-token pooling. 256 holds 317 MiB less anonymous memory than 512 once a
+# long input has run, at the same embed latency, and 128 halves the compute
+# arena and the output buffer again: 83 MiB less than 256, at no more CPU time.
+_N_UBATCH = 128
 # Safety truncation (chars) before inference, sized under _N_CTX at a
 # conservative ~4 chars/token so a clipped input always fits the context
 # window. Only pathological un-chunked blobs exceed this; mirrors the
@@ -163,6 +164,16 @@ _COLD_LOAD_WAIT_SECS = 30.0
 # suffer and cause contention. Pinned to the established four-thread default
 # here, overridable via memory.embedding_threads.
 _DEFAULT_EMBED_THREADS = 4
+# A host with at least _LARGE_HOST_MIN_CORES usable CPUs defaults to
+# _LARGE_HOST_EMBED_THREADS instead. Inference scales near-linearly from 4 to 8
+# threads (2,400 chars on a 16-core Graviton3: 8.4 s -> 4.2 s), but an embed
+# competes with the memory searches and agent turns running beside it: on a
+# 32-CPU x86 host with embeds back to back, 8 threads raised the p95 of the
+# memory searches they overlapped from 1.29 s to 2.07 s against 4, while 6 cut
+# embed time 15% and left that p95 at 1.30 s. At 12 cores 6 leaves half free. _DEFAULT_EMBED_THREADS stays 4 because it is
+# also the value every saved config.json carries (see _embed_threads).
+_LARGE_HOST_MIN_CORES = 12
+_LARGE_HOST_EMBED_THREADS = 6
 # One shared model and worker serve every store within this queue budget.
 _MAX_PENDING_EMBEDS = 8
 _INTERACTIVE_QUEUE_RESERVE = 2
@@ -317,15 +328,18 @@ def _embed_threads() -> int:
     honoured up to that count. Default policy caps the default one core BELOW it
     instead, so a 2-vCPU host keeps a core for the event loop rather than handing
     llama.cpp the whole box. It is a ceiling on the default, not a replacement
-    for it: a 16-core host still answers 4.
+    for it. A process that may use :data:`_LARGE_HOST_MIN_CORES` or more CPUs
+    defaults to :data:`_LARGE_HOST_EMBED_THREADS` instead: a 16-core host
+    answers 6, an 8-core laptop 4.
 
     A raw value EQUAL to the default is default policy, not operator intent.
     ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4 and
     ``KiroCrewConfig.save()`` publishes every field, so a fresh install's
     ``config.json`` carries a 4 nobody typed; reading that as a choice would
     hand the whole box to exactly the hosts this cap protects. The cost is that
-    4 cannot be pinned where the process may use 4 or fewer CPUs -- any other
-    number can.
+    4 cannot be pinned where the process may use 4 or fewer CPUs, or
+    :data:`_LARGE_HOST_MIN_CORES` or more (there it runs
+    :data:`_LARGE_HOST_EMBED_THREADS`) -- any other number can.
     """
     raw = _read_memory_config().get("embedding_threads")
     cores = affinity_cpu_count()
@@ -334,6 +348,8 @@ def _embed_threads() -> int:
         return max(1, min(requested, cores or _DEFAULT_EMBED_THREADS))
     if cores is None:
         return _DEFAULT_EMBED_THREADS
+    if cores >= _LARGE_HOST_MIN_CORES:
+        return _LARGE_HOST_EMBED_THREADS
     return max(1, min(_DEFAULT_EMBED_THREADS, cores - 1))
 
 

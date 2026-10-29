@@ -1212,15 +1212,19 @@ class TestVoiceSystemVoices:
             "kiro_crew.dashboard.chat_voice.resolve_system_tts_async",
             AsyncMock(return_value=("say", "/usr/bin/say")),
         )
-        probe = AsyncMock(return_value=[])
+        # A second probe would answer differently, so the second response shows
+        # whether it came from the cache.
+        alex = {"id": "Alex", "name": "Alex", "language": "en-US"}
+        probe = AsyncMock(side_effect=[[], [alex]])
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice.list_system_voices", probe)
 
         async with TestClient(TestServer(self._app(tmp_path))) as client:
-            await client.get("/api/voice/system-voices")
-            await client.get("/api/voice/system-voices")
+            first = await (await client.get("/api/voice/system-voices")).json()
+            second = await (await client.get("/api/voice/system-voices")).json()
         # An empty list is cached too: it is stable for the life of the install,
         # and re-probing would cost a subprocess per panel visit.
         assert probe.await_count == 1
+        assert first["voices"] == second["voices"] == []
 
     @pytest.mark.asyncio
     async def test_probe_failure_returns_502(self, tmp_path, monkeypatch):
@@ -1423,11 +1427,9 @@ class TestSynthesizeProviderRouting:
 def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     """No value from the request body may reach `_vc` via a bare ``str()``.
 
-    This is a RATCHET, not another point fix. Four consecutive review rounds
-    landed the same class of finding on this one handler -- a non-object body, a
-    wrong-typed ``system_voice``, a torn write, then a wrong-typed ``voice`` --
-    because each round fixed the field that was reported and left its siblings on
-    ``str()``. ``str({})`` is ``"{}"``: a syntactically valid voice name or path
+    This is a RATCHET over the whole handler, not a per-field fix: a field left
+    on ``str()`` while its siblings are validated is the same defect again.
+    ``str({})`` is ``"{}"``: a syntactically valid voice name or path
     that no engine can satisfy, so synthesis goes silent while the stored config
     looks populated.
 
@@ -1435,8 +1437,7 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     per-field: every ``body[...]`` read in ``api_voice_config`` must be an
     argument to a validator that owns a documented contract, or be guarded by an
     ``isinstance`` + membership test. A new field added on a bare ``str()`` or
-    ``bool()`` fails here instead of shipping and being found by a reviewer one
-    round later.
+    ``bool()`` fails here instead of shipping.
     """
     import ast
     import inspect

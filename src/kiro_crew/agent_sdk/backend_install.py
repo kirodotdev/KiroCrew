@@ -53,6 +53,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SELF_SERVED_ACP,
+    COPILOT_VERIFIED_VERSION,
     POLICY_ID_BY_BACKEND,
     host_unservable_reason,
     launch_for,
@@ -165,6 +166,11 @@ class BackendInstallState:
     fix: the harness is installed on disk NOW, but the running gateway already
     resolved its absence and cached that, so a session started right now would
     still fail. See :func:`_probe_claude`.
+
+    ``found_version`` is non-empty only on a ``MISSING`` verdict whose binary DOES
+    resolve but runs a release other than the one Crew verified (Copilot CLI's
+    pin): what is missing is that release, so the row names the release it found,
+    and ``install_command`` installs the verified one.
     """
 
     backend: str
@@ -173,6 +179,7 @@ class BackendInstallState:
     missing_components: Tuple[str, ...] = ()
     install_command: str = ""
     restart_required: bool = False
+    found_version: str = ""
 
 
 def _probe_kiro() -> BackendInstallState:
@@ -332,6 +339,20 @@ def _probe_self_served(backend: str) -> BackendInstallState:
     launch = launch_for(backend)
     policy_id = _policy_id(backend)
     if acp_driver.self_served_resolves(backend):
+        # A release the handshake refuses is not installed in any sense that helps:
+        # every session would end at ``initialize``. So the row says MISSING, names
+        # the verified release as the absent component and carries the command that
+        # installs it -- the same remedy a missing binary gets.
+        found = acp_driver.self_served_wrong_version(backend)
+        if found:
+            return BackendInstallState(
+                backend,
+                policy_id,
+                MISSING,
+                (f"{launch.binary} {COPILOT_VERIFIED_VERSION}",),
+                acp_driver.self_served_install_command(backend),
+                found_version=found,
+            )
         return BackendInstallState(
             backend,
             policy_id,

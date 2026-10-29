@@ -15,14 +15,25 @@ from kiro_crew.apps.builtins.dev_fleet.live_service import _LIVE_GATEWAY_LABEL, 
 from kiro_crew.service import live_target
 
 
-def _staged_notice(name: str, unit_status: str) -> str:
+def _staged_notice(name: str, unit_status: str, *, desktop_app: bool = False) -> str:
     """Operator-facing message for a cutover that staged but could not restart.
 
     Leads with the remedy: the actionable command is what the operator needs
     first, and the reason is diagnostic context after it. The reason string
     already carries the "Dev Fleet cannot restart it" clause, so this must not
     restate it.
+
+    With *desktop_app* the desktop app runs the gateway. The CLI's restart
+    refuses that gateway while the app runs, and a restart from the app comes
+    back on the app's own bundle, so the remedy is to quit the app first.
     """
+    if desktop_app:
+        return (
+            f"{name} is staged as the live target. The Kiro Crew desktop app runs "
+            f"this gateway, so quit the app, then run `{_manual_restart_command()}` "
+            f"to finish the cutover — the gateway will come up on it. To back out "
+            f"instead, use the live row's Cancel staged cutover in Dev Fleet."
+        )
     return (
         f"{name} is staged as the live target. Run "
         f"`{_manual_restart_command()}` to finish the cutover — the gateway "

@@ -628,14 +628,18 @@ async def test_delete_route_threads_exact_and_refuses_a_non_boolean() -> None:
                 headers=headers,
             )
             assert exact.status == 200
-            app["state"].lessons.remove.assert_called_once_with("use tabs", "", exact=True)
+            app["state"].lessons.remove.assert_called_once_with(
+                "use tabs", "", exact=True, keep_one=False
+            )
 
             app["state"].lessons.remove.reset_mock()
             default = await client.delete(
                 "/api/lessons", json={"rule": "use tabs"}, headers=headers
             )
             assert default.status == 200
-            app["state"].lessons.remove.assert_called_once_with("use tabs", None, exact=False)
+            app["state"].lessons.remove.assert_called_once_with(
+                "use tabs", None, exact=False, keep_one=False
+            )
 
             app["state"].lessons.remove.reset_mock()
             # A truthy STRING is not a boolean: "false" must not turn exact on,

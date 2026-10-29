@@ -9,9 +9,18 @@ swallow it, so neither the lines within this function nor the order in which
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from aiohttp import web
 
 from kiro_crew.dashboard import chat, handlers
+from kiro_crew.dashboard.handlers._shared import guarded_route
+from kiro_crew.dashboard.remote_chat_guard import remote_chat_refusal
+
+
+def _local_files(handler: Callable[..., Any]) -> Callable[..., Any]:
+    """A route over this machine's files: refused for a chat that runs remotely."""
+    return guarded_route(handler, remote_chat_refusal)
 
 
 def register(app: web.Application) -> None:
@@ -35,26 +44,26 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/taskrunner/{task_id}/plan", handlers.api_taskrunner_update_plan)
     app.router.add_post("/api/taskrunner/{task_id}/execute", handlers.api_taskrunner_execute_plan)
     app.router.add_post("/api/reveal", handlers.api_reveal_path)
-    app.router.add_get("/api/file-read", handlers.api_file_read)
+    app.router.add_get("/api/file-read", _local_files(handlers.api_file_read))
     app.router.add_post("/api/file-kinds", handlers.api_file_kinds)
     app.router.add_get("/api/file-download", handlers.api_file_download)
     app.router.add_get("/api/file-office-preview", handlers.api_file_office_preview)
     app.router.add_get("/api/file-office-slides", handlers.api_file_office_slides)
     app.router.add_get("/api/file-office-slide", handlers.api_file_office_slide)
-    app.router.add_get("/api/file-raw", handlers.api_file_raw)
-    app.router.add_get("/api/file-stream", handlers.api_file_stream)
-    app.router.add_get("/api/file-watch", handlers.api_file_watch)
-    app.router.add_post("/api/file-write", handlers.api_file_write)
-    app.router.add_get("/api/file-diff", handlers.api_file_diff)
+    app.router.add_get("/api/file-raw", _local_files(handlers.api_file_raw))
+    app.router.add_get("/api/file-stream", _local_files(handlers.api_file_stream))
+    app.router.add_get("/api/file-watch", _local_files(handlers.api_file_watch))
+    app.router.add_post("/api/file-write", _local_files(handlers.api_file_write))
+    app.router.add_get("/api/file-diff", _local_files(handlers.api_file_diff))
     app.router.add_get("/api/file-search", handlers.api_file_search)
     app.router.add_get("/api/path-complete", handlers.api_path_complete)
     app.router.add_post("/api/file-grep", handlers.api_file_grep)
     app.router.add_get("/api/file-sheet", handlers.api_file_sheet)
     app.router.add_get("/api/browse-dirs", handlers.api_browse_dirs)
     app.router.add_get("/api/browse-files", handlers.api_browse_files)
-    app.router.add_get("/api/project/git", handlers.api_project_git)
-    app.router.add_get("/api/project/git/status", handlers.api_project_git_status)
-    app.router.add_get("/api/project/git/log", handlers.api_project_git_log)
+    app.router.add_get("/api/project/git", _local_files(handlers.api_project_git))
+    app.router.add_get("/api/project/git/status", _local_files(handlers.api_project_git_status))
+    app.router.add_get("/api/project/git/log", _local_files(handlers.api_project_git_log))
     app.router.add_get("/api/project/git/repos", handlers.api_project_git_repos)
     app.router.add_get("/api/project/tree", handlers.api_project_tree)
     app.router.add_post("/api/upload", handlers.api_upload)

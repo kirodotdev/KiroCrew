@@ -6,6 +6,7 @@ import { normalizeUrl, setSessionPreviewPending } from '../../../components/WebP
 import { addTab as addDockTerminal } from '../../../hooks/useBottomTerminal'
 import type { usePanelTabs } from '../../../hooks/usePanelTabs'
 import { useRunInTerminalBridge } from '../../../hooks/useRunInTerminalBridge'
+import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 import { i18nT } from '../../../i18n/t'
 import type { AppDispatch } from '../../../store'
 import { openActivityPanel, refreshSlot, setPendingInput } from '../../../store/chatSlice'
@@ -185,10 +186,17 @@ export function useChatEventBridges({
   }, [dispatch, activeSlotRef, tabsCtlRef])
   // "Run in terminal" from this page's code blocks (useRunInTerminalBridge).
   // The page also answers unscoped requests, as it always has.
+  // The active chat's placement: a chat on a Session Environment runs in its
+  // workspace, so its code blocks must not run in a dock shell here.
+  const runsHere = useSlotRunsHere(activeSlot)
+  const runsHereRef = useRef(runsHere)
+  runsHereRef.current = runsHere
   const runInTerminalScope = useRunInTerminalBridge({
     queryClient,
     showActionError,
     cwdRef: currentProjectRef,
+    runsHereRef,
+    slotRef: activeSlotRef,
     acceptUnscoped: true,
     deleteTerminalSessionRef,
     terminalReuseRef,

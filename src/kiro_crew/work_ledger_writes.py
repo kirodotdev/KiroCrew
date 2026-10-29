@@ -31,6 +31,7 @@ from kiro_crew.work_ledger_records import (
     ITEM_STATES,
     LEGACY_GOAL_BASE,
     MAX_DECISION_CHARS,
+    MAX_EVENT_TEXT_CHARS,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
     MAX_GOAL_ITEM_CAP,
@@ -769,6 +770,33 @@ def apply_worker_report(
         event = _commit_item_locked(
             slot_key, item, "report", checked_summary, status=checked_status
         )
+        return {"item": item, "event": event}
+
+
+# --------------------------------------------------------------------------- #
+# Person writes
+# --------------------------------------------------------------------------- #
+
+
+def apply_person_steer(slot_key: str, item_id: str, text: Any) -> dict[str, Any] | None:
+    """Record a person's steer into a worker as one ``steer`` event on its item.
+
+    The event is the whole write: no item field moves, so acceptance, verdict and
+    state stay the conductor's and the worker's. *text* is already redacted by the
+    caller and is cut at the event's length cap here. ``None`` for a closed item:
+    a steer into a worker whose item ended records nothing.
+    """
+    checked_text = text[:MAX_EVENT_TEXT_CHARS] if isinstance(text, str) else ""
+    checked_id = _require_item_id(item_id)
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            return None
+        event = _commit_item_locked(slot_key, item, "steer", checked_text)
         return {"item": item, "event": event}
 
 

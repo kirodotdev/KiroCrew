@@ -148,15 +148,6 @@ function statusBadge(config: WhatsAppConfigData): { text: string; textCls: strin
 }
 
 /**
- * Which lifecycle states are a FAILURE. The gateway writes `connect_error` as
- * `"<state>: <detail>"` for EVERY non-connected state (`whatsapp/gateway.py`
- * `_on_state`), so during a healthy pairing it reads "pairing: scan the QR code
- * from your phone" — an instruction, not an error. Only these states mean the
- * link is broken; everything else stays a hint.
- */
-const FAILED_STATES = new Set(['error', 'banned', 'logged_out'])
-
-/**
  * `connect_error`, minus the gateway's missing-dependency note while the SDK is
  * still absent: the {@link OptionalSdkCard} explains that gap with the
  * gateway's own install command. Once the SDK is installed the note stays,
@@ -170,21 +161,14 @@ function gatewayError(config: WhatsAppConfigData): string {
  * The gateway's connection failure, kept apart from {@link connectionHint}: it
  * is the outcome of something that FAILED, so it renders through `ErrorNotice`,
  * while the hint describes a state that has not gone wrong yet. A populated
- * `connect_error` alone is not the test (see FAILED_STATES): it is a failure
- * when the lifecycle state says so, or when the message carries no state prefix
- * at all — the missing-extra hint and the startup exception path write it that
- * way, and neither is a lifecycle state.
+ * `connect_error` alone is not the test: the gateway fills it for every
+ * non-connected state, so during a healthy pairing it holds the scan
+ * instruction. `connect_failed` is the gateway's own verdict, written beside
+ * the text by the same writer.
  */
 function connectError(config: WhatsAppConfigData): string {
   const error = gatewayError(config)
-  if (config.connected || !error) return ''
-  // The prefix is read as well as `state`: the two come from different
-  // snapshots (the error string is written by the state callback, `state` by
-  // the config read), so "error: dial tcp timeout" is a failure even if the
-  // config read still says `unpaired`.
-  const prefix = /^([a-z_]+): /.exec(error)?.[1]
-  const failed = FAILED_STATES.has(config.state ?? '') || (prefix ? FAILED_STATES.has(prefix) : true)
-  if (!failed) return ''
+  if (config.connected || !error || !config.connect_failed) return ''
   return i18nT('pages.settings.whatsAppPanel.whatsapp_did_not_connect', {
     error,
   })
@@ -270,10 +254,12 @@ function GroupRow({
     if (next !== group.rules) onChange({ ...group, rules: next })
   }
   const commitCooldown = () => {
-    const next = Math.max(0, Math.floor(Number(cooldown)))
+    const raw = cooldown.trim()
+    const next = Math.max(0, Math.floor(Number(raw)))
     // A field emptied or filled with text is not a zero cooldown, zero means
     // "no rate limit at all", which is the opposite of a cautious default.
-    if (!Number.isFinite(next)) {
+    // `Number('')` is 0, so the empty case needs its own check.
+    if (raw === '' || !Number.isFinite(next)) {
       setCooldown(String(group.cooldown_s))
       return
     }

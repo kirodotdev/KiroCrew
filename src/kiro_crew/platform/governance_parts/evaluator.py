@@ -28,7 +28,7 @@ from kiro_crew.platform.governance_parts.archetypes import (
 from kiro_crew.platform.governance_parts.baseline import BASELINE_UNGATED
 from kiro_crew.platform.governance_parts.carriers import GovernanceCeiling, Profile
 from kiro_crew.platform.governance_parts.catalog import _SCOPE_ALIASES
-from kiro_crew.platform.governance_parts.parsing import baseline_controls
+from kiro_crew.platform.governance_parts.parsing import baseline_controls, with_inner_baseline
 from kiro_crew.platform.governance_parts.tool_calls import (
     _NO_TARGET_ITEM,
     _governed_targets,
@@ -68,19 +68,18 @@ def _policy_level(
     (``baseline=False``) get no baseline.
     """
     control = ceiling.get(scope) if ceiling is not None else None
-    if (
-        control is not None
-        or not baseline
-        or isinstance(ceiling, Profile)
-        or not edition.is_enterprise()
-    ):
+    if not baseline or isinstance(ceiling, Profile) or not edition.is_enterprise():
         return control, False
     # A policy's ``folders.*`` rule is stored under its ``filesystem.*`` scope at
     # parse time, so an alias query must find it there before the baseline answers.
     canonical = _SCOPE_ALIASES.get(scope, scope)
-    named = ceiling.get(canonical) if ceiling is not None else None
+    named = (
+        control
+        if control is not None
+        else (ceiling.get(canonical) if ceiling is not None else None)
+    )
     if named is not None:
-        return named, False
+        return with_inner_baseline(canonical, named), False
     if canonical in BASELINE_UNGATED:
         return None, False
     return baseline_controls().get(canonical, _DENY_UNLISTED), True

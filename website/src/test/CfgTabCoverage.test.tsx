@@ -12,6 +12,8 @@ import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import KiroCrewCfgTab, { AgentRunSettings } from '../pages/overview/KiroCrewCfgTab'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
+import { AGENT_SANDBOX_HIGHLIGHT_ANCHOR } from '../hooks/useSettingHighlight'
+import { AGENT_SANDBOX_PATH } from '../pages/overview/agentSandboxLink'
 
 vi.mock('../api/client')
 
@@ -359,6 +361,15 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     await waitFor(() => {
       expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('agent.sandbox', 'strict')
     })
+  })
+
+  it('anchors the Sandbox row for the deep link Session Environments sends under strict', async () => {
+    seed()
+    await renderTab()
+    const anchor = document.querySelector(`[data-setting-key="${AGENT_SANDBOX_HIGHLIGHT_ANCHOR}"]`)
+    expect(anchor).not.toBeNull()
+    expect(within(anchor as HTMLElement).getByRole('group', { name: 'Sandbox' })).toBeInTheDocument()
+    expect(AGENT_SANDBOX_PATH).toBe(`/developer?tab=config&highlight=${encodeURIComponent(`key:${AGENT_SANDBOX_HIGHLIGHT_ANCHOR}`)}`)
   })
 
   it('keeps same-valued options on different rows apart', async () => {

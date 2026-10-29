@@ -8,6 +8,7 @@ where the API is gone. The project-dir pointer path is pinned here too.
 """
 
 import hashlib
+import importlib
 import os
 import stat
 import subprocess
@@ -168,12 +169,25 @@ class TestMcpBuiltinDispatch:
         # mcp_server module resolves — make the synthetic one resolve.
         monkeypatch.setattr(cli_mod, "_builtin_mcp_server_available", lambda _name: True)
         mock_module = MagicMock()
+        # The server's own exit status must reach the caller unchanged.
+        mock_module.run_mcp_server.side_effect = SystemExit(7)
+
+        target = f"kiro_crew.apps.builtins.{builtin_name}.mcp_server"
+        real_import = importlib.import_module
+
+        def fake_import(name, *args):
+            # Only the synthetic module is faked; every other import stays real.
+            return mock_module if name == target else real_import(name, *args)
 
         monkeypatch.setattr(sys, "argv", ["kirocrew", f"mcp-{builtin_name}"])
-        with patch("importlib.import_module", return_value=mock_module) as mock_import:
+        with (
+            patch("importlib.import_module", side_effect=fake_import) as mock_import,
+            pytest.raises(SystemExit) as exc_info,
+        ):
             cli_mod.main()
 
-        mock_import.assert_called_once_with(f"kiro_crew.apps.builtins.{builtin_name}.mcp_server")
+        assert exc_info.value.code == 7
+        assert target in [c.args[0] for c in mock_import.call_args_list]
         mock_module.run_mcp_server.assert_called_once_with()
 
 
@@ -680,7 +694,7 @@ class TestInstallPidfdChildWatcher:
     """Verify _install_child_watcher's platform behavior."""
 
     @staticmethod
-    def _install_then_spawn_in_child(expected_watcher: str, cwd: Path) -> None:
+    def _assert_install_then_spawn_in_child(expected_watcher: str, cwd: Path) -> None:
         """Run "_install_child_watcher() then asyncio.run(subprocess)" in a CLEAN
         child Python process, and assert it exits 0.
 
@@ -895,7 +909,7 @@ class TestInstallPidfdChildWatcher:
             expected = "SafeChildWatcher"
         else:
             expected = "PidfdChildWatcher"
-        self._install_then_spawn_in_child(expected_watcher=expected, cwd=tmp_path)
+        self._assert_install_then_spawn_in_child(expected_watcher=expected, cwd=tmp_path)
 
     @pytest.mark.skipif(
         sys.platform == "linux" or not hasattr(__import__("asyncio"), "SafeChildWatcher"),
@@ -919,7 +933,7 @@ class TestInstallPidfdChildWatcher:
         is itself main-thread-only, so an in-process run under a non-main
         pytest-xdist worker thread would fail spuriously.
         """
-        self._install_then_spawn_in_child(expected_watcher="SafeChildWatcher", cwd=tmp_path)
+        self._assert_install_then_spawn_in_child(expected_watcher="SafeChildWatcher", cwd=tmp_path)
 
 
 class TestChildWatcherApiRemoved:

@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
@@ -19,6 +20,10 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, peek_data_home
+from kiro_crew.env_krb5_conf import (  # noqa: F401  (re-exported from env)
+    _krb5_conf_default_ccache,
+    _krb5_quoted_value,
+)
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # ``uv`` is a declared dependency shipped as a wheel (``setup.cfg``), so this
@@ -155,12 +160,23 @@ def _warn_rejected_bin_dir(raw: object, source: str) -> None:
 def _validated_bin_dirs(values: object, source: str) -> list[str]:
     """Validate an operator-supplied LIST of bin directories, dropping bad ones.
 
-    ``~`` is expanded first (a config file is where a human writes
-    ``~/.pixi/bin``), then each entry passes the same
-    :func:`_validated_bin_dir` gate as this module's own well-known dirs — one
-    absolute directory, no path separator, no NUL. A rejected entry is dropped
-    rather than failing the whole list: one typo must not cost an operator every
-    other directory they declared, nor abort PATH construction for every spawn.
+    ``~`` is expanded first (:func:`os.path.expanduser`, so ``~/.pixi/bin`` and a
+    ``~otheruser/bin`` both resolve the way an operator expects), then each entry
+    passes the same :func:`_validated_bin_dir` gate as this module's own
+    well-known dirs — one absolute directory, no path separator, no NUL. A
+    rejected entry is dropped rather than failing the whole list: one typo must
+    not cost an operator every other directory they declared, nor abort PATH
+    construction for every spawn.
+
+    A ``~otheruser`` prefix makes :func:`os.path.expanduser` call
+    ``pwd.getpwnam`` (POSIX) / the SAM database (Windows) SYNCHRONOUSLY, which on
+    an LDAP/SSSD/AD-backed host can block for as long as the directory service
+    takes to answer. That is tolerable on the paths that reach this at startup or
+    off the event loop, but NOT on the gateway's live ``.env`` PATH hot-reload,
+    which runs on the loop -- so that one caller expands and validates its
+    additions OFF the loop first (see :func:`extend_process_path` and
+    ``config.live.ConfigWatch._cycle``), and nothing on the loop reaches this
+    with an unexpanded ``~otheruser`` entry.
 
     *values* is typed ``object`` because both sources are hand-editable and can
     legally parse as something other than a list of strings.
@@ -241,27 +257,57 @@ def _extra_mcp_path_dirs() -> list[str]:
     ]
 
 
-def extend_process_path(value: str) -> None:
+def prepare_env_path_additions(value: str) -> tuple[str, ...]:
+    """Expand and validate a ``.env`` ``PATH`` line into absolute dirs to ADD.
+
+    The part of :func:`extend_process_path` that does NOT touch ``os.environ``,
+    split out so a caller on the event loop can run it OFF the loop. Each entry
+    goes through the absolute-directory gate the other operator lists use
+    (:func:`_validated_bin_dirs`, so ``~``/``~otheruser`` expands via
+    :func:`os.path.expanduser` and a relative or unexpanded entry such as
+    ``$HOME/bin`` is dropped with a warning), then is deduped in declared order.
+
+    This is where the only call that can BLOCK lives: a ``~otheruser`` entry
+    makes ``os.path.expanduser`` call ``pwd.getpwnam`` / the SAM database
+    synchronously, which an LDAP/SSSD/AD lookup can stall. The gateway's live
+    ``.env`` hot-reload (``config.live.ConfigWatch._cycle``) therefore calls THIS
+    off the loop and hands the result to :func:`extend_process_path`, so the only
+    work left on the loop is the ``os.environ`` mutation. Pure: no ``os.environ``
+    write, so it is safe to run in a worker thread.
+    """
+    wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
+    return tuple(_dedup_dirs(_validated_bin_dirs(wanted, ".env PATH")))
+
+
+def extend_process_path(value: str, *, prepared: tuple[str, ...] | None = None) -> None:
     """Append the directories of a data-home ``.env`` ``PATH`` line to this process's ``PATH``.
 
     The ``.env`` loader seeds the environment with ``setdefault``, and a process
     always has a ``PATH``, so this key cannot be applied the way every other one
-    is. The line is read as directories to ADD, never as a replacement: each entry
-    goes through the absolute-directory gate the other operator lists use
-    (:func:`_validated_bin_dirs`, so ``~`` expands and a relative or unexpanded
-    entry such as ``$HOME/bin`` is dropped with a warning), and lands behind the
-    ``PATH`` the process already has, so it can add a launcher but never shadow a
-    system tool. The existing string is kept byte for byte and an entry it
-    already holds is skipped, so the repeated loads of the file do not grow it.
+    is. The line is read as directories to ADD, never as a replacement: each
+    entry goes through :func:`prepare_env_path_additions` (``~``/``~otheruser``
+    expands, a relative or unexpanded entry such as ``$HOME/bin`` is dropped with
+    a warning), and lands behind the ``PATH`` the process already has, so it can
+    add a launcher but never shadow a system tool. The existing string is kept
+    byte for byte and an entry it already holds is skipped, so the repeated loads
+    of the file do not grow it.
+
+    *prepared* lets a caller that already ran :func:`prepare_env_path_additions`
+    OFF the event loop pass its result in, so the expand/validate step -- the one
+    that can block on a ``~otheruser`` directory-service lookup -- is not repeated
+    on the loop; only the ``os.environ`` mutation here runs on it. When omitted,
+    the expansion runs inline, which is what the boot and off-loop dashboard
+    callers want. A *prepared* value must be the result of
+    :func:`prepare_env_path_additions` over this same *value*.
 
     Nothing else about the environment widens. An agent child still receives its
     environment through the launch tail's scrub, and the terminal completion
     probe still filters this ``PATH`` through its ownership check.
     """
+    additions = prepare_env_path_additions(value) if prepared is None else prepared
     current = os.environ.get("PATH") or os.defpath
     held = _dedup_dirs(current.split(os.pathsep))
-    wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
-    merged = _dedup_dirs([*held, *_validated_bin_dirs(wanted, ".env PATH")])
+    merged = _dedup_dirs([*held, *additions])
     if len(merged) > len(held):
         os.environ["PATH"] = os.pathsep.join([current, *merged[len(held) :]])
 
@@ -875,6 +921,23 @@ def _managed_browser_cli_dirs() -> list[str]:
     return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
 
 
+def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
+    """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
+
+    On Windows Toolbox does not use ``~/.toolbox/bin``: its install guide puts
+    every tool (``claude``, ``kiro-cli``, ...) under ``%LOCALAPPDATA%\\Toolbox\\bin``
+    and has the user add that to their own PATH, which a gateway started before
+    that edit (or by a launcher that does not read it) never sees. So the Agent
+    Harness probe reported a Toolbox-installed Claude Code as not installed.
+
+    ``LOCALAPPDATA`` names the account running this process, so a caller that
+    pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
+    """
+    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
+    base = local or os.path.join(resolved_home, "AppData", "Local")
+    return _validated_bin_dir(os.path.join(base, "Toolbox", "bin"))
+
+
 def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
 
@@ -888,13 +951,17 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     sync.
 
     On Windows a launched (non-shell) gateway inherits a ``PATH`` that does
-    not include the venv's ``Scripts\\`` directory, so ``shutil.which`` fails
-    to resolve the ``kirocrew`` / ``kirocrew-core`` console-script wrappers
-    pip generated for MCP-server spawn. Append ``sys.executable``'s parent
-    directory as the LAST entry so the running interpreter's own
-    console-scripts (``Scripts\\`` on Windows, ``bin/`` on POSIX) are always
-    discoverable. Last, not first: the interpreter dir also contains
-    ``python``/``pip``, and placing it ahead of ``base_path`` would silently
+    not include the interpreter's console-scripts directory, so
+    ``shutil.which`` fails to resolve the ``kirocrew`` / ``kirocrew-core``
+    wrappers pip generated for MCP-server spawn, or the bundled ``uv`` /
+    ``uvx``. Append ``sys.executable``'s parent and then the interpreter's
+    ``sysconfig`` scripts directory as the LAST entries, so its own console
+    scripts are always discoverable. In a venv (``Scripts\\`` on Windows,
+    ``bin/`` on POSIX) and in a POSIX python-build-standalone tree they are
+    one directory. The Windows desktop backend is a python-build-standalone
+    tree with ``python.exe`` at its root and its console scripts in
+    ``Scripts\\``, so there they differ. Last, not first: the interpreter dir
+    also contains ``python``/``pip``, and placing it ahead of ``base_path`` would silently
     rebind a user MCP spec's bare ``"command": "python"`` (and the spawned
     agent's own ``python``/``pip`` shell calls) to the gateway's venv
     interpreter. As a pure fallback it resolves only names found nowhere
@@ -920,10 +987,39 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
         for d in _EXTRA_PATH_DIRS
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
+    if platform_compat.IS_WINDOWS and (
+        toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home)
+    ):
+        extra.append(toolbox_bin)
     extra += _node_all_bin_dirs(resolved_home, mise_data, _xdg_config_dir(resolved_home))
     parts = extra + ([base_path] if base_path else [])
-    parts.append(str(Path(sys.executable).parent))
+    parts.extend(_interpreter_script_dirs())
     return os.pathsep.join(parts)
+
+
+def _interpreter_script_dirs() -> list[str]:
+    """The running interpreter's own directory, then its console-scripts directory.
+
+    One entry when they are the same directory (a venv, POSIX
+    python-build-standalone); two on the Windows desktop backend, where
+    ``python.exe`` sits at the tree root and pip installs ``uv.exe`` and the
+    ``kirocrew`` wrappers into ``Scripts\\``.
+    """
+    dirs = [str(Path(sys.executable).parent)]
+    scripts = _INTERPRETER_SCRIPTS_DIR
+    same = os.path.normcase(os.path.normpath(scripts)) == os.path.normcase(
+        os.path.normpath(dirs[0])
+    )
+    if scripts and os.path.isabs(scripts) and not same:
+        dirs.append(scripts)
+    return dirs
+
+
+#: The interpreter's console-scripts directory, read once at import. It
+#: depends only on ``sys.prefix``, which does not change at runtime, and
+#: ``sysconfig.get_path`` runs ``os.path.expanduser`` over its result, so a
+#: per-call read would follow whatever home the caller is pinning.
+_INTERPRETER_SCRIPTS_DIR = sysconfig.get_path("scripts") or ""
 
 
 #: How many directories :func:`describe_search_path` names before truncating.
@@ -1744,9 +1840,6 @@ _KRB5_PER_USERNS_KEYRINGS = ("KEYRING:persistent:", "KEYRING:user:")
 # The same kinds with no uid, which libkrb5 resolves to the caller's own.
 _KRB5_PER_USERNS_BARE = ("KEYRING:persistent", "KEYRING:user")
 
-# A krb5 config file is a few KiB; read at most this much of one.
-_KRB5_CONF_READ_CAP = 256 * 1024
-
 
 def _warn_keyring_ccache_once(env: Mapping[str, str]) -> None:
     """Log one warning per process when agent children are left on a KEYRING cache.
@@ -1797,137 +1890,6 @@ def krb5_keyring_ccache(env: Mapping[str, str]) -> str | None:
     if name.startswith(_KRB5_PER_USERNS_KEYRINGS) or name in _KRB5_PER_USERNS_BARE:
         return name
     return None
-
-
-def _krb5_conf_default_ccache(env: Mapping[str, str]) -> str | None:
-    """First ``default_ccache_name`` in a ``[libdefaults]`` section, or ``None``.
-
-    Follows libkrb5's lookup order: the ``KRB5_CONFIG`` files (else
-    ``/etc/krb5.conf``) in order, each read top to bottom with its ``include``
-    / ``includedir`` files read where the directive stands, and the first
-    value found wins.
-    """
-    for root in env.get("KRB5_CONFIG", "/etc/krb5.conf").split(":"):
-        if root:
-            found = _libdefaults_ccache(Path(root), depth=0)
-            if found is not None:
-                return found
-    return None
-
-
-def _krb5_includedir_files(directory: Path) -> list[Path]:
-    # libkrb5 reads only names made of [A-Za-z0-9_-] or ending in ``.conf``.
-    try:
-        entries = sorted(directory.iterdir())
-    except (OSError, ValueError):
-        return []
-    return [
-        p
-        for p in entries
-        if (p.name.endswith(".conf") or all(c.isalnum() or c in "_-" for c in p.name))
-        and p.is_file()
-    ]
-
-
-def _read_krb5_conf(path: Path) -> str | None:
-    """Text of *path* when it is a regular file, capped; ``None`` otherwise.
-
-    The path is ``stat``-ed first so nothing but a regular file is opened, and
-    the open itself uses ``O_NONBLOCK | O_NOCTTY`` with an ``fstat`` re-check, so
-    a FIFO or device named in the config never blocks the spawn path.
-    """
-    flags = os.O_RDONLY
-    for name in ("O_NONBLOCK", "O_NOCTTY", "O_CLOEXEC"):
-        flags |= getattr(os, name, 0)
-    try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
-            return None
-        fd = os.open(path, flags)
-    except (OSError, ValueError):  # ValueError: a NUL byte in the path
-        return None
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
-        return os.read(fd, _KRB5_CONF_READ_CAP).decode("utf-8", errors="replace")
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
-
-
-def _libdefaults_ccache(path: Path, depth: int, seen: set[Path] | None = None) -> str | None:
-    seen = set() if seen is None else seen
-    if path in seen:
-        return None
-    seen.add(path)
-    text = _read_krb5_conf(path)
-    if text is None:
-        return None
-    section = ""
-    # Subsection depth: a key inside ``name = { ... }`` is not a libdefaults key.
-    braces = 0
-    for raw in text.splitlines():
-        line = raw.strip()
-        # libkrb5 honours include/includedir only at the start of a line.
-        parts = raw.split(None, 1) if raw[:1] not in (" ", "\t") else []
-        directive = parts[0] if parts else ""
-        target = parts[1].strip() if len(parts) > 1 else ""
-        if directive in ("include", "includedir") and target:
-            if depth >= 2:
-                continue
-            included = (
-                [Path(target)] if directive == "include" else _krb5_includedir_files(Path(target))
-            )
-            for child in included:
-                found = _libdefaults_ccache(child, depth + 1, seen)
-                if found is not None:
-                    return found
-        elif line.startswith("[") and line.endswith(("]", "]*")):
-            # A trailing ``*`` marks the section final; it is still a header.
-            section = line[1 : line.rindex("]")].strip().lower()
-            braces = 0
-        elif line.startswith("}"):
-            braces = max(braces - 1, 0)
-        elif not line.startswith(("#", ";")):
-            key, sep, value = line.partition("=")
-            value = value.strip()
-            if not sep:
-                continue
-            if value[:1] == "{":
-                braces += 1
-            # libkrb5 ends the tag at the first ``*`` (the relation-final
-            # marker); a tag with blanks inside it is a syntax error there.
-            elif (
-                section == "libdefaults"
-                and braces == 0
-                and not any(c.isspace() for c in key.strip())
-                and key.strip().split("*", 1)[0] == "default_ccache_name"
-            ):
-                if value[:1] == '"':
-                    value = _krb5_quoted_value(value[1:])
-                if value:
-                    return value
-    return None
-
-
-# libkrb5's profile parser decodes these escapes in a double-quoted value; any
-# other escaped character stands for itself.
-_KRB5_QUOTED_ESCAPES = {"n": "\n", "t": "\t", "b": "\b"}
-
-
-def _krb5_quoted_value(text: str) -> str:
-    """Decode a double-quoted krb5 profile value, *text* starting after the opening quote."""
-    out: list[str] = []
-    chars = iter(text)
-    for ch in chars:
-        if ch == '"':
-            break
-        if ch == "\\":
-            escaped = next(chars, "")
-            out.append(_KRB5_QUOTED_ESCAPES.get(escaped, escaped))
-        else:
-            out.append(ch)
-    return "".join(out)
 
 
 def usable_file_ccache() -> str | None:

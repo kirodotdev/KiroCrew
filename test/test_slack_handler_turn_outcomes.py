@@ -640,7 +640,7 @@ class TestTransientCompactionRetry:
         log = MagicMock()
         log.get_metadata.return_value = {}
         log.get_metadata_status.return_value = ({}, True)
-        log.recent.return_value = [
+        log.read_messages.return_value = [
             {"role": "user", "content": "earlier question"},
             {"role": "assistant", "content": "earlier partial answer"},
         ]

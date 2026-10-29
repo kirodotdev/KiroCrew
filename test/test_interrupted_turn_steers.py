@@ -199,11 +199,66 @@ def test_a_steer_with_an_unsettled_or_missing_state_is_carried():
         assert "[Steered mid-turn] sign the tag" in _resume(rows), meta
 
 
+def test_a_taken_back_steer_is_walked_past_but_not_carried():
+    # The person took this steer back before the turn read it, so it never
+    # redirected the turn and must not be presented to the model as if it had.
+    retracted = _steer("also bump the version")
+    retracted["meta"]["steerState"] = "retracted"
+    rows = _earlier_turn() + [
+        {"role": "user", "content": "tag the release"},
+        {"role": "assistant", "content": "Tagging"},
+        _steer("sign the tag"),
+        retracted,
+    ]
+
+    out = _resume(rows)
+
+    assert "Interrupted request:\ntag the release" in out
+    assert "[Steered mid-turn] sign the tag" in out
+    assert "also bump the version" not in out
+
+
+def test_a_taken_back_steer_is_not_replayed_on_a_cold_start(tmp_path):
+    # A cold start replays the transcript tail as conversation. A steer the person
+    # took back never reached the turn; if its row kept its text (a transcript
+    # written before the take-back cleared it, or a pending row), the replay would
+    # still present it as something the person said.
+    from kiro_crew import context as ctx
+    from kiro_crew.history import ConversationLog
+
+    log = ConversationLog(base_dir=tmp_path / "hist")
+    key = "dashboard:replay-retracted"
+    log.append(key, "user", "tag the release")
+    log.append(key, "assistant", "Tagging")
+    log.append(
+        key,
+        "user",
+        "also delete the old tags",
+        extra_meta={"steer": True, "steerState": "retracted"},
+        mid="m-disk",
+    )
+    pending = [
+        {
+            "role": "user",
+            "content": "and push to prod",
+            "ts": "2099-01-01T00:00:00+00:00",
+            "meta": {"steer": True, "steerState": "retracted", "mid": "m-live"},
+        }
+    ]
+
+    replay = ctx.build_session_replay(log, key, pending_messages=pending)
+
+    assert "tag the release" in replay
+    assert "also delete the old tags" not in replay
+    assert "and push to prod" not in replay
+
+
 def test_the_requeued_state_matches_the_dashboard_lifecycle():
     from kiro_crew.context_assembly import replay
-    from kiro_crew.dashboard.chat_delivery import STEER_STATE_REQUEUED
+    from kiro_crew.dashboard.chat_delivery import STEER_STATE_REQUEUED, STEER_STATE_RETRACTED
 
     assert replay._STEER_STATE_REQUEUED == STEER_STATE_REQUEUED
+    assert replay._STEER_STATE_RETRACTED == STEER_STATE_RETRACTED
 
 
 def _partial(out: str) -> str:

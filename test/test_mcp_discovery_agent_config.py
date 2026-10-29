@@ -170,9 +170,13 @@ class TestFixStaleManagedCommand:
         with patch(
             "kiro_crew.agent._kirocrew_mcp_invocation", return_value=(sys.executable, ["mcp-core"])
         ) as inv:
-            _fix_stale_managed_command("kirocrew-core", {"command": "x", "args": []})
-            _fix_stale_managed_command("kirocrew-core", {"command": "y", "args": []})
+            first = {"command": "x", "args": []}
+            second = {"command": "y", "args": []}
+            _fix_stale_managed_command("kirocrew-core", first)
+            _fix_stale_managed_command("kirocrew-core", second)
         inv.assert_called_once()  # cached after the first resolve
+        # The second spec is repaired from the cached answer, not left stale.
+        assert first == second == {"command": sys.executable, "args": ["mcp-core"]}
 
     def test_a_cached_command_from_a_pruned_install_is_re_resolved(self, tmp_path):
         """A cached launcher whose install an update removed is not served

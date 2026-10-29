@@ -2,7 +2,7 @@
 
 The enforcer-owned registries the governance model never reads from a policy or profile
 document: ``_ORDINAL_SCALES`` (each ordinal's strictness order) and ``_MATCHERS`` (the
-five match strategies, extended only through ``register_matcher``). Beside them, the
+seven match strategies, extended only through ``register_matcher``). Beside them, the
 item normalization the ``path`` matcher applies (``_norm_item``) and the host the
 ``host`` matcher tests (``_url_host``). A new match strategy goes here.
 
@@ -136,6 +136,114 @@ def _match_mcp(item: str, pattern: str) -> bool:
     return False
 
 
+#: ``scheme://host[:port]`` and nothing else: no path, query, fragment or userinfo.
+_ORIGIN_ITEM_RE = re.compile(r"^[a-z][a-z0-9+.-]*://(\[[0-9a-f:.]+\]|[^/?#@\s\[\]:]+)(:[0-9]+)?$")
+
+
+def _browser_idna(host: str) -> "str | None":
+    """*host* in the ``xn--`` form a browser sends (UTS #46, non-transitional).
+
+    ``None`` when the ``idna`` package is missing or the name does not convert, so
+    a caller refuses it rather than guessing: the standard-library codec is
+    IDNA2003, which maps ``faß.de`` to ``fass.de``, a different domain.
+    """
+    try:
+        import idna
+    except ImportError:
+        return None
+    try:
+        return idna.encode(host, uts46=True, transitional=False).decode("ascii").lower()
+    except (idna.IDNAError, UnicodeError, ValueError):
+        return None
+
+
+def _origin_form(text: str) -> str:
+    """*text* in one canonical origin spelling, so equal origins compare equal.
+
+    Lower-case; no trailing ``/``; no default port; the host's root dot dropped; an
+    IP literal in canonical form (``[2001:0db8::0:1]`` is ``[2001:db8::1]``); a
+    non-ASCII host in IDNA ``xn--`` form, as clients send it. Glob characters in a
+    policy entry are left as they are. Text that is not ``scheme://host[:port]``
+    comes back lower-cased only, and :func:`_match_origin` refuses it.
+    """
+    import ipaddress
+
+    t = text.strip().rstrip("/")
+    m = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*)://(\[[^\]]*\]|[^/?#@\s\[\]:]+)(?::([0-9]+))?$", t)
+    if not m:
+        return t.casefold()
+    scheme, host, port = m.group(1).lower(), m.group(2), m.group(3)
+    bracketed = host.startswith("[")
+    raw = host[1:-1] if bracketed else host.rstrip(".")
+    try:
+        ip = ipaddress.ip_address(raw)
+        host = f"[{ip.compressed}]" if ip.version == 6 else ip.compressed
+    except ValueError:
+        if bracketed:
+            host = host.casefold()
+        else:
+            host = raw.lower() if raw.isascii() else _browser_idna(raw)
+            if host is None:
+                # Not convertible the way a browser does: matches nothing.
+                return ""
+    if port is not None:
+        port = str(int(port))
+        if (scheme, port) in (("http", "80"), ("https", "443")):
+            port = None
+    return f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
+
+
+def _browser_origin(text: str) -> str:
+    """*text* as a browser's ``Origin`` header carries it: lower-case, no trailing
+    ``/``, no default port. No IDNA conversion and no IP rewriting."""
+    t = text.strip().rstrip("/").lower()
+    for scheme, port in (("http://", ":80"), ("https://", ":443")):
+        if t.startswith(scheme) and t.endswith(port):
+            return t[: -len(port)]
+    return t
+
+
+#: An enterprise ``dashboard_origins`` entry: a literal lower-case ASCII
+#: ``scheme://host[:port]`` with no glob, path, userinfo or written-out default port.
+ENTERPRISE_ORIGIN_ENTRY_RE = re.compile(
+    r"^https?://(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)"
+    r"(:[1-9][0-9]{0,4})?$"
+)
+
+
+def _match_origin(item: str, pattern: str) -> bool:
+    """Case-insensitive fnmatch for ``scheme://host[:port]`` origins, brackets literal.
+
+    Item and entry are both put in browser form first (:func:`_origin_form`), so
+    ``https://evil.example.com/`` and ``https://evil.example.com:443`` name the same
+    origin. An IPv6 origin carries ``[...]``, which fnmatch would read as a character
+    class, so ``[`` and ``]`` match only themselves; ``*`` and ``?`` stay wildcards.
+    An item that is not exactly ``scheme://host[:port]`` matches nothing: a ``*``
+    must not let a path, query or userinfo stand in for the host.
+    """
+    from kiro_crew import edition
+
+    if edition.is_enterprise():
+        # Exact set membership on the browser form. Entries were checked literal at
+        # load (``parsing``), so no glob, IDNA or IP rewriting is applied here.
+        return _browser_origin(item) == pattern
+    it = _origin_form(item)
+    if not _ORIGIN_ITEM_RE.match(it):
+        return False
+    literal = "".join({"[": "[[]", "]": "[]]"}.get(ch, ch) for ch in _origin_form(pattern))
+    return fnmatch.fnmatchcase(it, literal)
+
+
+def _match_ip(item: str, pattern: str) -> bool:
+    """An IP literal compared in canonical form (``0:0::0`` is ``::``); else a glob."""
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(item.strip()) == ipaddress.ip_address(pattern.strip())
+    except ValueError:
+        return _match_identifier(item, pattern)
+
+
 # Match-strategy registry.  A ScopedRuleset names its matcher; permits() looks
 # it up here.  Adding a domain = (optionally) one new entry, not evaluator code.
 _MATCHERS: Dict[str, Callable[[str, str], bool]] = {
@@ -144,6 +252,8 @@ _MATCHERS: Dict[str, Callable[[str, str], bool]] = {
     "path": _match_path,
     "host": _match_host,
     "mcp": _match_mcp,
+    "origin": _match_origin,
+    "ip": _match_ip,
 }
 
 _DEFAULT_MATCHER = "identifier"
@@ -158,14 +268,20 @@ def _norm_item(path_str: str) -> str:
     """Expand, absolutize, then lexically collapse ``.``/``..`` in a queried item.
 
     Applied to the queried ITEM only (never a pattern — see ``_match_path``).
-    Three steps, all purely lexical (no filesystem ``resolve()``, no I/O):
+    Four steps, all purely lexical (no filesystem ``resolve()``, no I/O):
 
     1. ``_expand`` — ``~`` / ``$VAR`` substitution.
-    2. ``os.path.abspath`` — anchor a relative path (e.g. ``../../etc/passwd`` or
+    2. on Windows, fold a namespace or default-stream alias of a local path to its
+       plain spelling (``_fold_windows_alias``, the keystone's own fold):
+       ``\\\\?\\C:\\x``, ``\\\\.\\C:\\x``, ``//?/C:/x``, ``\\??\\C:\\x`` and
+       ``C:\\x::$DATA`` all open ``C:\\x``, so each would otherwise dodge a deny
+       naming ``C:\\x`` and satisfy no allow that names it. UNC, volume GUID and
+       named-stream spellings stay as written. Identity off Windows.
+    3. ``os.path.abspath`` — anchor a relative path (e.g. ``../../etc/passwd`` or
        ``etc/passwd``) to the host CWD so it cannot dodge an absolute DENY glob by
        failing to match; ``abspath`` also runs ``normpath``, collapsing ``..``.
        An already-absolute path is unchanged except for the collapse.
-    3. collapse a leading ``//`` to ``/`` — POSIX (4.13) leaves a path beginning
+    4. collapse a leading ``//`` to ``/`` — POSIX (4.13) leaves a path beginning
        with exactly two slashes implementation-defined, and ``normpath`` PRESERVES
        it (``normpath('//etc/passwd') == '//etc/passwd'``).  An item supplied as
        ``//etc/passwd`` would then not match a ``/etc/**`` deny even though the OS
@@ -178,7 +294,9 @@ def _norm_item(path_str: str) -> str:
     best-effort anchor; the resolved ``is_sensitive_path`` keystone remains the
     authoritative block for the trust-root / credential dirs.
     """
-    p = os.path.abspath(_expand(path_str))
+    from kiro_crew.security.paths_resolver import _fold_windows_alias
+
+    p = os.path.abspath(_fold_windows_alias(_expand(path_str)))
     if p.startswith("//") and not p.startswith("///"):
         p = p[1:]
     return p

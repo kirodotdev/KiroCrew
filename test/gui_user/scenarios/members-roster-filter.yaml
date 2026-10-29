@@ -19,15 +19,15 @@ user_story: >-
   As a crew operator, I want to search my crewmate roster by name, so that I
   can find one crewmate without scrolling the whole crew.
 docs_url: docs/system-specs/modules/crew-mode.md
-summary: Enable the Crewmates preview and search the roster for nova, then for a name that matches nothing
+summary: Open the Mates page and search the roster for nova, then for a name that matches nothing
 preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /settings
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
-  - Turn on the preview whose title starts with "Mates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
-  - Open the Mates page. After the preview is on, a "Mates" item appears in the left rail, directly under Sessions; click it.
+  - If the Feature Previews list has a preview whose title starts with "Mates" (or "Crew Members", or "Crew Members and Crew Mode"), make sure it is ON -- click it once if it is off. Current builds have no such preview because Mates is always on; then go straight on. Ignore the Webhooks preview.
+  - Open the Mates page. A "Mates" item is in the left rail, directly under Sessions; click it.
   - Click into the roster's search box (placeholder "Search crewmates…").
   - Type exactly "nova" and look at the roster.
   - Without clearing the box, type exactly "zzz" so the box reads "novazzz", and look at the roster again. Do not click anything else.

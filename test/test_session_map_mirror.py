@@ -710,6 +710,7 @@ class TestReleaseConversationLocation:
                 session_map, key=self.KEY, location=self.LINK, channel="discord"
             )
         assert write.call_count == 1
+        assert session_map.find_mirror_sessions(self.LINK) == []
 
     def test_an_outer_batch_still_collapses_to_one_write(self, session_map):
         # Telegram wraps this call together with its opt-out write. Nesting is
@@ -723,6 +724,8 @@ class TestReleaseConversationLocation:
                     session_map, key=self.KEY, location=self.LINK, channel="discord"
                 )
         assert write.call_count == 1
+        assert session_map.find_mirror_sessions(self.LINK) == []
+        assert session_map.get_flag(self.KEY, "mirror_opt_out") is True
 
 
 class TestPrunePreservesMirror:

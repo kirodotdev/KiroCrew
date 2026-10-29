@@ -25,6 +25,7 @@ from html.parser import HTMLParser
 
 import pytest
 from markdown_it import MarkdownIt
+from named_cases_helpers import named_cases
 
 from kiro_crew.dashboard import session_markdown as sm
 
@@ -824,26 +825,93 @@ def test_a_tilde_block_is_not_closed_by_a_backtick_fence_inside_it():
 @pytest.mark.parametrize(
     "content, expected",
     [
-        # CommonMark: the closer must be at least as long as the opener. A ``` inside
-        # a ```` block is content.
-        pytest.param(
-            "````\n```\nstill open", "````", id="a_shorter_run_does_not_close_a_longer_fence"
+        *named_cases(
+            "test_fence_closer_and_indent_rules",
+            "content, expected",
+            [
+                # CommonMark: the closer must be at least as long as the opener. A ``` inside
+                # a ```` block is content.
+                pytest.param(
+                    "````\n```\nstill open",
+                    "````",
+                    id="a_shorter_run_does_not_close_a_longer_fence",
+                ),
+                # CommonMark forbids an info string on a closing fence, so this is a second
+                # OPENING inside the first block, not a close.
+                pytest.param(
+                    "```sh\nls\n```sh", "```", id="a_closer_with_an_info_string_does_not_close"
+                ),
+                pytest.param(
+                    "    ```\nindented code, not a fence",
+                    "",
+                    id="a_fence_indented_past_three_spaces_is_not_a_fence",
+                ),
+                # A leading tab is four columns, so the line is indented code. Pinned because
+                # the indent test measures spaces only and would be wrong on its own; the
+                # prefix check is what rejects this, and a refactor could drop it.
+                pytest.param("\t```", "", id="a_tab_indented_fence_is_not_a_fence"),
+            ],
         ),
-        # CommonMark forbids an info string on a closing fence, so this is a second
-        # OPENING inside the first block, not a close.
-        pytest.param("```sh\nls\n```sh", "```", id="a_closer_with_an_info_string_does_not_close"),
-        pytest.param(
-            "    ```\nindented code, not a fence",
-            "",
-            id="a_fence_indented_past_three_spaces_is_not_a_fence",
+        *named_cases(
+            "test_an_info_string_opens_where_the_fence_kind_allows_it",
+            "content, expected",
+            [
+                # The backtick restriction is specific to backtick fences; a tilde fence takes
+                # an arbitrary info string, so the same guard must not reject one.
+                pytest.param(
+                    "~~~ info ~ string\nstill open",
+                    "~~~",
+                    id="a_tilde_fence_may_carry_any_info_string",
+                ),
+                # A 4-backtick fence with a clean info string is a valid opener, so left
+                # unterminated it draws its matching closer (and the closer matches length).
+                pytest.param(
+                    "````python\nstill open",
+                    "````",
+                    id="a_longer_backtick_fence_with_a_clean_info_string_still_opens",
+                ),
+            ],
         ),
-        # A leading tab is four columns, so the line is indented code. Pinned because
-        # the indent test measures spaces only and would be wrong on its own; the
-        # prefix check is what rejects this, and a refactor could drop it.
-        pytest.param("\t```", "", id="a_tab_indented_fence_is_not_a_fence"),
+        *named_cases(
+            "test_html_comment_and_fence_interplay",
+            "content, expected",
+            [
+                pytest.param(
+                    "<!-- a note -->\ntext", "", id="a_balanced_html_comment_gets_no_closer"
+                ),
+                # CommonMark starts a raw HTML block only when the LINE begins with <!--. One
+                # appearing mid-line is inline text, and an unterminated one there is escaped
+                # to literal characters rather than recognised — so it hides nothing, and
+                # appending a --> would put a stray delimiter in the document.
+                pytest.param(
+                    "see the <!-- marker here",
+                    "",
+                    id="a_mid_line_comment_opener_is_not_treated_as_a_comment",
+                ),
+                # Inside a fence the <!-- is escaped text, so the fence is the only thing
+                # open. Two independent scans would wrongly append both closers.
+                pytest.param(
+                    "```html\n<!-- example",
+                    "```",
+                    id="a_comment_opener_inside_a_code_fence_needs_only_the_fence_closed",
+                ),
+                # The mirror case: inside a comment the ``` line is raw HTML, not a fence, so
+                # the comment is the only thing open.
+                pytest.param(
+                    "<!-- note\n```",
+                    "<!-- -->",
+                    id="a_fence_line_inside_a_comment_does_not_open_a_fence",
+                ),
+                pytest.param(
+                    "<!-- a -->\n```py\nx = 1",
+                    "```",
+                    id="a_comment_closed_before_a_fence_opens_reports_only_the_fence",
+                ),
+            ],
+        ),
     ],
 )
-def test_fence_closer_and_indent_rules(content, expected):
+def test_the_unterminated_block_closer_is_reported(content, expected):
     assert sm._unterminated_blocks(content) == expected
 
 
@@ -877,27 +945,6 @@ def test_the_one_line_snippet_leaves_the_rest_of_the_transcript_readable():
     assert "that builds it" in out
 
 
-@pytest.mark.parametrize(
-    "content, expected",
-    [
-        # The backtick restriction is specific to backtick fences; a tilde fence takes
-        # an arbitrary info string, so the same guard must not reject one.
-        pytest.param(
-            "~~~ info ~ string\nstill open", "~~~", id="a_tilde_fence_may_carry_any_info_string"
-        ),
-        # A 4-backtick fence with a clean info string is a valid opener, so left
-        # unterminated it draws its matching closer (and the closer matches length).
-        pytest.param(
-            "````python\nstill open",
-            "````",
-            id="a_longer_backtick_fence_with_a_clean_info_string_still_opens",
-        ),
-    ],
-)
-def test_an_info_string_opens_where_the_fence_kind_allows_it(content, expected):
-    assert sm._unterminated_blocks(content) == expected
-
-
 # ── the other construct that hides a transcript: an HTML comment ──────────
 
 
@@ -915,42 +962,6 @@ def test_an_unterminated_html_comment_is_closed_at_the_message_boundary():
     )
     assert out.index("<!-- -->") < out.index("## User — t2")
     _assert_no_unclosed_comment_before_later_heading(out)
-
-
-@pytest.mark.parametrize(
-    "content, expected",
-    [
-        pytest.param("<!-- a note -->\ntext", "", id="a_balanced_html_comment_gets_no_closer"),
-        # CommonMark starts a raw HTML block only when the LINE begins with <!--. One
-        # appearing mid-line is inline text, and an unterminated one there is escaped
-        # to literal characters rather than recognised — so it hides nothing, and
-        # appending a --> would put a stray delimiter in the document.
-        pytest.param(
-            "see the <!-- marker here",
-            "",
-            id="a_mid_line_comment_opener_is_not_treated_as_a_comment",
-        ),
-        # Inside a fence the <!-- is escaped text, so the fence is the only thing
-        # open. Two independent scans would wrongly append both closers.
-        pytest.param(
-            "```html\n<!-- example",
-            "```",
-            id="a_comment_opener_inside_a_code_fence_needs_only_the_fence_closed",
-        ),
-        # The mirror case: inside a comment the ``` line is raw HTML, not a fence, so
-        # the comment is the only thing open.
-        pytest.param(
-            "<!-- note\n```", "<!-- -->", id="a_fence_line_inside_a_comment_does_not_open_a_fence"
-        ),
-        pytest.param(
-            "<!-- a -->\n```py\nx = 1",
-            "```",
-            id="a_comment_closed_before_a_fence_opens_reports_only_the_fence",
-        ),
-    ],
-)
-def test_html_comment_and_fence_interplay(content, expected):
-    assert sm._unterminated_blocks(content) == expected
 
 
 # ── the document's shape ─────────────────────────────────────────────────
@@ -1164,13 +1175,37 @@ def test_scanner_state_keeps_a_later_heading_structural(content, expected):
 @pytest.mark.parametrize(
     "content",
     [
-        "<pre>\n<!-- unfinished\n</pre>\n```python\ncode",
-        "- <pre>\n  <!-- unfinished\n  </pre>\n```python\ncode",
-        "- <div>\n  <!-- unfinished\n\n```python\ncode",
+        *named_cases(
+            "test_html_container_exit_leaves_a_later_code_fence_top_level",
+            "content",
+            [
+                "<pre>\n<!-- unfinished\n</pre>\n```python\ncode",
+                "- <pre>\n  <!-- unfinished\n  </pre>\n```python\ncode",
+                "- <div>\n  <!-- unfinished\n\n```python\ncode",
+            ],
+            ids=["raw-html", "raw-html-list", "blank-html-list"],
+        ),
+        *named_cases(
+            "test_gpt_6_a_quoted_comment_releases_the_markdown_when_its_quote_ends",
+            "content",
+            [
+                "> <!--\n```\ncode",
+                "> <!--\n\n```\ncode",
+                "> > <!--\n> text\n```\ncode",
+                "- > <!--\n```\ncode",
+                "> - <!--\n> text\n```\ncode",
+            ],
+            ids=[
+                "dedented-fence",
+                "blank-then-fence",
+                "inner-quote-ends",
+                "list-quote-dedent",
+                "quote-list-dedent",
+            ],
+        ),
     ],
-    ids=["raw-html", "raw-html-list", "blank-html-list"],
 )
-def test_html_container_exit_leaves_a_later_code_fence_top_level(content):
+def test_a_later_code_fence_is_top_level(content):
     # The raw/blank HTML block ends in Markdown before the later fence, so the
     # fence is a top-level one and owes its closer. The parser decides that, the
     # same as it does for a fence with no HTML above it.
@@ -1252,13 +1287,99 @@ def test_gpt_1_list_owned_html_ends_before_a_dedented_fence(content):
 @pytest.mark.parametrize(
     "content,closer",
     [
-        ("Heading\n=======\n2. item\n   ```python\n   code", ""),
-        ("    indented code\n2. item\n   ```python\n   code", ""),
-        ("-\n\n  ```python\n  code", "```"),
+        *named_cases(
+            "test_gpt_2_completed_blocks_and_empty_items_set_fence_ownership",
+            "content,closer",
+            [
+                ("Heading\n=======\n2. item\n   ```python\n   code", ""),
+                ("    indented code\n2. item\n   ```python\n   code", ""),
+                ("-\n\n  ```python\n  code", "```"),
+            ],
+            ids=["setext", "indented-code", "empty-item"],
+        ),
+        *named_cases(
+            "test_list_exit_edges_found_by_differential_fuzzing",
+            "content,closer",
+            [
+                # An empty item holds no paragraph, so a dedented line ends it and the
+                # following fence is top level.
+                ("-\nx\n  ```", "```"),
+                ("+\n١.\n  ~~~", "~~~"),
+                # A setext underline needs a paragraph above it; a lone "=" is text, so a
+                # lone tag after it is a lazy line and the fence below still opens.
+                ("=\n<e>\n```", "```"),
+            ],
+            ids=["empty-item-fence", "empty-item-digit", "lone-setext"],
+        ),
+        *named_cases(
+            "test_gpt_10_a_hyphen_setext_underline_ends_the_paragraph",
+            "content,closer",
+            [
+                ("Heading\n--\n2. item\n   ```python\n   code", ""),
+                ("Heading\n-\n2. item\n   ```python\n   code", ""),
+                ("- item\n  Heading\n  --\n  ```py", ""),
+                ("para\n--\n```py", "```"),
+                ("--\n```py", "```"),
+                ("text\n-\n2. item\n   ```py", ""),
+            ],
+            ids=[
+                "h2-then-list",
+                "single-hyphen",
+                "in-list",
+                "top-fence",
+                "no-paragraph",
+                "lone-hyphen",
+            ],
+        ),
+        *named_cases(
+            "test_gpt_11_an_empty_list_item_opens_no_paragraph",
+            "content,closer",
+            [
+                ("-\n  +\ntext\n  ```py", "```"),
+                ("- a\n-\ntext\n  ```py", "```"),
+                ("-\n  text\n  ```py", ""),
+            ],
+            ids=["nested-empty-items", "sibling-empty-item", "item-filled-later"],
+        ),
+        *named_cases(
+            "test_gpt_12_a_lazy_quote_continuation_opens_no_top_level_paragraph",
+            "content,closer",
+            [
+                ("> quote\ncontinued\n2. item\n   ```py", ""),
+                ("> quote\n2. item\n   ```py", ""),
+                ("> quote\ncontinued\n```py", "```"),
+                ("> quote\ncontinued\n--\n2. item\n   ```py", ""),
+                ("> quote\ncontinued\n<div>\n```py", ""),
+                ("> ```\n> code\ncontinued\n2. item\n   ```py", "```"),
+                ("> > quote\n> text\n2. item\n   ```py", ""),
+                ("- item\n  > quote\ncontinued\n  ```py", ""),
+                ("> quote\n\n2. item\n   ```py", ""),
+            ],
+            ids=[
+                "lazy-then-list",
+                "list-right-after",
+                "lazy-then-fence",
+                "lazy-setext-is-text",
+                "lazy-then-html",
+                "quoted-fence-not-lazy",
+                "nested-quote",
+                "quote-in-list-item",
+                "blank-ends-quote",
+            ],
+        ),
+        *named_cases(
+            "test_gpt_15_container_edge_cases_are_decided_by_the_parser",
+            "content,closer",
+            [
+                ("> note\n<span>\n```python\ncode", "```"),
+                ("> ```\n- > a\n===\n  ```", ""),
+                ("text\n    - a\n-\n  ```", "```"),
+            ],
+            ids=["lazy-span-then-fence", "quoted-fence-changes-owner", "over-indented-marker"],
+        ),
     ],
-    ids=["setext", "indented-code", "empty-item"],
 )
-def test_gpt_2_completed_blocks_and_empty_items_set_fence_ownership(content, closer):
+def test_a_later_heading_stays_structural_after_the_block(content, closer):
     assert sm._unterminated_blocks(content) == closer
     out = _render(
         _bundle(
@@ -1301,69 +1422,7 @@ def test_gpt_5_unicode_digits_do_not_start_a_commonmark_list():
     _assert_later_heading_is_structural(out)
 
 
-@pytest.mark.parametrize(
-    "content,closer",
-    [
-        # An empty item holds no paragraph, so a dedented line ends it and the
-        # following fence is top level.
-        ("-\nx\n  ```", "```"),
-        ("+\n١.\n  ~~~", "~~~"),
-        # A setext underline needs a paragraph above it; a lone "=" is text, so a
-        # lone tag after it is a lazy line and the fence below still opens.
-        ("=\n<e>\n```", "```"),
-    ],
-    ids=["empty-item-fence", "empty-item-digit", "lone-setext"],
-)
-def test_list_exit_edges_found_by_differential_fuzzing(content, closer):
-    assert sm._unterminated_blocks(content) == closer
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_is_structural(out)
-
-
 # ── fork-lane review (GPT 6.1) findings: three more ways a turn could hide the rest ──
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        "> <!--\n```\ncode",
-        "> <!--\n\n```\ncode",
-        "> > <!--\n> text\n```\ncode",
-        "- > <!--\n```\ncode",
-        "> - <!--\n> text\n```\ncode",
-    ],
-    ids=[
-        "dedented-fence",
-        "blank-then-fence",
-        "inner-quote-ends",
-        "list-quote-dedent",
-        "quote-list-dedent",
-    ],
-)
-def test_gpt_6_a_quoted_comment_releases_the_markdown_when_its_quote_ends(content):
-    # F1: "> <!--" opens a comment inside a block quote. An HTML block cannot be
-    # lazily continued, so the first line without the ">" marker ENDS the quote
-    # and the HTML block with it -- a dedented fence there is a real top-level
-    # fence, and the parser says so. That fence is the only closer owed: the
-    # comment the quote ended without its terminator is outside what a parse
-    # reports (see the module docstring).
-    assert sm._unterminated_blocks(content) == "```"
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_parses(out)
 
 
 @pytest.mark.parametrize(
@@ -1393,116 +1452,6 @@ def test_gpt_6_a_quoted_comment_still_owns_lines_that_stay_in_its_quote(content)
 # ── fork-lane review, second round ──
 
 
-@pytest.mark.parametrize(
-    "content,closer",
-    [
-        ("Heading\n--\n2. item\n   ```python\n   code", ""),
-        ("Heading\n-\n2. item\n   ```python\n   code", ""),
-        ("- item\n  Heading\n  --\n  ```py", ""),
-        ("para\n--\n```py", "```"),
-        ("--\n```py", "```"),
-        ("text\n-\n2. item\n   ```py", ""),
-    ],
-    ids=["h2-then-list", "single-hyphen", "in-list", "top-fence", "no-paragraph", "lone-hyphen"],
-)
-def test_gpt_10_a_hyphen_setext_underline_ends_the_paragraph(content, closer):
-    # "--" under paragraph text is a setext h2 underline, exactly as "===" is an
-    # h1 underline, and it ends the paragraph. Only "=" was recognised, so the
-    # paragraph was read as still open, an ordered list starting above 1 could
-    # not "interrupt" it, and the list item's own fence was taken as top-level:
-    # its manufactured closer opened a new fence over every later turn. A lone
-    # "-" after text is the same underline (an empty item cannot interrupt a
-    # paragraph); at a block start "--" is plain text and opens nothing.
-    assert sm._unterminated_blocks(content) == closer
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_is_structural(out)
-
-
-@pytest.mark.parametrize(
-    "content,closer",
-    [
-        ("-\n  +\ntext\n  ```py", "```"),
-        ("- a\n-\ntext\n  ```py", "```"),
-        ("-\n  text\n  ```py", ""),
-    ],
-    ids=["nested-empty-items", "sibling-empty-item", "item-filled-later"],
-)
-def test_gpt_11_an_empty_list_item_opens_no_paragraph(content, closer):
-    # "-" alone is an empty item: it holds no paragraph, so the next line is at
-    # a block start. A nested marker there opens a nested (empty) item, and a
-    # dedented text line is a NEW top-level paragraph, not a lazy continuation
-    # of a paragraph that never existed. The scanner left the paragraph flag
-    # set after the marker line, so "text" was read as lazy continuation, the
-    # list stayed open, and the fence after it was attributed to the item and
-    # went unclosed. Text indented INTO the empty item does fill it, and a
-    # fence there is still the item's.
-    assert sm._unterminated_blocks(content) == closer
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_is_structural(out)
-
-
-@pytest.mark.parametrize(
-    "content,closer",
-    [
-        ("> quote\ncontinued\n2. item\n   ```py", ""),
-        ("> quote\n2. item\n   ```py", ""),
-        ("> quote\ncontinued\n```py", "```"),
-        ("> quote\ncontinued\n--\n2. item\n   ```py", ""),
-        ("> quote\ncontinued\n<div>\n```py", ""),
-        ("> ```\n> code\ncontinued\n2. item\n   ```py", "```"),
-        ("> > quote\n> text\n2. item\n   ```py", ""),
-        ("- item\n  > quote\ncontinued\n  ```py", ""),
-        ("> quote\n\n2. item\n   ```py", ""),
-    ],
-    ids=[
-        "lazy-then-list",
-        "list-right-after",
-        "lazy-then-fence",
-        "lazy-setext-is-text",
-        "lazy-then-html",
-        "quoted-fence-not-lazy",
-        "nested-quote",
-        "quote-in-list-item",
-        "blank-ends-quote",
-    ],
-)
-def test_gpt_12_a_lazy_quote_continuation_opens_no_top_level_paragraph(content, closer):
-    # "continued" after "> quote" is a LAZY continuation of the quote's
-    # paragraph (CommonMark §5.1), not a top-level paragraph. The scanner read
-    # it as one, so "2. item" — which cannot interrupt a paragraph — was taken
-    # as text, and the item's fence as a top-level one whose closer opened a
-    # fence over every later turn. In fact the quote did not match that line,
-    # so its paragraph is not the container there: the list starts, and the
-    # fence is the item's. A setext-looking line is lazy text too (an underline
-    # cannot be lazy, example 94); a quoted FENCE is not a paragraph, so the
-    # line after it ends the quote and is a real paragraph; and a lazy line
-    # inside a list item leaves the item open.
-    assert sm._unterminated_blocks(content) == closer
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_is_structural(out)
-
-
 # ── fork-lane review, third round: the parser decides ──
 
 
@@ -1513,35 +1462,6 @@ def test_gpt_14_a_raw_block_ended_by_another_tags_terminator_frees_the_fence():
     # already ended it.
     content = "<pre>\n</script>\n~~~"
     assert sm._unterminated_blocks(content) == "~~~"
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_is_structural(out)
-
-
-@pytest.mark.parametrize(
-    "content,closer",
-    [
-        ("> note\n<span>\n```python\ncode", "```"),
-        ("> ```\n- > a\n===\n  ```", ""),
-        ("text\n    - a\n-\n  ```", "```"),
-    ],
-    ids=["lazy-span-then-fence", "quoted-fence-changes-owner", "over-indented-marker"],
-)
-def test_gpt_15_container_edge_cases_are_decided_by_the_parser(content, closer):
-    # Three shapes the hand-written scanner got wrong, and the reason there is
-    # no scanner any more: a lone "<span>" cannot interrupt a paragraph, so it
-    # lazily continues the quote and the fence after it is top-level; a quoted
-    # fence whose quote is swallowed by a new list item is closed by that item;
-    # and a list marker indented four columns is paragraph text, so the "-"
-    # under it is a setext underline and the fence below is top-level. The
-    # parser answers each one; this module only asks.
-    assert sm._unterminated_blocks(content) == closer
     out = _render(
         _bundle(
             [

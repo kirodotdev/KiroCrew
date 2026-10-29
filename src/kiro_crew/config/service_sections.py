@@ -1,7 +1,7 @@
 """Sections that configure the gateway's background services.
 
 Owns the DTOs and defaults for ``taskrunner``, ``messaging``,
-``cron_history``, ``monitoring``, ``heartbeat`` and ``watchdog``. The monitoring
+``cron_history``, ``monitoring``, ``heartbeat``, ``watchdog`` and ``power``. The monitoring
 runtime bounds come from ``monitoring.limits``, their single owner.
 ``config.sections`` re-exports every name; this module never imports it, the
 loader, schema or validation.
@@ -87,6 +87,8 @@ class MessagingConfig:
             "the namespace in force at boot, so switching namespaces live could "
             "resume a stale session persisted under the other one.",
             restart=True,
+            # __post_init__ reads any other value as per-channel-peer.
+            enum=["per-channel-peer", "unified"],
         ),
     )
     idle_reset_minutes: int = field(
@@ -112,6 +114,8 @@ class MessagingConfig:
             "How a DM that arrives while a turn is running is handled. 'steer' "
             "(default) folds it into the running reply; 'queue' holds it and runs "
             "it after the current turn finishes.",
+            # __post_init__ reads any other value as the field default.
+            enum=["steer", "queue"],
         ),
     )
 
@@ -217,6 +221,9 @@ class HeartbeatConfig:
             "routed: 'slack' (Slack DM + dashboard bell, the default) or 'dashboard' "
             "(dashboard slot + bell only, no Slack). Per-task deliver tags always "
             "override this.",
+            # The loader reads any other value as 'slack', so the write gate
+            # refuses it instead of storing what the reader drops.
+            enum=["slack", "dashboard"],
         ),
     )
 
@@ -351,5 +358,46 @@ class WorkLedgerConfig:
             "is 27), so raise it only where concurrency is already capped per level. "
             "Lowering it does not touch ledgers already open: new ledgers and new items "
             "at the levels it removes are refused.",
+        ),
+    )
+
+
+#: ``power.on_battery`` values. ``normal`` ignores the power source.
+ON_BATTERY_NORMAL = "normal"
+ON_BATTERY_REDUCED = "reduced"
+ON_BATTERY_PAUSED = "paused"
+ON_BATTERY_MODES = (ON_BATTERY_NORMAL, ON_BATTERY_REDUCED, ON_BATTERY_PAUSED)
+
+
+def normalize_on_battery(value: object) -> str:
+    """``power.on_battery`` as a known mode; anything else is ``normal``.
+
+    An unknown value keeps today's behaviour rather than guessing a throttle: a
+    typo must never silently stop background work.
+    """
+    if isinstance(value, str) and value.strip().lower() in ON_BATTERY_MODES:
+        return value.strip().lower()
+    return ON_BATTERY_NORMAL
+
+
+@dataclass
+class PowerConfig:
+    """What Knowledge Library background sweeps do while this machine runs on battery."""
+
+    on_battery: str = field(
+        default=ON_BATTERY_NORMAL,
+        metadata=_meta(
+            "On battery",
+            "What Knowledge Library background sweeps do while this machine "
+            "runs on battery; nothing else reads it yet. 'normal' (the default) "
+            "ignores the power source. 'reduced' cuts each sweep's chunk budget "
+            "to a quarter, at least 10 chunks and never more than the "
+            "configured budget. 'paused' skips the sweeps until the machine is "
+            "back on mains. A document you add yourself always ingests; a folder "
+            "you add ingests its first paced batch at once, and the rest of a "
+            "large folder arrives with the sweeps, so under 'paused' it waits "
+            "for mains. A host that cannot report its power source counts as "
+            "plugged in.",
+            enum=list(ON_BATTERY_MODES),
         ),
     )

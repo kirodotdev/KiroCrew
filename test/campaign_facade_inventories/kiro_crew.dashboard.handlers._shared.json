@@ -82,6 +82,7 @@
   "resolve_requested_memory_store",
   "resolve_session_memory_mode",
   "safe_read_file_bytes_nolink",
+  "session_folder_steering_dirs",
   "session_project_for_spawn_gate",
   "skill_key_for_uri",
   "skill_resource_uris",

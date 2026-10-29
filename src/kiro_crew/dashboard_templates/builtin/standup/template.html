@@ -11,7 +11,6 @@
     .head .say { font-size: 12.5px; font-weight: 600; color: var(--text-strong, #fff); }
     .head .who { margin-top: 3px; }
 
-    .quiet { margin-top: 7px; padding: 6px 10px; border: 1px solid var(--border, #333); border-left: 3px solid var(--warn, #ffd230); border-radius: 8px; font-size: 11px; color: var(--muted-strong, #889); }
 
     .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 10px; }
     .col { border: 1px solid var(--border, #333); border-radius: 14px; padding: 8px 10px; background: var(--card, #181818); }
@@ -46,7 +45,6 @@
     <div class="who"><span class="wrote" id="wrote"></span></div>
   </div>
 
-  <div id="quiet"></div>
 
   <div class="cols" id="cols"></div>
 
@@ -71,7 +69,6 @@
   <script>
     (function () {
       var DASH = '\u2014';
-      var QUIET_MS = 15 * 60 * 1000;
 
       // The page's own words, one table per UI language. A key a language lacks falls
       // back to English. Values the record or a crewmate wrote are never looked up
@@ -93,8 +90,6 @@
           turn_n: 'turn {n}', credits_suffix: ' credits',
           feed_nothing: 'nothing yet',
           feed_none_desc: 'the timeline fold has no moment for this session',
-          quiet_unknown: 'No write time on the record, so this page cannot say whether anything is still moving.',
-          quiet_band: 'No new entry for {t}. Nothing has written to the record since.',
           wrote: 'mate wrote this', no_headline: 'no headline written'
         },
         'zh-CN': {
@@ -113,8 +108,6 @@
           turn_n: '\u7b2c {n} \u8f6e', credits_suffix: ' \u989d\u5ea6',
           feed_nothing: '\u8fd8\u6ca1\u6709',
           feed_none_desc: '\u6b64\u4f1a\u8bdd\u5728\u65f6\u95f4\u7ebf\u6298\u53e0\u4e2d\u6ca1\u6709\u4efb\u4f55\u7247\u6bb5',
-          quiet_unknown: '\u8bb0\u5f55\u4e2d\u6ca1\u6709\u5199\u5165\u65f6\u95f4\uff0c\u56e0\u6b64\u672c\u9875\u65e0\u6cd5\u5224\u65ad\u662f\u5426\u8fd8\u6709\u8fdb\u5c55\u3002',
-          quiet_band: '\u5df2\u6709 {t} \u6ca1\u6709\u65b0\u6761\u76ee\u3002\u6b64\u540e\u6ca1\u6709\u4efb\u4f55\u5185\u5bb9\u5199\u5165\u8bb0\u5f55\u3002',
           wrote: '\u961f\u53cb\u5199\u5165', no_headline: '\u672a\u5199\u5165\u8981\u70b9'
         }
       };
@@ -308,29 +301,6 @@
         }
       }
 
-      function drawQuiet(f) {
-        var host = document.getElementById('quiet');
-        if (!host) return;
-        host.textContent = '';
-        // Silence, not work time. A reader who restarts the gateway cannot otherwise
-        // tell a crewmate that is thinking from one that died, and the two look the
-        // same on every other element of this page.
-        var last = stamp(f.last_time) || stamp(f.last_entry_at) || stamp(f.last_progress_at);
-        if (last === null) {
-          var unk = document.createElement('div');
-          unk.className = 'quiet';
-          unk.textContent = i18n('quiet_unknown');
-          host.appendChild(unk);
-          return;
-        }
-        var silent = Date.now() - last;
-        if (silent < QUIET_MS) return;
-        var band = document.createElement('div');
-        band.className = 'quiet';
-        band.textContent = i18n('quiet_band', { t: ago(silent) });
-        host.appendChild(band);
-      }
-
       // A bound ISO stamp reaches its cell verbatim, and a full offset-bearing
       // timestamp in a meta row is three times the width of the fact it carries. The
       // cell is reformatted rather than the value replaced, so an unparseable stamp is
@@ -363,7 +333,6 @@
         var moments = arr('moments');
         drawCols(items);
         drawFeed(moments);
-        drawQuiet(f);
 
         // The mark is the host's own ARRAY of names (dashboard_frame.read_payload sorts
         // a list into `agentic`), so membership is the question. Asking an array for a

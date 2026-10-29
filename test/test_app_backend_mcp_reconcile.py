@@ -134,7 +134,7 @@ class TestHealthGatedMcpRegistration:
 
 
 class TestMcpReconcileHonoursRecordIdentity:
-    """A stale watcher must not move the SUCCESSOR's MCP entry (review finding).
+    """A stale watcher must not move the SUCCESSOR's MCP entry.
 
     The MCP writers key on the app NAME, not on the record: `_deregister_mcp_servers`
     removes every `<app>:` entry. So the identity guard has to stay effective through
@@ -241,10 +241,10 @@ class TestMcpReconcileHonoursRecordIdentity:
 
 
 class TestFailedMcpReconcileIsRetried:
-    """A reconcile that did not land must be retried (review finding).
+    """A reconcile that did not land must be retried.
 
     The health FLAG moves whether or not mcp.json could be written. Gating the
-    reconcile on the health *transition* alone therefore stranded a failed write until
+    reconcile on the health *transition* alone would strand a failed write until
     the next transition — which, for a backend that then stays put, never comes: a dead
     URL kiro-cli dials on every session, or a live backend with no MCP entry at all.
     """
@@ -335,12 +335,12 @@ class TestFailedMcpReconcileIsRetried:
 
 
 class TestTerminalScrubIsRetriedUntilItLands:
-    """The exit path may not leave the dead URL behind (review finding).
+    """The exit path may not leave the dead URL behind.
 
     This is the one place where giving up is permanent: nothing revisits an exited
     backend, so a scrub that did not land stays unlanded and kiro-cli keeps dialing the
-    dead url every session. The retry the watch does elsewhere was useless here, because
-    the terminal path returned before it could run.
+    dead url every session. The terminal path must retry itself, because it returns
+    before the watch's own retry could run.
     """
 
     @pytest.fixture
@@ -434,7 +434,7 @@ class TestTerminalScrubIsRetriedUntilItLands:
 
 
 class TestTeardownParticipatesInTheReconcileSerialization:
-    """stop_app_backend takes the reconcile lock (review finding).
+    """stop_app_backend takes the reconcile lock.
 
     A watcher that had already passed its identity check could still be inside
     `_gate_mcp_registration` when the caller's `deregister_app` scrubs — its write would
@@ -478,7 +478,7 @@ class TestTeardownParticipatesInTheReconcileSerialization:
 
 
 class TestAdoptedRecoveryRebindsOwnership:
-    """An adopted recovery must re-bind its owning PIDs (review finding).
+    """An adopted recovery must re-bind its owning PIDs.
 
     `adopted_pids` is what `stop_app_backend` signals and what uninstall acts behind. A
     recovery means the EXTERNAL supervisor put something back, possibly a different
@@ -573,11 +573,11 @@ class TestAdoptedRecoveryRebindsOwnership:
 
 
 class TestUnknownMcpStateStillGetsScrubbed:
-    """`mcp_healthy` is tri-state; only False means confirmed-scrubbed (review finding).
+    """`mcp_healthy` is tri-state; only False means confirmed-scrubbed.
 
     A startup reconcile that failed leaves `healthy=True, mcp_healthy=None` — the entry
     may well be on disk, and None records only that we never confirmed a write. Treating
-    that as "nothing was ever registered" abandoned precisely the entry most in need of
+    that as "nothing was ever registered" would abandon precisely the entry most in need of
     removal, one sweep after the process exited.
     """
 
@@ -654,7 +654,7 @@ class TestUnknownMcpStateStillGetsScrubbed:
 
 
 class TestScrubAlsoRefreshesMaterializedAgents:
-    """Removing a server from the global map is only half the removal (review finding).
+    """Removing a server from the global map is only half the removal.
 
     An app's materialized agent JSONs COPY the server's launch spec, and the agent config
     is what kiro-cli actually loads — so scrubbing `mcp.json` alone leaves the agents
@@ -743,12 +743,12 @@ class TestScrubAlsoRefreshesMaterializedAgents:
 
 
 class TestRegistrationReportsAgentIoFailuresToo:
-    """The healthy branch owes the same guarantee as the scrub (review finding).
+    """The healthy branch owes the same guarantee as the scrub.
 
     Both directions write the agent JSONs, and both let `mcp_healthy` advance on success.
     Reporting a failed agent write as landed on RECOVERY strands the app's agent without
-    its MCP tools exactly as reporting one on demotion stranded the dead url — the same
-    defect, mirrored, and fixing only one half was an oversight rather than a decision.
+    its MCP tools exactly as reporting one on demotion strands the dead url — the same
+    defect, mirrored.
     """
 
     def test_a_failed_agent_write_on_recovery_is_unlanded(self, monkeypatch):

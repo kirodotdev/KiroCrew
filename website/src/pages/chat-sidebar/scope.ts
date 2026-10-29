@@ -122,6 +122,14 @@ export interface ChatSidebarProps {
    *  not a live slot, because the composer stages it until send. Never fired for
    *  incognito/temporary sessions or for the already-active session. */
   onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
+  /** Whether staging a session reference has a composer to land in right now —
+   *  the same predicate `chatDropTarget` is gated on, passed through on its own
+   *  because the row menu's "Reference in chat" item needs the boolean (the drop
+   *  zone needs the element). False/omitted hides the menu item: an embed
+   *  sessions list, split view, or no active slot has no composer, so the row
+   *  would stage a reference nothing renders. The per-row incognito/temporary/
+   *  self refusals are decided in the row from `sessionRefBlockReason`. */
+  canStageSessionRef?: boolean
   /** Where a crew row's window opens, for a host with no chat pane of its
    *  own (embed/sessions). Omit to open it over this page's pane. */
   onOpenPeerSession?: (instanceId: string, key: string) => void
@@ -152,6 +160,7 @@ export interface SidebarScope {
   collapsible: ChatSidebarProps['collapsible']
   chatDropTarget: ChatSidebarProps['chatDropTarget']
   onDropSessionRef: ChatSidebarProps['onDropSessionRef']
+  canStageSessionRef: ChatSidebarProps['canStageSessionRef']
   staticRows: ChatSidebarProps['staticRows']
 
   // Its own state and what it derives
@@ -228,7 +237,7 @@ export interface SidebarScope {
   activeDrag: { type: string; id: string } | null
   derivedHintCol: string | null
   setDerivedHintCol: SetState<string | null>
-  renameCommit: (id: string, name: string) => void
+  renameCommit: (id: string, name: string) => boolean
   closeRefused: RootState['chat']['closeRefused']
   rowActions: React.ComponentProps<typeof SessionRow>['actions']
   tintAgents: AgentInfo[]
@@ -262,7 +271,7 @@ export interface SidebarScope {
   // From `useSessionRename`
   renameError: ReturnType<typeof useSessionRename>['renameError']
   setRenameError: ReturnType<typeof useSessionRename>['setRenameError']
-  suppressMenuRestoreRef: ReturnType<typeof useSessionRename>['suppressMenuRestoreRef']
+  suppressMenuRestore: ReturnType<typeof useSessionRename>['suppressMenuRestore']
   onMenuCloseAutoFocus: ReturnType<typeof useSessionRename>['onMenuCloseAutoFocus']
 
   // From `useSessionAutoTitle`
@@ -346,6 +355,7 @@ export interface SidebarScope {
 
   // From `useFolderRename`
   folderEditInputRef: ReturnType<typeof useFolderRename>['folderEditInputRef']
+  folderCancelEscapeRef: ReturnType<typeof useFolderRename>['folderCancelEscapeRef']
   editingId: ReturnType<typeof useFolderRename>['editingId']
   setEditingId: ReturnType<typeof useFolderRename>['setEditingId']
   editScope: ReturnType<typeof useFolderRename>['editScope']

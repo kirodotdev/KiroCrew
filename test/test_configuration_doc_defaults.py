@@ -72,6 +72,7 @@ SECTION_CLASS: dict[str, str] = {
     "instances": "InstancesConfig",
     "decisions": "DecisionsConfig",
     "work_ledger": "WorkLedgerConfig",
+    "power": "PowerConfig",
 }
 
 #: ``| `sec.key` | … | `default` |`` — the shape every per-section table row uses.

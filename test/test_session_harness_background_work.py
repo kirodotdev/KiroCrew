@@ -492,6 +492,15 @@ def _proc_route(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
 
 
+def _notice_recorder(notices: list[tuple[str, str]]):
+    """A recycle callback that keeps each ``(key, reason)`` notice it is handed."""
+
+    async def _record(key: str, *, reason: str) -> None:
+        notices.append((key, reason))
+
+    return _record
+
+
 async def _rss_tick(manager: Any, rss: int = 2514) -> None:
     with (
         patch("kiro_crew.session._build_child_map", return_value={}),
@@ -548,13 +557,13 @@ class TestRssRecycleHonoursHarnessWork:
         manager._sessions["dashboard:x"] = _session_with_launch(None)
         manager.reset = AsyncMock(return_value=True)
         manager.get_pid = MagicMock(return_value=4242)
-        cb = AsyncMock()
-        manager.set_recycle_callback(cb)
+        notices: list[tuple[str, str]] = []
+        manager.set_recycle_callback(_notice_recorder(notices))
 
         await _rss_tick(manager)
 
         manager.reset.assert_awaited_once()
-        assert cb.await_args.kwargs["reason"] == "memory limit (2514MB)"
+        assert notices == [("dashboard:x", "memory limit (2514MB)")]
 
     @pytest.mark.asyncio
     async def test_a_launch_past_the_hold_recycles_with_the_plain_notice(self) -> None:
@@ -566,13 +575,13 @@ class TestRssRecycleHonoursHarnessWork:
         manager._sessions["dashboard:x"] = _session_with_launch(_PAST)
         manager.reset = AsyncMock(return_value=True)
         manager.get_pid = MagicMock(return_value=4242)
-        cb = AsyncMock()
-        manager.set_recycle_callback(cb)
+        notices: list[tuple[str, str]] = []
+        manager.set_recycle_callback(_notice_recorder(notices))
 
         await _rss_tick(manager)
 
         manager.reset.assert_awaited_once()
-        assert cb.await_args.kwargs["reason"] == "memory limit (2514MB)"
+        assert notices == [("dashboard:x", "memory limit (2514MB)")]
 
     @pytest.mark.asyncio
     async def test_a_raising_provider_does_not_break_the_tick(self) -> None:

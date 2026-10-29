@@ -140,11 +140,11 @@ def _do_merge(
     ]
     facade._refuse_unsafe_destination_roots(mc, merged_components)
     # Asked once, at entry, BEFORE any mutation. The core-file copies below run before
-    # any tree call, so gating inside the tree helpers meant a merge on a platform that
-    # cannot pin wrote memory.db, crons.json and the security files first and only then
-    # met the refusal -- either redirecting those writes through a planted link, or
-    # aborting with the restore already half applied. Review caught it; it is the same
-    # gate-placement defect as the snapshot side, one path over.
+    # any tree call, so gating inside the tree helpers would let a merge on a platform that
+    # cannot pin write memory.db, crons.json and the security files first and only then
+    # meet the refusal -- either redirecting those writes through a planted link, or
+    # aborting with the restore already half applied. The snapshot side gates the same
+    # way, at entry.
     facade._staging_is_pinned(allow_unpinned=allow_unpinned, what="merge restore")
     print("🔀 Merge mode — importing...")
 

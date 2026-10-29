@@ -68,7 +68,7 @@ MAX_BODY_BYTES = 256 * 1024
 #: while the earliest accepted alerts were dropped before any dispatch cycle claimed them, so
 #: an incident was paged, acknowledged with a 2xx, and then simply never appeared on the board.
 #: Refusing is strictly better because webhook senders retry: Alertmanager re-delivers on a 5xx,
-#: so a full spool becomes a delay instead of a lost page. Found in review (GPT 5.6).
+#: so a full spool becomes a delay instead of a lost page.
 REJECT_SPOOL_FULL = "spool is full"
 
 #: Rejection reason for an oversized body. Shared with the route, which enforces the same

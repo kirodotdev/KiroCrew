@@ -39,29 +39,34 @@ vi.mock('../components/ChatPane', () => ({
   default: ({
     slotKey,
     focused,
+    pushToTalk,
     onFocus,
     onRemove,
     onSplitRight,
     onSplitDown,
+    onOpenFull,
     leading,
     onFileOpen,
   }: {
     slotKey: string
     focused?: boolean
+    pushToTalk?: boolean
     onFocus?: () => void
     onRemove?: () => void
     onSplitRight?: () => void
     onSplitDown?: () => void
+    onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
     leading?: { inset?: boolean; control?: React.ReactNode }
     onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   }) => (
-    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
+    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-ptt={pushToTalk ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
       {leading?.control}
       {focused !== undefined && <PaneDim dimmed={!focused} />}
       <button type="button" aria-label={`focus ${slotKey}`} onClick={onFocus} />
       <button type="button" aria-label={`remove ${slotKey}`} onClick={onRemove} />
       <button type="button" aria-label={`right ${slotKey}`} onClick={onSplitRight} />
       <button type="button" aria-label={`down ${slotKey}`} onClick={onSplitDown} />
+      <button type="button" aria-label={`open full ${slotKey}`} onClick={() => onOpenFull?.(slotKey, 'ts-1', 'mid-1')} />
       <button type="button" aria-label={`open file ${slotKey}`} onClick={() => onFileOpen?.('/tmp/report.pdf')} />
     </div>
   ),
@@ -78,6 +83,7 @@ type Slot = {
   messages?: number
   agent?: string
   last_activity_ts?: string
+  crew_root?: string
 }
 
 const leaf = (id: string, slot?: string): GridNode =>
@@ -294,7 +300,17 @@ describe('SessionGridView — collapse rules', () => {
 
     fireEvent.click(within(onlyPicker()).getByLabelText('Close cell'))
 
+    // The grid collapsing itself is not the user opening the chat (#23564):
+    // no anchor and no gesture flag.
     await waitFor(() => expect(onCollapse).toHaveBeenCalledWith('a'))
+  })
+
+  it('a pane\'s open-full click collapses as a gesture, keeping its anchor', async () => {
+    const { onCollapse } = renderGrid('a')
+
+    fireEvent.click(screen.getByLabelText('open full a'))
+
+    expect(onCollapse).toHaveBeenCalledWith('a', 'ts-1', 'mid-1', true)
   })
 
   it('falls back to the loading surface once every pane is closed', async () => {
@@ -424,6 +440,36 @@ describe('SessionGridView — slot-focus intent signal', () => {
     renderGrid('a')
 
     await waitFor(() => expect(vi.mocked(emitSlotFocused).mock.calls.at(-1)).toEqual(['a']))
+  })
+})
+
+describe('SessionGridView — dictation key ownership', () => {
+  const ptt = (slot: string) => screen.getByTestId(`pane-${slot}`).getAttribute('data-ptt')
+
+  it('arms the key on the focused pane only, and moves it with focus', async () => {
+    seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
+    seedApi([{ key: 'a' }, { key: 'b' }])
+    renderGrid('a')
+    await screen.findByTestId('pane-b')
+
+    fireEvent.click(screen.getByLabelText('focus a'))
+    await waitFor(() => expect(ptt('a')).toBe('yes'))
+    expect(ptt('b')).toBe('no')
+
+    fireEvent.click(screen.getByLabelText('focus b'))
+    await waitFor(() => expect(ptt('b')).toBe('yes'))
+    expect(ptt('a')).toBe('no')
+  })
+
+  it('arms no pane while a placeholder holds focus', async () => {
+    renderGrid('a')
+    await screen.findByTestId('pane-a')
+    fireEvent.click(screen.getByLabelText('focus a'))
+    await waitFor(() => expect(ptt('a')).toBe('yes'))
+
+    fireEvent.mouseDown(onlyPicker())
+
+    await waitFor(() => expect(ptt('a')).toBe('no'))
   })
 })
 
@@ -895,5 +941,19 @@ describe('SessionGridView — picker controls', () => {
     fireEvent.mouseDown(onlyPicker())
 
     await waitFor(() => expect(screen.getByTestId('pane-a').getAttribute('data-focused')).toBe('no'))
+  })
+})
+
+describe('SessionGridView — Crew Mode workers (edge review R2 F4)', () => {
+  it("never offers a Crew Mode worker in a pane's picker, even one waiting on approval", async () => {
+    seedApi([
+      { key: 'a', title: 'Alpha' },
+      { key: 'root', title: 'Conductor' },
+      { key: 'w', title: 'Worker', crew_root: 'root', pending_approval: true },
+    ])
+    renderGrid('a')
+    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(1))
+    expect(rowsOf(onlyPicker())[0].textContent).toContain('Conductor')
+    expect(within(onlyPicker()).queryByText('Worker')).toBeNull()
   })
 })

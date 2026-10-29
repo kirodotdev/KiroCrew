@@ -86,6 +86,8 @@ A non-standard (X) capability — an underscore method, a `_meta` field, a harne
 
 For KAS, `agent_version` is the engine's own version, read from the `@kiro/agent` package.json kiro-cli installs, not kiro-cli's version; a newer capture also records `kiro_cli_version`. `test_x_feature_captures.py` checks that every live `kas/` capture names an engine version.
 
+Coverage is opt-out. Every `ACP_BACKENDS_*` set must sit in exactly one of three lists, or the check fails and names the set: `X_FEATURE_SETS` (checked as above); `X_REGISTRATION_PENDING`, for an X set whose capture does not exist yet, each entry naming its non-standard verb or field; or `HARNESS_EXEMPT_SETS`, for a set that is not an X feature, each entry with a one-line reason (standard ACP, routing-only, off the wire, Crew-side). The pending list only shrinks: with `HARNESS_BASE_REF` set, an entry missing from the base ref's copy fails, and a set that leaves it must join `X_FEATURE_SETS`, never the exempt list. `test/test_x_feature_captures.py` holds its ceiling.
+
 A second check covers kiro-cli and KAS drifting apart: every `ACP_BACKENDS_*` set holding exactly one of them must name the other in its comment, so the reader sees the split was decided, not assumed.
 
 Today's gaps live in `X_CAPTURE_ALLOWLIST` (each entry names the missing capture) and `KIRO_KAS_PAIR_ALLOWLIST`. Both only shrink: with `HARNESS_BASE_REF` set, an entry missing from the base ref's copy fails; an entry whose member now passes fails until it is deleted; an X set dropped from `X_FEATURE_SETS`, or its scope narrowed, fails; and `test/test_x_feature_captures.py` holds a ceiling on each. A member added to an X set therefore lands with its capture, or not at all. The self-test plants each shape above.

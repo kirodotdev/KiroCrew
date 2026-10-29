@@ -104,7 +104,7 @@ export function arrivedByFreshNavigation(): boolean {
 /** The document's navigation-timing type, or `''` when the platform reports
  *  none (older engines, some test runners) — callers must treat that as
  *  "unknown", never as any one kind of arrival. */
-function navigationArrivalType(): string {
+export function navigationArrivalType(): string {
   try {
     const entries = performance.getEntriesByType('navigation') as { type?: string }[]
     return entries[0]?.type ?? ''
@@ -248,6 +248,13 @@ export function canGoForward(): boolean {
   const { idx, state } = routerEntry()
   if (idx === null || maxIdx === null) return false
   return (isTrapEntry(state) ? idx - 1 : idx) < maxIdx
+}
+
+/** The highest entry Forward may reach — the watermark — or `null` before the
+ *  tracker's first report. The history menu bounds its Forward list by it, so
+ *  it never names an entry a PUSH has truncated. */
+export function forwardFrontier(): number | null {
+  return maxIdx
 }
 
 export function subscribeRouteHistoryPosition(listener: () => void): () => void {

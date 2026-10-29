@@ -13,6 +13,10 @@ vi.mock('../utils/clipboard', async (orig) => ({
 }))
 import { copyToClipboard } from '../utils/clipboard'
 
+vi.mock('../components/WidgetFrame', () => ({
+  default: ({ html }: { html: string }) => <div data-testid="widget-frame" data-html={html} />,
+}))
+
 const row = (role: ChatMessage['role'], meta: Record<string, unknown>, content = ''): ChatMessage => ({
   role, content, cls: role === 'assistant' ? 'msg msg-a' : '', meta,
 })
@@ -110,7 +114,7 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', progress: null, remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [],
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', widget: '',
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
@@ -128,7 +132,7 @@ const FULL = {
 
 const EMPTY: WarmBrief = {
   status: null, headline: 'PR is open.', asked: '', progress: null, remaining: '',
-  done: [], needsYou: [], next: [], extra: [],
+  done: [], needsYou: [], next: [], extra: [], body: '', widget: '',
 }
 
 describe('WarmBriefCard', () => {
@@ -350,5 +354,44 @@ describe('chat search on a brief row', () => {
     const m = stamped('user')
     expect(searchableText(m)).toBe(m.content)
     expect(searchableTextMemo(m)).toBe(m.content)
+  })
+})
+
+describe('a free-form brief', () => {
+  const FREE = {
+    status: 'needs_you', headline: 'Nearly there 🎉', needs_you: ['Approve the push so CI runs'],
+    progress: { accepted: 2, total: 3 }, body: 'You asked for a green nightly.\n\n- two fixes in\n- one to go',
+    widget: '<div style="color:var(--accent)">timeline</div>',
+  }
+
+  it('draws the body with its lines after progress, then the widget in the sandboxed frame', () => {
+    render(<WarmBriefCard brief={warmBriefOf(brief(FREE))!} />)
+    const card = screen.getByTestId('warm-brief-card')
+    const order = [...card.querySelectorAll('[data-testid^="warm-brief-"]')]
+      .map(el => el.getAttribute('data-testid'))
+      .filter(id => id !== 'warm-brief-progress-count')
+    expect(order).toEqual([
+      'warm-brief-status', 'warm-brief-headline', 'warm-brief-needs-you', 'warm-brief-progress',
+      'warm-brief-body', 'warm-brief-widget',
+    ])
+    expect(screen.getByTestId('warm-brief-body').textContent).toBe(FREE.body)
+    expect(screen.getByTestId('widget-frame')).toHaveAttribute('data-html', FREE.widget)
+  })
+
+  it('drops a widget over the bound and a non-string body or widget', () => {
+    const big = warmBriefOf(brief({ headline: 'x', widget: '<p>' + 'a'.repeat(8000) + '</p>' }))!
+    expect(big.widget).toBe('')
+    const odd = warmBriefOf(brief({ headline: 'x', body: ['a'], widget: { html: 'b' } }))!
+    expect([odd.body, odd.widget]).toEqual(['', ''])
+    render(<WarmBriefCard brief={odd} />)
+    expect(screen.queryByTestId('warm-brief-widget')).toBeNull()
+  })
+
+  it.each(['green nightly', 'one to go', 'timeline'])('search counts "%s" as the card shows it', (term) => {
+    const m = brief(FREE)
+    const { container } = render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    const card = container.querySelector('[data-testid="warm-brief-card"]')!
+    const shown = (card.textContent ?? '').toLowerCase().split(term).length - 1
+    expect(searchableText(m).toLowerCase().split(term).length - 1).toBe(shown)
   })
 })

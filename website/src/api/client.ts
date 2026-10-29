@@ -103,10 +103,7 @@ export type {
   DeniedCommandRule,
   DeniedUserRule,
   AwsConsentStatus,
-  FileDeliveryGrant,
-  FileDeliveryConsentStatus,
   CredentialRedactionState,
-  ArmedFileDeliveryConsent,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,
@@ -166,6 +163,7 @@ export type {
   McpShareReason,
   McpShareRecommendation,
   McpMeasureProgress,
+  McpGatewayFootprint,
   McpManagedServer,
 } from './client/mcp'
 export type {
@@ -173,7 +171,6 @@ export type {
   CrewmateExportPreview,
   MemberRosterRow,
   MemberActivityEntry,
-  MemberRecap,
   MemberGoals,
   MemberGoal,
   GoalKeyResult,
@@ -920,6 +917,90 @@ function sendResponseAuthRecovery(r: Response): Response {
   return r
 }
 
+export interface SessionEnvironmentProfile {
+  id: string
+  name: string
+  provider: string
+  workdir: string
+  /** Template name, what tells two profiles apart; older gateways omit it. */
+  template?: string
+}
+
+export interface RemoteDirListing {
+  root: string
+  path: string
+  entries: { name: string; dir: boolean }[]
+  truncated: boolean
+}
+
+export interface RemoteFileContent {
+  root: string
+  path: string
+  content: string
+  binary: boolean
+  truncated: boolean
+}
+
+export interface RemoteEnvironmentHealth {
+  state: 'running' | 'stopped' | 'unavailable' | 'not_created'
+  workspace?: string
+  workdir?: string
+  error?: string
+  stats?: {
+    arch: string
+    cpus: number
+    load?: number[]
+    memory?: { total_bytes: number; available_bytes: number }
+    disk?: { total_bytes: number; free_bytes: number }
+    uptime_s?: number
+  }
+}
+
+/** `withheld`: the 'strict' agent sandbox lends no gateway login to remote sessions.
+ *  `unsupported`: a Windows gateway lends no git login to remote sessions yet. */
+export type GitLoginStatus = 'signed_in' | 'not_signed_in' | 'unchecked' | 'withheld' | 'unsupported'
+
+export interface SessionEnvironmentsCheck {
+  coder: { ok: boolean; owner?: string; error?: string }
+  profiles: { id: string; ok: boolean; error?: string }[]
+  /** Absent from a gateway that predates the git rows. */
+  git?: Record<string, GitLoginStatus>
+}
+
+export interface SessionEnvironmentWorkspace {
+  workspace: string
+  slot: string
+  /** The profile the chat is bound to; empty when unknown. */
+  profile?: string
+  state: string
+  template: string
+  created_at: string
+  /** Set once the owning session is archived: when the workspace is deleted. */
+  deletion_due_at: string
+}
+
+/** Provider-neutral stages of a remote session's start, in order. */
+export type SessionEnvironmentStartStage = 'checking' | 'provisioning' | 'connecting' | 'starting_agent'
+
+export interface SlotEnvironment {
+  profile: string | null
+  profiles: SessionEnvironmentProfile[]
+  /** True once the session has a message: its environment can no longer change. */
+  locked?: boolean
+  /** A runtime in this gateway is attached to the remote workspace. */
+  attached?: boolean
+  /** Set while this session's environment is starting in THIS gateway. */
+  starting?: {
+    stage: SessionEnvironmentStartStage
+    stage_elapsed_s: number
+    elapsed_s: number
+    /** Every stage this start has entered, in order. Older gateways omit it. */
+    entered?: SessionEnvironmentStartStage[]
+    /** The gateway already had this session attached: an engine restart. */
+    reconnect?: boolean
+  } | null
+}
+
 /**
  * A non-2xx this endpoint's caller handles itself, identified by the denial it
  * IS rather than by the status it arrives with.
@@ -1235,10 +1316,9 @@ export interface KiroBonusCreditGrantPayload {
 export interface KiroUsagePayload {
   available?: boolean
   /**
-   * Why usage is unavailable when `available` is false (`api_key_auth`,
-   * `signin_required`, or `account_unproven` when the account is named but its
-   * reading could not be tied to it); absent when the gateway simply holds no
-   * reading.
+   * Why usage is unavailable when `available` is false (`signin_required`, or
+   * `account_unproven` when the account is named but its reading could not be
+   * tied to it); absent when the gateway simply holds no reading.
    */
   reason?: string
   credits_used?: number

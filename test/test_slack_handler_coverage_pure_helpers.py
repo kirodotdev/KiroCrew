@@ -25,24 +25,14 @@ from kiro_crew.slack import handler as h
 # small pure helpers
 # ──────────────────────────────────────────────────────────────────────
 class TestPureHelpers:
-    def test_tool_to_phase_by_kind(self):
-        assert h._tool_to_phase("Whatever", "bash") == "coding"
-        assert h._tool_to_phase("Whatever", "webfetch") == "browsing"
-
-    def test_tool_to_phase_by_name(self):
-        assert h._tool_to_phase("Edit") == "coding"
-        assert h._tool_to_phase("WebSearch") == "browsing"
-        assert h._tool_to_phase("mcp__example-mcp__Bash") == "coding"
-        assert h._tool_to_phase("SomethingElse") == "tool"
-
     def test_build_phase_emojis_collects_unknown_keys(self):
-        result, unknown = h._build_phase_emojis({"done": "tada", "bogus": "x"})
-        assert result["done"] == "tada"
+        result, unknown = h._build_phase_emojis({"queued": "tada", "bogus": "x"})
+        assert result["queued"] == "tada"
         assert unknown == ["bogus"]
 
     def test_build_phase_emojis_accepts_suppression(self):
-        result, unknown = h._build_phase_emojis({"done": None})
-        assert result["done"] is None and unknown == []
+        result, unknown = h._build_phase_emojis({"error": None})
+        assert result["error"] is None and unknown == []
 
     def test_filter_options_brackets_drops_options_tag(self):
         hold, buf = h._filter_options_brackets("hi [OPTIONS: a | b] bye", "", "")

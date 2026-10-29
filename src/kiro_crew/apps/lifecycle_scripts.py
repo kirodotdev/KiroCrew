@@ -30,7 +30,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import apps_dir
-from kiro_crew.apps.registry import minimal_env
+from kiro_crew.apps.registry import NATIVE_WINDOWS_HOOK_REFUSAL, minimal_env
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -82,8 +82,9 @@ async def run_lifecycle_script(
     # the app's own script breaking. The reason reaches the user through the
     # enable response's existing ``script_output`` field; the enable route's
     # rollback rule is unchanged. (``onInstall`` runs in the install transaction
-    # in ``registry_pipeline/install.py``, a separate spawn site this guard does
-    # not cover.) On Linux and macOS nothing changes.
+    # in ``registry_pipeline/install.py``, a separate spawn site that applies the
+    # same refusal through ``_install_script_platform_refusal``.) On Linux and
+    # macOS nothing changes.
     if script and not platform_compat.IS_POSIX:
         logger.warning(
             "App %s lifecycle action %s not run: lifecycle hooks are not "
@@ -91,13 +92,7 @@ async def run_lifecycle_script(
             app_name,
             action,
         )
-        return {
-            "output": (
-                "app lifecycle hooks are not supported on native Windows "
-                "(they run through /bin/bash)"
-            ),
-            "failed": True,
-        }
+        return {"output": NATIVE_WINDOWS_HOOK_REFUSAL, "failed": True}
 
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]

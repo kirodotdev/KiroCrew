@@ -1,10 +1,11 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
 import { quoteBlock } from '../chat-core/composer/messageQuote'
 import type { KnowledgeBlock } from '../pages/chat/useKnowledgeFetch'
+import { findTokenRanges, formatToken, readStoredPaste, type PasteBlock } from '../utils/pasteTokens'
 
 // QueueStack renders framer-motion cards; we only exercise the inline
 // EditInput, which is plain DOM and needs no special test polyfill.
@@ -159,6 +160,298 @@ describe('QueueStack knowledge-context entry', () => {
     const text = 'what does [KNOWLEDGE CONTEXT — injected by user from knowledge library] mean?'
     render(<QueueStack messages={[queued(text, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
     expect(screen.getByText(text)).toBeInTheDocument()
+  })
+})
+
+describe('QueueStack pasted entry', () => {
+  // The queued row carries the WIRE text, in which the composer expanded the
+  // `[ Paste #N ]` token in place, plus the blocks the store looked up for it
+  // (`meta.pastes`, the same key a user row carries them under).
+  const P1: PasteBlock = { id: 'p1', seq: 1, lines: 3, content: 'alpha\nbeta\ngamma' }
+  const T1 = formatToken(P1)
+  const KB = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'kb line one\n\nkb line two', tokens: 7 }] } as unknown as KnowledgeBlock
+
+  function pasted(input: Parameters<typeof buildOutgoingTurn>[0], queueId = 'q1'): ChatMessage {
+    const turn = buildOutgoingTurn(input, 'send')
+    const { quote, files } = turn.meta
+    // In token order, as `queueEntryPastes` reads them off the recorded display.
+    const pastes = findTokenRanges(turn.bubble, turn.meta.pastes ?? []).sort((a, b) => a.start - b.start).map(r => r.block)
+    return { role: 'queued', content: turn.wire, cls: 'msg msg-queued', ts: '', meta: { queueId, ...(files ? { files } : {}), ...(pastes.length ? { pastes } : {}), ...(quote ? { quote } : {}) } } as ChatMessage
+  }
+
+  beforeEach(() => { localStorage.clear() })
+
+  it('shows the token on the card, never the pasted text', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    expect(row.content).toContain('alpha\nbeta\ngamma')
+    const { container } = render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(container.textContent).toContain('Paste #1')
+    expect(container.textContent).not.toContain('alpha')
+    expect(screen.getByText(`look at ${T1} please`)).toBeInTheDocument()
+  })
+
+  it('shows the text as sent when the row carries no blocks', () => {
+    const wire = buildOutgoingTurn({ text: `look at ${T1} please`, pastes: [P1] }, 'send').wire
+    const { container } = render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(container.textContent).toContain('alpha')
+    expect(container.textContent).not.toContain('Paste #1')
+  })
+
+  it('opens the editor on the token and expands it again when the edit commits', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    expect(input.value).toBe(`look at ${T1} please`)
+    fireEvent.change(input, { target: { value: `look at ${T1} now` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    const expected = buildOutgoingTurn({ text: `look at ${T1} now`, pastes: [P1] }, 'send').wire
+    expect(expected).toContain('alpha\nbeta\ngamma')
+    expect(onEdit).toHaveBeenCalledWith('q1', expected, [P1])
+    // The edit is on record under its new wire text, so the store finds the
+    // blocks for the edited row and the sent bubble finds them after a reload.
+    expect(readStoredPaste(expected.trim())).toMatchObject({ displayTxt: `look at ${T1} now`, pastes: [P1] })
+  })
+
+  it('records the edit only when it commits, never per keystroke, and without the attachment list', () => {
+    const row = pasted({ text: `look at ${T1} please`, files: ['/tmp/a.txt'], pastes: [P1] })
+    expect(row.meta?.files).toEqual(['/tmp/a.txt'])
+    const onEditDraft = vi.fn()
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} onEditDraft={onEditDraft} />)
+    const input = openEditor()
+    // The editor holds the typed line AND the attachment marker line below it.
+    expect(input.value).toBe(`look at ${T1} please\n[attached_file 1] /tmp/a.txt`)
+    localStorage.clear()
+    for (const word of ['n', 'no', 'now']) fireEvent.change(input, { target: { value: `look at ${T1} ${word}\n[attached_file 1] /tmp/a.txt` } })
+    expect(input.value).toBe(`look at ${T1} now\n[attached_file 1] /tmp/a.txt`)
+    // Each keystroke built a live draft for the side surface, so the surface
+    // tracked what the edit would send, and the paste side table saw none.
+    expect(onEditDraft).toHaveBeenCalledWith('q1', buildOutgoingTurn({ text: `look at ${T1} now`, files: ['/tmp/a.txt'], pastes: [P1] }, 'send').wire)
+    expect(localStorage.getItem('mc-paste-store-v1')).toBeNull()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    const wire = buildOutgoingTurn({ text: `look at ${T1} now`, files: ['/tmp/a.txt'], pastes: [P1] }, 'send').wire
+    expect(onEdit).toHaveBeenCalledWith('q1', wire, [P1])
+    const stored = readStoredPaste(wire.trim())
+    expect(stored).toMatchObject({ pastes: [P1] })
+    // The gateway prunes the entry's list to the markers the edit kept; a list
+    // on the record would be put back over it on a reload.
+    expect(stored?.files).toBeUndefined()
+  })
+
+  it('refuses a fold when a carried block has no body in the text, and edits the text as sent', () => {
+    // The row carries two blocks but the text holds only one body (another
+    // tab's edit took the other paste out): folding one and treating the
+    // other as live would let a commit expand a token that is not there.
+    const P2: PasteBlock = { id: 'p2', seq: 2, lines: 2, content: 'delta\nepsilon' }
+    const wire = buildOutgoingTurn({ text: `look at ${T1}`, pastes: [P1] }, 'send').wire
+    const row = { role: 'queued', content: wire, cls: '', ts: '', meta: { queueId: 'q1', pastes: [P1, P2] } } as ChatMessage
+    const onEdit = vi.fn()
+    const { container } = render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    expect(container.textContent).not.toContain('Paste #')
+    expect(container.textContent).toContain('alpha')
+    const input = openEditor()
+    expect(input.value).toBe(wire)
+    fireEvent.change(input, { target: { value: wire + ' ok' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // The row carried blocks, so the commit names what the edit kept: nothing.
+    expect(onEdit).toHaveBeenCalledWith('q1', wire + ' ok', [])
+  })
+
+  it('attributes a shorter body followed by typed text that completes a longer sibling to its own token', () => {
+    // #1 is a prefix of #2, and the typed text after #1 happens to complete
+    // #2's body: the text alone reads as "#2 then #1" as well, so the fold
+    // must follow the recorded token order, or deleting #1 would send part
+    // of #2 and move the words across the separator.
+    const P2: PasteBlock = { id: 'p2', seq: 2, lines: 4, content: 'alpha\nbeta\ngamma\ndelta' }
+    const typed = `${T1}\ndelta\n---\n${formatToken(P2)}`
+    const row = pasted({ text: typed, pastes: [P1, P2] })
+    expect(row.meta?.pastes).toEqual([P1, P2])
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    expect(input.value).toBe(typed)
+    fireEvent.change(input, { target: { value: `delta\n---\n${formatToken(P2)}` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', `delta\n---\n${P2.content}`, [P2])
+  })
+
+  it('shows the text as sent when the body also stands in it as plain words', () => {
+    // A paste expanded in place in the composer, then pasted again collapsed
+    // after "compare with": the token could sit on either copy, so the card
+    // shows the text as sent and an edit sends the words as typed.
+    const row = pasted({ text: `${P1.content}\ncompare with\n${T1}`, pastes: [P1] })
+    const onEdit = vi.fn()
+    const { container } = render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    expect(container.textContent).not.toContain('Paste #')
+    const input = openEditor()
+    expect(input.value).toBe(row.content)
+    fireEvent.change(input, { target: { value: `compare with\n${P1.content}` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', `compare with\n${P1.content}`, [])
+  })
+
+  it('folds two pastes whose bodies overlap onto their own tokens', () => {
+    const P2: PasteBlock = { id: 'p2', seq: 2, lines: 4, content: 'alpha\nbeta\ngamma\ndelta' }
+    const row = pasted({ text: `${formatToken(P2)}\n${T1}`, pastes: [P1, P2] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    expect(input.value).toBe(`${formatToken(P2)}\n${T1}`)
+    // Deleting the shorter token removes ITS body, not the start of the longer one.
+    fireEvent.change(input, { target: { value: formatToken(P2) } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', P2.content, [P2])
+  })
+
+  it('treats the token as one unit in the editor, through the composer\'s own handlers', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    const start = input.value.indexOf('[ Paste')
+    const end = start + T1.length
+    // A selection that ends inside the token snaps to the token's edge.
+    input.setSelectionRange(start - 3, start + 4)
+    fireEvent.select(input)
+    expect([input.selectionStart, input.selectionEnd]).toEqual([start - 3, start])
+    // Backspace with the caret just past the token removes the whole token.
+    input.setSelectionRange(end, end)
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    expect(input.value).toBe('look at  please')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', 'look at  please', [])
+  })
+
+  it('Delete with the caret just before the token removes it whole', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={() => {}} />)
+    const input = openEditor()
+    const start = input.value.indexOf('[ Paste')
+    input.setSelectionRange(start, start)
+    fireEvent.keyDown(input, { key: 'Delete' })
+    expect(input.value).toBe('look at  please')
+  })
+
+  it('does not commit a broken token: the editor stays open and nothing is sent', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    // A cut or a paste inside the token, which no key handler sees: the
+    // closing bracket is gone, so the token no longer resolves to its block.
+    fireEvent.change(input, { target: { value: `look at ${T1.slice(0, -1)} please` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.blur(input)
+    expect(onEdit).not.toHaveBeenCalled()
+    // The head cut away through both invisible fences, leaving only the tail.
+    fireEvent.change(input, { target: { value: `look at ${T1.slice(T1.indexOf(' · '))} please` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'Edit queued message' })).toBeInTheDocument()
+    // Escape still leaves the edit.
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.queryByRole('textbox', { name: 'Edit queued message' })).toBeNull()
+  })
+
+  it('commits a literal "[ Paste #" typed beside an intact token', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    fireEvent.change(input, { target: { value: `look at ${T1} and search for "[ Paste #"` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', `look at ${P1.content} and search for "[ Paste #"`, [P1])
+  })
+
+  it('commits typed words that carry zero-width joiners of their own, beside an intact token', () => {
+    // Persian: U+200C (ZWNJ) is an ordinary character of the word, and the
+    // same code point is a bit of a token's invisible id run. Only a token's
+    // fence (U+2063) or a `[ Paste #` fragment counts as a broken token.
+    const persian = 'می\u200cخواهم'
+    const row = pasted({ text: `${persian} ${T1}`, pastes: [P1] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    fireEvent.change(input, { target: { value: `${persian} ${T1} حالا` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', `${persian} ${P1.content} حالا`, [P1])
+  })
+
+  it('commits from the row the editor opened on when another tab rewrites the entry meanwhile', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    const onEdit = vi.fn()
+    const { rerender } = render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    expect(input.value).toBe(`look at ${T1} please`)
+    // Another tab removed the paste and saved plain words: the queue_edit
+    // frame rewrites the live row, blocks gone, while this editor is open.
+    rerender(<QueueStack messages={[{ ...row, content: 'plain words instead', meta: { queueId: 'q1' } } as ChatMessage]} onCancel={() => {}} onEdit={onEdit} />)
+    fireEvent.change(input, { target: { value: `look at ${T1} now` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // The token the editor shows still expands: the commit reads the blocks
+    // the editor opened with, never the literal token.
+    expect(onEdit).toHaveBeenCalledWith('q1', `look at ${P1.content} now`, [P1])
+  })
+
+  it('a token the editor expanded inline is sent as the text shown, never expanded a second time', () => {
+    // The pasted body itself holds a token-shaped literal with the same
+    // number as the row's block. Expanded inline in the editor (double click),
+    // the block is retired; the commit must send the text as shown and not
+    // resolve that literal against the retired block.
+    const PX: PasteBlock = { id: 'px', seq: 1, lines: 3, content: 'Example:\n[ Paste #1 · 3 lines ]\nEnd' }
+    const row = pasted({ text: `see ${formatToken(PX)}`, pastes: [PX] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    const start = input.value.indexOf('[ Paste')
+    input.setSelectionRange(start + 2, start + 2)
+    fireEvent.click(input, { detail: 2 })
+    expect(input.value).toBe(`see ${PX.content}`)
+    fireEvent.change(input, { target: { value: `see ${PX.content} now` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', `see ${PX.content} now`, [])
+  })
+
+  it('a token a native undo puts back is expanded again on commit', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    // The browser deletes the selected first line (token included) as a
+    // native edit, then Ctrl/Cmd+Z puts the text back: both reach the editor
+    // as plain value changes, with no key the token handlers see.
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.change(input, { target: { value: `look at ${T1} please` } })
+    fireEvent.change(input, { target: { value: `look at ${T1} now` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', `look at ${P1.content} now`, [P1])
+  })
+
+  it('an edit that removes the token drops its paste from the send', () => {
+    const row = pasted({ text: `look at ${T1} please`, pastes: [P1] })
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    fireEvent.change(input, { target: { value: 'never mind, skip it' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', 'never mind, skip it', [])
+    expect(readStoredPaste('never mind, skip it')).toBeNull()
+  })
+
+  it('folds the token back beside a quote and a knowledge envelope, and an edit restores all three', () => {
+    const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't0' }
+    const row = pasted({ text: `compare ${T1}`, pastes: [P1], knowledge: KB, quote })
+    const onEdit = vi.fn()
+    const { container } = render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
+    expect(screen.getByText(`compare ${T1}`)).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/alpha|KNOWLEDGE CONTEXT|quoting an earlier message/)
+    expect(screen.getByTestId('queue-card-knowledge')).toBeInTheDocument()
+    const input = openEditor()
+    expect(input.value).toBe(`compare ${T1}`)
+    fireEvent.change(input, { target: { value: `contrast ${T1}` } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', buildOutgoingTurn({ text: `contrast ${T1}`, pastes: [P1], knowledge: KB, quote }, 'send').wire, [P1])
   })
 })
 

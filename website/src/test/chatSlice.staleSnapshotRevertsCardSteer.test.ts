@@ -278,6 +278,39 @@ describe('#20833 gate-3: a stale snapshot reverts a newer steer row', () => {
     expect(steers[0].meta?.steerState).toBe('requeued')
   })
 
+  it('keeps a taken-back steer taken back against a snapshot captured while it was written', () => {
+    const store = makeStore()
+    const liveHead: Row[] = [
+      ...olderServerRows(6),
+      {
+        role: 'user',
+        content: 'earlier request',
+        cls: 'msg msg-u',
+        ts: STEER_TS,
+        meta: { mid: STEER_MID, steer: true, steerState: 'retracted', steerRetractAction: 'unsend', sendId: 's-3' },
+      },
+    ]
+    store.dispatch(switchSlot.pending('seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, liveHead, false), 'seed', KEY))
+
+    const stalePage: Row[] = [
+      {
+        role: 'user',
+        content: 'earlier request',
+        cls: 'msg msg-u',
+        ts: STEER_TS,
+        meta: { mid: STEER_MID, steer: true, steerState: 'written', steerRetract: true, sendId: 's-3' },
+      },
+      { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:50:00Z', meta: { mid: 'm-new-E' } },
+    ]
+    store.dispatch(switchSlot.pending('req-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, stalePage, true), 'req-stale', KEY))
+
+    const steers = store.getState().chat.messages.filter(m => m.meta?.steer)
+    expect(steers.length).toBe(1)
+    expect(steers[0].meta?.steerState, 'a stale snapshot revived the take-back controls').toBe('retracted')
+  })
+
   it('does NOT overwrite a DISTINCT row that merely reuses the same mid (ts differs)', () => {
     // GPT finding F1: two distinct steer rows can share (mid, role) but differ
     // in ts (a crafted meta.mid reused across two POSTs; `_ChatSlot.append`

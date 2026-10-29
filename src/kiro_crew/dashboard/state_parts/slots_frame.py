@@ -375,6 +375,7 @@ def _slots_ws_frame(
     folders: object,
     folders_gen: object,
     governance_gen: object,
+    tags_gen: object = None,
     slots_partial: bool = False,
     slots_held_keys: object = (),
     slots_hold_channels: bool = False,
@@ -414,6 +415,10 @@ def _slots_ws_frame(
         # (``social_share_enabled``) follows the ceiling instead of waiting out
         # its stale window. Process-local, like the two counters above.
         "governanceGeneration": governance_gen,
+        # The tag vocabulary / board columns' change signal, the folder
+        # generation's twin: the client invalidates ``['chat-tags']``
+        # and ``['tag-columns']`` when it moves.
+        "tagsGeneration": tags_gen,
     }
     if slots_partial:
         frame["slotsPartial"] = True
@@ -867,9 +872,11 @@ def serialize_slots(
 
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
+    saved_creators: dict[str, str] = {}
     for s in self._slots.values():
         if s.key in under_construction:
             continue
+        saved_creators[s.key] = getattr(s, "_saved_created_by", "") or ""
         self._drop_orphaned_mcp_report(s)
         d = self.serialize_slot(
             s,
@@ -886,6 +893,17 @@ def serialize_slots(
     # the nesting and must cost the nesting rather than the whole sidebar.
     # ``getattr`` because a stub state in the suite may not carry the method at all.
     _attach_slot_parents(out, getattr(self, "spend_slot_by_session", None))
+    # After the parents, which the worker walk reads: every row says whether it is a
+    # Crew Mode root, and each session a root dispatched names that root, so the
+    # person's own list can leave workers out and the side panel can list them.
+    from kiro_crew import crew_mode
+
+    try:
+        crew_mode.stamp_rows(
+            out, settled=crew_mode.lineage_is_settled(), saved_creators=saved_creators
+        )
+    except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
+        logger.warning("Crew Mode rows not stamped", exc_info=True)
     return out
 
 

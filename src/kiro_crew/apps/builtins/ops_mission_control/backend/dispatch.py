@@ -562,7 +562,7 @@ def verify_pending_actions(
             # the mutation was abandoned before it wrote, so nothing is half-applied and
             # the only cost is this annotation, which the next verification pass redoes.
             # The store staying strict and this caller staying tolerant are the same
-            # decision seen from two ends, not a contradiction. Found in review (GPT 5.6).
+            # decision seen from two ends, not a contradiction.
             logger.debug(
                 "ops-mission-control: could not record verification for %s",
                 incident.incident_id,
@@ -685,7 +685,7 @@ async def run_cycle(
         # Slack pin mirror, the desktop notifications and the cycle's SEL entry. This
         # function is ordered specifically so a later fault cannot cost an earlier step
         # ("a Slack outage can never cost us a claim"), and a maintenance pass that reruns
-        # every heartbeat is the clearest case of that rule. Found in review.
+        # every heartbeat is the clearest case of that rule.
         logger.warning(
             "ops-mission-control: proposal expiry skipped, dispatch index I/O failed",
             exc_info=True,
@@ -708,7 +708,7 @@ async def run_cycle(
     # heartbeat, so run inline it freezes the whole loop — chat turn and liveness heartbeat
     # included — for up to 10s. `_login_cache` is only a mitigation: `resolve_shift` wraps each
     # source in `asyncio.wait_for`, and a timeout cancels the awaiter while the worker keeps
-    # running, so the cache may still be cold here. Found in review.
+    # running, so the cache may still be cold here.
     tiers = await asyncio.to_thread(rotation.tier_states, shift)
     if not tiers.get(rotation.TIER_ON_SHIFT, True):
         return CycleResult(skipped_reason="off shift — on_shift tier is disarmed")
@@ -745,9 +745,7 @@ async def run_cycle(
     # the heartbeat. Measured elsewhere in this app at 42ms/1k and 188ms/5k incidents, so on a
     # busy install this stalled the loop on every cycle.
     #
-    # `routes.py` was swept for exactly this class last round and this file was not — the
-    # narrowness my own guard test was written to prevent, one module over. The guard now
-    # covers `dispatch.py` too. Found in review.
+    # The guard test that keeps this class out of `routes.py` covers `dispatch.py` too.
     index = await asyncio.to_thread(store.read_index)
     # A signal is "owned" only by an OPEN incident. A closed one (resolved/escalated) must
     # not suppress a fresh firing — `signal.id` is stable for the alarm's lifetime, so
@@ -788,7 +786,7 @@ async def run_cycle(
             # in this same loop are durably on disk, so escaping here means an in-flight
             # investigation nobody is ever told about -- and it made the maintenance-pass
             # guard below unreachable on any install with something firing, which is the
-            # only install where it matters. Found in review (Design Review, Fable 5).
+            # only install where it matters.
             #
             # `break`, not `continue`: whatever stopped this claim will stop every
             # remaining one the same way, so continuing only repeats the failure per
@@ -825,18 +823,18 @@ async def run_cycle(
     # - signals whose `_claim_one` returned None (another instance won the race — it acks
     #   its own copy in its own cycle).
     #
-    # Acking ids rather than the whole batch is what makes the per-cycle cap safe: before,
-    # a burst larger than `limit` had its remainder destroyed by the very poll that
+    # Acking ids rather than the whole batch is what makes the per-cycle cap safe: acking the
+    # batch would destroy the remainder of a burst larger than `limit` in the very poll that
     # delivered it.
     # Ack what we claimed THIS cycle **and** everything an open incident already owns.
     #
-    # `owned` ids are filtered out of `candidates` above, so they are never claimed and — with
-    # only the `claimed` set acked — never left the spool. A sender that redelivers while an
-    # investigation is in flight (Alertmanager repeats every group_interval; a webhook script
-    # retries) therefore accumulated copies of a signal already being worked, and on a full
-    # 200-entry spool those evicted a NEW unclaimed alert. Found in review, and the same shape
-    # as the manual-claim gap one round earlier: every place a signal becomes or already IS
-    # durable has to acknowledge it, not just the place that claims it.
+    # `owned` ids are filtered out of `candidates` above, so they are never claimed; with
+    # only the `claimed` set acked they would never leave the spool. A sender that redelivers
+    # while an investigation is in flight (Alertmanager repeats every group_interval; a
+    # webhook script retries) would then accumulate copies of a signal already being worked,
+    # and on a full 200-entry spool those would evict a NEW unclaimed alert. The manual claim
+    # has the same shape: every place a signal becomes or already IS durable has to
+    # acknowledge it, not just the place that claims it.
     #
     # Safe by the same argument the durability rule rests on: an id in `owned` has an incident
     # on disk, so dropping the spooled copy loses nothing — and if that incident later goes

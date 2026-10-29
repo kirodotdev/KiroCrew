@@ -5,7 +5,6 @@ landed turn's reset of every retry budget, and consolidation."""
 
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import TYPE_CHECKING, Literal
 
@@ -40,7 +39,7 @@ if TYPE_CHECKING:
         runtime_death,
         save_slot_off_loop,
     )
-    from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes, _turn_after_reads
+    from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes_off_loop
     from kiro_crew.dashboard.chat_turn.recovery import (
         _COMPACTION_FAILED_RETRIES,
         _should_suppress_requeue,
@@ -378,31 +377,24 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
         )
         if _prompt_depth == 0 and _stats_attached:
             slot._carried_ttft_clock = None
-        # Attach accumulated file changes to this turn's assistant row before persist.
-        # The turn-end disk reads and diffs (a whole file of up to two megabytes
-        # for a large edited file) run off the event loop; the flush then applies
-        # them to the slot here, on the loop. The teardown flush in
-        # _turn_release_handles (chat_turn/turn_entry.py) reads inline without them: it
-        # runs where an await could skip the session-permit release, so it keeps the
-        # ordinary capped read only.
-        _changes_now = getattr(slot, "_file_changes", None)
-        _after_reads = (
-            await asyncio.to_thread(_turn_after_reads, list(_changes_now), bool(_shell_tool_calls))
-            if isinstance(_changes_now, list) and _changes_now
-            else None
-        )
+        # Attach accumulated file changes to this turn's assistant row before
+        # persist. Awaited: the turn-end disk reads, diffs (a whole file of up
+        # to two megabytes for a large edited file), redaction and budget run
+        # on a worker thread, and the attach has happened when this returns,
+        # so the save below still carries the chips. A cancellation that
+        # lands during the read is re-raised after the attach, into this
+        # turn's own CancelledError arm.
         # Copied before the flush, which clears the reply ids on exit.
         _note_reply_mids = list(_reply_mids) if isinstance(_reply_mids, list) else []
         # The Slack mirror leg (_turn_stop_hook) runs AFTER this flush, so it reads
         # the snapshot rather than the cleared live list to publish the whole
         # answer (see _turn_full_reply_text).
         turn._reply_mids_snapshot = _note_reply_mids
-        _flush_file_changes(
+        await _flush_file_changes_off_loop(
             slot,
             turn_boundary=_turn_msg_boundary,
             turn_start_mid=_turn_start_mid,
             turn_had_shell=bool(_shell_tool_calls),
-            after_reads=_after_reads,
         )
         # The reply is in the window, so this save is the durable clear of
         # the in-flight marker: retire it first and the omission rides the

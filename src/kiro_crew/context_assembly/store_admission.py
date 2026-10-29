@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sqlite3 as _stdlib_sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -151,6 +152,9 @@ def turn_lessons_block(
         record.add(lesson for _, lesson in chosen)
     if not chosen:
         return ""
+    from kiro_crew import injection_receipts
+
+    injection_receipts.record(injection_receipts.TURN_LESSONS, [{"key": key} for key, _ in chosen])
     lines = "\n".join(f"- {_markers._scrub_turn_lesson(lesson)}" for _, lesson in chosen)
     return (
         "[Learned corrections — relevant to this message, not shown earlier in this "
@@ -277,7 +281,10 @@ def session_memory_parts(
                         budget_chars=max(0, room),
                     )
                     memory_ctx = memory_ctx[: max(0, room - len(notice))] + notice
-                append_required(memory_ctx)
+                # Bounded by the model-safe ceiling (its ``pref.*`` rows by
+                # ``_PREFS_STARTUP_CAP``), not by the background pool the
+                # activity block below competes for, so it does not use that pool up.
+                blocks.append_authored(memory_ctx)
             if reads.activity:
                 append_required(reads.activity)
             # The recent-activity block (projects, daily history, task facts,
@@ -690,6 +697,165 @@ def _take_memory_prefetch(
     return entry.reads
 
 
+def _lessons_renderer(
+    builder: ContextBuilder,
+    *,
+    memory: MemoryStore | None,
+    member_vectors: VectorMemoryStore | None,
+    activity_ranked: bool,
+    workspace: str | None,
+    memory_store: str | None,
+    project: str | None,
+    caps: _budgets._ResolvedCaps,
+    query_text: str,
+) -> Callable[[int], str]:
+    """The lessons renderer for whichever store answers: member, vector, named or global JSONL.
+
+    Shared by the session-start block and its post-compaction copy, so both read
+    the same store under the same population rule. The renderer takes the hard
+    character cap it may fill.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    # V1 only: the JSONL store answers when the vector store is absent OR not yet
+    # populated, and stays silent once it holds lessons.
+    #
+    # Two real failures pull in opposite directions here and both are
+    # avoided by keying on POPULATION rather than on the rendered result.
+    # Keying on "the render came back empty" lets the JSONL store speak for
+    # a live store whose rows were simply all out of scope, re-injecting
+    # rows deleted from it. Keying on "a store object exists" instead
+    # silences saved corrections while a first-boot migration is still
+    # filling that store. Population tells the two apart: no rows at all
+    # means the JSONL store is still the authority, rows-but-none-in-scope
+    # means this store already answered.
+    if member_vectors is not None:
+        member_store = member_vectors
+
+        def _render_member_lessons(hard_cap: int) -> str:
+            return member_store.get_lessons_context(
+                query_text=query_text,
+                cap=caps.lessons,
+                project_dir=project,
+                background=True,
+                hard_cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+            )
+
+        return _render_member_lessons
+    elif memory is not None and memory.vector_store and memory.vector_store.has_any_lesson():
+        vector_store = memory.vector_store
+        # Only after the activity block ranked against the first message:
+        # when that ranking embedded it, the shared cache can answer
+        # without a second inference. Built once, outside the renderer,
+        # because the renderer runs again when the protected ceiling trims
+        # lessons.
+        vector_query = vector_store.startup_lesson_query(query_text) if activity_ranked else None
+
+        def _render_vector_lessons(hard_cap: int) -> str:
+            return vector_store.get_lessons_context(
+                query_text=query_text,
+                cap=caps.lessons,
+                project_dir=project,
+                recall_query=vector_query,
+                background=True,
+                hard_cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+            )
+
+        return _render_vector_lessons
+    elif ctx._resolved_store_name(memory_store):
+        lesson_store = builder.get_lessons_for(workspace, memory_store)
+
+        def _render_named_jsonl_lessons(hard_cap: int) -> str:
+            return lesson_store.get_context(
+                project_dir=project,
+                cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+                query_text=query_text,
+            )
+
+        return _render_named_jsonl_lessons
+    else:
+
+        def _render_default_jsonl_lessons(hard_cap: int) -> str:
+            return builder.lessons.get_context(
+                project_dir=project,
+                cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+                query_text=query_text,
+            )
+
+        return _render_default_jsonl_lessons
+
+
+def compaction_lessons_block(
+    builder: ContextBuilder,
+    *,
+    private: bool,
+    blocks_reads: bool,
+    context_groups: frozenset[str] | None,
+    workspace: str | None,
+    memory_store: str | None,
+    project: str | None,
+    model_window: int | None,
+    essentials: str,
+    query_text: str,
+) -> str:
+    """The session-start lessons block again, for the first turn after a compaction.
+
+    The compaction dropped the ``[Learned corrections]`` and ``[Learned
+    experience]`` blocks with the rest of session start. This renders them from
+    the store that answers at session start (see :func:`_lessons_renderer`), under
+    the same gates: nothing on a read-blocked (temporary or incognito) turn,
+    nothing when the operator's config or the caller's context groups withhold
+    lessons, and nothing for a private member whose own store is not prepared --
+    Global lessons never stand in for it. The startup budgets apply, ranked
+    against *query_text*. A store that cannot be read costs the block, never the
+    turn.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    if blocks_reads:
+        return ""
+    if not _inclusion._group_included(
+        ctx._config_scoped_groups(context_groups), _inclusion.CONTEXT_GROUP_LESSONS
+    ):
+        return ""
+    try:
+        memory: MemoryStore | None = None
+        member_vectors: VectorMemoryStore | None = None
+        if private:
+            member_vectors = ctx._vector_stores.get(memory_store or "")
+            if member_vectors is None:
+                return ""
+        else:
+            memory = builder.get_memory_for(workspace, memory_store)
+        caps = ctx._resolve_caps(model_window)
+        renderer = _lessons_renderer(
+            builder,
+            memory=memory,
+            member_vectors=member_vectors,
+            activity_ranked=False,
+            workspace=workspace,
+            memory_store=memory_store,
+            project=project,
+            caps=caps,
+            query_text=query_text,
+        )
+        return renderer(max(1, caps.protected_context - len(essentials)))
+    # Both libraries: the stores use the compat module (pysqlite3 where installed),
+    # and a store on the stdlib one raises its own Error class, which the compat
+    # module's does not catch (see sqlite_wal._OPERATIONAL_ERRORS).
+    except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error, _stdlib_sqlite3.Error):
+        logger.warning("Post-compaction lessons skipped: the lesson store could not be read")
+        return ""
+
+
 def session_lessons_part(
     builder: ContextBuilder,
     blocks: _budgets.ContextParts,
@@ -714,7 +880,6 @@ def session_lessons_part(
 
     parts = blocks.parts
     protected_parts = blocks.protected
-    append_required = blocks.append_required
     # Lessons: injected for ALL agents (skipped for temporary sessions), gated
     # by the same project scope the skill loader applies. A lesson with no
     # ``repo_scope`` applies everywhere; a scoped one reaches only sessions
@@ -736,83 +901,17 @@ def session_lessons_part(
     if (memory is not None or member_vectors is not None) and _inclusion._group_included(
         effective_groups, _inclusion.CONTEXT_GROUP_LESSONS
     ):
-        # V1 only: the JSONL store answers when the vector store is absent OR not yet
-        # populated, and stays silent once it holds lessons.
-        #
-        # Two real failures pull in opposite directions here and both are
-        # avoided by keying on POPULATION rather than on the rendered result.
-        # Keying on "the render came back empty" lets the JSONL store speak for
-        # a live store whose rows were simply all out of scope, re-injecting
-        # rows deleted from it. Keying on "a store object exists" instead
-        # silences saved corrections while a first-boot migration is still
-        # filling that store. Population tells the two apart: no rows at all
-        # means the JSONL store is still the authority, rows-but-none-in-scope
-        # means this store already answered.
-        if member_vectors is not None:
-            member_store = member_vectors
-
-            def _render_member_lessons(hard_cap: int) -> str:
-                return member_store.get_lessons_context(
-                    query_text=query_text,
-                    cap=caps.lessons,
-                    project_dir=project,
-                    background=True,
-                    hard_cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                )
-
-            lessons_renderer = _render_member_lessons
-        elif memory is not None and memory.vector_store and memory.vector_store.has_any_lesson():
-            vector_store = memory.vector_store
-            # Only after the activity block ranked against the first message:
-            # when that ranking embedded it, the shared cache can answer
-            # without a second inference. Built once, outside the renderer,
-            # because the renderer runs again when the protected ceiling trims
-            # lessons.
-            vector_query = (
-                vector_store.startup_lesson_query(query_text) if activity_ranked else None
-            )
-
-            def _render_vector_lessons(hard_cap: int) -> str:
-                return vector_store.get_lessons_context(
-                    query_text=query_text,
-                    cap=caps.lessons,
-                    project_dir=project,
-                    recall_query=vector_query,
-                    background=True,
-                    hard_cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                )
-
-            lessons_renderer = _render_vector_lessons
-        elif ctx._resolved_store_name(memory_store):
-            lesson_store = builder.get_lessons_for(workspace, memory_store)
-
-            def _render_named_jsonl_lessons(hard_cap: int) -> str:
-                return lesson_store.get_context(
-                    project_dir=project,
-                    cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                    query_text=query_text,
-                )
-
-            lessons_renderer = _render_named_jsonl_lessons
-        else:
-
-            def _render_default_jsonl_lessons(hard_cap: int) -> str:
-                return builder.lessons.get_context(
-                    project_dir=project,
-                    cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                    query_text=query_text,
-                )
-
-            lessons_renderer = _render_default_jsonl_lessons
-
+        lessons_renderer = _lessons_renderer(
+            builder,
+            memory=memory,
+            member_vectors=member_vectors,
+            activity_ranked=activity_ranked,
+            workspace=workspace,
+            memory_store=memory_store,
+            project=project,
+            caps=caps,
+            query_text=query_text,
+        )
         protected_before_lessons = len(essentials) + sum(
             len(parts[index]) for index in protected_parts
         )
@@ -833,7 +932,9 @@ def session_lessons_part(
             lessons_ctx = ""
         if lessons_ctx:
             lessons_part_index = len(parts)
-            append_required(lessons_ctx)
+            # The rule tier has its own window-independent allowance
+            # (``_LESSONS_STARTUP_CAP``); it is not charged to the background pool.
+            blocks.append_authored(lessons_ctx)
     return lessons_renderer, lessons_part_index
 
 

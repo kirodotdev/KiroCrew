@@ -105,6 +105,210 @@ class TestAcpClientToolAudit:
         assert time.monotonic() - start < 4  # returned via timeout, not the 5s sleep
 
 
+class TestAcpClientUnaskedClaudeAutoAudit:
+    """A claude ``auto`` call that never asks the host still gets an SEL record.
+
+    Claude's own classifier approves the call, so no ``session/request_permission``
+    arrives and no consumer writes a decision row. ``_maybe_audit_unasked_tool_call``
+    writes one when the call reaches a terminal status.
+    """
+
+    @staticmethod
+    def _sel_calls(monkeypatch) -> list[dict]:
+        calls: list[dict] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kw):
+                calls.append(kw)
+
+        monkeypatch.setattr(acp_client, "sel", lambda: _Sel())
+        return calls
+
+    @staticmethod
+    def _client(**kw) -> AcpClient:
+        kw.setdefault("permission_mode", "auto")
+        return AcpClient(session_key="sk", agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, **kw)
+
+    @staticmethod
+    def _result_ev(call_id="tc1", status="completed"):
+        return types.SimpleNamespace(tool_call_id=call_id, tool_status=status)
+
+    @staticmethod
+    def _permission_request(call_id="tc1"):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        return JsonRpcMessage(
+            id=7,
+            method="session/request_permission",
+            params={
+                "sessionId": "s-1",
+                "toolCall": {"toolCallId": call_id, "kind": "execute", "title": "Bash"},
+                "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}],
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unasked_completed_call_is_recorded(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert len(calls) == 1
+        row = calls[0]
+        assert row["session_key"] == "sk"
+        assert row["agent"] == "kirocrew"
+        assert row["source"] == "acp"
+        assert row["tool_name"] == "Bash"
+        assert row["tool_kind"] == "execute"
+        assert row["outcome"] == "auto_approved"
+        assert row["request_id"] == "tc1"
+        assert row["metadata"]["decided_by"] == "claude_classifier"
+        assert row["metadata"]["tool_status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_unasked_call_is_recorded_with_its_status(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev(status="failed"))
+        assert [c["outcome"] for c in calls] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_asked_is_left_to_its_consumer(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        assert client._process_message(self._permission_request("tc1"), 1) == "permission"
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_one_record_per_call(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["in_progress", "pending", None])
+    async def test_a_running_call_is_not_recorded_yet(self, monkeypatch, status):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        await client._maybe_audit_unasked_tool_call(self._result_ev(status=status))
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_session_not_in_auto_mode_writes_nothing(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client(permission_mode=None)
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_audit_source_client_is_not_double_logged(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client(audit_source="subagent")
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_swallows_sel_errors(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("SEL backend down")
+
+        monkeypatch.setattr(acp_client, "sel", _boom)
+        client = self._client()
+        # A SEL failure must never break tool dispatch.
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+
+    @pytest.mark.asyncio
+    async def test_the_send_message_path_records_an_unasked_call(self, monkeypatch):
+        """``_read_prompt_response`` writes the row for a call that never asked."""
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        call_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc9",
+                    "title": "Bash",
+                    "kind": "execute",
+                }
+            }
+        )
+        result_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc9",
+                    "status": "completed",
+                    "content": [{"content": {"type": "text", "text": "ok"}}],
+                }
+            }
+        )
+        complete_msg = types.SimpleNamespace(result={"stopReason": "end_turn"})
+
+        async def _fake_loop(req_id, timeout):
+            yield "update", call_msg
+            yield "update", result_msg
+            yield "complete", complete_msg
+
+        monkeypatch.setattr(client, "_prompt_loop", _fake_loop)
+        await client._read_prompt_response(1, 5.0)
+        rows = [c for c in calls if c.get("request_id") == "tc9"]
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == "auto_approved"
+
+    @pytest.mark.asyncio
+    async def test_the_stream_path_records_an_unasked_call(self, monkeypatch):
+        """``_dispatch_events`` writes the row for a call that never asked."""
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        frames = [
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc9",
+                        "title": "Bash",
+                        "kind": "execute",
+                    }
+                },
+            ),
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc9",
+                        "status": "completed",
+                        "content": [{"content": {"type": "text", "text": "ok"}}],
+                    }
+                },
+            ),
+        ]
+
+        async def _fake_loop(req_id, timeout):
+            for frame in frames:
+                yield "update", frame
+            yield "complete", JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
+
+        client._prompt_loop = _fake_loop
+        client._read_new_tool_results = AsyncMock(return_value=[])
+        async for _ in client._dispatch_events(req_id=1, timeout=5.0):
+            pass
+        rows = [c for c in calls if c.get("request_id") == "tc9"]
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == "auto_approved"
+
+
 class TestAcpClientZeroTools:
     """``_deny_zero_tools`` -- the one refusal not scoped to MCP calls.
 

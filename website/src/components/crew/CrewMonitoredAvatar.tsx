@@ -5,6 +5,11 @@ import CrewLoopIndicator from './CrewLoopIndicator'
 export interface CrewMonitoredAvatarProps extends CrewStateAvatarProps {
   /** The normalized record for this avatar's slot. Null means no proven monitor. */
   automation?: AutomationRecord | null
+  /** On watch by another route than the slot's monitor: the crewmate's
+   *  heartbeat is on, so it will act again without being asked. ORed with the
+   *  record, so a host that already resolved the one reading its filters
+   *  count (`MemberSignals.patrolling`) can hand it in whole. */
+  watch?: boolean
   indicatorTestId?: string
 }
 
@@ -17,10 +22,11 @@ export interface CrewMonitoredAvatarProps extends CrewStateAvatarProps {
  */
 export default function CrewMonitoredAvatar({
   automation,
+  watch = false,
   indicatorTestId,
   ...avatarProps
 }: CrewMonitoredAvatarProps) {
-  const monitorActive = isAutomationActive(automation)
+  const monitorActive = isAutomationActive(automation) || watch
   return (
     <span
       className="relative inline-flex shrink-0 rounded-full"

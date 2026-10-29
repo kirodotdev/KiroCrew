@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from named_cases_helpers import named_cases
 
 from conftest import requires_o_nofollow, requires_symlinks
 from kiro_crew import pinned_fs
@@ -153,7 +154,14 @@ class TestPinnedArm:
 
 
 class TestByNameArm:
-    def test_it_yields_none_and_validates_a_clean_chain(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_it_yields_none_and_validates_a_clean_chain"),
+            *named_cases("test_a_clean_chain_is_not_refused_negative_control"),
+        ],
+    )
+    def test_a_clean_chain_yields_none_and_validates(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
         (tmp_path / "a" / "b").mkdir(parents=True)
         with open_pinned_descendant_dir(tmp_path, ("a", "b"), what="chain") as leaf:
@@ -205,11 +213,3 @@ class TestByNameArm:
         with pytest.raises(PinnedPathRefusal):
             with open_pinned_descendant_dir(tmp_path, ("a", "b"), what="chain", create=True):
                 pass
-
-    def test_a_clean_chain_is_not_refused_negative_control(self, tmp_path, monkeypatch):
-        # The SAME by-name arm on a clean real chain does NOT raise, proving the
-        # refusals above observe the link/type and not the arm being inert.
-        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
-        (tmp_path / "a" / "b").mkdir(parents=True)
-        with open_pinned_descendant_dir(tmp_path, ("a", "b"), what="chain") as leaf:
-            assert leaf is None

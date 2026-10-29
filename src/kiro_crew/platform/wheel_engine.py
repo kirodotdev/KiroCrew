@@ -1138,6 +1138,26 @@ def apply_wheel_update(
             release_update_lock(lock_fd)
 
 
+def check_policy_channel(channel: str) -> None:
+    """Refuse a wheel update from *channel* when the policy requires another one.
+
+    The one channel-pin check every wheel install passes: :func:`apply_wheel_update`
+    enforces it under the update lock immediately before ``promote`` swaps the
+    stable link, whichever route called it (dashboard approve, scheduled
+    auto-apply, ``kirocrew server update``). The earlier reads are advisory, made
+    so a refusal comes before a download and names the policy: the engine's own
+    before its preflight, and the approve route's. The
+    caller picked *channel* when it read the feed or armed the request; an
+    ``updates.channel`` pin installed since then decides (``update_layout``
+    ``policy_release_channel``), as the source pin does.
+    """
+    from kiro_crew.platform.update_layout import policy_release_channel
+
+    required = policy_release_channel()
+    if required and channel != required:
+        raise WheelUpdateError(f"updates on this host follow the {required} channel")
+
+
 def _check_buildable(payload: dict[str, str]) -> None:
     """Refuse, before any download, a release the SIGNED metadata excludes here."""
     from kiro_crew.dep_sync import python_floor_breach
@@ -1223,6 +1243,9 @@ def _apply_locked(
             (expected_tree / _SHADOW_SENTINEL).unlink(missing_ok=True)
         repoint_launcher_symlink(layout)
         return expected_tree
+    # Early refusal so a pinned host does not download a release it cannot take;
+    # the enforcing read is the one just before ``promote``.
+    check_policy_channel(channel)
     preflight()
     with tempfile.TemporaryDirectory(prefix="kirocrew-update-", dir=str(_staging_dir())) as tmp:
         workdir = Path(tmp)
@@ -1262,6 +1285,11 @@ def _apply_locked(
             before_promote()
             # The last point a cancel is honoured: past it the stable link flips.
             _raise_if_cancelled(ctx.cancel)
+            # The channel pin is enforced HERE, at the swap: the check before the
+            # download only saves the work. A policy installed while the release
+            # downloaded and built is read now, under the update lock, and a
+            # mismatch leaves this tree unpromoted debris for the handler below.
+            check_policy_channel(channel)
             progress("Promoting…")
             promote(shadow_dir, layout.stable_link)
         except BaseException:

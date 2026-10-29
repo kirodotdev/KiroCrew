@@ -12,6 +12,7 @@ import ErrorNotice from './ErrorNotice'
 import { crudErrorMessage } from './tagMutationError'
 
 import { i18nT } from '../i18n/t'
+import { slotRowByKey } from '../store/slotIndex'
 
 /**
  * The topmost element at viewport point (x, y) that is NOT `backdrop` or one of
@@ -128,7 +129,7 @@ const readRejection = (error: unknown): RejectionPayload => {
  */
 export default function SlotTagPopover() {
   const { slotKey, close } = useTagPopover()
-  const slot = useAppSelector(s => (slotKey ? s.dashboard.slots.find(x => x.key === slotKey) : undefined))
+  const slot = useAppSelector(s => (slotKey ? slotRowByKey(s.dashboard.slots, slotKey) : undefined))
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const listRef = useRef<HTMLDivElement>(null)

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { lastInputIsPointer } from '../lib/quietFocusReturn'
 import { useImeGuard } from './useImeGuard'
 
 /**
@@ -85,12 +86,17 @@ export function useListboxKeyboard(opts: {
   // users can reach the options. (When an input is shown, the consumer's opener
   // auto-focuses it — Radix onOpenAutoFocus for the Popover-based pickers,
   // useFilteredDropdown for the rest.) Skip on touch to avoid hijacking focus.
+  // After a pointer open the option is focused without the keyboard ring:
+  // Chromium paints `:focus-visible` on this scripted focus whenever the
+  // element that held focus before (often the composer textarea) matched it.
   useEffect(() => {
     if (!open || hasFilterInput || isTouchDevice()) return
     const t = window.setTimeout(() => {
       const els = optionEls()
       const selected = els.find(el => el.getAttribute('aria-selected') === 'true')
-      ;(selected ?? els[0])?.focus()
+      // `focusVisible` is not yet in TypeScript's DOM lib.
+      const options = lastInputIsPointer() ? ({ focusVisible: false } as FocusOptions) : undefined
+      ;(selected ?? els[0])?.focus(options)
     }, 0)
     return () => clearTimeout(t)
   }, [open, hasFilterInput, optionEls])

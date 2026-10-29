@@ -228,6 +228,7 @@ def _cleanup(
         cleanup_stale_sandbox_profiles=lambda: 0,
         prune_session_pid_mappings=lambda: 0,
         prune_member_pid_bindings=lambda: 0,
+        sweep_session_staging_temps=lambda: 0,
         rotate_shell_audit_log=lambda: False,
         prune_pycache=lambda: (0, 0),
         collect_active_pids=collect_active,

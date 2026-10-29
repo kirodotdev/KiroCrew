@@ -201,6 +201,20 @@ _unreadable_session_files_warned: set[str] = set()
 _unreadable_session_files_lock = threading.Lock()
 
 
+#: The metadata-line fields a catalog row carries so a reader can tell a Crew Mode
+#: root from a crew member without opening the file: the creator stamp, the agent's
+#: namespace and the Crew Mode stamp (``crew_mode.saved_row_is_root``).
+_CREW_CATALOG_FIELDS: tuple[str, ...] = ("created_by", "agent_kind", "crew_mode_agent")
+
+
+def _project_crew_fields(meta: dict, line: dict) -> None:
+    """Copy the non-empty :data:`_CREW_CATALOG_FIELDS` of metadata *line* onto catalog row *meta*."""
+    for field in _CREW_CATALOG_FIELDS:
+        value = line.get(field)
+        if isinstance(value, str) and value:
+            meta[field] = value
+
+
 def _warn_unreadable_session_file(path: str, error: OSError) -> None:
     with _unreadable_session_files_lock:
         if path in _unreadable_session_files_warned:
@@ -420,6 +434,7 @@ class SessionCatalogProjection:
                 meta["memory_mode"] = d.get("memory_mode", "persistent")
                 if d.get("folder_id"):
                     meta["folder_id"] = d["folder_id"]
+                _project_crew_fields(meta, d)
             else:
                 # Read only the first line for metadata
                 try:
@@ -437,6 +452,7 @@ class SessionCatalogProjection:
                             meta["memory_mode"] = d.get("memory_mode", "persistent")
                             if d.get("folder_id"):
                                 meta["folder_id"] = d["folder_id"]
+                            _project_crew_fields(meta, d)
                             # Guarded publish — discard the fill if a write
                             # invalidated this key inside the stat → read
                             # window (see the generation snapshot above).

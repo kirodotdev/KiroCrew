@@ -209,6 +209,18 @@ def _folder_sort_from(raw: object, default: str) -> str:
     return default
 
 
+def _translucent_panels_from(raw: object) -> str:
+    """Normalize the Translucent panels choice; anything unknown reads as ``""``.
+
+    ``""`` is "never chosen on this workspace": the frontend then keeps the
+    browser's own stored choice, which is what every install did before the key
+    existed, so a missing or hand-edited value changes nothing the person sees.
+    """
+    if isinstance(raw, str) and raw in _sections.TRANSLUCENT_PANELS_VALUES:
+        return raw
+    return ""
+
+
 def _session_sort_from(raw: object, default: str) -> str:
     """Normalize the sidebar session sort key; anything unknown is *default*, ``date-desc``.
 
@@ -478,9 +490,17 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
         ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         backend_from_stored,
+        kiro_cli_pick_backend,
         selectable_backends,
     )
+    from kiro_crew.config.validation import MALFORMED_BACKEND_FLOOR
 
+    if agent_data.get(key) == MALFORMED_BACKEND_FLOOR:
+        # The floor for an unusable value (``validate_config_data``), already
+        # warned about there: never a Kiro CLI pick, so never moved onto KAS.
+        from kiro_crew.acp_backends import GOVERNANCE_FLOOR_BACKEND
+
+        return GOVERNANCE_FLOOR_BACKEND
     value = backend_from_stored(agent_data.get(key))
     if value is None:
         default = section.default(key)
@@ -488,6 +508,14 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
     elif key == _MEMBER_HARNESS_KEY and value == ACP_BACKEND_KIRO:
         value = ACP_BACKEND_KAS
         _note_member_remap(agent_data.get(key), value)
+    elif value == ACP_BACKEND_KIRO and not section.read("kas_bundle", _safe_bool):
+        # The one place a stored Kiro CLI pick in ``agent.acp_backend`` moves onto
+        # KAS: once the gateway's probe confirmed v3 and while KAS is selectable.
+        # Here, not in the gate, so a Kiro CLI id the gate already answered (a
+        # degraded value's floor) is never moved by a later resolution. Not on the
+        # bundle route: the confirmation is about kiro-cli's own engine, and KAS
+        # there spawns Kiro Crew's bundled engine instead.
+        value = kiro_cli_pick_backend()
     return _normalize_acp_backend(value)
 
 
@@ -589,6 +617,19 @@ def _restore_stored_stt_provider(doc: dict) -> None:
 # Build each section in its own frame: the large inline constructor amplifies
 # line-tracing cost on every load. These helpers create fresh values, never
 # cache configuration, and leave resolution and admission checks unchanged.
+def _crew_mode_agent_or_default(value: object) -> str:
+    """``agent.crew_mode_agent`` as a trimmed name; the shipped conductor for anything else.
+
+    An empty or non-string value must not turn Crew Mode into "no agent", which the
+    slot switch reads as the default template: Crew Mode would then be a plain chat.
+    """
+    from kiro_crew.crew_mode import DEFAULT_CREW_MODE_AGENT
+
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return DEFAULT_CREW_MODE_AGENT
+
+
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
@@ -611,7 +652,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         kas_bundle=section.read("kas_bundle", _safe_bool),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
+        native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
+        crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
         # Through the module alias rather than a new top-level import: the loader's
         # ``from ... import`` list is a FROZEN pre-split compatibility snapshot
         # (``test_config_module_boundaries.test_loader_reexports_historical_snapshot_by_identity``),
@@ -1011,6 +1054,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             _degraded,
             key_present="tailscale" in dashboard_data,
         ),
+        shared_crew=_sections.shared_crew_config_from(dashboard_data.get("shared_crew")),
         restore_sessions=section.get("restore_sessions"),
         crewmate_threads=section.read("crewmate_threads", _safe_bool),
         crewmates_in_agent_picker=section.read("crewmates_in_agent_picker", _safe_bool),
@@ -1115,6 +1159,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             if isinstance(nudge := section.get("update_nudge"), dict)
             else section.default("update_nudge")
         ),
+        translucent_panels=_translucent_panels_from(section.get("translucent_panels")),
         onboarded=bool(section.get("onboarded")),
         import_onboarded=_safe_bool(
             dashboard_data.get("import_onboarded"),

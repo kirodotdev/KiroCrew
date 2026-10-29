@@ -403,6 +403,17 @@ class TestDispatchRouting:
     """Each recognised action_id must reach exactly its own handler."""
 
     @pytest.mark.asyncio
+    async def test_choose_several_opens_the_modal(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.format import OPTIONS_SEVERAL_ACTION
+
+        spy = AsyncMock()
+        monkeypatch.setattr(ix, "_open_options_several", spy)
+        await ix.dispatch(_action_payload(OPTIONS_SEVERAL_ACTION))
+        spy.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_spent_options_marker_is_a_noop(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -425,18 +436,19 @@ class TestDispatchRouting:
     async def test_options_blocked_by_channels_governance(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, ix_logs: pytest.LogCaptureFixture
     ) -> None:
-        from kiro_crew.slack.format import OPTIONS_SUBMIT_ACTION
+        from kiro_crew.slack.format import OPTIONS_ACTION_PREFIX, OPTIONS_SEVERAL_ACTION
 
         gov = AsyncMock(return_value=False)
         monkeypatch.setattr(ix, "channel_inbound_permitted", gov)
-        spy = AsyncMock()
-        monkeypatch.setattr(ix, "_handle_options_submit", spy)
-        await ix.dispatch(_action_payload(OPTIONS_SUBMIT_ACTION))
-        spy.assert_not_awaited()
-        gov.assert_awaited_once_with("slack")
-        assert "slack OPTIONS choice dropped: denied by channels governance policy" in _ix_messages(
-            ix_logs
-        )
+        click, menu = AsyncMock(), AsyncMock()
+        monkeypatch.setattr(ix, "_handle_options", click)
+        monkeypatch.setattr(ix, "_open_options_several", menu)
+        await ix.dispatch(_action_payload(f"{OPTIONS_ACTION_PREFIX}0", "A"))
+        await ix.dispatch(_action_payload(OPTIONS_SEVERAL_ACTION))
+        assert click.await_count == menu.await_count == 0
+        assert gov.await_args_list == [(("slack",),), (("slack",),)]
+        dropped = "slack OPTIONS choice dropped: denied by channels governance policy"
+        assert _ix_messages(ix_logs).count(dropped) == 2
         orch.slack.update_message.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
 
@@ -981,6 +993,7 @@ class TestAllowlistButtons:
         await ix._handle_allowlist(
             _payload(), {"value": "U9"}, ACTION_ALLOWLIST_APPROVE, "C1", "m1", "U1"
         )
+        assert orch._allowed_users == {"U9"}
         assert "U9" in orch.slack.update_message.await_args.kwargs["text"]
 
     @pytest.mark.asyncio
@@ -1105,22 +1118,20 @@ class TestAgentSelect:
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sh, "_resolve_agent_name", lambda n, project_dir=None: "reviewer")
-        setter = MagicMock()
-        monkeypatch.setattr(sh, "_set_default_agent", setter)
+        monkeypatch.setattr(sh, "_cached_default_agent", None)
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "rev"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
-        setter.assert_called_once_with("reviewer")
+        assert _read_config()["agent"]["default_agent"] == "reviewer"
         assert "reviewer" in orch.slack.update_message.await_args.kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_off_resets_to_default(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        setter = MagicMock()
-        monkeypatch.setattr(sh, "_set_default_agent", setter)
+        monkeypatch.setattr(sh, "_cached_default_agent", "reviewer")
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "off"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
-        setter.assert_called_once_with("")
+        assert _read_config()["agent"]["default_agent"] == ""
         assert "default" in orch.slack.update_message.await_args.kwargs["text"]
 
     @pytest.mark.asyncio
@@ -1140,12 +1151,11 @@ class TestAgentSelect:
     ) -> None:
         resolver = MagicMock(return_value=None)
         monkeypatch.setattr(sh, "_resolve_agent_name", resolver)
-        setter = MagicMock()
-        monkeypatch.setattr(sh, "_set_default_agent", setter)
+        monkeypatch.setattr(sh, "_cached_default_agent", None)
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "ghost"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
         resolver.assert_called_once_with("ghost")
-        setter.assert_not_called()
+        assert not config_path().exists()
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1164,12 +1174,11 @@ class TestAgentSelect:
     async def test_empty_selection_is_a_noop(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        setter = MagicMock()
-        monkeypatch.setattr(sh, "_set_default_agent", setter)
+        monkeypatch.setattr(sh, "_cached_default_agent", None)
         await ix._handle_agent_select(
             _payload(), {"action_id": "mc_agent_select"}, "C1", "m1", "U1"
         )
-        setter.assert_not_called()
+        assert not config_path().exists()
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1182,14 +1191,13 @@ class TestAgentSelect:
         monkeypatch.setattr(sh, "is_owner", owner_gate)
         resolver = MagicMock(return_value="reviewer")
         monkeypatch.setattr(sh, "_resolve_agent_name", resolver)
-        setter = MagicMock()
-        monkeypatch.setattr(sh, "_set_default_agent", setter)
+        monkeypatch.setattr(sh, "_cached_default_agent", None)
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "rev"}}
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
         owner_gate.assert_called_once_with("U1")
         resolver.assert_not_called()
-        setter.assert_not_called()
+        assert not config_path().exists()
         orch.slack.update_message.assert_not_awaited()
         _mock_aiohttp.post.assert_not_awaited()
 

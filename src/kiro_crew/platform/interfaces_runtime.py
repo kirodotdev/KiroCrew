@@ -215,6 +215,54 @@ class RemoteProvisioner:
     confirm_before_launch: str = ""
 
 
+@dataclass(frozen=True)
+class CloudInstancePolicy:
+    """What an edition adds to the IAM role of every EC2 crew it launches.
+
+    Some organizations require each EC2 instance to run a host agent (monitoring,
+    inventory, patch compliance) whose permissions come from a managed policy that
+    already exists in every account. The built-in launcher attaches only Session
+    Manager's policy, and its permissions boundary caps the role to that, so such
+    an instance is non-compliant from the moment it boots. This descriptor is how
+    an edition says what those organizations need, without the public build naming
+    any one of them.
+
+    ``managed_policy_arns`` are attached to the instance role beside Session
+    Manager's. Each is a full IAM policy ARN; ``{account}`` stands for the launch
+    account's id, for a policy that exists at the same path in every account.
+
+    ``boundary_statements`` are ``Allow`` statements appended to the instance
+    permissions boundary. A boundary is a ceiling, so without them an attached
+    policy is capped back to Session Manager and grants nothing. They do not grant
+    anything themselves: the role can use a statement here only if an attached
+    policy also allows it.
+
+    Empty by default, and an empty descriptor leaves the launch, the boundary
+    document and the launcher policy byte-identical to a build without this seam.
+    ``cloud/host_policy.py`` validates both lists and refuses a launch whose
+    descriptor fails validation.
+    """
+
+    managed_policy_arns: Tuple[str, ...] = ()
+    boundary_statements: Tuple[Dict[str, Any], ...] = ()
+
+
+class CloudInstancePolicyProvider(Protocol):
+    """The edition's additions to every EC2 crew's instance role.
+
+    Public default = :class:`CloudInstancePolicy` with both lists empty.
+    """
+
+    def instance_policy(self) -> CloudInstancePolicy:
+        """Return the managed policies and boundary statements to add.
+
+        WIRED: ``cloud/host_policy.py::instance_policy`` reads this, and through it
+        ``cloud/iam.py`` (boundary document and the launcher-policy addendum) and
+        ``cloud/ec2.py`` (the template's ``ExtraManagedPolicyArns``).
+        """
+        ...
+
+
 class RemoteProvisionerProvider(Protocol):
     """Edition-contributed remote-instance provisioners.
 
@@ -432,6 +480,11 @@ class SttProvider(Protocol):
     ``transcribe.availability_detail`` and the STT capability list call
     :meth:`check`, and ``/api/ws/stt`` calls :meth:`open_stream` when
     ``streaming`` is true. A built-in name never reaches any of them.
+
+    A provider that identifies languages among ``stt.transcribe_languages`` may
+    also set an optional ``identifies_languages = True``. Core then offers the
+    mixed-language picker for it; the provider reads the candidates from
+    ``stt_config.transcribe_language_identification`` itself.
 
     Core may call any method from any event loop. A provider must not keep a
     loop-bound client (an aiohttp or httpx session) across calls: it creates one

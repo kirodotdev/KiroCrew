@@ -2,8 +2,8 @@
 provenance, consume veto, allowances and clocks), the Stop signal it reads live, the session's
 Stop count, the directive provenance a channel steer can narrow and the start priority of its
 cold start (``_turn_start_priority``); and the hand-back of what the turn held on its slot
-when it ends (``_turn_release_handles``: the live handles, the batch latch and the file
-changes)."""
+when it ends (``_turn_release_handles``: the live handles and the batch latch;
+``_turn_flush_file_changes``: the file changes)."""
 
 from __future__ import annotations
 
@@ -26,8 +26,10 @@ if TYPE_CHECKING:
         logger,
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _discard_stale_decision
-    from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes
+    from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes_off_loop
     from kiro_crew.dashboard.chat_turn.native_cards import (
+        NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        _native_flush_cut_short,
         _native_subagent_close_all,
         _retain_terminal_native,
     )
@@ -118,10 +120,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     state = turn.state
     turn_exit = turn.turn_exit
     turn_exit.depth = _prompt_depth
-    from kiro_crew.dashboard import responsive_chat
+    from kiro_crew.dashboard import responsive_chat, steer_retract
 
     if _prompt_depth == 0:
         responsive_chat.begin_turn(slot, protected=_responsive_protected)
+        # Before this turn can be steered: a take-back still offered on a row now
+        # belongs to a turn that ended without settling it (a hard Stop, a restart).
+        steer_retract.withdraw_stale_offers(state, slot)
     _responsive_turn = responsive_chat.turn_state(slot)
     turn._responsive_turn = _responsive_turn
     _responsive_owner = asyncio.current_task()
@@ -166,6 +171,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn.slot_ctx_phase = slot_ctx_phase
     slot_ctx_omitted: dict[str, dict[str, Any]] = {}
     turn.slot_ctx_omitted = slot_ctx_omitted
+    slot_ctx_receipts: dict[str, dict[str, Any]] = {}
+    turn.slot_ctx_receipts = slot_ctx_receipts
     # The per-turn billing stats observed BEFORE this turn's cancellable work, so
     # the abnormal seam can tell a turn that installed fresh stats from one that
     # died before doing so and still carries the PREVIOUS turn's object. Snapshot
@@ -560,6 +567,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # only for PostToolUse hook name-matching — NOT trustworthy for security).
     _pending_tools: dict[str, str] = {}
     turn._pending_tools = _pending_tools
+    # tool_call_id -> what the call's PostToolUse SPEC hooks match on
+    # (``spec_hooks.PostToolIdentity``), only where Crew fires them.
+    turn._pending_tool_ids = {}
     # The `ts` of every row ALREADY in this slot when the turn began, so a row
     # this turn appended can be told from one that predates it.
     #
@@ -708,6 +718,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # sub-agent's tool calls stream onto its own card.
     _native_tc_card: dict[str, str] = {}
     turn._native_tc_card = _native_tc_card
+    # Every tool_call_id an activity event names as a native sub-agent's, carded
+    # or not: the session-directive refusal reads this, so a child with no card
+    # (past a bound, or not listed yet) cannot act on this turn's own session.
+    _native_child_tc: set[str] = set()
+    turn._native_child_tc = _native_child_tc
     # tool_call_ids whose output was already streamed to a native card — kiro
     # emits two tool_call_update frames per tool (content + rawOutput), so we
     # dedupe to avoid printing the same output twice.
@@ -930,10 +945,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
 
 
 async def _turn_release_handles(turn: _ChatTurn) -> None:
-    """Hand back the turn's hold on its slot: the live handles, the batch latch, file changes."""
+    """Hand back the turn's hold on its slot: the live handles and the batch latch."""
     _native_card_output = turn._native_card_output
     _native_tracker = turn._native_tracker
-    _shell_tool_calls = turn._shell_tool_calls
     slot = turn.slot
     state = turn.state
     # Completion can be bypassed by cancellation, provider errors, or timeouts.
@@ -944,8 +958,23 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
     # tracker for replay, so reading the tracker afterwards would blame
     # long-completed children for a later ceiling timeout.
     _children_unfinished_final = any(not _i.get("done") for _i in _native_tracker.values())
+    # A turn cut short gets no roster that flushes a Claude child's held text,
+    # so it goes onto the card here, before the card closes.
     try:
-        _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+        _native_flush_cut_short(turn)
+    except Exception:
+        logger.debug("native child text flush at release failed", exc_info=True)
+    # Every normal landing already closed its cards in _on_complete, so a
+    # card still open here belongs to a turn that was stopped, timed out or
+    # crashed before its terminal event.
+    try:
+        _native_subagent_close_all(
+            state,
+            slot,
+            _native_tracker,
+            _native_card_output,
+            error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        )
     finally:
         slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)
         slot._native_subagent_output = {}
@@ -984,18 +1013,36 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
         setattr(turn.client, "accepts_elicitation", False)
     except Exception:
         pass
-    # Ensure file changes always surface, even on cancel/error. Wrapped so
-    # a raise here cannot skip the re-arm in _turn_settle_debts
-    # (chat_turn/prompt_assembly.py) and re-introduce the orphan bug this fix prevents.
+
+
+async def _turn_flush_file_changes(turn: _ChatTurn) -> asyncio.CancelledError | None:
+    """Surface the turn's file changes on every exit, cancel and error included.
+
+    The one phase of the ``finally`` before ``_turn_release_session`` that
+    suspends: the after-content reads run off the loop. A cancellation landing
+    on this await comes back up only after the attach, and is HELD and
+    returned rather than let through -- raised here it would pass every
+    ``except Exception`` in the turn's finally, skip the session permit release
+    and the queue hand-off, and leave the session busy until a restart. The
+    caller re-raises it after ``_end_turn_tail`` (which holds its own the same
+    way). Any other failure is logged so it cannot skip the re-arm in
+    ``_turn_settle_debts`` (chat_turn/prompt_assembly.py) and re-introduce the
+    orphan bug this flush prevents.
+    """
+    slot = turn.slot
+    _held_flush_cancel: asyncio.CancelledError | None = None
     try:
-        _flush_file_changes(
+        await _flush_file_changes_off_loop(
             slot,
             turn_boundary=turn._turn_msg_boundary,
             turn_start_mid=turn._turn_start_mid,
-            turn_had_shell=bool(_shell_tool_calls),
+            turn_had_shell=bool(turn._shell_tool_calls),
         )
+    except asyncio.CancelledError as exc:
+        _held_flush_cancel = exc
     except Exception:
         logger.debug("_flush_file_changes failed", exc_info=True)
+    return _held_flush_cancel
 
 
 def _turn_start_priority(

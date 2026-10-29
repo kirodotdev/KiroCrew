@@ -66,14 +66,28 @@ def verdict(rules: Any, queue_variable: str = "") -> tuple[bool, str]:
     if found:
         ids = sorted({str(rule.get("ruleset_id")) for rule in found})
         # A queue with no required check merges every group unexamined: the
-        # queue only waits on checks a rule requires (PR Readiness here).
-        if not any(
-            isinstance(rule, dict) and rule.get("type") == "required_status_checks"
+        # queue only waits on checks a rule requires (PR Readiness here). A
+        # required_status_checks rule that names zero checks is the same
+        # "waits on nothing" state as having no such rule at all, so require
+        # that some required_status_checks rule lists at least one check.
+        checks_rules = [
+            rule
             for rule in rules
-        ):
+            if isinstance(rule, dict) and rule.get("type") == "required_status_checks"
+        ]
+        if not checks_rules:
             return False, (
                 f"main requires the merge queue (ruleset {', '.join(ids)}) but no required_status_checks "
                 "rule, so a merge group lands without waiting on PR Readiness."
+            )
+        if not any(
+            isinstance(rule.get("parameters"), dict)
+            and rule["parameters"].get("required_status_checks")
+            for rule in checks_rules
+        ):
+            return False, (
+                f"main requires the merge queue (ruleset {', '.join(ids)}) but its required_status_checks "
+                "rule requires no checks, so a merge group lands without waiting on PR Readiness."
             )
         return True, f"merge queue required on main (ruleset {', '.join(ids)})"
     # Same comparison ci.yml and build.yml make on the variable: an Actions

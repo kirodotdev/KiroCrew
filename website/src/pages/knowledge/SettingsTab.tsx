@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useId, createContext, useContext } from 'react'
+import { useState, useId, createContext, useContext } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
@@ -75,14 +75,18 @@ export function SettingsTab() {
   const [localEmbedRate, setLocalEmbedRate] = useState('')
   const [localPoolSize, setLocalPoolSize] = useState('')
 
-  const initRef = useRef(false)
-  useEffect(() => {
-    if (cfgQ.data && !initRef.current) {
-      initRef.current = true
-      setLocalEmbedRate(String(cfg?.embed_rate_limit ?? EMBED_RATE_DEFAULT))
-      setLocalPoolSize(String(cfg?.extraction_pool_size ?? POOL_SIZE_DEFAULT))
-    }
-  }, [cfgQ.data, cfg])
+  // The served config seeds both rows ONCE, in the render that first has it.
+  // Setting state during render is React's shape for state derived from a value
+  // that just arrived: the component re-renders before anything commits, so the
+  // commit that enables the inputs is the one that shows the stored numbers.
+  // Seeding from an effect instead commits one frame where the inputs are
+  // enabled and empty, which a user can see and a test can land on.
+  const [seeded, setSeeded] = useState(false)
+  if (cfgQ.data && !seeded) {
+    setSeeded(true)
+    setLocalEmbedRate(String(cfg?.embed_rate_limit ?? EMBED_RATE_DEFAULT))
+    setLocalPoolSize(String(cfg?.extraction_pool_size ?? POOL_SIZE_DEFAULT))
+  }
 
   // ── Commit helpers ──
   function commitNumber(

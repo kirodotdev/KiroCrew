@@ -15,9 +15,48 @@ CHUNK_OVERLAP = 200
 MAX_CHUNKS_PER_FILE = 50
 
 
+def _skip_space(text: str, pos: int) -> int:
+    """Offset of the first non-whitespace character at or after *pos*."""
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    return pos
+
+
 def _word_count(text: str) -> int:
     """Approximate token count using word splitting (1 word ≈ 1.3 tokens)."""
     return int(len(text.split()) * 1.3)
+
+
+def _span(text: str, piece: str, cursor: int) -> tuple[int, int]:
+    """Start and end offsets of *piece* in *text*, searching from *cursor*.
+
+    A split piece is a substring of the source unless it was split on words,
+    which re-joins them with single spaces, so any whitespace run between two
+    words matches. Pieces come out in source order, so the piece is first tried
+    where the next text after *cursor* begins (a linear check); only when it is
+    not there is the earliest match searched for. Either way a word-split piece
+    is never placed on a later line that repeats the same words exactly.
+    """
+    words = piece.split()
+    if not words:
+        return cursor, cursor
+    start = pos = _skip_space(text, cursor)
+    for n, word in enumerate(words):
+        if n:
+            gap = _skip_space(text, pos)
+            if gap == pos:
+                break
+            pos = gap
+        if not text.startswith(word, pos):
+            break
+        pos += len(word)
+    else:
+        if pos == len(text) or text[pos].isspace():
+            return start, pos
+    found = re.compile(r"\s+".join(map(re.escape, words))).search(text, cursor)
+    if found is None:
+        return cursor, cursor
+    return found.start(), found.end()
 
 
 class HeadingAwareChunker:
@@ -40,11 +79,14 @@ class HeadingAwareChunker:
 
         # Build result with overlap
         result = []
-        cumulative_lines = 1
+        cursor, line = 0, 1
         for i, content in enumerate(raw_chunks):
-            line_start = cumulative_lines
+            # Locate the chunk in the source: the separator between two chunks
+            # may be one newline, a blank line, or a space, so it cannot be assumed.
+            at, end = _span(text, content, cursor)
+            line_start = line + text.count("\n", cursor, at)
             line_end = line_start + content.count("\n")
-            cumulative_lines = line_end + 2  # +2 accounts for separator between chunks (at least \n\n)
+            cursor, line = end, line_start + text.count("\n", at, end)
 
             # Then add overlap (convert token count to word count)
             if i > 0 and self.overlap > 0:
@@ -214,9 +256,15 @@ class HeadingAwareChunker:
             """Emit the accumulated section, sub-splitting it if oversized."""
             nonlocal idx
             if _word_count(current_body) > self.target_size:
-                offset = 0
+                # An oversized body is a single unmerged section, so each sub
+                # piece is located in the source from the section's first line.
+                cursor, line = 0, current_start
+                if current_start > 1:
+                    cursor = len(text) - len(text.split("\n", current_start - 1)[-1])
                 for sub in self._recursive_split(current_body, _SEPARATORS):
-                    sub_line_start = current_start + offset
+                    at, end = _span(text, sub, cursor)
+                    sub_line_start = line + text.count("\n", cursor, at)
+                    cursor, line = end, sub_line_start + text.count("\n", at, end)
                     results.append({
                         "content": sub,
                         "section_title": current_title,
@@ -224,7 +272,6 @@ class HeadingAwareChunker:
                         "line_start": sub_line_start,
                         "line_end": sub_line_start + sub.count("\n"),
                     })
-                    offset += sub.count("\n") + 1
                     idx += 1
             else:
                 # line_end tracks the last SOURCE line of the merged sections,

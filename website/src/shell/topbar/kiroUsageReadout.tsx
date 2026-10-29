@@ -150,7 +150,7 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
   if (kiroUsageState !== 'none' && kiroUsageState !== 'config-unreadable') {
     if (isAccountOnly(kiroUsageState)) {
       // Signed in with no balance tied to the user (an external identity
-      // provider sign-in). Permanent for that sign-in like 'api-key': the same
+      // provider sign-in). Permanent for that sign-in: the same
       // muted dash the sibling no-value states show, so it reads as "no value
       // here", plus an info mark, the one the modal's notice uses, so it is
       // not mistaken for a failed read. It only arises with kiro-cli, so it
@@ -166,18 +166,10 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       // spinner are both dropped: without it the failed and warming
       // states are one coin glyph apart in opacity alone.
       node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_unavailable')} aria-label={i18nT('app.kiro_credit_usage_unavailable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
-    } else if (kiroUsageState === 'api-key') {
-      // API-key auth: the usage API needs an SSO/OIDC token this
-      // account type never has, so this is a PERMANENT state, not a
-      // failure. Same terminal dash as 'failed' (nothing is in
-      // flight), but the label says why, and clicking through opens
-      // the modal's fuller explanation.
-      node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_api_key')} aria-label={i18nT('app.kiro_credit_usage_api_key')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
     } else if (kiroUsageState === 'signin-required') {
       // No live Kiro credential could be read (or it was rejected), so
-      // the free API never got an answer about this account. Terminal
-      // like 'api-key', but the label must name the remedy: signing in
-      // again.
+      // the free API never got an answer about this account. Terminal,
+      // and the label must name the remedy: signing in again.
       node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_signin_required')} aria-label={i18nT('app.kiro_credit_usage_signin_required')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
     } else if (!kiroUsageState) {
       node = (<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)

@@ -7,12 +7,14 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Literal
 
+from kiro_crew.crew_mode import slot_is_crew_mode_root as crew_mode_is_root
 from kiro_crew.dashboard.chat_utils import (
     _broadcast_compaction_result,
     drained_to_thread,
     has_leaked_tool_call,
 )
 from kiro_crew.dashboard.state import durable_row_count
+from kiro_crew.platform import redact_log_via_context
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -285,6 +287,41 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         # the session reset in _turn_release_session (chat_turn/session_reset.py) tears the
         # switched session down, the same way the tool-rejection paths in
         # _on_permission_prompt bail out of a turn that must not continue.
+        return _Flow.BREAK
+    elif new_agent and new_agent != slot.agent and crew_mode_is_root(slot):
+        # Crew Mode is locked once the chat has a message, and a turn
+        # means it has one (``crew_mode_locked`` on every switch
+        # route): the backend switching its own agent mid-turn would
+        # take the chat off its conductor by the one door the HTTP
+        # lock cannot reach. Vetoed like a member pin: the slot keeps
+        # its agent, the denial is audited and shown, and the session
+        # resets so the next turn starts on the conductor again.
+        # A gate-side log line reads the context-aware redactor, so a
+        # loaded companion's patterns apply (test_security_posture).
+        _crew_veto_agent = redact_log_via_context(event.text or "")
+        logger.warning(
+            "agent switch to %r vetoed on Crew Mode chat %s",
+            _crew_veto_agent,
+            slot.key,
+        )
+        sel().log_api_access(
+            caller=f"slot={slot.key}",
+            operation="chat_runner.agent_switch",
+            outcome="denied",
+            source="crew_mode_locked",
+            resources=f"slot={slot.key} agent={_crew_veto_agent}",
+            error="a Crew Mode chat stays on its conductor",
+        )
+        slot.append(
+            "notice",
+            f"📌 Agent switch to {new_agent} was blocked — this chat is in "
+            "Crew Mode, which stays on its conductor. The next turn restarts "
+            "on the conductor.",
+            "msg msg-info",
+        )
+        needs_session_reset = True
+        turn.needs_session_reset = needs_session_reset
+        turn._produced_visible_output = True
         return _Flow.BREAK
     elif new_agent:
         # A live provider event can change a template selection.

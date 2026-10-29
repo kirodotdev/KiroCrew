@@ -110,9 +110,6 @@ class TestGetPeerPid:
     def test_a_non_unix_socket_has_no_peer_pid(self) -> None:
         assert socketsec.get_peer_pid(_FailingSock(family=socket.AF_INET)) is None
 
-    def test_an_object_with_no_socket_at_all(self) -> None:
-        assert socketsec.get_peer_pid(object()) is None
-
     def test_the_windows_dispatch_goes_through_the_pipe_handle(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

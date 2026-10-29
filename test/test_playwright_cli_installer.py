@@ -391,7 +391,9 @@ def test_the_posix_installer_stages_node_for_gateway_execution() -> None:
     assert 'mktemp "$PREFIX/.gateway-node.XXXXXX"' in body
     assert 'mv "$_gateway_node_incoming" "$GATEWAY_NODE"' in body
     wrapper = body[body.index("# ── gateway Node + wrapper") : body.index("# ── verify")]
-    assert 'exec $(_shell_quote "$GATEWAY_NODE") $(_shell_quote "$TARGET")' in wrapper
+    assert 'KIROCREW_NODE="$(_shell_quote "$GATEWAY_NODE")"' in wrapper
+    assert 'KIROCREW_ENTRY="$(_shell_quote "$TARGET")"' in wrapper
+    assert 'exec @KIROCREW_NODE@ @KIROCREW_ENTRY@ "$@"' in wrapper
     assert 'PATH=$(_shell_quote "$NODE_BIN_DIR")' not in wrapper
 
 
@@ -981,9 +983,8 @@ def test_both_installers_probe_the_staged_node_before_promoting_it() -> None:
     tree is in place while the old one waits in staging. An interrupt inside that
     interval runs the cleanup, which sees the target present, correctly declines to
     restore -- and then deletes the rollback, leaving an unvalidated Node with no way
-    back. Four review rounds were spent guarding that interval before it became
-    clear the interval should not exist: nothing under the prefix is touched until
-    the downloaded bits are known to run.
+    back. Guarding that interval is not enough; it must not exist: nothing under the
+    prefix is touched until the downloaded bits are known to run.
     """
     sh = INSTALLER_SH.read_text(encoding="utf-8")
     probe = sh.index('_try_node "$_stage/tree/bin/node"')

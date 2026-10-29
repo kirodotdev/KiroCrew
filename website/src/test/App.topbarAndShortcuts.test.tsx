@@ -324,7 +324,9 @@ describe('onCycleAgent keyboard shortcut', () => {
     const noticeText = await screen.findByText(
       REAL_FAILURE,
     )
-    expect(noticeText.closest('[role="status"]')).not.toBeNull()
+    // A refused switch is an error: it renders through ErrorNotice, which
+    // announces itself as an alert rather than a polite status line.
+    expect(noticeText.closest('[role="alert"]')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByText(
       REAL_FAILURE,
@@ -862,6 +864,20 @@ describe('Kiro credits pill — edge cases', () => {
     // pill (which would otherwise show "NaN / NaN") never appears.
     await waitFor(() => expect(screen.queryByTitle('Kiro account & credits — view usage, manage subscription')).not.toBeInTheDocument())
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument()
+  })
+})
+
+describe('file-menu result toast', () => {
+  it('is mounted in the popout and embed frames, which have no notification sheet', () => {
+    // A file-menu row renders in those frames too (the chat side panels' markdown
+    // header), and the dashboard's copy lives in NotificationSheet, which only the
+    // dashboard branch's ShellHeader renders. Read from source for the same reason
+    // as the import notice below.
+    const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
+    const frames = '{(isPopout || isEmbed) && <FileMenuResultToastFrame />}'
+    expect(src.split(frames).length - 1).toBe(1)
+    expect(src.indexOf(frames)).toBeGreaterThan(src.indexOf('<WsContext.Provider'))
+    expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{isPopout ? ('))
   })
 })
 

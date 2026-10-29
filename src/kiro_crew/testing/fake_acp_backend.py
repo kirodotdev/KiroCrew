@@ -26,6 +26,8 @@ sends none of this, exactly like kiro-cli v2.
 Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
 
 * Default text -> stream one ``agent_message_chunk`` (the canned reply).
+* A session-naming prompt (opens with ``NAMING_PROMPT_OPENING``) -> stream
+  ``SKIP``, so the host titles the session from its first-message fallback.
 * ``[[TOOL]]`` in the prompt -> also emit a ``tool_call`` + ``tool_call_update``
   (no permission). Exercises the tool-card UI and is deterministic headless:
   kiro-cli likewise emits tool calls that never raise ``session/request_permission``
@@ -113,6 +115,17 @@ PROTOCOL_VERSION = "2025-08-22"
 # Stable, searchable marker the send->assert test asserts on. Kept distinctive
 # so a real backend's output could never masquerade as this fake's reply.
 REPLY_TEXT = "pong from the fake ACP backend"
+# The opening sentence of every session-naming prompt (the dashboard title, its
+# refresh, the Slack/Telegram conversation name). A copy of
+# ``kiro_crew.label_guard.NAMING_PROMPT_OPENING``, not an import: this module is
+# exec'd by its shebang and stays stdlib-only at import time. A unit test pins
+# the two equal.
+NAMING_PROMPT_OPENING = "You are a session naming agent."
+# The whole reply to a naming prompt. ``SKIP`` is the control word every naming
+# prompt teaches for "not nameable yet", so the host keeps its own fallback --
+# the truncated first user message -- instead of storing ``REPLY_TEXT`` as the
+# session title.
+NAMING_REPLY_TEXT = "SKIP"
 FAKE_VERSION = "kiro-cli fake-e2e"
 FAKE_IDENTITY = "fake-e2e-user"
 
@@ -787,6 +800,18 @@ def _handle(msg: dict[str, Any]) -> None:
                 )
                 _result(req_id, {"stopReason": "end_turn"})
                 return
+        if text.lstrip().startswith(NAMING_PROMPT_OPENING):
+            # A naming turn, not a chat turn: answer with the naming control
+            # word, never the chat reply, or the session is titled with it.
+            _update(
+                session_id,
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": NAMING_REPLY_TEXT},
+                },
+            )
+            _result(req_id, {"stopReason": "end_turn"})
+            return
         if ERROR_TRIGGER in text:
             # A JSON-RPC error instead of a result: the turn fails, not stops.
             _error(req_id)

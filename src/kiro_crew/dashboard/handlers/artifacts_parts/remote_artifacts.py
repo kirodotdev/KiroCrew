@@ -215,7 +215,7 @@ async def api_remote_artifacts_clone(request: web.Request) -> web.Response:
     external_id = str(body.get("external_id") or "").strip()
     if not external_id:
         return _err("external_id is required")
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="artifact_clone",
@@ -595,7 +595,7 @@ async def api_remote_artifact_post_comment(request: web.Request) -> web.Response
     # gate as artifact publish and the local shared-comment path — otherwise a
     # policy denying publish for this provider would be bypassed. No local mirror
     # to fall back to here, so a denial is an audited 403.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_post_comment",
@@ -688,7 +688,7 @@ async def api_remote_artifact_reply_comment(request: web.Request) -> web.Respons
     text = _redact_text(text)
 
     # Replying is outbound egress to the provider — same fail-closed publish gate.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_reply_comment",
@@ -763,7 +763,7 @@ async def api_remote_artifact_mark_review(request: web.Request) -> web.Response:
     comment_id = request.match_info["comment_id"]
 
     # Advancing a thread's status mutates provider-side state — same publish gate.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_mark_review",
@@ -837,7 +837,7 @@ async def api_remote_artifact_delete_comment(request: web.Request) -> web.Respon
     comment_id = request.match_info["comment_id"]
 
     # Deleting a provider comment mutates provider-side state — same publish gate.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_delete_comment",

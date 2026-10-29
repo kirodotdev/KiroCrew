@@ -738,12 +738,11 @@ def vet_job_at_fire_time(job: CronJob) -> str | None:
         # existed still runs after it -- measured, `_vet_command_governance`
         # (the only fire-time check a command had) ALLOWS
         # `set -B; cat ~/.a{w,w}s/creds` while `_vet_shell_command` refuses it,
-        # so the storage-time half of this change simply did not reach the
-        # installed base. Deny semantics here are the right ones for that: the
-        # run fails, the job is KEPT, and the refusal is audited rather than
-        # silent -- which also makes the newly-refused shapes (a quoted regex
-        # interval, say) surface as a legible audited failure instead of a job
-        # that quietly stops matching policy.
+        # so a storage-time refusal alone does not reach the installed base.
+        # Deny semantics here are the right ones for that: the run fails, the job is KEPT,
+        # and the refusal is audited rather than silent -- which also makes the
+        # newly-refused shapes (a quoted regex interval, say) surface as a legible audited
+        # failure instead of a job that quietly stops matching policy.
         reason = _vet_shell_command(job.command, governance_checked=True)
         if reason:
             _audit_fire_time_decision(job.id, "cron_command_body", "denied", reason)

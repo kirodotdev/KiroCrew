@@ -5,6 +5,7 @@ the post-rejection un-poison routine, and every refusal that returns before a cl
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -525,6 +526,42 @@ class TestInstallFromRegistryRefusals:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "os_value,required",
+        [(None, ["macos", "linux"]), (7, []), (True, []), ("windows", []), ({"id": "x"}, [])],
+    )
+    async def test_a_non_list_platform_os_reaches_the_client_install_answer(
+        self, monkeypatch, os_value, required
+    ):
+        """The platform gate reads the parsed ``os``, not the raw registry JSON.
+
+        ``"os": null`` means unset (macOS + Linux) and any other non-list
+        supports no platform, as ``PlatformConfig.from_dict`` reads them. Read
+        raw, ``null`` or a number reached ``supports_platform`` and the OS label
+        as a non-iterable and the install endpoint answered HTTP 500.
+        """
+        monkeypatch.setattr(
+            registry,
+            "_resolve_install_entry",
+            lambda name: ({"name": "demo", "gitUrl": "https://github.com/o/demo.git"}, ""),
+        )
+
+        async def _manifest(*a, **k):
+            return {"name": "demo", "platform": {"os": os_value, "installMode": "client"}}
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
+        monkeypatch.setattr(registry, "get_app", lambda name: None)
+        monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+        # A host no default names, so the client-install answer is the one under test.
+        monkeypatch.setattr(sys, "platform", "haiku")
+        try:
+            result = await registry.install_from_registry("demo")
+        except TypeError as exc:
+            pytest.fail(f"platform.os={os_value!r} raised instead of answering: {exc}")
+        assert result["needsClientInstall"] is True
+        assert result["platform"]["required"] == required
+
+    @pytest.mark.asyncio
     async def test_admission_denial_stops_before_the_clone(self, monkeypatch):
         monkeypatch.setattr(
             registry,
@@ -538,7 +575,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": "banned"
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: "banned"
         )
         result = await registry.install_from_registry("demo")
         assert result["ok"] is False
@@ -566,7 +603,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": None
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: None
         )
         result = await registry.install_from_registry("demo")
         assert result["needsClientInstall"] is True
@@ -587,7 +624,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": None
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: None
         )
         monkeypatch.setattr("kiro_crew.apps.version.check_min_version", lambda mv: "needs 999.0.0")
         result = await registry.install_from_registry("demo")
@@ -607,7 +644,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": None
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: None
         )
         monkeypatch.setattr(
             registry,

@@ -59,6 +59,9 @@ class _CronCapture(NamedTuple):
     cron_memory_store: str
     cron_agent: str
     default_substituted: bool
+    # The previous run's result framed as untrusted data, for build_message's
+    # request_prefix_context (``cron_prior_result_context``); "" when none.
+    prior_result: str = ""
 
 
 def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
@@ -266,9 +269,12 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     the agent it dispatches: the configured default stands in for the bare floor
     only where that is safe. Every kind of job captures, before the overlap guard.
     """
-    # helper picks stable vs ephemeral session key and
-    # decides whether to prepend last_result, based on job.persistent_session.
+    # helper picks stable vs ephemeral session key; a persistent job's previous
+    # result is carried separately, framed as data, ahead of the request.
     session_key, msg = build_cron_session_context(job)
+    from kiro_crew.cron_service.identity import cron_prior_result_context
+
+    prior_result = cron_prior_result_context(job)
 
     from kiro_crew.cron import resolve_cron_memory
     from kiro_crew.execution_context import (
@@ -528,6 +534,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         cron_memory_store,
         cron_agent,
         _default_substituted,
+        prior_result,
     )
 
 

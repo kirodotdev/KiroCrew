@@ -103,9 +103,8 @@ _MATE_AUTO_GRANTS = (
 #: the person arranged and would have to reconstruct by hand. Creation is otherwise
 #: recoverable clutter; mutation of what the user arranged is not.
 #:
-#: Both granted creation verbs earn half 2 from a server ceiling, and BOTH ceilings
-#: were added by this change — neither verb was safe to auto-approve as the code
-#: stood:
+#: Both granted creation verbs earn half 2 from a server ceiling — without its
+#: ceiling neither verb is safe to auto-approve:
 #:
 #: * ``chat_folder_create`` had no bound at all, so a loop grew durable on-disk
 #:   state without limit. Now ``MAX_CHAT_FOLDERS``, tested under the folder lock.
@@ -284,7 +283,7 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: → stop) stalls on an approval prompt at its second step with nobody at the
 #: keyboard.
 #: ``session_broadcast`` joins on exactly ``session_send``'s argument rather than a
-#: new one, and the fan-out does not widen it: the verb's DEFAULT audience is read
+#: new one, and the fan-out does not widen it: the verb's `all: true` audience is read
 #: from the same ``created_by`` field the ownership fence reads, and every delivery
 #: re-runs that fence per target, so a member's broadcast reaches the worker
 #: sessions it opened and nothing else — the same confinement, applied to each of

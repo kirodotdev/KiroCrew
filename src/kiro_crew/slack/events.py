@@ -106,6 +106,7 @@ from kiro_crew.slack.blocks import (
     dashboard_link_block,
     voice_config_modal,
 )
+from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
@@ -369,6 +370,20 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
 
     orch._socket_client.socket_mode_request_listeners.append(_on_event)  # type: ignore[arg-type]
     register_drain(_CHANNEL, lambda session_key: _drain_slack_queue(orch, session_key))
+
+
+async def _post_stop_notice(orch: Any, channel: str, text: str, ts: str | None) -> str:
+    """Post a ``!stop`` reply; ``""`` when the channel policy refuses the write.
+
+    A pure ``!stop`` is exempt from the channel list so a withdrawn channel can
+    still halt its turn; its replies are not, and a refused one must not abort
+    the stop or the audit that follows it.
+    """
+    try:
+        return await orch.slack.post_message(channel, text, ts)
+    except SlackChannelRefused:
+        logger.info("!stop notice withheld: channel refused by policy")
+        return ""
 
 
 async def _route_message(
@@ -656,6 +671,24 @@ async def _route_message(
                 error="channels governance policy",
             )
             return
+        # The channel itself: channels.posture.slack.allowed_channel_ids. In an
+        # enterprise build no channel is admitted until the policy names the list.
+        # A pure ``!stop`` stays exempt for the reason above.
+        from kiro_crew.slack.channel_policy import channel_refusal
+
+        # Audited just below with the sender, so not a second time inside.
+        channel_refused = channel_refusal(channel, audit=False)
+        if channel_refused:
+            logger.info("slack inbound dropped: %s", channel_refused)
+            sel().log_api_access(
+                caller=sender_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=channel,
+                error="channel_not_allowed_by_policy",
+            )
+            return
 
     # Resolve sender's Slack display name so the LLM uses the actual
     # profile name instead of guessing from memory. Cached on channel
@@ -854,7 +887,7 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+                await _post_stop_notice(orch, channel, "Nothing running.", thread_ts or msg_ts)
             return
         _flat_stop_key = flat_dm_session_key(
             channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
@@ -918,8 +951,8 @@ async def _route_message(
                 # The post hands back the ts of what landed, so a falsy one is a
                 # warning this member never saw and must arm nothing.
                 return bool(
-                    await orch.slack.post_message(
-                        channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
+                    await _post_stop_notice(
+                        orch, channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
                     )
                 )
 
@@ -979,13 +1012,18 @@ async def _route_message(
                 try:
                     # Post ephemeral "Stopping…" block with Kill Now button
                     if orch.slack:
-                        await orch.slack.post_ephemeral(
-                            channel,
-                            sender_id,
-                            "Stopping…",
-                            blocks=build_stopping_blocks(session_key),
-                            thread_ts=stop_post_ts,
-                        )
+                        try:
+                            await orch.slack.post_ephemeral(
+                                channel,
+                                sender_id,
+                                "Stopping…",
+                                blocks=build_stopping_blocks(session_key),
+                                thread_ts=stop_post_ts,
+                            )
+                        except SlackChannelRefused:
+                            # A channel the policy refuses still gets its
+                            # stop; only the notice is withheld.
+                            logger.info("!stop notice withheld: channel refused by policy")
 
                     async def _on_soft() -> None:
                         if orch.slack:
@@ -1038,8 +1076,8 @@ async def _route_message(
                         # The ts of what landed: a falsy one is a warning this
                         # member never saw and must arm nothing.
                         return bool(
-                            await orch.slack.post_message(
-                                channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
+                            await _post_stop_notice(
+                                orch, channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
                             )
                         )
 
@@ -1093,7 +1131,7 @@ async def _route_message(
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", stop_post_ts)
+                await _post_stop_notice(orch, channel, "Nothing running.", stop_post_ts)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -1112,7 +1150,7 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+                await _post_stop_notice(orch, channel, "Nothing running.", thread_ts or msg_ts)
         return
 
     # ── !restart: bang alias for /kirocrew restart — intercept here so it

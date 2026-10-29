@@ -7,9 +7,10 @@ name: PR Size Override
 #
 # issue_comment workflows execute from the trusted default branch, never from the
 # PR head. This handler validates the commenter, posts a bot-authored comment whose
-# first line is a hidden marker, and re-runs the `PR Size` check, which reads the
-# marker back. The check trusts a marker only in a comment written by
-# `github-actions[bot]`, so a marker typed by hand is ignored.
+# first line is a hidden marker, and re-runs the `PR Policy` run for the head (the
+# `PR Size` step lives there, in pr-policy.yml), which reads the marker back. The
+# check trusts a marker only in a comment written by `github-actions[bot]`, so a
+# marker typed by hand is ignored.
 #
 # Who counts as an owner: a collaborator with `admin`, `maintain` or `write`, read
 # from GET collaborators/<actor>/permission with the same retry and fail-closed
@@ -156,14 +157,14 @@ jobs:
 
           err="$(mktemp)"
           if ! latest="$(gh api \
-            "repos/$REPO/actions/workflows/pr-size.yml/runs?head_sha=$HEAD&event=pull_request&per_page=20" \
+            "repos/$REPO/actions/workflows/pr-policy.yml/runs?head_sha=$HEAD&event=pull_request&per_page=20" \
             --jq '.workflow_runs | sort_by(.id) | last | select(. != null) | "\(.id) \(.status)"' 2>"$err")"; then
-            echo "::warning::Reading the PR Size runs failed ($(tr '\n' ' ' < "$err" | cut -c1-200))."
-            post_notice "The approval is recorded, but the PR Size runs could not be read. Re-run the PR Size check by hand."
+            echo "::warning::Reading the PR Policy runs failed ($(tr '\n' ' ' < "$err" | cut -c1-200))."
+            post_notice "The approval is recorded, but the PR Policy runs (the PR Size step lives there) could not be read. Re-run the PR Policy check by hand."
             exit 0
           fi
           if [ -z "$latest" ]; then
-            echo "PR Size has not run for $HEAD yet; it reads the approval when it does."
+            echo "PR Policy has not run for $HEAD yet; its PR Size step reads the approval when it does."
             exit 0
           fi
           run_id="${latest%% *}"
@@ -180,13 +181,13 @@ jobs:
             done
           fi
           if [ "$status" != "completed" ]; then
-            echo "::warning::PR Size run $run_id did not stop in time."
-            post_notice "The approval is recorded, but PR Size run $run_id did not stop in time. Re-run the PR Size check by hand."
+            echo "::warning::PR Policy run $run_id did not stop in time."
+            post_notice "The approval is recorded, but PR Policy run $run_id did not stop in time. Re-run the PR Policy check by hand."
             exit 0
           fi
           if ! gh api --method POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>"$err"; then
-            echo "::warning::Could not re-run PR Size run $run_id ($(tr '\n' ' ' < "$err" | cut -c1-200))."
-            post_notice "The approval is recorded, but PR Size could not be re-run automatically. Re-run the PR Size check by hand."
+            echo "::warning::Could not re-run PR Policy run $run_id ($(tr '\n' ' ' < "$err" | cut -c1-200))."
+            post_notice "The approval is recorded, but PR Policy could not be re-run automatically. Re-run the PR Policy check by hand."
             exit 0
           fi
-          echo "Re-running PR Size run $run_id for $HEAD"
+          echo "Re-running PR Policy run $run_id for $HEAD (its PR Size step reads the approval)"

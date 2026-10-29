@@ -24,16 +24,13 @@ pytestmark = pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX guest p
 
 @pytest.fixture(autouse=True)
 def _drain_asyncio_transports():
-    """Collect asyncio transport cycles before the next test can be blamed for them.
+    """Collect asyncio transport cycles after each test in this module.
 
-    Tests in this module run asyncio subprocesses via asyncio.run().  When the
-    loop closes, any BaseSubprocessTransport whose subprocess has not yet been
-    awaited forms a reference cycle with its protocol.  CPython's cyclic
-    collector defers that cycle until the next GC pass, which may land inside a
-    completely unrelated test — attributing an "Event loop is closed" unraisable
-    to the innocent victim.  Collecting here, after each test in this module
-    finishes, pays the GC cost at the right place and keeps the unraisable (if
-    any) attached to the test that leaked the transport.
+    Tests here spawn asyncio subprocesses via asyncio.run(); a
+    BaseSubprocessTransport whose subprocess is not awaited before the loop
+    closes forms a reference cycle with its protocol.  Collecting after each
+    test keeps such a cycle from surfacing inside the next test, in this file
+    or in a later module on the same worker.
     """
     import gc
 

@@ -686,9 +686,11 @@ def _session_tools() -> tuple[Tool, ...]:
             description=(
                 "Send ONE message to several peer sessions at once — the fan-out "
                 "counterpart of session_send, for when the thing you have to say "
-                "is true of every worker rather than of one. Omit `targets` and it "
-                "goes to every session YOU created, which is the usual case for a "
-                "conductor; name them to reach a subset. `mode` picks the delivery "
+                "is true of every worker rather than of one. Name `targets` to reach a "
+                "subset, or pass `all: true` to reach every session YOU created, "
+                "which is the usual case for a conductor. A call with neither is "
+                "refused and delivers nothing, so when your audience computes to "
+                "nobody, skip the call. `mode` picks the delivery "
                 "and is required, because the two are different instructions: "
                 "`queue` waits for each target's current turn to end (use it for "
                 "'the base moved, rebase before you push'), while `steer` cuts "
@@ -733,8 +735,16 @@ def _session_tools() -> tuple[Tool, ...]:
                         "items": {"type": "string"},
                         "description": (
                             "Session keys or exact titles, as session_send takes "
-                            "them. Omit to reach every session you created. A "
-                            "repeated target is delivered to once."
+                            "them. An empty list counts as no list, so it never "
+                            "reaches anyone. A repeated target is delivered to "
+                            "once. Give this or `all`, not both."
+                        ),
+                    },
+                    "all": {
+                        "type": "boolean",
+                        "description": (
+                            "`true` reaches every session you created. Use it "
+                            "instead of `targets`, never together with it."
                         ),
                     },
                 },

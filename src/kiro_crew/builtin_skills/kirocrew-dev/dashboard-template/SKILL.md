@@ -178,10 +178,11 @@ The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
   `img-src data: blob:`.
 - No link can leave the frame. A page asks the host instead:
   `parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')`. The host
-  (`useFrameOpenLink`) opens it only from its own frame, only right after a click or
-  key press in that frame, and only for a URL matching `PR_URL_RE`, a
-  `https://github.com/<owner>/<repo>/pull/<n>` page. Anything else drops, so post it
-  from a click handler, never on a timer.
+  (`useFrameLinkBridge`) opens it only from its own frame, only right after a click or
+  key press in that frame, in a new tab, for an `http(s)` URL or a dashboard path
+  such as `/artifacts/<slug>` or `/chat?sid=<key>`. A click it cannot tie to the
+  frame gets an "Open <host>" button instead. Other schemes drop, and so does a
+  post with no click, so post it from a click handler, never on a timer.
 
 Script and buttons are for the built-in directory templates. A scaffolded page above
 stays inert, so its motion is CSS only and it links nowhere.

@@ -221,8 +221,15 @@ class TestTheApply:
     async def test_a_pinned_model_is_re_applied(self) -> None:
         runtime = _runtime()
         provider = _provider(runtime, _handle(model="some-pinned-id"))
+
+        async def _set_model(model: str) -> None:
+            runtime.new_handle.model = model
+
+        runtime.new_handle.set_model = AsyncMock(side_effect=_set_model)
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
+        assert provider._handle is runtime.new_handle
+        assert provider._handle.model == "some-pinned-id"
         runtime.new_handle.set_model.assert_awaited_once_with("some-pinned-id")
 
     @pytest.mark.asyncio
@@ -231,6 +238,9 @@ class TestTheApply:
         provider = _provider(runtime, _handle(model=""))
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
+        assert provider._handle is runtime.new_handle
+        assert provider._handle.model == ""
+        assert provider._mcp_reinject_pending is False
         runtime.new_handle.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -269,6 +279,8 @@ class TestTheApply:
         provider.reclaim = MagicMock()  # type: ignore[method-assign]
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
+        assert provider._handle is runtime.new_handle
+        assert provider._mcp_reinject_pending is False
         assert runtime.load_session.await_args.kwargs["member_session_key"] == "member:m1"
 
 
@@ -382,26 +394,30 @@ class TestEvict:
         runtime.unregister_session.assert_called_once_with(_SID)
 
     @pytest.mark.asyncio
-    async def test_a_refused_close_still_unregisters(self) -> None:
+    async def test_a_refused_close_still_unregisters(self, tmp_path) -> None:
+        import asyncio
+
         from kiro_crew.acp.runtime_class import AcpRuntime
 
-        runtime = object.__new__(AcpRuntime)
-        runtime._dead = False
-        runtime._process = object()
+        runtime = AcpRuntime(work_dir=tmp_path, sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
+        runtime._session_queues[_SID] = asyncio.Queue()
+        runtime._process = object()  # type: ignore[assignment]
         runtime._send_and_await = AsyncMock(side_effect=RuntimeError("no such session"))  # type: ignore[method-assign]
-        runtime.unregister_session = MagicMock()  # type: ignore[method-assign]
-        await AcpRuntime.evict_session(runtime, _SID)
-        runtime.unregister_session.assert_called_once_with(_SID)
+        await runtime.evict_session(_SID)
+        assert _SID not in runtime._session_queues
 
     @pytest.mark.asyncio
-    async def test_a_dead_runtime_sends_nothing(self) -> None:
+    async def test_a_dead_runtime_sends_nothing(self, tmp_path) -> None:
+        import asyncio
+
         from kiro_crew.acp.runtime_class import AcpRuntime
 
-        runtime = object.__new__(AcpRuntime)
+        runtime = AcpRuntime(work_dir=tmp_path, sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
+        runtime._session_queues[_SID] = asyncio.Queue()
+        # A process is set, so being dead is the only reason to skip the close.
+        runtime._process = object()  # type: ignore[assignment]
         runtime._dead = True
-        runtime._process = None
         runtime._send_and_await = AsyncMock()  # type: ignore[method-assign]
-        runtime.unregister_session = MagicMock()  # type: ignore[method-assign]
-        await AcpRuntime.evict_session(runtime, _SID)
+        await runtime.evict_session(_SID)
         runtime._send_and_await.assert_not_awaited()
-        runtime.unregister_session.assert_called_once_with(_SID)
+        assert _SID not in runtime._session_queues

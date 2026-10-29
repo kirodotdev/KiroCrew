@@ -15,10 +15,15 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import native_skill_projection_helpers
 import pytest
 
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError, _format_runtime_rpc_error
+
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 
 VIEW = "kirocrew-skill-view-" + "a" * 24
 OTHER_VIEW = "kirocrew-skill-view-" + "b" * 24

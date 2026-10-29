@@ -41,6 +41,7 @@ export interface TailnetStatusData {
  * `handlers/tailnet_mobile._derive_step`) so this list is rendered, never
  * re-computed here — one owner for the state machine.
  *
+ * - `policy_off` — an enterprise build whose policy does not turn tailnet on. Dead end.
  * - `pinned` — an administrator's policy forbids tailnet access. Dead end.
  * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `enable_magicdns`
  *   — the ways there is no usable tailnet name, kept apart because each is a
@@ -59,6 +60,7 @@ export interface TailnetStatusData {
  * - `ready` — published and trusted.
  */
 export type TailnetMobileStep =
+  | 'policy_off'
   | 'pinned'
   | 'untrusted_cli'
   | 'install'

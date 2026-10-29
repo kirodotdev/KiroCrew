@@ -589,6 +589,98 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
 
 
 @pytest.mark.asyncio
+async def test_pooled_stubs_get_the_backends_instructions_after_a_respawn_too(
+    tmp_path: Path, short_sock_dir
+) -> None:
+    """MCP ``instructions`` reach every stub of a pooled backend, unchanged.
+
+    Kiro Crew's servers carry their usage text in the ``initialize`` result
+    (``kiro_crew.mcp_instructions``), and gatewayd answers every stub after the
+    first from its cached copy of that result. So the text must survive the
+    replay, and after the shared backend dies, a stub that connects later must get
+    the REPLACEMENT's result rather than a stale one. The fake stamps its pid into
+    the text, which names the backend each reply came from.
+    """
+    sock = short_sock_dir / "gw.sock"
+    work_dir = tmp_path / "ws"
+    work_dir.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    launch_log = tmp_path / "launches.txt"
+    # The fake answers ``tools/call`` only while it records callers.
+    caller_log = tmp_path / "callers.txt"
+
+    def _resolver(_key: object) -> tuple[str, list[str], dict[str, str], str]:
+        return (
+            sys.executable,
+            [str(_FAKE_SERVER), str(launch_log), str(caller_log)],
+            {"FAKE_POOL_INSTRUCTIONS": "Use the fake well."},
+            str(work_dir),
+        )
+
+    stop = asyncio.Event()
+    daemon = asyncio.create_task(
+        gw.run_gatewayd(
+            socket_path=sock,
+            max_backends=8,
+            idle_timeout_secs=300,
+            stop_event=stop,
+            target_resolver=_resolver,
+            prewarm_count=0,
+        )
+    )
+    procs: list[asyncio.subprocess.Process] = []
+    try:
+        await async_wait_until(
+            lambda: transport.endpoint_exists(sock),
+            off_loop=True,
+            describe=lambda: "gatewayd never bound its endpoint",
+        )
+
+        async def _instructions_of_a_new_stub(req_id: int) -> str:
+            proc = await _spawn_stub(
+                socket_path=sock, server="fake", agent="probe", work_dir=work_dir, home=home
+            )
+            procs.append(proc)
+            reply = await _drive_initialize(proc, req_id=req_id)
+            assert "result" in reply, reply
+            return reply["result"].get("instructions", "")
+
+        first = await _instructions_of_a_new_stub(1)
+        second = await _instructions_of_a_new_stub(2)
+        backends = recorded(launch_log)
+        assert len(backends) == 1, backends
+        assert first == f"Use the fake well. pid={backends[0]}"
+        assert second == first, "the cached initialize did not replay the instructions"
+
+        await pc.kill_process_tree_async(int(backends[0]), pc.SIGKILL)
+        # The next forwarded call finds the backend gone and respawns it; the call
+        # that hits the dead one fails retryably, so drive calls (bounded) until one
+        # is answered by the replacement.
+        for attempt in range(10):
+            reply = await _drive_tool_call(procs[0], req_id=100 + attempt)
+            if "result" in reply and len(recorded(launch_log)) == 2:
+                break
+        backends = recorded(launch_log)
+        assert len(backends) == 2, backends
+        dead = first.removeprefix("Use the fake well. pid=")
+        third = await _instructions_of_a_new_stub(3)
+        assert third.startswith("Use the fake well. pid="), third
+        served_by = third.removeprefix("Use the fake well. pid=")
+        assert served_by != dead, "a stub after the respawn was replayed the dead backend's result"
+        assert served_by in backends, (served_by, backends)
+        fallback = home / "logs" / "stub_fallback.jsonl"
+        assert not fallback.exists(), fallback.read_text()
+    finally:
+        await _reap(procs)
+        stop.set()
+        try:
+            await asyncio.wait_for(daemon, timeout=30)
+        except asyncio.TimeoutError:  # pragma: no cover - daemon shutdown hang
+            daemon.cancel()
+
+
+@pytest.mark.asyncio
 async def test_real_stubs_without_poolable_get_their_own_backend(
     tmp_path: Path, short_sock_dir
 ) -> None:

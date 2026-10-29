@@ -40,8 +40,22 @@ first. Each class exists because it has been observed to break a green head:
 during the review wait, and costs anything only on a PR whose files actually
 collide. It adds no required check and slows no merge.
 
+A STALE answer tells a caller to rebase, and on a base that moves every minute it
+can keep saying so for as long as the PR is open -- each rebase discarding a green
+the PR had already earned. SKILL.md caps that at ``RESYNC_CAP`` re-syncs and then
+hands the PR to a person, so with ``--pr`` this script counts the re-sync comments
+the loop itself posted and reports exit ``EXIT_CAP_SPENT`` once the cap is spent.
+The count is the PR's own comment history because a loop wakes with no memory:
+there is no local state a later cycle could read. It is a TOTAL, not a
+consecutive run -- a PR that has needed this many rebases at any point is one a
+person should look at -- and it is read only when an overlap was already found, so
+a FRESH answer still costs no API call. A count that cannot be read leaves the
+verdict at ``EXIT_STALE``, exactly as before: only a proven spent cap diverts.
+
 Usage:  python3 green_age.py [--base BRANCH] [--pr N]
-Exit:   0 FRESH (no overlap) | 30 STALE (rebase and re-run) | 2 environment error
+Exit:   0 FRESH (no overlap) | 30 STALE (rebase and re-run)
+        | 31 STALE and the re-sync cap is spent (hand the PR to a person)
+        | 2 environment error
 """
 
 import argparse
@@ -57,7 +71,36 @@ import warnings
 # from the values here.
 EXIT_FRESH = 0
 EXIT_STALE = 30
+# STALE, and this PR has already spent its re-sync budget. A separate code
+# because the two call for opposite actions -- 30 means rebase, 31 means stop
+# rebasing and hand over -- and a caller that reads prose instead of an exit code
+# is how the cap went unenforced in the first place.
+EXIT_CAP_SPENT = 31
 EXIT_ENV = 2
+
+# How many re-syncs one PR gets before a person takes it. SKILL.md Phase 3 step 5
+# states the same number in prose; test_prepare_pr_green_age.py pins the two
+# together so neither can drift.
+RESYNC_CAP = 3
+
+# The first words of the comment the loop posts after every re-sync (SKILL.md
+# Phase 3 step 5 fixes the wording). Counting these is what gives a fresh cycle,
+# which remembers nothing, a way to know how many it has already done.
+RESYNC_MARKER = "Rebased: main moved in"
+
+# The `authorAssociation` values that place a commenter INSIDE the project, used
+# with the author clause to decide whose re-sync record is believable.
+# `CONTRIBUTOR` is deliberately absent: it means only that an earlier PR of
+# theirs merged, which a drive-by commenter can have too.
+#
+# These do not PROVE push access -- `MEMBER` is org membership and `COLLABORATOR`
+# covers read and triage roles as well -- so an insider who cannot push could
+# spend a PR's budget. Establishing push rights would need a
+# `/repos/.../collaborators/<login>/permission` call per distinct commenter,
+# which is a request per author on a path that runs every poll cycle, to narrow a
+# case that needs someone already inside the project and whose outcome is a
+# hand-over to a person rather than anything destructive.
+WRITE_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
 
 # Directory components that name a layout, not a module. A parent whose last
 # component is one of these is not evidence that two files belong together --
@@ -489,6 +532,68 @@ def _pr_files(pr, runner=None):
     return _lines(out)
 
 
+def resync_selector():
+    """The ``jq`` program that counts this PR's re-syncs, as one testable value.
+
+    Named and returned rather than inlined because ``gh`` evaluates it remotely:
+    a stubbed runner answers a number without the program ever running, so the
+    only way to test what it actually selects is to hand this string to ``jq``.
+    """
+    # Spelled as plain equality rather than `IN` or `index`: this program is
+    # evaluated by whatever jq the installed `gh` carries, and an `index` over a
+    # literal list reads `.authorAssociation` with the LIST as input, which is a
+    # hard jq error rather than a false match.
+    can_push = " or ".join(
+        '.authorAssociation == "{}"'.format(assoc) for assoc in WRITE_ASSOCIATIONS
+    )
+    return (
+        ".author.login as $author | [.comments[] | select("
+        "(.author.login == $author or {}) "
+        'and (.body | startswith("{}")))] | length'
+    ).format(can_push, RESYNC_MARKER)
+
+
+def _resync_count(pr, runner=None):
+    """How many re-syncs this PR has already had, or -1 when that cannot be read.
+
+    Counted from the PR's own ``Rebased: main moved in`` comments, because a loop
+    cycle wakes with no memory of its earlier ones and there is no local state to
+    consult. ``jq`` does the counting so the body text never has to be parsed
+    here: a comment body is free-form Markdown and can contain anything,
+    including this marker quoted inside someone else's comment, so the match is
+    anchored at the start of the body the way the loop writes it.
+
+    Only a comment from inside the project counts: one by the PULL REQUEST
+    AUTHOR, or by an account whose ``authorAssociation`` is in
+    ``WRITE_ASSOCIATIONS`` (see the bound on what that proves, where it is
+    defined). The marker is a published string
+    on a public repository, so counting any matching body would let a passer-by
+    post three comments and strand the PR on exit 31 with none of its budget
+    spent. Those two clauses are both needed and neither is sufficient: pushing
+    a rebase to a fork branch requires owning it, so an outside contributor
+    driving their own PR is only ever matched by the author clause (their
+    ``authorAssociation`` is ``CONTRIBUTOR``, exactly like a stranger's), while
+    a maintainer driving a branch they did not author -- an assigned PR, or a
+    fork with maintainer edits enabled -- is only ever matched by the
+    association clause. A drive-by is neither.
+
+    NEVER raises. An unreadable count must leave the overlap verdict exactly as
+    it was rather than converting it into an error, since the overlap is the part
+    that was actually measured; :func:`main` keeps ``EXIT_STALE`` on -1.
+    """
+    if not re.match(r"^[0-9]+$", str(pr)):
+        return -1
+    rc, out, _ = (runner or run)(
+        ["gh", "pr", "view", str(pr), "--json", "author,comments", "-q", resync_selector()]
+    )
+    if rc != 0:
+        return -1
+    try:
+        return int((out or "").strip())
+    except ValueError:
+        return -1
+
+
 def summarize(base="main", pr="", head="HEAD", runner=None):
     """Measure this head's green against today's ``origin/<base>``.
 
@@ -506,6 +611,11 @@ def summarize(base="main", pr="", head="HEAD", runner=None):
         "pr_files": 0,
         "overlap": [],
         "stale": False,
+        # -1 means "not read": no PR number, no overlap to rebase for, or the
+        # count could not be fetched. Pre-set so an embedding caller
+        # (pr_status.py) can read both keys off any result, including a failed one.
+        "resyncs": -1,
+        "cap_spent": False,
         "reason": "",
     }
     try:
@@ -545,6 +655,10 @@ def summarize(base="main", pr="", head="HEAD", runner=None):
             return text if rc == 0 else ""
 
         overlap = classify_overlap(moved, mine, read_moved)
+        # Only an overlap leads to a rebase, so only an overlap needs the budget
+        # read -- a FRESH answer pays for no extra API call. Without a PR number
+        # there is nowhere to read the count from, and the cap cannot apply.
+        resyncs = _resync_count(pr, _run) if (overlap and pr) else -1
         result.update(
             {
                 "ok": True,
@@ -555,6 +669,8 @@ def summarize(base="main", pr="", head="HEAD", runner=None):
                 "pr_files": len(mine),
                 "overlap": overlap,
                 "stale": bool(overlap),
+                "resyncs": resyncs,
+                "cap_spent": resyncs >= RESYNC_CAP,
             }
         )
     except EnvError as exc:
@@ -581,12 +697,19 @@ def format_line(summary):
         what = ", ".join(shown)
     else:
         what = "none"
-    return "green age: base +{} commits ({} -> {}), overlap: {}".format(
+    line = "green age: base +{} commits ({} -> {}), overlap: {}".format(
         summary.get("commits", 0),
         (summary.get("ci_base") or "")[:8],
         (summary.get("base_head") or "")[:8],
         what,
     )
+    # Printed only once a budget has actually been read, so the common FRESH line
+    # is unchanged. A poll cycle reading this sees how close the PR is to being
+    # handed over, rather than finding out only at the cap.
+    resyncs = summary.get("resyncs", -1)
+    if resyncs >= 0:
+        line += ", re-syncs: {}/{}".format(resyncs, RESYNC_CAP)
+    return line
 
 
 def main(argv=None):
@@ -611,7 +734,21 @@ def main(argv=None):
     else:
         print(line)
         code = EXIT_STALE if summary["stale"] else EXIT_FRESH
-        if summary["stale"]:
+        if summary["stale"] and summary["cap_spent"]:
+            # The overlap is real, so the green IS stale -- but another rebase is
+            # the wrong answer to it. Said as its own code because the two
+            # verdicts call for opposite actions and a caller must not have to
+            # read prose to tell them apart.
+            code = EXIT_CAP_SPENT
+            err(
+                "CAP SPENT: this PR has already been re-synced {} time(s), the limit "
+                "is {}, and origin/{} has moved again in {} file(s) it touches. Do NOT "
+                "rebase: each one discards a green the PR already earned. Report which "
+                "files the base keeps moving in and hand the PR to a person.".format(
+                    summary["resyncs"], RESYNC_CAP, args.base, len(summary["overlap"])
+                )
+            )
+        elif summary["stale"]:
             err(
                 "STALE: origin/{} gained {} commit(s) touching {} file(s) this PR also "
                 "touches, so this head's green was not measured against them. Rebase "

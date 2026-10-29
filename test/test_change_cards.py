@@ -24,6 +24,7 @@ from change_cards_helpers import (
     _propose_capability,
     _reload,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.context_blocks import render_change_card_results, split_blocks
@@ -55,15 +56,34 @@ def test_a_secret_card_has_no_value_field_at_all():
 @pytest.mark.parametrize(
     "path,before,after,risk",
     [
-        ("agent.approval_mode", "interactive", "auto", "widen"),
-        ("agent.approval_mode", "auto", "interactive", "tighten"),
-        ("agent.sandbox", "strict", "off", "widen"),
-        ("skills.approval_required", True, False, "widen"),
-        ("dashboard.folder_sort", "name", "recent", "normal"),
-        ("dashboard.some_token_thing", "a", "b", "widen"),
+        *named_cases(
+            "test_setting_risk_is_computed_from_the_diff",
+            "path,before,after,risk",
+            [
+                ("agent.approval_mode", "interactive", "auto", "widen"),
+                ("agent.approval_mode", "auto", "interactive", "tighten"),
+                ("agent.sandbox", "strict", "off", "widen"),
+                ("skills.approval_required", True, False, "widen"),
+                ("dashboard.folder_sort", "name", "recent", "normal"),
+                ("dashboard.some_token_thing", "a", "b", "widen"),
+            ],
+        ),
+        *named_cases(
+            "test_newly_classified_paths_read_their_class_on_the_card",
+            "path,before,after,risk",
+            [
+                ("dashboard.tailscale.pin_scope", "node", "login", "widen"),
+                ("dashboard.tailscale.pin_scope", "login", "node", "tighten"),
+                ("knowledge.auto_add_documents", False, True, "widen"),
+                ("knowledge.auto_add_documents", True, False, "tighten"),
+                ("agent.acp_backend", "", "claude", "code_exec"),
+                ("session.pool_agent", "", "builder", "code_exec"),
+                ("telemetry.enabled", False, True, "normal"),
+            ],
+        ),
     ],
 )
-def test_setting_risk_is_computed_from_the_diff(path, before, after, risk):
+def test_a_setting_reads_its_risk_from_the_diff(path, before, after, risk):
     p = {"path": path, "value": after}
     assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk
 

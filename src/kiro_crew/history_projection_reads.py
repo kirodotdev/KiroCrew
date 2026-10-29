@@ -30,7 +30,6 @@ from kiro_crew.history_projection_contract import (
     _TRANSCRIPT_PAGE_INDEX_MAX_CHECKPOINTS,
     _TRANSCRIPT_PAGE_INDEX_STRIDE,
     _TRANSCRIPT_PAGE_READ_ATTEMPTS,
-    DISPLAY_ONLY_ROLES,
     METADATA_LINE_CORRUPT,
     METADATA_LINE_READABLE,
     METADATA_LINE_TRANSIENT,
@@ -129,7 +128,13 @@ class TranscriptReadProjection:
         *,
         exclude_last_n: int = 0,
     ) -> list[dict]:
-        """Return recent source-bearing entries for cross-session citation."""
+        """Return recent source-bearing entries for cross-session citation.
+
+        Only what was said is cited: the user's and the assistant's rows. A
+        channel turn also records its tool steps with the turn's provenance, and
+        a step's title in one of these few slots would push the question it
+        answered out of the next session's context.
+        """
         messages = self._log._read_messages(key)
         if exclude_last_n > 0:
             messages = messages[:-exclude_last_n]
@@ -138,7 +143,7 @@ class TranscriptReadProjection:
             item
             for item in messages
             if item.get("source_thread")
-            and item.get("role") not in DISPLAY_ONLY_ROLES
+            and item.get("role") in ("user", "assistant")
             and not is_warm_task_brief_message(item)
         ]
         for message in cited[-max_messages:]:
@@ -1546,9 +1551,11 @@ class TranscriptReadProjection:
                 cached = self._log._meta_cache.get(key)
                 if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
                     return cached[2], METADATA_LINE_READABLE
-                with open(path, encoding="utf-8") as handle:
-                    first = handle.readline().strip()
-            except (OSError, UnicodeError):
+                # Bytes, decoded below: a first line that is not UTF-8 is a
+                # damaged line no retry will ever read, not a read in flight.
+                with open(path, "rb") as handle:
+                    raw_first = handle.readline()
+            except OSError:
                 if attempt + 1 < attempts:
                     self._log._pause_for_transient_retry()
                     continue
@@ -1560,6 +1567,15 @@ class TranscriptReadProjection:
                     exc_info=True,
                 )
                 return {}, METADATA_LINE_TRANSIENT
+            try:
+                first = raw_first.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                # Every line writer encodes UTF-8, so bytes that do not decode
+                # are damage (a torn or foreign write), exactly like bytes that
+                # are not JSON. Reporting them TRANSIENT made every writer defer
+                # for good, so the line could never be rewritten and the session
+                # refused every turn.
+                return {}, METADATA_LINE_CORRUPT
             if not first:
                 return {}, METADATA_LINE_READABLE
             try:

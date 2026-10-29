@@ -206,20 +206,8 @@ def register(app: web.Application) -> None:
     # strip's tooltip reads. Browser-called by the chat surface, like the consent
     # pair above.
     app.router.add_post("/api/decisions/feedback", handlers.api_decisions_feedback)
-    # Flagged-file delivery consent. Owner-gated in the handler; deliberately NOT
-    # on the strict-internal list in server.py, because unlike the file_send legs
-    # its only legitimate caller IS the owner's browser.
-    app.router.add_get("/api/file-delivery/consent", handlers.api_file_delivery_consent_get)
-    app.router.add_post("/api/file-delivery/consent", handlers.api_file_delivery_consent_post)
-    app.router.add_get(
-        "/api/file-delivery/consent/arm", handlers.api_file_delivery_consent_arm_status
-    )
-    app.router.add_post(
-        "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
-    )
-    app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
-    # Credential-redaction switch. Owner-gated in the handler, like the consent
-    # routes above: its only legitimate caller is the owner's browser.
+    # Credential-redaction switch. Owner-gated in the handler: its only
+    # legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
     app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
     app.router.add_get("/api/approvals", handlers.api_approvals)

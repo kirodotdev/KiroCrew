@@ -151,6 +151,9 @@ whoever folds the cell (the eager worker or a lazy reader), and they are cleared
 a publish, under the same memo lock as the render of the marked parts. A memo rebuild
 starts with no marks and a flag that forces `snapshot_needed` on the next publish.
 
+Status: PR (c+d), #24749, shipped a render-diff base instead of these marks (section 4).
+The marks move to PR (e).
+
 ### 2.2 Per fold
 
 | Fold | Size seen | On the bus | To the browser | Why |
@@ -347,8 +350,9 @@ Two mismatches are real and both must keep working:
   version keeps running the newer bundle. Its `caps` and `fold_watch` are ignored, and it
   gets no `fold_hello`.
 
-The rule: a socket without the capability gets today's whole-value `work` frames until
-PR (e) removes that path, and PR (e) does not ship until a release has carried PR (d).
+The rule: a socket without the capability keeps getting whole-value `work` frames,
+built from the render the publisher recorded for that revision, and PR (e) does not ship
+until a release has carried PR (d).
 
 **Does an old tab tolerate a `slot_projection` frame with no `value`?** Yes, and it
 behaves exactly as today for a non-work fold. `takeFoldedSlotProjection` returns
@@ -370,7 +374,7 @@ What an old tab sees after each PR:
 | (b) | Unchanged. The exporter keeps its wildcard subscription while such a socket is open, and sends it every board, as today. | The tab sends `fold_watch`; the gateway ignores it. The tab gets every board's frames, as today. |
 | (c) | Unchanged. The bus carries deltas AND the value for `work` during migration; the exporter still sends this socket the whole value. | Not applicable: (c) has no client change. |
 | (d) | Unchanged. | No `fold_hello` arrives, so the tab stays on its `slot_projection` handler with whole values. |
-| (e) | `work` frames arrive as bare `{slot, fold, revision}`. The tab invalidates and re-reads the board over REST, plus its timed pull. Correct, slower; a reload fixes it. | Same as after (d). |
+| (e) | Unchanged: whole-value `work` frames, from the render the publisher recorded for that revision, serialized only when such a tab is a target. A publish with no recorded render (an older or repeated revision) arrives bare `{slot, fold, revision}`, and the tab re-reads the board over REST. | Same as after (d). |
 
 ## 4. PR plan
 
@@ -387,9 +391,8 @@ writing, open PR #24275 also changes `crew_log/bus.py`, `crew_log/eager.py` and
 |---|---|---|---|
 | (a) | Stop sending values the browser drops: `_push_fold` omits `value` for every slot fold but `work`. | `dashboard/handlers/crew_log.py` | No. Can start now. |
 | (b) | Per-tab watch and skip render of unwatched folds: `fold_delta.1` capability, `fold_hello`, `fold_watch`, per-socket watch sets, keyed exporter subscriptions, a bus "has a matching subscriber" check that eager consults before it reads a slot fold. | `dashboard/ws.py`, `dashboard/websocket_hub.py`, `dashboard/handlers/crew_log.py`, `crew_log/bus.py`, `crew_log/eager.py`, browser `useWebSocket.ts`, `websocket/connection.ts` | Yes: `dashboard/ws.py`. Waits. |
-| (c) | Delta for `work`: change marks in the fold step and the memo cell, `base_revision`, `kind`, `delta` on `FoldAdvanced` (value still carried), `snapshot_needed` on rebuild and generation change, `published_revision` on the REST read, the shared apply in `crew_log/fold_delta.py`. | `crew_log/projection_work.py`, `crew_log/projection_slot_memo.py`, `crew_log/bus.py`, `crew_log/eager.py`, `crew_log/fold_delta.py` (new), `dashboard/handlers/crew_log.py` (REST field) | Yes: `projection_work.py`, `projection_slot_memo.py`. Waits. |
-| (d) | Receivers: browser delta path, `conductor_wake`, `DashboardFeed`, bus baseline replay, WS exporter sends `slot_fold` to capable watchers. | browser `useWebSocket.ts`, `websocket/slotProjection.ts`, `pages/chat/command-center/useCommandCenter.ts`; `conductor_wake.py`, `dashboard_feed.py`, `dashboard/handlers/member_dashboard_fields.py`, `crew_log/bus.py`, `dashboard/handlers/crew_log.py` | No, unless the exporter change needs `dashboard/ws.py`, which it should not after (b). Depends on (b) and (c). |
-| (e) | Remove the whole-value path: `FoldAdvanced` stops carrying `value` for `work`; eager stops rendering the whole board on a publish; legacy sockets get bare `work` frames. | `crew_log/bus.py`, `crew_log/eager.py`, `dashboard/handlers/crew_log.py`, `conductor_wake.py`, `dashboard_feed.py` | No. Ships one release after (d). |
+| (c+d) | Shipped together in #24749. Delta for `work` with a RENDER-DIFF base: the publisher holds the last published render per board and diffs the new render against it item by item (`diff_work`), so the fold step and the memo cell are untouched. `base_revision`, `kind`, `delta` on `FoldAdvanced` (value still carried), `snapshot_needed` when no base is held or the revision does not rise, `published_revision` on the REST read (`read_labelled` folds outside `_published_lock`, then checks the label under it), the shared apply in `crew_log/fold_delta.py` and its TypeScript twin. Receivers switched: the bus (per-subscriber base, relabel to `snapshot_needed` on a gap), `conductor_wake` (restamps only the changed items of a delta), the WS exporter (`slot_fold` to tabs that declare `fold_delta.2` and watch the board), the browser (`websocket/workDelta.ts`), and REST. | `crew_log/bus.py`, `crew_log/eager.py`, `crew_log/fold_delta.py` (new), `conductor_wake.py`, `dashboard/handlers/crew_log.py`, `dashboard/websocket_hub.py`, `dashboard/ws.py`, `dashboard/state_parts/*`; browser `useWebSocket.ts`, `websocket/connection.ts`, `websocket/workDelta.ts` (new), `pages/chat/command-center/useCommandCenter.ts` | Landed after the hotfix. |
+| (e) | Moved here from (c) and (d): the change-mark delta base (section 2.1: marks in the `work` fold step and the memo cell, replacing the held render and its diff); the `DashboardFeed` delta apply; value-less self-reads (`conductor_wake` reads its own board through `_read_board_items`, and receivers rebuild the value with `fold_delta.value_after`). Then remove the whole-value path: `FoldAdvanced` carries no `value` for `work`; legacy sockets get the recorded render for that revision (`eager.published_value`), serialized only when one is a target. The change-mark base is not built: eager still renders the board once per publish to diff it. | `crew_log/projection_work.py`, `crew_log/projection_slot_memo.py`, `crew_log/bus.py`, `crew_log/eager.py`, `crew_log/fold_delta.py`, `dashboard/handlers/crew_log.py`, `conductor_wake.py`, `dashboard_feed.py` | Yes: `projection_work.py`, `projection_slot_memo.py`. Ships one release after (c+d). |
 
 PR (a) is the only one that can start before the hotfix. It saves the 168 KB
 `workstreams` value and every other non-work value on every advance, per tab.
@@ -456,7 +459,7 @@ the real bus subscriber or the real browser hook reading them.
 
 ### PR (e)
 
-- Unit: `work` publishes carry no value; legacy sockets get bare `work` frames.
+- Unit: `work` publishes carry no value; legacy sockets still get whole `work` frames, and a bare one only when no render is recorded for that revision.
 - End to end, old client: the current-main bundle's handler, driven by the real frames
   after (e), ends with the right board after its REST re-read.
 

@@ -91,6 +91,7 @@ my-app/
 | `resources` | Omit from `app.json`; declare app resources with `agents`, `skills`, `sops`, and `mcpServers` | `resources` is install/registry ownership metadata (`"gateway"` or `"app"`), not an app-manifest resource array |
 | `ui.entry` | Use an ESM `.mjs` bundle; `.js` is also served | HTML is not in the app UI static-file allowlist |
 | `ui.pages[].iconUrl` | Use an app-relative image path for a custom icon | `ui.pages[].icon` also works for supported host Lucide names and falls back to `Package` |
+| `ui.loading.layout` | Optional: `"page"` (default), `"rail"`, `"centered"` or `"split"`, e.g. `"loading": { "layout": "rail" }`. Pick the one closest to your first paint | The dashboard shows nothing for 300 ms, then this placeholder shape until the bundle mounts. It is a closed set the host draws; no custom markup or CSS. Anything else, including `"Rail"`, falls back to `"page"` |
 | `displayName` | Required | Gateway uses it for UI display |
 | `version` | Semver string | Used by the App Store registry to compute `updateAvailable` |
 | `crons[].timezone` | IANA zone name; omit it only when the hour is zone-agnostic | An empty timezone falls back to the gateway config's zone and then to **UTC**, so `"cron_expr": "0 6 * * *"` without it fires at 06:00 UTC — the wrong calendar day for most users. A per-USER zone is not manifest data: pass `timezone=` to `ctx.cron.add_job` instead |

@@ -1140,13 +1140,14 @@ class TestMonitorToolsCanSetTheBanner:
             patch("kiro_crew.autonudge.get_instance", return_value=svc),
             patch("kiro_crew.autonudge_authz.authorize_and_add_nudge", authz),
         ):
-            await sda._monitor_start(
+            result = await sda._monitor_start(
                 MagicMock(),
                 "chat-9-1",
                 {"message": "go", "banner": "watching CI"},
                 producer_is_channel=False,
             )
         assert authz.await_args.kwargs["banner"] == "watching CI"
+        assert "loop-1" in result
 
 
 class TestChannelBoundLoopsRefuseABanner:

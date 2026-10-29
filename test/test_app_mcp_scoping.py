@@ -852,9 +852,8 @@ class TestAutoApproveIsFilteredAtTheWriteChokepoint:
     `autoApprove` reaches a written agent config from at least four places — an
     app manifest, a per-agent MCP policy, a materialized managed ref, and an entry
     preserved from the previous file (plus an imported config from another tool).
-    Three review rounds each fixed the source that had been REPORTED and left the
-    rest, so the filter now runs once on the final map, at the position both
-    writers hand it to disk.
+    Patching one source at a time leaves the rest, so the filter runs once on the
+    final map, at the position both writers hand it to disk.
     """
 
     def test_a_governed_server_loses_the_key_and_keeps_the_server(

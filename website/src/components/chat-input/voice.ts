@@ -9,6 +9,7 @@ import { i18nT } from '../../i18n/t'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import type { ComposerControl } from '../composerControl'
 import { anotherEscapeOwnerIsOpen } from './escapeOwners'
+import { slotRowByKey } from '../../store/slotIndex'
 
 /* Dictation as the composer sees it. The Composer root's Voice atom
    (`chat-core/composer/useComposerVoice.ts`) owns capture, the one-mic mutex
@@ -278,7 +279,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   // An untitled chat (its stored title can be the raw slot key) is named
   // "Untitled session", so the label and the jump action never show the key.
   const micOwnerTitle = useAppSelector(s => {
-    const owner = voiceBusyElsewhereSession ? s.dashboard.slots.find(x => x.key === voiceBusyElsewhereSession) : undefined
+    const owner = voiceBusyElsewhereSession ? slotRowByKey(s.dashboard.slots, voiceBusyElsewhereSession) : undefined
     return owner ? sessionDisplayTitle(owner) : null
   })
   const micHeldElsewhereLabel = micOwnerTitle

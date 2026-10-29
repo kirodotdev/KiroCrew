@@ -1092,7 +1092,19 @@ def _resume_slot_fold(
     before = _digest_to_carry(units, marks)
     registry = ProjectionRegistry(seq_of=_ordinal_seq)
     registry.register(_SlotFold(_FOLDS[name], slot))
-    tail = _SlotStream(units[-1:], base=base, since=saved.reached)
+    # ``resume``: the byte position the savepoint's writer stored for the record at its
+    # seq, so the tail walk opens the file there instead of decoding every record below
+    # it. The store checks it against the live file before seeking and walks from the
+    # top when it does not hold, so it changes what is read, never what is folded.
+    #
+    # With no stored position, ``since`` is one BELOW the savepoint, so the walk yields the
+    # savepoint's own record and the stream's cursor names it even when nothing arrived
+    # above it -- which is how a slot resumed from a file with no stored position learns
+    # one. That record is dropped before the fold (``above``), and the kernel drops it
+    # too, since it sits at the cell's watermark.
+    since = saved.reached if saved.resume is not None else saved.reached - 1
+    tail = _SlotStream(units[-1:], base=base, since=since, resume=saved.resume)
+    above = (event for event in tail if event.ordinal > saved.watermark)
     try:
         registry.prime_checkpointed(
             slot,
@@ -1100,7 +1112,7 @@ def _resume_slot_fold(
                 {name: Checkpoint(name=name, last_seq=saved.watermark, state=saved.state)}
             ),
             {},
-            lambda _floor: tail,
+            lambda _floor: above,
         )
         # RENDERED here, and the value thrown away. It is the admission condition the
         # shape checks cannot be: they read a state's top level, so a value malformed
@@ -1111,6 +1123,12 @@ def _resume_slot_fold(
         # empty a live slot's ledger on every read for the life of the unit. A state no
         # reader can be served is not a state to resume from, and asking costs one render
         # of a bounded value on a read that resumed.
+        # The walk began one record below the savepoint. If that record was not YIELDED
+        # (an ignorable type this build skips), the stream's own height reads one short
+        # of a position the state already stands at; the savepoint's is the true one.
+        if tail.reached < saved.reached:
+            tail.reached = saved.reached
+            tail.heights[units[-1]] = saved.reached
         _FOLDS[name].render(registry.cells(slot)[name][0])
     except Exception:
         # A state that passed every admission condition and then could not be FOLDED or
@@ -1155,15 +1173,17 @@ def _resume_slot_fold(
         marks=_folded_marks(units, marks, tail, carried=marks),
         reached=tail.reached,
         prefix=_vouched(units[-1], before),
-        saved=saved.watermark,
-        # No resume point, so the first continuation of a cell that stood on a savepoint
-        # walks the newest unit once and reports a point of its own. The tail folded here
-        # could issue one, and it would be as sound as any other: the cut count is what
-        # vouches for an unread prefix, and this pass holds it. It is left unset because
-        # a point is an optimisation and this is the one pass that cannot be checked
-        # against the loop that wrote it -- the state it continues came from another
-        # process, so ``reached`` here is the savepoint's position advanced by this tail
-        # rather than a height this cell folded end to end.
+        # A file whose witness still costs a full prefix walk to check, or that stored no
+        # tail position, is reported as saving NOTHING, so the persist step right after
+        # this rewrites it once with the evidence and position this pass holds. Without
+        # that, a quiet slot -- one that never advances 256 entries again -- would pay
+        # the walk on every restart for the life of the unit.
+        saved=saved.watermark if saved.cheap and saved.resume is not None else 0,
+        # The point this tail walk reached, or the stored one when the tail yielded
+        # nothing (the walk then leaves its cursor untouched). Sound for the reason any
+        # point is: ``iter_from`` re-checks it against the live file before every use,
+        # and the cut count it carries is what vouches for the prefix it skips.
+        resume=tail.points.get(units[-1], saved.resume),
         revision=_minted_revision(),
         weight=_cell_weight(name, registry, slot),
     )
@@ -1253,6 +1273,7 @@ def _persist_slot_fold(
         watermark=watermark,
         prefix=witness,
         expect_origin=sampled.origin,
+        expect_files=(sampled.size, sampled.mtime_ns),
     )
     if not written:
         return memo
@@ -1276,13 +1297,17 @@ def _slot_witness(
     """
     from kiro_crew.crew_log import checkpoint as savepoints
 
+    # The cell's own tail position, stored beside the witness so the resume after a
+    # restart seeks there (``iter_from`` re-checks it before use). Only one naming the
+    # record the witness ends at.
+    point = memo.resume if memo.resume is not None and memo.resume.seq == memo.reached else None
     if sampled.cuts is not None:
-        held = savepoints.CutWitness(seq=memo.reached, cuts=sampled.cuts)
+        held = savepoints.CutWitness(seq=memo.reached, cuts=sampled.cuts, resume=point)
         return held if savepoints.cuts_unchanged(handle, held) else None
     if memo.prefix is None or not _prefix_holds(memo.units[-1], memo.prefix):
         return None
     return savepoints.PrefixWitness(
-        seq=memo.reached, records=memo.prefix.records, sha=memo.prefix.sha
+        seq=memo.reached, records=memo.prefix.records, sha=memo.prefix.sha, resume=point
     )
 
 

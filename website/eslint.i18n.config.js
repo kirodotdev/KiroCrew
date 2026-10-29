@@ -684,6 +684,12 @@ export default [
               // a shape UI copy takes — copy has spaces and capitals, which is what keeps
               // `['Save changes', 'Delete item']` reported.
               '^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$',
+              // The same snake_case identifier with a numeric version suffix: a
+              // versioned wire token such as the `fold_delta.1` socket capability the
+              // tab declares in `/api/ws?caps=` (hooks/websocket/foldWatch.ts). It is
+              // sent to the gateway, never rendered. Copy never ends in `.<digits>`
+              // after an underscore-joined lowercase word, so no prose matches.
+              '^[a-z][a-z0-9]*(?:_[a-z0-9]+)+\\.[0-9]+$',
               // A `KeyboardEvent.code` SIDE-SPECIFIC MODIFIER identifier, i.e.
               // `AltRight`, `ControlLeft`, `MetaRight`, `ShiftLeft`. These are DOM
               // protocol values: they are compared against `e.code` and never
@@ -954,13 +960,14 @@ export default [
               // "GitLab" in every language, and a localized spelling would name a
               // product that does not exist. They reach the UI as the provider name in
               // Issue Radar's connect picker, as the `{{provider}}` value
-              // interpolated into its refresh tooltips, and as the source provider's
-              // name in the pull-request panel header, so the bare brand is the whole
+              // interpolated into its refresh tooltips, as the source provider's
+              // name in the pull-request panel header, and as the host name in the
+              // Session Environments readiness check, so the bare brand is the whole
               // literal. Whole-value-anchored like the entry above, so a sentence that
               // merely mentions a forge is still reported — only the bare name is
               // exempt, and the sentences AROUND it stayed in the catalog (that is
               // what `{{provider}}` is for).
-              '^(GitHub|GitLab|Azure DevOps|Bitbucket Server|Gerrit)$',
+              '^(GitHub|GitLab|Azure DevOps|Bitbucket|Bitbucket Server|Gerrit)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal
@@ -1219,6 +1226,12 @@ export default [
               // `config.json`, not copy. Already exempt as an object property below; a
               // JSX attribute of the same name carries the same machine value.
               'path',
+              // The same dotted config path on the Settings* primitives
+              // (`configKey="session_environments.coder_url"`): the settings
+              // extractor reads it to deep-link the control, so it is a machine
+              // key. A section with an underscore escapes the dotted-token word
+              // shape, which is why the attribute itself is named here.
+              'configKey',
               'data-\\w+', 'aria-(hidden|live|orientation|current|haspopup)',
               'autoComplete', 'inputMode', 'enterKeyHint', 'spellCheck',
               'viewBox', 'xmlns', 'fill', 'stroke', 'd', 'points', 'transform',
@@ -1682,6 +1695,21 @@ export default [
   // serialization-only.
   {
     files: ['src/utils/pasteTokens.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // SECRETS AUTHORIZE COMMAND ONLY, same "format IS the interface" category as
+  // `pasteTokens.ts` above: the two literals in this module are a CLI command and
+  // an MCP server grant name the owner types exactly as shown, so translating
+  // either makes the step impossible to complete. The sentence the owner reads
+  // around them is a separate, translated string
+  // (`settings.secrets.custom_authorize`) rendered by `SecretsPanel.tsx`, which
+  // shows the command verbatim in a `<code>` element. This module renders
+  // nothing and holds no prose; copy added here later belongs in the catalog.
+  {
+    files: ['src/pages/settings/secretsAuthorizeCommand.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

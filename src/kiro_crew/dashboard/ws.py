@@ -16,6 +16,7 @@ from aiohttp import WSCloseCode, WSMsgType, web
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
+from kiro_crew.dashboard import websocket_hub as _ws_hub
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.slot_retention import note_foreground
@@ -48,6 +49,17 @@ from kiro_crew.dashboard.ws_event_scope import (
     persisted_replay_denial_reason,
     slots_envelope_extras,
     visible_subagent_slot_keys,
+)
+from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: callers import them from here
+    SIDE_CLOSED_EVENT,
+    SIDE_KIND,
+    SIDE_QUEUE_EVENT,
+    SIDE_RESULT_EVENT,
+    THREAD_REPLY_EVENT,
+    broadcast_side_closed,
+    broadcast_side_queue,
+    broadcast_side_result,
+    broadcast_thread_reply,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent_persistence import read_panel_records
@@ -113,14 +125,6 @@ SUBAGENT_REPLAY_BATCH_THRESHOLD = 8
 #: The one replay request a crew-log-off install makes per subscribe. Its folder
 #: reader has no per-slot index, and no client slot name can be this string.
 _FOLDER_REPLAY = "\x00folders"
-
-SIDE_RESULT_EVENT = "chat.side_result"
-#: A reply landing in a thread on a crewmate chat message (``chat_threads``).
-THREAD_REPLY_EVENT = "chat.thread_reply"
-SIDE_QUEUE_EVENT = "chat.side_queue"
-#: The slot's side conversation was closed, so every tab clears it (``api_side_close``).
-SIDE_CLOSED_EVENT = "chat.side_closed"
-SIDE_KIND = "side"
 
 
 def _subagent_replay_has_owner(frame: object) -> bool:
@@ -632,205 +636,6 @@ def _grant_auditee(ws: web.WebSocketResponse, ws_app: str) -> str:
     return ws_app
 
 
-def broadcast_side_result(
-    state: DashboardState,
-    *,
-    slot_key: str,
-    run_id: str,
-    role: str,
-    content: str,
-    is_error: bool = False,
-    final: bool = False,
-    ts: float | None = None,
-    steer: bool = False,
-    message_id: str = "",
-) -> None:
-    """Broadcast a side conversation event on the dedicated side channel.
-
-    Emits ``{type: "chat.side_result", data: payload}`` to all WS clients.
-    The event name and payload shape are reused from the upstream OpenClaw
-    `/btw` protocol so a future shared client can interop. ``kind`` is
-    translated from upstream ``"btw"`` to KiroCrew's ``"side"``.
-
-    The event channel is intentionally separate from ``chat_message`` so
-    receivers that don't subscribe to side simply don't see it; this
-    keeps side deltas out of the main transcript by construction.
-    Receiver-side run-ID isolation is the frontend's responsibility via
-    ``local_side_run_ids``.
-
-    Set final=True on the terminal frame of a side turn so the frontend
-    can flip the streaming flag off cleanly.
-
-    ``message_id`` names the sidecar row the frame announces (a question, a
-    steer, a final answer, a stop row). A panel restored from ``GET .../side``
-    already holds that row, and the id is how it knows. Streaming deltas and
-    the error notices the sidecar does not store carry none.
-
-    No payload field is persisted — sidecar-only, ephemeral.
-    """
-    payload: dict[str, object] = {
-        "kind": SIDE_KIND,
-        "slot": slot_key,
-        "run_id": run_id,
-        "role": role,
-        "content": redact_credentials(redact_exfiltration_urls(content)[0])[0],
-        "ts": ts if ts is not None else time.time(),
-    }
-    if is_error:
-        payload["is_error"] = True
-    if final:
-        payload["final"] = True
-    if steer:
-        payload["steer"] = True
-    if message_id:
-        payload["message_id"] = message_id
-    # Owner-only, matching the queue frame and `_check_slot_ownership`: side answers and
-    # steer echoes are the owner's own conversation, and an app that asks the HTTP API
-    # about a slot it does not own gets a 404.
-    state.broadcast_ws_owners(SIDE_RESULT_EVENT, payload)
-
-
-def broadcast_thread_reply(
-    state: DashboardState,
-    *,
-    slot_key: str,
-    mid: str,
-    run_id: str,
-    role: str,
-    content: str,
-    is_error: bool = False,
-    final: bool = False,
-    ts: float | None = None,
-    reply: dict[str, object] | None = None,
-) -> None:
-    """Broadcast one frame of a reply thread (``dashboard/chat_threads.py``).
-
-    ``{type: "chat.thread_reply", data: payload}``: ``mid`` names the parent
-    message the thread hangs off, ``run_id`` groups the streamed deltas of one
-    crewmate reply, and the terminal frame (``final``) carries the stored
-    ``reply`` record so the panel can replace its streamed text with the row the
-    store holds. Owner-only, like the side chat: a thread is the owner's own
-    conversation. Same channel discipline as ``chat.side_result`` -- a receiver
-    that does not subscribe never sees it, so thread frames stay out of the main
-    transcript by construction.
-
-    Sent only while ``dashboard.crewmate_threads`` is on. The routes refuse
-    before any turn starts, so this guard covers the one turn that was already
-    running when the flag went off: its frames are dropped, and the reply it
-    stores is served again once the flag is back on. The watcher's snapshot is
-    the read (a plain attribute, never a disk load on the loop); before the
-    watcher has one, the frame is dropped too -- the flag is off by default and
-    a frame nobody can act on is the cheaper mistake.
-    """
-    from kiro_crew.config import live
-
-    cfg = live.snapshot()
-    if cfg is None or not cfg.dashboard.crewmate_threads:
-        return
-    payload: dict[str, object] = {
-        "slot": slot_key,
-        "mid": mid,
-        "run_id": run_id,
-        "role": role,
-        "content": redact_credentials(redact_exfiltration_urls(content)[0])[0],
-        "ts": ts if ts is not None else time.time(),
-    }
-    if is_error:
-        payload["is_error"] = True
-    if final:
-        payload["final"] = True
-    if reply is not None:
-        payload["reply"] = reply
-    state.broadcast_ws_owners(THREAD_REPLY_EVENT, payload)
-
-
-def broadcast_side_queue(
-    state: DashboardState,
-    *,
-    slot_key: str,
-    action: str,
-    queue_id: str,
-    content: str = "",
-    depth: int = 0,
-    front: bool = False,
-    steer_id: str = "",
-    origin_client: str = "",
-    rev: int | None = None,
-) -> None:
-    """Broadcast a side-queue mutation on the dedicated side channel.
-
-    ``action`` is one of ``push`` | ``edit`` | ``cancel`` | ``drain``. ``drain``
-    fires when the entry leaves the queue to become the next side turn, so the
-    frontend can retire its card without waiting for the user frame. ``depth``
-    is the queue length AFTER the mutation, letting a client that missed a frame
-    resync its badge without a refetch.
-
-    ``rev`` is the entry's revision after an ``edit``, the same count the side
-    read reports, so a tab that holds both an edit and a read's copy of the entry
-    keeps the newer one.
-
-    ``front`` says the entry went to the HEAD of the queue rather than the tail —
-    which is how a requeued steer and a failed drain's entry land. Without it a
-    client appends them and shows a different next question than the backend will
-    actually run.
-
-    Kept separate from ``chat.side_result`` so a queue mutation never enters the
-    transcript reducer, and separate from the main chat's ``queue_push`` so side
-    queue entries can never be mistaken for parent-slot turns.
-    """
-    payload: dict[str, object] = {
-        "kind": SIDE_KIND,
-        "slot": slot_key,
-        "action": action,
-        "queue_id": queue_id,
-        "depth": depth,
-        "ts": time.time(),
-    }
-    if front:
-        payload["front"] = True
-    if rev is not None:
-        payload["rev"] = rev
-    if steer_id:
-        # Not sensitive — an opaque ledger id. It lets the submitting client match
-        # its own RAW steer text to this card, whose content is redacted here.
-        payload["steer_id"] = steer_id
-    if content:
-        payload["content"] = redact_credentials(redact_exfiltration_urls(content)[0])[0]
-    if origin_client:
-        # Not sensitive — an opaque per-tab id. It lets a tab recognise its OWN action's echo,
-        # so only the tab that cancelled takes the question back into its composer.
-        payload["origin_client"] = origin_client
-    # Owner-only: `_check_slot_ownership` answers 404 when an app asks about a slot it
-    # does not own, and queue entries are the user's own prose. An unscoped broadcast
-    # would hand that text to app sockets the HTTP layer keeps out.
-    state.broadcast_ws_owners(SIDE_QUEUE_EVENT, payload)
-
-
-def broadcast_side_closed(
-    state: DashboardState,
-    *,
-    slot_key: str,
-    origin_client: str = "",
-    dropped: list[dict[str, str]] | None = None,
-) -> None:
-    """Tell every tab that the slot's side conversation is closed.
-
-    Without it only the tab that closed it clears its panel. Another tab keeps
-    rows the model has dropped, and its next question opens a fresh
-    conversation under them. ``origin_client`` names the tab that closed it,
-    which has already cleared its own panel. ``dropped`` names every queue entry
-    the close dropped, including the steer id of a requeued steer, so a tab that
-    missed its queue frame can return retained text from a delayed receipt.
-    Owner-only, like every side frame.
-    """
-    payload: dict[str, object] = {"kind": SIDE_KIND, "slot": slot_key}
-    if origin_client:
-        payload["origin_client"] = origin_client
-    if dropped:
-        payload["dropped"] = dropped
-    state.broadcast_ws_owners(SIDE_CLOSED_EVENT, payload)
-
-
 def _handle_slot_read(
     state: DashboardState, slot_key: object, read_ts: object = None, *, owner: bool
 ) -> bool:
@@ -1054,6 +859,10 @@ async def _serve_ws(
     ws[SLOT_PATCH_WS_FLAG] = bool(ws["_is_dashboard_user"]) and (
         SLOT_PATCH_CAPABILITY in declared_caps
     )
+    # ``fold_delta.1``: send this tab only the boards it watches (dashboard users only).
+    state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
+    # ``fold_delta.2`` beside it: this tab applies ``slot_fold`` deltas for ``work``.
+    state.set_fold_apply_capable(ws, _ws_hub.FOLD_APPLY_CAPABILITY in declared_caps)
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
@@ -1071,9 +880,9 @@ async def _serve_ws(
     # ceiling, because it is not ceiling-only.
     initial_answer_generation = governance_answer_generation()
     # The slots an app socket may receive subagent cards for, read at each
-    # subscribe: its replay covers these when it names none, and a name outside
-    # them is not kept. A dashboard user's replay follows the slots it names and
-    # focuses instead.
+    # subscribe: its replay covers these when its subscribe names no list, and a
+    # name outside them is not kept. A dashboard user's replay follows the slots
+    # it names instead, and on the owner's socket the slots it focuses.
     _app_replay_slots: list[str] = []
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
@@ -1117,6 +926,9 @@ async def _serve_ws(
             # never receives the tree, so its generation would describe data the
             # app does not have.
             envelope_extras["foldersGeneration"] = state.folders_generation()
+            # The tag vocabulary / board columns' baseline, gated the same way:
+            # an app token is not sent the sidebar's tag stores.
+            envelope_extras["tagsGeneration"] = state.tags_generation()
         if "yolo" in envelope_extras:
             # Handing a socket the live blanket-approval override is a grant
             # of operator security posture, not slot data, and this initial
@@ -1156,6 +968,10 @@ async def _serve_ws(
             logger.warning("slots connect snapshot failed to serialize", exc_info=True)
             raise
         await ws.send_str(snapshot_payload)
+        # After the snapshot (the first frame by contract): ask a capable tab for its watch.
+        if ws.get(_ws_hub.FOLD_DELTA_WS_FLAG, False):
+            hello = {"type": _ws_hub.FOLD_HELLO_FRAME, "data": _ws_hub.fold_hello_payload(ws)}
+            await ws.send_str(json.dumps(hello))
         # One-shot per-member event-log baseline, to THIS socket only, right
         # after the connect snapshot and before any later broadcast can reach
         # it -- so the client's held member_projection frames can be pruned
@@ -1887,16 +1703,22 @@ async def _serve_ws(
                             )
                         else:
                             _replay_queue.reset(_durable_replay)
-                        # The slots the client names; a client that names none
-                        # gets the slots it later focuses (an app socket: the
-                        # slots it was shown on connect). The folder fallback
-                        # has no per-slot index, so it runs once per subscribe.
+                        # With the crew log off, the folder fallback: it has no
+                        # per-slot index, so it runs once per subscribe. Otherwise
+                        # the slots the client names, none for an empty list. A
+                        # frame with no list asks, on an app socket, for the slots
+                        # whose subagent cards it may see (read above at this
+                        # subscribe), and on a dashboard-user socket for none.
+                        # While the crew log is on, later subagent_replay frames,
+                        # and an owner's slot_focused frames, ask for more.
                         _scope = requested_slots(data.get("slots"))
-                        _replay_queue.request(
-                            (_scope if _scope is not None else _app_replay_slots)
-                            if crew_log_enabled()
-                            else [_FOLDER_REPLAY]
-                        )
+                        if not crew_log_enabled():
+                            _replay_slots = [_FOLDER_REPLAY]
+                        elif _scope is not None:
+                            _replay_slots = _scope
+                        else:
+                            _replay_slots = _app_replay_slots
+                        _replay_queue.request(_replay_slots)
                     elif msg_type == "subagent_replay":
                         # A view that starts showing more slots (a split pane, a
                         # session's children) asks for their finished runs. Each
@@ -1907,6 +1729,8 @@ async def _serve_ws(
                         state.unsubscribe_subagents(ws)
                         if _replay_queue is not None:
                             _replay_queue.clear()
+                    elif msg_type == "fold_watch":  # replaces the set; no-op unless capable
+                        state.set_fold_watch(ws, data.get("slots"))
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —

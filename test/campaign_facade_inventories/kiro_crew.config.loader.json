@@ -214,7 +214,6 @@
   "ensure_data_home",
   "env_bom_prefix",
   "env_path",
-  "file_delivery_consent_path",
   "inject_kiro_cli_api_key",
   "is_owner_only_target",
   "is_valid_effort",

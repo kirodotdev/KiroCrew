@@ -48,6 +48,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     model_registry_namespace,
     selectable_backend_values,
     selectable_stored_backend_values,
@@ -285,6 +286,7 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
+    _DASHBOARD_SERVED_SLASH_COMMANDS,
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
@@ -314,6 +316,8 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     read_only_reason_for_path,
     validate_definition_patch,
 )
+from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
+from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
@@ -558,6 +562,9 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     "no session is up" is not "nothing is advertised", and an id the catalog does
     not list reaches a picker ONLY through this list. Returns ``[]`` only when the
     snapshot is empty too (a genuine first run) or the backend advertised nothing.
+    Both sources pass the same bounded admission
+    (:func:`model_registry.live_advertised_model_rows`), so a live payload cannot
+    reach the picker with an id or label the cache would refuse or clip.
 
     Two filters, and both are load-bearing. The CAPABILITY gate
     (``SessionCapabilities.resolves_model_from_advertised_list``) is the property
@@ -592,19 +599,16 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
             advertised = getter()
         except Exception:
             continue
-        if advertised:
-            return [
-                {
-                    "model_name": m.get("modelId", ""),
-                    "display_name": m.get("name", "") or m.get("modelId", ""),
-                    "description": m.get("description", ""),
-                }
-                for m in advertised
-                if m.get("modelId")
-            ]
+        rows = model_registry.live_advertised_model_rows(advertised) if advertised else []
+        if rows:
+            return rows
     return [
-        {"model_name": m, "display_name": m, "description": ""}
-        for m in model_registry.advertised_models(namespace)
+        {
+            "model_name": r["model_name"],
+            "display_name": r.get("display_name", "") or r["model_name"],
+            "description": r.get("description", ""),
+        }
+        for r in model_registry.advertised_model_rows(namespace)
     ]
 
 
@@ -759,9 +763,9 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     shown it unfiltered is offered the full flagship list and discovers the truth
     only when a prompt fails.
 
-    So when anything is advertised, registry rows are FILTERED DOWN to it (keeping
-    the registry's cleaner display names for the survivors), and advertised models
-    the registry does not list are appended for forward-compat.
+    So when anything is advertised, registry rows are FILTERED DOWN to it (each survivor
+    labelled with the backend's own name when it sent one, else the registry's),
+    and advertised models the registry does not list are appended for forward-compat.
 
     With no session live the advertised set is the last snapshot any session
     wrote (:func:`_advertised_cc_models`), so a cold dashboard filters the same
@@ -795,20 +799,7 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             or _normalize_model_key(e.get("model_name", "")) == "auto"
         ]
 
-    merged: list[dict] = []
-    seen: dict[str, int] = {}
-    for entry in (*registry_rows, *advertised):
-        name = entry.get("model_name", "")
-        key = _normalize_model_key(name)
-        if not key:
-            continue
-        if key in seen:
-            # Collision: registry keeps display, advertised id keeps the wire value.
-            if key != "auto":
-                merged[seen[key]] = {**merged[seen[key]], "model_name": name}
-            continue
-        seen[key] = len(merged)
-        merged.append(entry)
+    merged = merge_advertised_rows(registry_rows, advertised, _normalize_model_key)
     # "auto" leads. It may be absent entirely if a future registry drops the row,
     # so synthesize it rather than assuming the filter above preserved one.
     merged = [e for e in merged if _normalize_model_key(e.get("model_name", "")) == "auto"] + [
@@ -816,7 +807,7 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     ]
     if not any(_normalize_model_key(e.get("model_name", "")) == "auto" for e in merged):
         merged.insert(0, {"model_name": "auto", "display_name": "Auto", "description": ""})
-        seen = {_normalize_model_key(e.get("model_name", "")): i for i, e in enumerate(merged)}
+    seen = {_normalize_model_key(e.get("model_name", "")) for e in merged}
     # Guarantee the configured default is present (e.g. a custom cc_model the
     # backend doesn't advertise) so the selected model never vanishes. Resolve it
     # to its canonical key first (it may be stored as a provider id or alias) so a
@@ -1413,6 +1404,17 @@ async def api_models(request: web.Request) -> web.Response:
                 request, backend, configured_default=_scoped_default(cfg, backend)
             )
         )
+    # KAS from Crew's own engine bundle: no kiro-cli to list models with, so the
+    # readiness gate, the ``--list-models`` spawn and the ``_entitled_kiro_models``
+    # narrowing below never apply (the engine's select is already the signed-in
+    # account's list). Decided per ROUTE (backend AND the bundle switch), not per
+    # backend, which is why it is not a capability-set branch like the one above.
+    # The one shared predicate (``agent_sdk.kas_bundle``); it re-reads config, so
+    # off the loop. Deferred like the handler module's own engine probe.
+    from kiro_crew.agent_sdk import kas_bundle
+
+    if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+        return await api_models_kas_bundle(request)
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -1595,11 +1597,16 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # explicit "not available in the dashboard" rejection in chat_runner), but
     # the suggestion payload must not advertise them: a menu entry that only
     # ever produces a warning is an inert affordance.
+    offered = _SLASH_COMMANDS - blocked_commands
+    # The same holds for a harness with no command channel: the slash gate
+    # answers each of its harness commands with a notice, so list only what the
+    # dashboard serves there. /compact stays: it has a gate of its own, which
+    # sends the engine's compaction verb or explains that the harness compacts
+    # by itself, and never gives that notice.
+    if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
+        offered = offered & (_DASHBOARD_SERVED_SLASH_COMMANDS | {"/compact"})
     return web.json_response(
-        [
-            {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")}
-            for c in sorted(_SLASH_COMMANDS - blocked_commands)
-        ]
+        [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
     )
 
 

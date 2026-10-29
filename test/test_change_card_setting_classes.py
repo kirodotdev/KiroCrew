@@ -66,18 +66,24 @@ def test_ordered_values_are_values_the_route_accepts():
 
 
 @pytest.mark.parametrize(
-    "path,before,after,risk",
+    "path,cls,before,after,risk",
     [
-        ("dashboard.tailscale.pin_scope", "node", "login", "widen"),
-        ("dashboard.tailscale.pin_scope", "login", "node", "tighten"),
-        ("knowledge.auto_add_documents", False, True, "widen"),
-        ("knowledge.auto_add_documents", True, False, "tighten"),
-        ("agent.acp_backend", "", "claude", "code_exec"),
-        ("session.pool_agent", "", "builder", "code_exec"),
-        ("telemetry.enabled", False, True, "normal"),
+        (
+            "session_environments",
+            "_CODE_EXEC_SETTINGS",
+            {},
+            {"coder_url": "https://c"},
+            "code_exec",
+        ),
+        ("session_environments.coder_url", "_CODE_EXEC_SETTINGS", "", "https://c", "code_exec"),
+        ("session_environments.default_profile", "_CANNOT_WIDEN_SETTINGS", "", "dev", "normal"),
+        ("session_environments.stop_on_shutdown", "_CANNOT_WIDEN_SETTINGS", True, False, "normal"),
     ],
 )
-def test_newly_classified_paths_read_their_class_on_the_card(path, before, after, risk):
+def test_session_environment_paths_keep_their_class(path, cls, before, after, risk):
+    # The deployment and template pick the machine a session runs on; the default
+    # profile and the shutdown switch choose only among the operator's own setups.
+    assert [name for name, members in _CLASSES.items() if path in members] == [cls]
     p = {"path": path, "value": after}
     assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk
 

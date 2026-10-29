@@ -27,6 +27,8 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import RemoteBehindBadge from '../../../components/RemoteBehindBadge'
 import Glass from '../../../components/Glass'
 import ChatInput from '../../../components/ChatInput'
+import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
+import { busySteerFlag } from '../../../components/chat-input/busySend'
 import ChatMessageList from '../../../app-sdk/ChatMessageList'
 import ChatFooter from '../ChatFooter'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../../../components/QueueStack'
@@ -42,7 +44,7 @@ import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowMode
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
-import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
+import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
 import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
@@ -97,7 +99,10 @@ function withoutHubRecords(m: ChatMessage): ChatMessage {
 export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { target: CrewWindowTarget; onClose?: () => void }) {
   const { instanceId, key } = target
   const queryClient = useQueryClient()
-  const slotPath = 'api/chat/slots/' + encodeURIComponent(key)
+  // `?crew=all` keeps a Crew Mode root's crew members in the peer's answer, the
+  // same way the local slot list asks for them.
+  const slotsPath = 'api/chat/slots'
+  const slotPath = slotsPath + '/' + encodeURIComponent(key)
   const slotKeyQ = useMemo(() => ['crew-window', instanceId, key, 'slot'] as const, [instanceId, key])
   const detailKeyQ = useMemo(() => ['crew-window', instanceId, key, 'detail'] as const, [instanceId, key])
   const instancesQ = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances() })
@@ -121,7 +126,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // detail carries the transcript. Both are the peer's own answers.
   const slotQ = useQuery({
     queryKey: slotKeyQ,
-    queryFn: async () => ((await api.crewPeerGet(instanceId, 'api/chat/slots')) as PeerSlot[]).find(s => s.key === key) ?? null,
+    queryFn: async () => ((await api.crewPeerGet(instanceId, slotsPath + '?crew=all')) as PeerSlot[]).find(s => s.key === key) ?? null,
     enabled: versionOk,
   })
   const detailQ = useQuery({
@@ -242,6 +247,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       if (text.trim()) recoverIntoDraft(text)
     },
   })
+  const composerRef = useRef<ComposerHandle>(null)
   /** Send the draft. While the peer runs, the composer's busy choice picks:
    *  a plain send the peer queues, or `steer` into the running turn. */
   const send = (steer = false) => {
@@ -249,6 +255,9 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     if ((!typed && (rewindTs || !messageQuote.pendingQuote)) || action.isPending || !connected) return
     // A held rewind waits for an idle peer: mid-turn the peer refuses it.
     if (rewindTs && running) return
+    // A send ends live streaming dictation before the box is cleared, or the
+    // next partial rebuilds the sent text (see useComposerVoice.disarmForSend).
+    composerRef.current?.voice()?.disarmForSend()
     const { quote, text: message } = rewindTs ? { quote: null, text: typed } : messageQuote.consume(typed)
     const req = rewindTs
       ? { path: slotPath + '/rewind', body: { ts: rewindTs, content: message } }
@@ -260,11 +269,21 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     setRewindTs(null)
     action.mutate({ ...req, message, rewindTs, typed, quote })
   }
+  // Dictation runs on THIS machine (mic + STT); only the text goes to the
+  // peer, through the same send as a typed message. An auto-submit (endpoint
+  // or release) picks steer or queue the way Enter does, from this window's
+  // busy-send choice. It reads the latest `send` and run state through a ref.
+  const autoSubmitRef = useRef<() => void>(() => {})
+  const voiceOptions = useMemo<ComposerVoiceOptions>(() => ({ onAutoSubmit: () => autoSubmitRef.current() }), [])
 
   const running = slotQ.data?.running ?? detailQ.data?.running ?? false
   // When the crew cannot be reached, its last-known running state is stale:
   // stop the animation so the transcript does not contradict the notice.
   const displayRunning = running && !(action.error && isUnreachable(action.error))
+  autoSubmitRef.current = () => {
+    const live = running && !rewindTs
+    send(!!busySteerFlag({ slotKey: crewWindowSlot(instanceId, key), busy: live, turnRunning: live, stopState: slotQ.data?.stop_state, jevAutoConsented: false }))
+  }
   // Resume, as locally: only on a turn the peer itself calls interrupted,
   // and not while a refused rewind is held (Send retries that first).
   const continuable = connected && !running && !rewindTs && !slotQ.data?.stopping && !!slotQ.data?.interrupted
@@ -307,7 +326,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   }, [nativeApproval, instanceId, slotPath, settle, name])
   // The newest turn row the transcript draws as a bubble: a system notice
   // (compaction, reload) and a say-nothing reply are not one.
-  const lastTurn = [...messages].reverse().find(m => m.role === 'user' || (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m)))
+  const lastTurn = [...messages].reverse().find(m =>
+    !isRetractedSteerRow(m) && (
+      m.role === 'user' ||
+      (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m))
+    ),
+  )
   // An untitled session shows the shared "Untitled session" label, never the
   // internal slot key. The key still routes every request (crewWindowSlot,
   // slotPath); only the header text changes. The label is used ONLY once a
@@ -500,6 +524,16 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             name the hub's gateway, not this crew. */}
         <fieldset disabled={!connected} className="contents">
         <SlotProvider slotId={crewWindowSlot(instanceId, key)}>
+        {/* Voice is keyed per editor: a rewind edit and the saved draft are
+            two boxes, so switching between them ends the other box's
+            dictation instead of writing its words into this one. */}
+        <Composer
+          ref={composerRef}
+          slotKey={crewWindowSlot(instanceId, key) + (rewindTs ? ':rewind' : '')}
+          value={rewindTs ? rewindText : draft}
+          onChange={rewindTs ? setRewindText : setDraft}
+          voice={voiceOptions}
+        >
           <ChatInput
             value={rewindTs ? rewindText : draft}
             onChange={rewindTs ? setRewindText : setDraft}
@@ -540,6 +574,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             pendingQuote={rewindTs ? null : messageQuote.pendingQuote}
             onRemoveQuote={messageQuote.clearQuote}
           />
+        </Composer>
         </SlotProvider>
         </fieldset>
       </Glass>

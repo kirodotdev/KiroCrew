@@ -101,7 +101,9 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
         require_member_memory_store,
     )
 
-    # A V2 store with no owner_member_id predates member identities. The start-of-
+    # A V2 store with no owner_member_id predates member identities, and a member
+    # store whose declaration an older build's save stripped back to V1 has lost
+    # them. The start-of-
     # process upgrade repairs the ones it can attribute to exactly one member;
     # doctor itself repairs nothing (it is exempt from that prologue so it can
     # report the stores), so a repairable store is reported as pending through

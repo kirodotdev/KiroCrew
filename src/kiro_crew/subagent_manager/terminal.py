@@ -312,11 +312,15 @@ class TerminalCoordinator(ManagerComponent):
         # child's origin pin, which `_record_crew_log_terminal` holds until the
         # closer is handed to the writer. This flip stays ahead of the event for
         # the paths that reach a terminal without the run loop.
+        #
+        # Usage still pending here is settled before the closer reads
+        # `info.credits`, as the reap does before its tombstone, so the crew log,
+        # the tombstone and the WS frame all carry the same figure.
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         self._record_crew_log_terminal(info)
         self._record_terminal_metric(info)
         info.done = True
-        if info._credit_accounting is not None:
-            info._credit_accounting.settle()
         # Arm the done-but-unreported hold in the same synchronous block as
         # the flip, so the hold and the flip can never be observed apart: from
         # this line until the completion consumer lands the member's
@@ -395,6 +399,9 @@ class TerminalCoordinator(ManagerComponent):
                 "stop_reason": info.stop_reason,
                 "stop_class": info.stop_class,
                 "partial": info.partial,
+                # A normal end whose final segment leaked a tool call as
+                # text: completed, but that last call never ran.
+                "leaked_tool_call": bool(getattr(info, "leaked_tool_call", False)),
             },
         )
         # A terminal is where the user watches the wave settle, so it
@@ -455,6 +462,8 @@ class TerminalCoordinator(ManagerComponent):
             self._manager._teardown_cancelled_ids.discard(info.id)
             # Owed only to the parent that ended, so this skip settles it.
             info._report_delivered = True
+            return True
+        if info._left_for_next_start:  # reported by the next start's orphan sweep
             return True
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)

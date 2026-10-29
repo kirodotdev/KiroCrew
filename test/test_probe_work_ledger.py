@@ -51,13 +51,17 @@ class TestActionableEvents:
     def test_every_conductor_action_kind_is_covered(self):
         """Guards the test above from drifting from the store's own vocabulary."""
         worker_owned = lw.WORKER_EVENT_KINDS
+        # ``steer`` is the person's word (a Crew Mode side-panel steer); it reaches
+        # the worker directly and wakes no conductor through this gate.
         assert work_ledger.EVENT_KINDS - worker_owned == {
             "create",
             "bind",
             "decision",
             "verdict",
             "close",
+            "steer",
         }
+        assert not lw.is_actionable_event("steer", "done")
 
     def test_the_waking_set_is_a_subset_of_the_stores_worker_statuses(self):
         """A status the store refuses could never reach the gate."""

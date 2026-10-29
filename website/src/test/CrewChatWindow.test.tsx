@@ -16,6 +16,34 @@ import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import type { RootState } from '../store'
 
+// jsdom has no MediaRecorder, so the real flag reads false and hides the mic:
+// pin it. The engine stays real; its endpoint callback is kept so a test can
+// fire the verdict that auto-submits a dictation.
+const voiceHooks = vi.hoisted(() => ({ onEndpoint: null as (() => void) | null }))
+vi.mock('../hooks/useVoiceInput', async () => {
+  const actual = await vi.importActual<typeof import('../hooks/useVoiceInput')>('../hooks/useVoiceInput')
+  return {
+    ...actual,
+    voiceInputSupported: true,
+    useVoiceInput: (...args: Parameters<typeof actual.useVoiceInput>) => {
+      voiceHooks.onEndpoint = args[1]?.onEndpoint ?? null
+      return actual.useVoiceInput(...args)
+    },
+  }
+})
+// Seam on the composer's Voice atom: counts the window's `disarmForSend` over
+// the real hook, so a send that stops ending live dictation fails a test.
+const voiceSeam = vi.hoisted(() => ({ disarmForSend: vi.fn() }))
+vi.mock('../chat-core/composer/useComposerVoice', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../chat-core/composer/useComposerVoice')>()
+  return {
+    ...actual,
+    useComposerVoice: (host: Parameters<typeof actual.useComposerVoice>[0]) => {
+      const cv = actual.useComposerVoice(host)
+      return { ...cv, disarmForSend: () => { voiceSeam.disarmForSend(); cv.disarmForSend() } }
+    },
+  }
+})
 const mocks = vi.hoisted(() => ({
   crewPeerGet: vi.fn(), crewPeerPost: vi.fn(), listInstances: vi.fn(), instancesCapabilities: vi.fn(),
   // The LOCAL slot routes. A crew window must never reach them: on a remote
@@ -125,8 +153,10 @@ beforeEach(() => {
   slotRow = { key: 'k1', title: 'Build fix', running: false, interrupted: false }
   detail = { running: false, messages: [{ role: 'user', content: 'hi', ts: 't1' }, { role: 'assistant', content: 'hello', ts: 't2' }] }
   mocks.listInstances.mockResolvedValue({ instances: [{ id: 'cd-1', name: 'devbox' }] })
+  // The slot read asks the peer for `?crew=all`, so a Crew Mode root's crew
+  // members are in the list the window picks its row from.
   mocks.crewPeerGet.mockImplementation((_id: string, path: string) =>
-    Promise.resolve(path === 'api/chat/slots' ? [{ key: 'other' }, slotRow] : detail))
+    Promise.resolve(path === 'api/chat/slots?crew=all' ? [{ key: 'other' }, slotRow] : detail))
   mocks.crewPeerPost.mockResolvedValue({ ok: true })
   mocks.instancesCapabilities.mockResolvedValue({ version_match: true, version: '0.9.0', local_version: '0.9.0' })
   mocks.instancesApprovalState.mockResolvedValue({ yolo: false })
@@ -150,6 +180,14 @@ describe('CrewChatWindow', () => {
     ]))
     expect(mocks.crewPeerPost.mock.calls[0][0]).toBe('cd-1')
     expect(mocks.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  // The window mounts the shared Composer root, so the mic shows as it does in
+  // a local chat. Without the root ChatInput has no voice slice and no mic.
+  it('offers voice input in the composer', async () => {
+    detail = { running: false, messages: [{ role: 'user', content: 'hi', ts: 't1' }] }
+    renderWindow()
+    expect(await screen.findByRole('button', { name: 'Voice input' })).toBeInTheDocument()
   })
 
   it('keeps Stop reachable while an approval is pending', async () => {
@@ -319,6 +357,32 @@ describe('CrewChatWindow', () => {
     expect(box).toHaveValue('')
   })
 
+  // A dictation that auto-submits mid-turn must pick steer the way Enter does;
+  // a bare send() would only queue it behind the running turn.
+  it('steers the PEER\'s running turn when dictation auto-submits', async () => {
+    slotRow = { ...slotRow, running: true }
+    renderWindow()
+    const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+    await screen.findByRole('button', { name: 'Stop generation' }, PEER_ROW_WAIT)
+    fireEvent.change(box, { target: { value: 'say it out loud' } })
+    expect(voiceHooks.onEndpoint).toBeTypeOf('function')
+    await act(async () => { voiceHooks.onEndpoint?.() })
+    await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'say it out loud', slot: 'k1', steer: true }]))
+  })
+
+  // A send ends live streaming dictation before the box is cleared; without
+  // it the next partial rebuilds the sent text in the empty composer.
+  it('ends live dictation when the window sends', async () => {
+    renderWindow()
+    const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+    await waitFor(() => expect(box).not.toBeDisabled())
+    voiceSeam.disarmForSend.mockClear()
+    fireEvent.change(box, { target: { value: 'spoken words' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'spoken words', slot: 'k1' }]))
+    expect(voiceSeam.disarmForSend).toHaveBeenCalledTimes(1)
+  })
+
   it('queues a mid-turn message on the PEER with the other-action chord', async () => {
     slotRow = { ...slotRow, running: true }
     renderWindow()
@@ -391,7 +455,7 @@ describe('CrewChatWindow', () => {
     detail = { ...detail, running: true }
     renderWindow()
     const footer = await screen.findByTestId('chat-footer', {}, PEER_ROW_WAIT)
-    expect(within(footer).getByText('Killing…').className).toContain('text-danger')
+    expect(within(footer).getByText('Force stopping…').className).toContain('text-danger')
     expect(screen.queryByText('Stopping…')).toBeNull()
   })
 
@@ -926,7 +990,7 @@ describe('CrewChatWindow', () => {
     slotRow = { ...slotRow, model: 'claude-opus', reasoning_effort: 'high' }
     let fail = true
     mocks.crewPeerGet.mockImplementation((_id: string, path: string) => (
-      path === 'api/chat/slots' ? Promise.resolve([slotRow])
+      path === 'api/chat/slots?crew=all' ? Promise.resolve([slotRow])
         : path.endsWith('/selection-capabilities') ? (fail ? Promise.reject(new Error('peer unreachable')) : Promise.resolve({ known: true, effort_supported: true, effort_levels: ['low', 'high'] }))
           : Promise.resolve(detail)))
     renderWindow()
@@ -958,7 +1022,7 @@ describe('CrewChatWindow', () => {
     slotRow = { ...slotRow, model: 'claude-opus', reasoning_effort: 'high' }
     let known = false
     mocks.crewPeerGet.mockImplementation((_id: string, path: string) => Promise.resolve(
-      path === 'api/chat/slots' ? [slotRow]
+      path === 'api/chat/slots?crew=all' ? [slotRow]
         : path.endsWith('/selection-capabilities') ? (known ? { known: true, effort_supported: true, effort_levels: ['low', 'high'] } : { known: false })
           : detail))
     renderWindow()
@@ -967,6 +1031,17 @@ describe('CrewChatWindow', () => {
     known = true
     await waitFor(() => expect(screen.getByTestId('composer-model-chip')).toHaveTextContent('High'), { timeout: 8000 })
   }, 15000)
+
+  it('offers Regenerate on the newest reply when a taken-back steer follows it', async () => {
+    detail = { running: false, messages: [
+      { role: 'user', content: 'hi', ts: 't1' },
+      { role: 'assistant', content: 'hello', ts: 't2' },
+      { role: 'user', content: '', ts: 't3', meta: { steer: true, steerState: 'retracted' } },
+    ] }
+    renderWindow()
+    const reply = await screen.findByTestId('crew-window-assistant', {}, PEER_ROW_WAIT)
+    expect(within(reply).getByRole('button', { name: 'Regenerate response' })).toBeTruthy()
+  })
 
   it('offers Regenerate on the newest reply even when a compaction notice follows it', async () => {
     detail = { running: false, messages: [
@@ -981,7 +1056,7 @@ describe('CrewChatWindow', () => {
   it('shows a refused effort pick on the window itself', async () => {
     slotRow = { ...slotRow, model: 'claude-opus', reasoning_effort: 'high' }
     mocks.crewPeerGet.mockImplementation((_id: string, path: string) => Promise.resolve(
-      path === 'api/chat/slots' ? [slotRow]
+      path === 'api/chat/slots?crew=all' ? [slotRow]
         : path.endsWith('/selection-capabilities') ? { known: true, effort_supported: true, effort_levels: ['low', 'high'] }
           : detail))
     mocks.instancesCapabilities.mockResolvedValue({

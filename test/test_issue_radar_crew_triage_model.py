@@ -278,7 +278,7 @@ class TestSwitchingOff(_Isolated):
 
 
 class TestAPersonsPickWins(_Isolated):
-    """The crew changes only a model it chose itself (the Design and review finding).
+    """The crew changes only a model it chose itself.
 
     A pick in the crew's session -- the model picker, or ``session_set_model`` --
     holds the slot until the crew's ``model`` or ``triage_model`` setting changes.

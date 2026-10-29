@@ -94,8 +94,8 @@ tool. All stores share one model and inference worker. The interactive
 process may run on -- which a CPU-set restriction (`--cpuset-cpus`, `taskset`)
 narrows below the host's core count -- and never below one thread, so the event
 loop keeps a core wherever
-there is one to spare; `memory.embedding_bulk_threads` remains 1. The value 4 means that default policy, so pinning threads
-where the process may use 4 or fewer CPUs takes a different number; any other explicit setting is
+there is one to spare; where the process may use 12 or more CPUs the default is 6; `memory.embedding_bulk_threads` remains 1. The value 4 means that default policy, so 4 cannot be pinned
+where the process may use 4 or fewer, or 12 or more CPUs (there a 4 runs 6; set 3 or 5 to stay low); any other explicit setting is
 honored up to that same count. Bulk threads may be 0 to inherit the normal
 setting. Background jobs share the configured bulk
 duty cycle, while waiting interactive queries take priority. A full inference
@@ -473,8 +473,9 @@ and the three Linux formats come from one backend tree packaged three times.
 The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
-installs the next time you quit the app (closing the window only hides it to
-the tray; quit from the tray or the menu bar). To be asked first, turn off
+installs the next time you quit the app (by default closing the window only hides
+it to the tray; quit from the tray or the menu bar, or turn off **Keep running in the background
+after closing the window** in Settings → Display → View → Desktop app so the close button quits). To be asked first, turn off
 **Install app updates automatically** on the About page (an **Update the gateway
 automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
 downloads it when you click Download, in the update popup or on the About page.

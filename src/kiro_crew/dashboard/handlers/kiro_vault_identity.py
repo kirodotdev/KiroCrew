@@ -16,9 +16,17 @@ This module answers them from the vault, token-free, in the field vocabulary
 ``account_type`` and friends), so the frontend's provider labelling
 (``accountProviderLabel``) branches on nothing new. What the vault can say is
 the KIND of account: a Builder ID, Identity Center, company-SSO or social
-sign-in. It stores no e-mail and no portal URL, so a vault-labelled reading
-carries neither; the account modal then shows the provider badge and, for an
-enterprise profile, the profile's display name the usage API already attaches.
+sign-in, and for an Identity Center sign-in the portal (start URL) it was begun
+against, when the sign-in recorded one. It stores no e-mail: the vault's usage
+reading asks ``GetUsageLimits`` for it (``isEmailRequired``), the way kiro-cli
+does, so the account modal shows the address, the provider badge and the portal
+host as it does on the kiro-cli route.
+
+The slot -> ``accountType`` table itself lives in :mod:`kiro_crew.auth.whoami`
+(:func:`~kiro_crew.auth.whoami.account_type_for`), the one copy every reader of
+the vault's identity spells from: this module, ``kirocrew kas whoami`` and the
+cloud sign-in's identity match. With no table of its own here, the dashboard
+cannot label an account one way while the remote sign-in matches it another.
 
 ``kiro_crew.auth`` is imported at call time only: it brings the ``cryptography``
 wheel, which must stay off the handlers package's import path (the boot-path
@@ -30,13 +38,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 
-#: The vault's store slot -> the ``accountType`` kiro-cli prints for that kind of
-#: sign-in. The social slot is spelled from its provider instead (below).
-_ACCOUNT_TYPE_BY_SLOT: Mapping[str, str] = {
-    "builder_id": "BuilderId",
-    "identity_center": "IamIdentityCenter",
-    "external_idp": "ExternalIdP",
-}
+#: Longest ``start_url`` published, matching ``parse_whoami_output``'s bound.
+_START_URL_CAP = 200
 
 
 def account_type_from_claims(identity: str, provider: str) -> str:
@@ -48,26 +51,46 @@ def account_type_from_claims(identity: str, provider: str) -> str:
     the account modal's badge humanizes whatever follows ``Social`` by splitting
     at an inner capital, so the one-capital spelling the vault stores is the one
     that renders as a single word. Every other slot has one type. ``""`` when
-    neither names a kind the dashboard can label.
+    neither names a kind the dashboard can label. The spelling is
+    :func:`kiro_crew.auth.whoami.account_type_for`'s, so the badge and
+    ``kirocrew kas whoami`` can never disagree about one token.
     """
-    if identity == "social":
-        return f"Social{provider}" if provider else ""
-    return _ACCOUNT_TYPE_BY_SLOT.get(identity, "")
+    # Deferred: see the module docstring.
+    from kiro_crew.auth.whoami import account_type_for
+
+    return account_type_for(identity, provider)
 
 
 def identity_fields(claims: Mapping[str, str]) -> dict[str, object]:
     """The whoami-shaped identity fields the vault's public claims support.
 
-    ``{"account_type": ...}`` for a stored identity, ``{}`` when ``claims`` is
-    empty (signed out) or names no labelable kind. Deliberately never an
-    ``email`` or ``start_url`` key: the vault holds neither, and an empty string
-    there would read as "known to be blank" to the identity-agreement checks on
-    the kiro-cli path, which share this shape.
+    Rendered from :func:`kiro_crew.auth.whoami.whoami_document_for`, the writer
+    ``kirocrew kas whoami`` prints, so the account modal and the CLI describe one
+    sign-in the same way: ``account_type`` for a stored identity, plus
+    ``start_url`` when the sign-in recorded its Identity Center portal. ``{}``
+    when ``claims`` is empty (signed out) or names no labelable kind. Never an
+    ``email`` key (the vault holds none; the e-mail rides in on the usage reading
+    from the API), and never an empty string for a field it does not know: that
+    would read as "known to be blank" to the identity-agreement checks on the
+    kiro-cli path, which share this shape.
     """
-    account_type = account_type_from_claims(
-        str(claims.get("identity") or ""), str(claims.get("provider") or "")
+    # Deferred: see the module docstring.
+    from kiro_crew.auth.whoami import whoami_document_for
+
+    doc = whoami_document_for(
+        str(claims.get("identity") or ""),
+        str(claims.get("provider") or ""),
+        claims.get("start_url"),
     )
-    return {"account_type": account_type} if account_type else {}
+    account_type = doc["accountType"]
+    if not account_type:
+        return {}
+    fields: dict[str, object] = {"account_type": account_type}
+    start_url = doc.get("startUrl")
+    if start_url:
+        # The same bound ``parse_whoami_output`` puts on kiro-cli's own startUrl.
+        fields["start_url"] = start_url[:_START_URL_CAP]
+    return fields
 
 
 def vault_identity_snapshot_sync() -> tuple[str, dict[str, object]]:

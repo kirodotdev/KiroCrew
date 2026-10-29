@@ -297,7 +297,8 @@ def _learn(args: argparse.Namespace) -> None:
             elif jsonl_store.remove(args.query, repo_scope):
                 print(f"Removed lessons matching: {args.query}")
             else:
-                print(f"No lessons match: {args.query}")
+                print(f"No lessons match: {args.query}", file=sys.stderr)
+                sys.exit(1)
 
         else:
             print("Usage: kirocrew learn {add|list|remove}")

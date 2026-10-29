@@ -143,9 +143,27 @@ def _work(handle: CrewLog, item_id: str) -> int:
     return int(entry.seq)
 
 
+def _whole(seen: "list[Any]") -> "Callable[[Any], None]":
+    """A subscriber recording each event with its whole value.
+
+    A ``work`` delta or ``snapshot_needed`` event carries no value; inside the publish
+    the render it stands for is ``eager.published_value`` at its revision, the same
+    lookup the WS exporter makes for a tab that reads whole values.
+    """
+
+    def _record(event: Any) -> None:
+        if event.value is None:
+            whole = eager.published_value(event.key, event.fold, event.revision)
+            assert whole is not None, "a published work event has no recorded render"
+            event = event._replace(value=whole)
+        seen.append(event)
+
+    return _record
+
+
 def _subscribe(seen: "list[Any]") -> "bus.Disposer":
     return bus.subscribe(
-        bus.FOLD_ADVANCED, seen.append, scope=bus.SCOPE_SLOT, key=SLOT, fold="work", baseline=True
+        bus.FOLD_ADVANCED, _whole(seen), scope=bus.SCOPE_SLOT, key=SLOT, fold="work", baseline=True
     )
 
 
@@ -250,7 +268,7 @@ def test_the_eager_advance_on_a_cold_cell_returns_while_the_prime_is_held(held, 
     """The eager worker is never held by a cold fold, on the first wake or a later one."""
     _board()
     seen: "list[Any]" = []
-    bus.subscribe(bus.FOLD_ADVANCED, seen.append, scope=bus.SCOPE_SLOT, key=SLOT, fold="work")
+    bus.subscribe(bus.FOLD_ADVANCED, _whole(seen), scope=bus.SCOPE_SLOT, key=SLOT, fold="work")
     _finishes_while_held(lambda: eager._advance(SLOT, "work"), held)
     assert held.entered.wait(timeout=JOIN_SECONDS), "no background prime started"
     _finishes_while_held(lambda: eager._advance(SLOT, "work"), held)

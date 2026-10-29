@@ -1,7 +1,7 @@
 """The product's own command floors: the subcommands it must never be driven to run.
 
 The termination floor (a kill whose target is the product, by pid or by name, through
-``pkill``-style programs and computed words), the restart, update, file-delivery,
+``pkill``-style programs and computed words), the restart, update,
 gateway-restart and destructive-cloud subcommand floors, the dev-mode out-of-root
 confirmation, and the credential-mint predicates, which follow a payload through the
 carriers that can hand it to an interpreter -- an inline program, a here-document, a
@@ -57,7 +57,7 @@ from .shell_normalizer import (
     _substitution_bodies,
     _substitution_depth_delta,
 )
-from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
+from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
 
 # ── Self-protection floor (argv-structural, not a regex) ──
 # The two self-protection rules below are enforced by TOKENIZING the command
@@ -1052,11 +1052,6 @@ def _is_self_restart(text_lower: str) -> bool:
 def _is_self_update(text_lower: str) -> bool:
     """``kirocrew update`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("update",))
-
-
-def _is_self_file_delivery(text_lower: str) -> bool:
-    """``kirocrew file-delivery <verb>`` behind any shell dressing of interposed flags."""
-    return _matches_self_subcommand(text_lower, ("file-delivery", _SELF_FILE_DELIVERY_VERBS))
 
 
 def _is_self_gateway_restart(text_lower: str) -> bool:

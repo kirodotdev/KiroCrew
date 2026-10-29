@@ -943,6 +943,7 @@
         "subagent/completed",
         "subagent/failed",
         "turn/completed",
+        "work/charged",
         "work/recorded"
       ],
       "answers": "Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session",
@@ -1102,6 +1103,35 @@
           "name": "updated_at",
           "type": "string",
           "optional": false
+        }
+      ]
+    },
+    {
+      "name": "custom",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/custom_value"
+      ],
+      "answers": "The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it",
+      "fields": [
+        {
+          "name": "latest",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "types_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "wrote",
+          "type": "number",
+          "optional": false,
+          "integer": true
         }
       ]
     },

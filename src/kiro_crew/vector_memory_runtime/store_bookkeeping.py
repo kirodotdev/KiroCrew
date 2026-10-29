@@ -254,7 +254,7 @@ def get_rejection_stats(self: VectorMemoryStore) -> dict[str, int]:
         "SELECT event_type, COUNT(*) as count FROM memory_events "
         "WHERE event_type = 'injection_blocked' "
         "OR (memory_type = 'semantic' AND event_type IN "
-        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty')) "
+        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty', 'work_state')) "
         "GROUP BY event_type"
     )
     return {r["event_type"]: r["count"] for r in rows}

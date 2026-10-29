@@ -428,7 +428,7 @@ export default function CommandPalette({
     [dispatchEnter],
   )
 
-  const { selected, setSelected, selectedRef, itemRefs, claimKey } = useListKeyboardNav({
+  const { selected, setSelected, selectedRef, itemRefs, claimKey, hoverSelect } = useListKeyboardNav({
     open,
     count: results.length,
     wrap: true,
@@ -717,7 +717,7 @@ export default function CommandPalette({
                         isRecents ? '' : 'flex items-start gap-3'
                       }`}
                       title={r.subtitle || r.title}
-                      onMouseEnter={() => setSelected(i)}
+                      onMouseMove={e => hoverSelect(i, e)}
                       onMouseDown={(e) => {
                         e.preventDefault()
                         dispatchEnter(r, e.metaKey || e.ctrlKey)
@@ -770,8 +770,8 @@ export default function CommandPalette({
                               r.statusStyle === 'pill' ? (
                                 <div className="text-[12px] leading-snug truncate mt-0.5 flex items-center gap-1.5 min-w-0">
                                   <span
-                                    className="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                                    style={{ backgroundColor: `var(${r.statusColorVar})` }}
+                                    className="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                                    style={{ backgroundColor: `var(${r.statusColorVar})`, color: `var(${r.statusColorVar}-fg)` }}
                                   >
                                     {r.statusLabel}
                                   </span>

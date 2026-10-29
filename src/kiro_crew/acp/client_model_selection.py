@@ -319,7 +319,9 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
         # keyed by its own registry namespace.
         if self._uses_advertised_model_selection:
             self._advertised_models_changed = model_registry.refresh_advertised_models(
-                self._model_registry_namespace, self._advertised_model_ids()
+                self._model_registry_namespace,
+                self._advertised_model_ids(),
+                rows=self._available_models,
             )
 
 

@@ -264,6 +264,39 @@ class TestBriefInjection(unittest.TestCase):
             self.assertNotIn(cr.BRIEF_SENTINEL, second)
             self.assertIn("[crew turn]", second)
 
+    def test_extra_prompt_follows_the_brief_on_every_turn(self):
+        """The operator's Additional prompt is sent after the brief, never instead."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            extra = "Ask the requester when an issue needs a product decision."
+            crew = _crew(root, extra_prompt=extra)
+            slot = _FakeSlot()
+            first = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+            self.assertTrue(first.startswith(cr.BRIEF_SENTINEL))
+            self.assertIn(extra, first)
+            self.assertLess(first.index(cr.BRIEF_SENTINEL), first.index(extra))
+            self.assertLess(first.index(extra), first.index("[crew turn]"))
+            # The carrying message still satisfies the brief's own presence guard.
+            slot.append("user", first)
+            self.assertTrue(cr.brief_is_present(slot))
+            # A later turn has no brief but still carries the extra prompt.
+            second = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+            self.assertNotIn(cr.BRIEF_SENTINEL, second)
+            self.assertIn(extra, second)
+            self.assertLess(second.index(extra), second.index("[crew turn]"))
+
+    def test_blank_extra_prompt_adds_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plain = _crew(root, name="Andromeda")
+            blank = _crew(root, name="Bode", extra_prompt="  \n\t ")
+            for crew in (plain, blank):
+                slot = _FakeSlot()
+                prompt = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+                self.assertNotIn("Additional instructions", prompt)
+                nudge = cr.compose_nudge(cr.build_snapshot(OWNER, REPO, crew, root))
+                self.assertEqual(prompt, cr.brief_text() + "\n\n---\n\n" + nudge)
+
 
 # ── nudge composition ───────────────────────────────────────────────────────
 

@@ -34,7 +34,9 @@ from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
-TEMPLATE = "kirocrew-conductor"
+# Not a conductor: every conductor is Crew Mode, and a Crew Mode root refuses another
+# agent (crew_mode_locked), which these switch tests are not about.
+TEMPLATE = "kirocrew-research"
 
 
 async def _finished(coro, what: str, *, timeout: float | None = None):

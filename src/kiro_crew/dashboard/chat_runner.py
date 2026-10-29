@@ -29,6 +29,7 @@ from typing import (  # noqa: F401
 
 from kiro_crew import (  # noqa: F401
     context_omissions,
+    injection_receipts,
     mcp_apps_render,
     model_registry,
     resource_status,
@@ -56,6 +57,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CONSUMED,
+    EVENT_STEER_DROPPED,
     STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
@@ -77,6 +79,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_LOCAL_CLEAR,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     Routing,
     routing_for,
 )
@@ -174,6 +177,7 @@ from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
 from kiro_crew.dashboard.chat_turn.queue_cycle import (
     TURN_FAILED_META,
     _end_turn_tail,
+    _hand_off_unstarted_turn,
     _note_failed_before_the_try,
     _turn_record_outcome,
     _TurnExit,
@@ -213,6 +217,7 @@ from kiro_crew.dashboard.chat_turn.slash_commands import (
 from kiro_crew.dashboard.chat_turn.steer_queue import (  # noqa: F401
     _has_user_queued_followup,
     _on_steer_consumed,
+    _on_steer_dropped,
     _requeue_unconsumed_steers,
 )
 from kiro_crew.dashboard.chat_turn.stop_recovery import (
@@ -231,6 +236,8 @@ from kiro_crew.dashboard.chat_turn.tool_rows import (
     _on_tool_call,
     _on_tool_call_update,
     _tcid_identity_key,
+    _tool_call_ws_payload,
+    _tool_meta,
 )
 from kiro_crew.dashboard.chat_turn.turn_admission import _turn_admit
 from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
@@ -240,6 +247,7 @@ from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
 from kiro_crew.dashboard.chat_turn.turn_ending import _turn_ending_chain
 from kiro_crew.dashboard.chat_turn.turn_entry import (
     _stop_pressed,
+    _turn_flush_file_changes,
     _turn_open,
     _turn_release_handles,
 )
@@ -270,6 +278,7 @@ from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
+    BLOCKED_LINKS_ORDERED_KEY,
     _dequeue_next_message,
     _dequeue_next_system_message,
     _maybe_consolidate,
@@ -325,7 +334,10 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     build_stale_recovery_prompt,
     context_entry_expired,
 )
-from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+from kiro_crew.dashboard.steer_settle import (
+    possibly_consumed_steers,
+    settle_consumed_steers,
+)
 from kiro_crew.dashboard.turn_dispatch import (
     spawn_guarded_turn,
     tool_approval_timeout_secs,
@@ -490,6 +502,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     SUBAGENT_COMPLETION_KIND,
     SYNTHESIS_CLEAR,
     SYNTHETIC_RECOVERY_KIND,
+    background_wake_absent,
     should_recover_promise_only,
     subagents_attached_async,
     synthesis_fire_verdict,
@@ -784,6 +797,11 @@ async def _run_chat(
     # deactivate a loop whose config advanced since (the A->B->A race that a
     # message-value key could not tell apart). Captured by the fire path.
     _directive_loop_gen: int = 0,
+    # The text skill triggers match on a loop's wake, when it is not the
+    # message: a plain nudge passes the loop's own message, without the cycle
+    # header the fire path prepends. ``None`` matches the turn's own text. Set
+    # only by ``_fire_dashboard_nudge``.
+    _skill_trigger_text: str | None = None,
     _directive_channel_origin: bool = False,
     # The message is turn CONTENT and its first word is never read as a dashboard
     # command: set by the drain for an entry the channel hand-off stamped
@@ -791,6 +809,10 @@ async def _run_chat(
     # entry this way; without the switch, a channel's queued "/clear" would be the
     # one queued "/clear" in the system that ran instead of being said.
     _commands_off: bool = False,
+    # A verbatim recovery replay of a dashboard prompt whose first attempt died
+    # before the mirror posted its echo. Set only by the drain, from the entry's
+    # ``MIRROR_ECHO_OWED_META_KEY`` stamp, so the replay is echoed once.
+    _recovery_echo_owed: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -825,8 +847,10 @@ async def _run_chat(
         _directive_self_wake=_directive_self_wake,
         _directive_loop_id=_directive_loop_id,
         _directive_loop_gen=_directive_loop_gen,
+        _skill_trigger_text=_skill_trigger_text,
         _directive_channel_origin=_directive_channel_origin,
         _commands_off=_commands_off,
+        _recovery_echo_owed=_recovery_echo_owed,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
@@ -992,6 +1016,8 @@ async def _run_chat(
                 continue
             elif event.kind == EVENT_STEER_CONSUMED:
                 await _on_steer_consumed(turn, event)
+            elif event.kind == EVENT_STEER_DROPPED:
+                await _on_steer_dropped(turn, event)
             elif event.kind == EVENT_COMPACTION_STATUS:
                 await _on_compaction_status(turn, event)
             elif event.kind == EVENT_CLEAR_STATUS:
@@ -1155,6 +1181,7 @@ async def _run_chat(
         await _turn_record_outcome(turn)
         await _turn_close_crew_log(turn)
         await _turn_release_handles(turn)
+        _held_flush_cancel = await _turn_flush_file_changes(turn)
         await _turn_settle_debts(turn)
         await _turn_release_session(turn)
         # Retire the in-flight marker once every transcript mutation is complete
@@ -1174,8 +1201,12 @@ async def _run_chat(
         # The per-exit duties and the queue hand-off, in their one order. Run to
         # completion: a cancel landing inside the tail (a turn deadline during
         # the deferred-reset consume) is deferred until the hand-off ran, then
-        # re-raised, so the queue is never left behind a finished task.
+        # re-raised, so the queue is never left behind a finished task. A cancel
+        # the file-change flush in _turn_flush_file_changes held resurfaces here,
+        # once the hand-off has run, for the same reason.
         await run_to_completion(_end_turn_tail(state, slot, turn_exit))
+        if _held_flush_cancel is not None:
+            raise _held_flush_cancel
 
 
 # Every function the owners define runs on this module's globals, so a patch of

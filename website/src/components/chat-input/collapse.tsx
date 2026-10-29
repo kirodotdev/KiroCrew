@@ -5,6 +5,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import type { ComposerControl } from '../composerControl'
+import { sliceCodePoints } from '../CommentOverlay'
 
 /* The user-driven collapse: "put the message box away while I read". The
    composer unmounts, a bar stands where it was, and the preference persists. */
@@ -150,7 +151,7 @@ export function useComposerCollapse({ collapsible, composerControl, value }: {
    */
   const collapsedDraftLine = useMemo(() => {
     const line = value.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
-    return line.length > 120 ? `${line.slice(0, 120)}…` : line
+    return line.length > 120 ? `${sliceCodePoints(line, 0, 120)}…` : line
   }, [value])
 
   return { composerCollapsed, collapsedBarRef, collapseComposer, expandComposer, collapsedDraftLine }

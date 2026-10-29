@@ -16,6 +16,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app_with_agent_routes, drain_background_tasks
 from dashboard_owner_helpers import as_owner
+from named_cases_helpers import named_cases
 from test_chat_agent_selection import TEMPLATE, _template_chat
 
 from kiro_crew.agent_switch_command import agent_switch_target, switch_announcement
@@ -34,13 +35,29 @@ WORKER = "kirocrew-worker"
 @pytest.mark.parametrize(
     ("text", "agent"),
     [
-        ("/agent fable", "fable"),
-        ("  /agent kiro_planner  ", "kiro_planner"),
-        ("/agent team.reviewer", "team.reviewer"),
-        ("/agent\tamzn-builder", "amzn-builder"),
+        *named_cases(
+            "test_a_single_agent_name_is_a_switch",
+            ("text", "agent"),
+            [
+                ("/agent fable", "fable"),
+                ("  /agent kiro_planner  ", "kiro_planner"),
+                ("/agent team.reviewer", "team.reviewer"),
+                ("/agent\tamzn-builder", "amzn-builder"),
+            ],
+        ),
+        *named_cases(
+            "test_slack_parser_reads_as_before",
+            ("text", "agent"),
+            [
+                ("/agent beta", "beta"),
+                ("/agent list", None),
+                ("/agent", None),
+                ("/agent a b", None),
+            ],
+        ),
     ],
 )
-def test_a_single_agent_name_is_a_switch(text, agent):
+def test_the_parser_reads_the_agent_switch(text, agent):
     assert agent_switch_target(text) == agent
 
 
@@ -573,10 +590,3 @@ class TestTelegramAndSlackUnchanged:
 
         assert parse_command("/agent") == "agent"
         assert parse_command("/agent beta") == "agent"
-
-    @pytest.mark.parametrize(
-        ("text", "agent"),
-        [("/agent beta", "beta"), ("/agent list", None), ("/agent", None), ("/agent a b", None)],
-    )
-    def test_slack_parser_reads_as_before(self, text: str, agent: str | None) -> None:
-        assert agent_switch_target(text) == agent

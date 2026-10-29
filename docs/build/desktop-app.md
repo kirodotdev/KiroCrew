@@ -126,9 +126,14 @@ subcommand the app uses. The Windows build administratively extracts the
 upstream MSI without installing it or writing PATH/registry state, then stages
 `kiro-cli.exe` plus the four Visual C++ runtime DLLs it imports
 (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`, `msvcp140_1.dll`),
-copied from the build host's `System32`; a build host without the Visual C++
-2015-2022 x64 redistributable fails the build with that instruction. DirectML
-(`directml.dll`) is left to the host, where desktop Windows supplies it.
+taken from Microsoft's Visual C++ 2015-2022 x64 redistributable and never from
+the build host. `packaging/vc-runtime-pin.json` pins that installer's immutable
+download URL, its sha256 and each DLL's sha256; `packaging/vc_runtime.py`
+unpacks the four without running the installer, fails the build on any
+mismatch, and records the version in `VC-RUNTIME-VERSION` beside
+`BUNDLED-VERSION`. DirectML (`directml.dll`) is deliberately not bundled: it is
+an OS component on desktop Windows, the same dependency upstream's own
+installer has, so a Windows Server Core build host must supply it.
 `kiro_cli.bundled_kiro_cli_entry` owns
 the platform split. The release is pinned in two files that travel together:
 `packaging/kiro-cli-version`
@@ -678,7 +683,17 @@ local SSH forward to a remote gateway looks like, is reused only when a remote
 crew is recorded for that port; otherwise the supervisor refuses it
 (`foreign-holder`) and the gateway-failure dialog offers **Add Remote Crew**
 (see [The gateway-failure dialog](#the-gateway-failure-dialog)). Adopting an
-unattributed holder would post this machine's local secret to it. Before
+unattributed holder would post this machine's local secret to it. On Windows a
+holder is attributed by the executable path the launch resolver selected. A
+source or pip venv's gateway listens from the venv's base interpreter (its
+`Scripts\python.exe` is a redirector), which every Python program can run, so
+that interpreter counts only when it is the one the venv's `pyvenv.cfg` names,
+its argv0 names that interpreter or the venv's redirector, its script is
+exactly that venv's `Scripts\kirocrew.exe`, and a server subcommand follows
+(`windowsVenvBaseInterpreterLaunches` in
+[`windows-port.js`](../../website/electron/windows-port.js)). Like every
+Windows rule here, this attributes by command line: it does not tell apart a
+process of the same account that copies that exact command line. Before
 reusing a same-family local gateway on a fixed-path POSIX install, the shell
 checks whether its sole listener is running from this app's current bundled
 backend path. If that bundled gateway reports an older version than the app,
@@ -1212,7 +1227,9 @@ it).
   `%LOCALAPPDATA%\Kiro-Cli` — so an already-running gateway does not depend on
   inheriting an installer-updated `PATH`.
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
-  app to the tray on window close; the composition root delegates quit-time
+  app to the tray on window close, or quits through the same path as the Quit
+  menu item when the user chose that (`closeAction` in the app's own config,
+  decided by [`close-action.js`](../../website/electron/close-action.js)); the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
   signal escalation contract. On POSIX,
   [`gateway-stop.js`](../../website/electron/gateway-stop.js) lists the child's

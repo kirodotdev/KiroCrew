@@ -13,16 +13,16 @@ import {
   type McpShareRecommendation,
   type McpShareReason,
 } from '../../api/client'
-import ErrorNotice from '../../components/ErrorNotice'
 import { splitOnPlaceholder } from '../../lib/splitOnPlaceholder'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   type LaunchRefusal,
-  stateLabelKey,
   STRENGTH_LABEL_KEY,
   REASON_LABEL_KEY,
   rowState,
+  stateLabelKey,
   sharedWithoutSupport,
 } from './mcpManagementModel'
 
@@ -122,6 +122,14 @@ function AssessmentRow({
           {unsupported && <AlertTriangle size={11} aria-hidden="true" />}
           {i18nT(stateLabelKey(rowState(server, sharingOn, refused), refused?.[server.name]))}
         </span>
+        {/* "One per chat" alone reads the same for a server marked but kept
+            unshared by its env as for one never marked; the audit view must
+            tell them apart, so it carries the same reason line the servers tab does. */}
+        {rowState(server, sharingOn, refused) === 'direct_env' && (
+          <span className="mt-1 block text-[12px] text-[var(--muted)]">
+            {i18nT('pages.mcpManagement.state_direct_env_reason')}
+          </span>
+        )}
       </td>
     </tr>
   )
@@ -359,13 +367,7 @@ export function AssessmentView({
             {servers.map(s => (
               <AssessmentRow key={s.name} server={s} sharingOn={sharingOn} refused={refused} />
             ))}
-            {isError && (
-              <tr className="block border-t border-[var(--border)] md:table-row">
-                <td colSpan={4} className="block px-4 py-4 md:table-cell">
-                  <ErrorNotice message={i18nT('pages.mcpManagement.servers_failed')} askAgent />
-                </td>
-              </tr>
-            )}
+            {/* A failed list is reported page-wide by McpManagement. */}
             {servers.length === 0 && !loading && !isError && (
               <tr className="block border-t border-[var(--border)] md:table-row">
                 <td colSpan={4} className="block px-4 py-6 text-center text-[13px] text-[var(--muted)] md:table-cell">
@@ -380,13 +382,6 @@ export function AssessmentView({
             rows reads as a broken feature rather than a conservative one. */}
         <div className="border-t border-[var(--border)] px-4 py-3 text-[12.5px] leading-relaxed text-[var(--muted)]">
           {i18nT('pages.mcpManagement.assessment.legend')}
-        </div>
-        {/* This view renders the same state chips through the same derivation, so a
-            term defined only under the OTHER tab is undecodable to the operator
-            auditing sharing here -- which is this fix's whole audience. ONE key,
-            rendered wherever the chip can appear, in its own block on both tabs. */}
-        <div className="border-t border-[var(--border)] px-4 py-3 text-[12.5px] leading-relaxed text-[var(--muted)]">
-          {i18nT('pages.mcpManagement.state_direct_env_legend')}
         </div>
       </section>
     </div>

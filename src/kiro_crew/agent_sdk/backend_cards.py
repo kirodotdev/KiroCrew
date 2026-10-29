@@ -167,7 +167,7 @@ own -- the same shape, and for the same reason, as
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Mapping, Tuple
+from typing import Dict, FrozenSet, Mapping, Optional, Tuple
 
 from kiro_crew.agent_sdk import backends
 from kiro_crew.agent_sdk.backend_mcp_ability import ability_payload
@@ -335,7 +335,14 @@ DETAIL_LINES: Tuple[_LineSpec, ...] = (
 #: of the four (the sandbox stand-down, and Crew handing over its credential)
 #: describe a boundary moving, and the sandbox one fails OPEN by design.
 SECURITY_LINES: Tuple[_LineSpec, ...] = (
-    _LineSpec(NOTE_CREW_SANDBOX_STANDS_DOWN, ("ACP_BACKENDS_INTERNAL_SANDBOX",)),
+    # A union: KAS's default relay route is the kiro-cli process and stands Crew's
+    # sandbox down exactly as kiro-cli does. Its bundle route does not, and a card
+    # cannot show a per-route fact, so the line errs toward naming the boundary
+    # that can move rather than hiding it on the route most KAS sessions take.
+    _LineSpec(
+        NOTE_CREW_SANDBOX_STANDS_DOWN,
+        ("ACP_BACKENDS_INTERNAL_SANDBOX", "ACP_BACKENDS_RELAY_INTERNAL_SANDBOX"),
+    ),
     _LineSpec(NOTE_REFUSES_UNCLASSIFIED_TOOLS, ("ACP_BACKENDS_META_IDENTITY",)),
     _LineSpec(NOTE_HOST_CREDENTIAL_TO_CHILD, ("ACP_BACKENDS_HOST_AUTH_CALLBACK",)),
     _LineSpec(NOTE_POD_HOME_RELOCATED, ("ACP_BACKENDS_POD_HOME_REMAP",)),
@@ -360,6 +367,12 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
+        "whether a server the user approved for a template Crew does not own reaches "
+        "that template's sessions here. The approval card asks the same question for "
+        "the session it is raised in and refuses with its own reason, so a card line "
+        "would repeat a refusal the user already meets where it applies"
+    ),
     "ACP_BACKENDS_MATE_WORKER_KIT": (
         "whether a crewmate's worker may run here with its kit. A worker always runs "
         "on its crewmate's backend, so the choice it depends on is the member "
@@ -371,6 +384,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "which channel carries a crewmate worker's prompt: the context block or the "
         "wire spec. The worker gets the same prompt either way, so there is nothing "
         "for a user choosing a harness to weigh"
+    ),
+    "ACP_BACKENDS_STEER_RETRACT": (
+        "whether a pending steer can be taken back (the dashboard's Unsend, Edit and "
+        "Queue instead). The steer itself is the mid-turn-steer line's claim, and these "
+        "controls are drawn only on a steer the running harness can take back, so no "
+        "reader is promised an undo the harness lacks. A wrong membership offers a "
+        "control whose clear names nothing, which leaves the steer to run, and is a "
+        "defect"
     ),
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": (
         "which backend's process answers session starts and mode switches one at a "
@@ -407,6 +428,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "choosing a harness loses nothing. A wrong membership either sends /clear "
         "to the model as text, or answers a harness that would have run it, which "
         "is a defect"
+    ),
+    "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": (
+        "whether the dashboard answers every harness command itself and leaves the "
+        "ones it cannot serve out of the / menu. It names a harness with no command "
+        "channel rather than a feature a reader gains, and the commands that matter "
+        "for choosing a harness already have lines of their own. A wrong membership "
+        "either hides commands a harness would have run, or offers rows that only "
+        "ever reach the model as text, which is a defect"
     ),
     "ACP_BACKENDS_HOOKS_LIST": (
         "which backend's agent may ask its client for the hooks matching a trigger, and "
@@ -716,6 +745,21 @@ ADVERTISED_FIELD_BY_LINE: Mapping[str, str] = {
     LINE_MODEL_SWITCH: "session.configOptions[model] or session.models.availableModels",
 }
 
+#: The (harness, line) cells whose runtime gate is the line's ``initialize`` field.
+#:
+#: Keyed by harness constant NAME, as :data:`DECLARED_UNMEASURED` is and for the same
+#: reasons. Only the two ``_session/steering`` speakers: claude through
+#: ``AcpClient._steering_request_ready``, codex through ``AcpSessionHandle``. Both
+#: refuse the steer when their handshake lacks the field, so :func:`card_for`, given
+#: that handshake, says the same. kiro-cli, KAS, goose, pi and opencode steer on a
+#: verb that advertises nothing, so their membership stays the whole answer.
+ADVERTISED_BY_HARNESS: FrozenSet[Tuple[str, str]] = frozenset(
+    {
+        ("ACP_BACKEND_CLAUDE", LINE_MID_TURN_STEER),
+        ("ACP_BACKEND_CODEX", LINE_MID_TURN_STEER),
+    }
+)
+
 
 @dataclass(frozen=True)
 class CardLine:
@@ -852,7 +896,35 @@ def _unmeasured_lines(backend: str) -> Dict[str, UnmeasuredLine]:
     return by_backend.get(backend, {})
 
 
-def _card_lines(backend: str, specs: Tuple[_LineSpec, ...]) -> Tuple[CardLine, ...]:
+def _advertised(init: Mapping[str, object], wire_path: str) -> bool:
+    """Whether *init* carries a literal ``true`` at *wire_path*.
+
+    *wire_path* is an ``initialize.``-rooted dotted path from
+    :data:`ADVERTISED_FIELD_BY_LINE`. Any missing step, non-object step or value
+    other than ``True`` reads False, the runtime's own fail-closed reading.
+    """
+    node: object = init
+    for key in wire_path.split(".")[1:]:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node is True
+
+
+def _gated_lines(backend: str) -> FrozenSet[str]:
+    """The line ids :data:`ADVERTISED_BY_HARNESS` gates for *backend*.
+
+    Resolved by name on every call, as :func:`_unmeasured_lines` resolves its keys.
+    """
+    by_backend: Dict[str, set] = {}
+    for harness_name, line_id in ADVERTISED_BY_HARNESS:
+        by_backend.setdefault(getattr(backends, harness_name), set()).add(line_id)
+    return frozenset(by_backend.get(backend, ()))
+
+
+def _card_lines(
+    backend: str,
+    specs: Tuple[_LineSpec, ...],
+    init: Optional[Mapping[str, object]] = None,
+) -> Tuple[CardLine, ...]:
     """Every line of *specs* for *backend*, in server order.
 
     Membership decides first and the declared table only ever SOFTENS a negative:
@@ -860,12 +932,20 @@ def _card_lines(backend: str, specs: Tuple[_LineSpec, ...]) -> Tuple[CardLine, .
     demonstrated the capability keeps its available mark whatever the table says.
     That ordering is what stops a stale entry from withdrawing a real capability;
     the entry being stale at all is separately a test failure.
+
+    With *init*, a member line in :data:`ADVERTISED_BY_HARNESS` also needs its
+    handshake field. A line that field withdraws is measured: the session's own
+    handshake is the measurement.
     """
     declared = _unmeasured_lines(backend)
+    gated = _gated_lines(backend) if init is not None else frozenset()
     produced = []
     for spec in specs:
-        available = _holds(backend, spec)
-        entry = None if available else declared.get(spec.id)
+        held = _holds(backend, spec)
+        available = held
+        if held and spec.id in gated:
+            available = _advertised(init or {}, ADVERTISED_FIELD_BY_LINE[spec.id])
+        entry = None if held else declared.get(spec.id)
         produced.append(
             CardLine(
                 id=spec.id,
@@ -877,8 +957,13 @@ def _card_lines(backend: str, specs: Tuple[_LineSpec, ...]) -> Tuple[CardLine, .
     return tuple(produced)
 
 
-def card_for(backend: str) -> BackendCard:
+def card_for(backend: str, init: Optional[Mapping[str, object]] = None) -> BackendCard:
     """The card for *backend*, complete for any id -- known to this build or not.
+
+    *init* is a live session's ``initialize`` result. Given one, a line the runtime
+    gates on a handshake field (:data:`ADVERTISED_BY_HARNESS`) is available only
+    when membership says so AND that handshake carries the field. Without one the
+    card is membership alone, which is what ``GET /api/acp-backends`` serves.
 
     Total: no raise, no I/O, no dependence on a live session. An id outside every
     set answers False on every capability line and ``unverified`` on tool
@@ -896,8 +981,8 @@ def card_for(backend: str) -> BackendCard:
     return BackendCard(
         backend=backend,
         policy_id=_policy_id(backend),
-        capabilities=_card_lines(backend, USER_FACING_LINES),
-        details=_card_lines(backend, DETAIL_LINES),
+        capabilities=_card_lines(backend, USER_FACING_LINES, init),
+        details=_card_lines(backend, DETAIL_LINES, init),
         security_notes=tuple(spec.id for spec in SECURITY_LINES if _holds(backend, spec)),
         operator_notes=tuple(spec.id for spec in OPERATOR_LINES if _holds(backend, spec)),
         tool_approval=backends.routing_for(backend).value,

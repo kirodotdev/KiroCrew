@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _run_belongs_to_caller,
         _sel,
         _spawn_on_loop,
+        _stopped_before_start,
         body_int,
         dashboard_slot_key,
         effective_session_key,
@@ -462,6 +463,17 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
             owed.extend(slot.take_pending_subagent_deliveries([str(item.get("content") or "")]))
         except Exception:
             logger.debug("Could not claim delivery marks for %s", aid, exc_info=True)
+    if state.subagents is not None:
+        # A completion still queued was settled above. One already handed to
+        # the parent and not queued (injected, or settled by an earlier
+        # mark whose reply the tool never saw) has passed every check that
+        # would discard its id, so it stays out of the set. That makes a
+        # repeated mark a no-op, which the tool relies on when it re-sends one.
+        wanted = {
+            aid
+            for aid in wanted
+            if getattr(state.subagents.get(aid), "_reported_to_parent", False) is not True
+        }
     room = max(0, _COLLECTED_IDS_CAP - len(slot._subagents_inline_collected))
     slot._subagents_inline_collected.update(sorted(wanted)[:room])
     if owed and state.subagents is not None:
@@ -596,6 +608,11 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
         )
     if info.done and info.error:
         return web.json_response({"error": info.error}, status=400)
+    # Stopped before it started: nothing ran, so the claim is left pending for
+    # the caller's ``finally`` to release and the failed run stays retryable.
+    stopped = _stopped_before_start(info)
+    if stopped is not None:
+        return stopped
     state.subagents.settle_retry(old, info.id)
     logger.info("Subagent %s retried as %s (POST /api/spawn/{id}/retry)", agent_id, info.id)
     return web.json_response({"id": info.id, "retried_from": agent_id, "status": "spawned"})

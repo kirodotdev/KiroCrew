@@ -301,7 +301,12 @@ async def test_a_newer_stored_run_wins_over_a_held_record(tmp_path):
             store.scope = "merge"
             await _tick(service, job.id)
             store.scope = "off"
-            generation = service._runs.generations[job.id]
+            # The run's generation, read off the record it held when its merge
+            # was busy. RunClaims.generations drops the entry with the run's
+            # claim on release, so the map does not carry it once the tick
+            # returns; the held record is where the generation this run drew
+            # lives until a save under the lock persists it onto the job.
+            generation = _held_record(service, job.id).run_generation
 
             def store_newer_run() -> None:
                 other = CronService(base_dir=tmp_path)

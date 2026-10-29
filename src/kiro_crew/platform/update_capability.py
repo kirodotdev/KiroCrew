@@ -535,6 +535,7 @@ def _git_route(root: str) -> tuple[str | None, str]:
     from kiro_crew import platform_compat
     from kiro_crew.platform.update_governance import (
         _git,
+        git_command_env,
         is_primary_branch,
         repo_exec_config_reason,
         resolve_remote_url,
@@ -554,7 +555,11 @@ def _git_route(root: str) -> tuple[str | None, str]:
         return None, "the repository names a program git would run during the update"
     if not tracks_upstream(root, branch):
         return None, f"{branch} does not track origin/{branch}"
-    if update_blocked_reason(resolve_remote_url(root, remote="origin")):
+    # The route this judges is the gateway's auto-update, whose fetch runs under
+    # `git_command_env()`: judge the URL that isolated fetch will connect to.
+    if update_blocked_reason(
+        resolve_remote_url(root, fetch_env=git_command_env(), remote="origin")
+    ):
         return None, _SOURCE_PIN_REASON
     return AUTO_ROUTE_GIT, ""
 

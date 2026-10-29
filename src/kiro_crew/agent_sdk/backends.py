@@ -114,6 +114,9 @@ with no row here.
    * - ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``
      - pre-session registry query (whether a user steer travels as a second
        ``session/prompt`` that joins the running turn)
+   * - ``ACP_BACKENDS_STEER_RETRACT``
+     - driver-internal (whether a pending steer can be taken back with
+       ``_session/steer/clear``)
    * - ``ACP_BACKENDS_COMPACT``
      - pre-session registry query (whether manual ``/compact`` is offered at all)
    * - ``ACP_BACKENDS_INLINE_COMPACTION``
@@ -126,6 +129,8 @@ with no row here.
      - semantic question (whether a full context is answered by recycling)
    * - ``ACP_BACKENDS_INTERNAL_SANDBOX``
      - driver-internal (whether Crew's seatbelt is skipped at spawn)
+   * - ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+     - driver-internal (whether Crew's seatbelt is skipped on the kiro-cli relay route)
    * - ``ACP_BACKENDS_POD_HOME_REMAP``
      - driver-internal (whether ``$HOME`` is relocated onto the pod tree)
    * - ``ACP_BACKENDS_ACP_RUNTIME``
@@ -185,6 +190,9 @@ with no row here.
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
      - pre-session registry query (whether the dashboard answers ``/clear``
        itself rather than handing it to the harness as prompt text)
+   * - ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``
+     - pre-session registry query (whether the dashboard answers every harness
+       command itself, and which commands the ``/`` menu lists)
    * - ``ACP_BACKENDS_EFFORT_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` effort keys are written,
        read back at construction and cleared)
@@ -197,6 +205,9 @@ with no row here.
    * - ``ACP_BACKENDS_MCP_WIRE_REINJECT``
      - pre-session registry query (whether the dashboard may skip a session reset
        because Crew re-sends the projection at the next turn boundary)
+   * - ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN``
+     - pre-session registry query (whether a per-template MCP addition reaches a
+       session of a template Crew does not own)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
    * - ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``
@@ -327,6 +338,15 @@ ACP_BACKEND_GOOSE = "goose"
 # closure -- so one global install is the whole precondition, with no workspace
 # checkout and no per-profile dependency step.
 ACP_BACKEND_DEEPSEEK = "deepseek"
+# GitHub Copilot CLI: a single binary that serves ACP itself (``copilot --acp
+# --stdio``), so its install probe names ONE component, like opencode and goose. Its
+# permission route is an ACP v1 session config option (``allow_all``), the shape
+# codex has -- see :data:`Routing.SESSION_CONFIG`.
+#
+# VERIFIED RANGE: Copilot CLI 1.0.100 is the recorded binary
+# (``test/fixtures/acp_frames/copilot/``). Its ``allow_all`` option and its
+# ``session/request_permission`` per tool call are wire facts of that release.
+ACP_BACKEND_COPILOT = "copilot"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -343,6 +363,20 @@ STORED_BACKEND_KIRO = "kiro"
 # or ``""``) and KAS is selectable.
 DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 
+# The harness an explicit Kiro CLI choice runs on once this host's kiro-cli is known
+# to offer its v3 (KAS) engine. kiro-cli serves ``acp`` on v3 by default and is
+# retiring v2, and a bare ``kiro-cli acp`` on v3 reads none of what Crew writes for
+# the v2 harness (the per-spawn skill-view aliases, the ``cli.json`` effort overlay,
+# the re-filtered agent specs). So :func:`resolve_selected_backend` hands the pick
+# to Crew's KAS path, which drives that engine with KAS's launch, projection,
+# permissions and compaction -- but only after the gateway's ``acp --help`` probe
+# has CONFIRMED v3 (:func:`confirm_kiro_cli_offers_kas`) and while KAS is
+# selectable. Without that evidence (another process, an unknown verdict, the
+# bundle route, a policy that denies KAS) the pick keeps the v2 launch. The stored
+# value is never rewritten: ``config.json`` still says ``"kiro"`` until the user
+# saves KAS (the a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
+KIRO_SELECTION_BACKEND = ACP_BACKEND_KAS
+
 # Membership gate for the ``acp_backend`` kwarg. An unrecognized value would
 # otherwise fall through every ``_is_<backend>`` check and silently spawn
 # kiro-cli, so provider construction rejects it instead.
@@ -356,6 +390,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -371,6 +406,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -382,10 +418,8 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #: session with it: ``acp/client_start.py`` owns the whole spawn path (the ``_is_claude``
 #: branch, ``_resolve_claude_acp_bin``, ``_resolve_claude_code_executable``) and the
 #: adapter it needs is a PUBLIC npm package (``CLAUDE_ACP_NPM_PKG``). Nothing about it
-#: is edition-private. An earlier revision left it out and described it as a "dormant
-#: seam ... not something a public build can serve a session with", which made the
-#: option render as permanently unavailable on exactly the builds that could run it —
-#: the switch was the only missing piece, not the harness.
+#: is edition-private. Leaving it out would render the option as permanently
+#: unavailable on exactly the builds that can run it.
 #:
 #: Whether it is USABLE on a given machine is a separate question with its own answer:
 #: :mod:`kiro_crew.agent_sdk.backend_install` probes for the two binaries and the
@@ -466,6 +500,17 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #:   marker, keyed to this session's nonce and to Crew's sealed file, read before the
 #:   first prompt. See :data:`Routing.VERIFIED_GATE_EXTENSION` and
 #:   :data:`Readback.LOAD_MARKER`.
+#:
+#: ``ACP_BACKEND_COPILOT`` is included on the same two conditions, met by Codex's
+#: mechanism:
+#:
+#: * ``backend_install`` probes for the ``copilot`` binary, one component, because
+#:   the harness's own package ships the executable that serves ACP.
+#: * its tool calls are ROUTED. Copilot CLI advertises an ``allow_all`` session
+#:   config option on every ``session/new`` and ``session/load``; Crew verifies the
+#:   ``off`` value is advertised and applies it before the first prompt, refusing
+#:   the session otherwise, so a user's own allow-all default cannot reach a Crew
+#:   session. See :data:`Routing.SESSION_CONFIG`.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -476,6 +521,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -501,6 +547,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_PI: ACP_BACKEND_PI,
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
 }
 
 #: The backend a deployment policy may never deny.
@@ -525,14 +572,14 @@ GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KIRO
 # edition registered. ``_selectable`` is what this DEPLOYMENT may currently select,
 # i.e. the baseline minus whatever the live policy denies.
 #
-# Keeping them apart is what makes the policy re-appliable in BOTH directions. An
-# earlier revision of this module had one set and a destructive
-# ``deny_selectable_backend``: a ceiling installed at runtime
-# (``policy_distribution.apply_ceiling`` replaces ``current_context().governance``
-# mid-process) could then never be re-evaluated, so a TIGHTENED fleet policy stayed
-# inert until every gateway restarted and a LOOSENED one could not restore what the
-# earlier pass had already deleted. Recomputing ``baseline - denied`` has neither
-# failure: it is idempotent, order-independent, and reversible.
+# Keeping them apart is what makes the policy re-appliable in BOTH directions. With
+# one set and a destructive ``deny_selectable_backend``, a ceiling installed at
+# runtime (``policy_distribution.apply_ceiling`` replaces
+# ``current_context().governance`` mid-process) could never be re-evaluated, so a
+# TIGHTENED fleet policy would stay inert until every gateway restarted and a
+# LOOSENED one could not restore what an earlier application had already deleted.
+# Recomputing ``baseline - denied`` has neither failure: it is idempotent,
+# order-independent, and reversible.
 _baseline: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 _selectable: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 
@@ -541,6 +588,12 @@ _selectable: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 # above: it is a fact about the machine, not the build or the policy, so every policy
 # recompute subtracts it again rather than restoring what the host cannot run.
 _host_unservable: dict[str, str] = {}
+
+# Whether THIS process has positive evidence that the host's kiro-cli offers its v3
+# (KAS) engine: set by the gateway's KAS floor when ``acp --help`` ran and names the
+# engine. The one condition under which a Kiro CLI pick runs on
+# :data:`KIRO_SELECTION_BACKEND`; an unknown verdict leaves it unset.
+_kiro_cli_offers_kas: bool = False
 
 
 def register_selectable_backend(backend: str) -> None:
@@ -662,6 +715,22 @@ def mark_backend_unservable(backend: str, reason: str) -> None:
     _selectable.discard(backend)
 
 
+def confirm_kiro_cli_offers_kas() -> None:
+    """Record that this host's kiro-cli offers its v3 (KAS) engine.
+
+    Called by the gateway's KAS floor only on a probe that RAN and names the
+    engine. From then on a Kiro CLI pick resolves to :data:`KIRO_SELECTION_BACKEND`
+    while KAS is selectable.
+    """
+    global _kiro_cli_offers_kas
+    _kiro_cli_offers_kas = True
+
+
+def kiro_cli_offers_kas() -> bool:
+    """Whether :func:`confirm_kiro_cli_offers_kas` ran in this process."""
+    return _kiro_cli_offers_kas
+
+
 def host_unservable_reason(backend: str) -> str | None:
     """Why this host cannot serve *backend*, or ``None`` when nothing was recorded."""
     return _host_unservable.get(backend)
@@ -699,6 +768,25 @@ def backend_to_stored(backend: str) -> str:
     return STORED_BACKEND_KIRO if backend == ACP_BACKEND_KIRO else backend
 
 
+def spawn_delegates_to_internal_sandbox(backend: str, *, kiro_cli_internal_sandbox: bool) -> bool:
+    """Whether this spawn's isolation is delegated to kiro-cli's internal sandbox.
+
+    The one verdict every launch site passes to ``sandbox.wrap_argv`` as
+    ``is_kiro_cli`` (harness-parity H7). A member of
+    ``ACP_BACKENDS_INTERNAL_SANDBOX`` delegates on every route; a member of
+    ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX`` delegates only when its plan says
+    kiro-cli's sandbox confines the spawn. Both tests are positive, so a harness in
+    neither set keeps Crew's layer whatever its plan says.
+
+    Defined on this facade rather than beside the sets in ``backends_launch``: tests
+    rebind ``ACP_BACKENDS_INTERNAL_SANDBOX`` here, and a function in the owner would
+    read the owner's binding instead.
+    """
+    return backend in ACP_BACKENDS_INTERNAL_SANDBOX or (
+        kiro_cli_internal_sandbox and backend in ACP_BACKENDS_RELAY_INTERNAL_SANDBOX
+    )
+
+
 def selectable_stored_backend_values() -> list[str]:
     """:func:`selectable_backend_values` in the config-file vocabulary, sorted.
 
@@ -730,6 +818,11 @@ def resolve_selected_backend(value: object) -> str:
     :func:`backend_from_stored` first, which turns "no choice" (absent or ``""``)
     into ``None`` and the stored ``"kiro"`` into :data:`ACP_BACKEND_KIRO`.
 
+    :data:`ACP_BACKEND_KIRO` resolves to itself here. Moving a stored Kiro CLI pick
+    onto KAS happens once, at config load (:func:`kiro_cli_pick_backend`, called by
+    ``_read_backend_choice``), so a value this gate already answered -- the floor a
+    degraded member backend took, say -- is never moved again by a later call.
+
     Only ``None`` (no choice) selects :data:`DEFAULT_ACP_BACKEND`, and only
     while it is selectable; otherwise it takes the floor, silently. An
     explicit value that is unselectable or unrecognized — a backend this build did
@@ -760,6 +853,24 @@ def resolve_selected_backend(value: object) -> str:
         ", ".join(repr(b) for b in selectable_stored_backend_values()),
     )
     return GOVERNANCE_FLOOR_BACKEND
+
+
+def kiro_cli_pick_backend() -> str:
+    """The runtime id a STORED Kiro CLI pick in ``agent.acp_backend`` loads as.
+
+    A Kiro CLI pick launches a bare ``kiro-cli acp``, which kiro-cli now serves on
+    its v3 (KAS) engine by default, and only Crew's KAS path drives that engine. The
+    pick moves there only on positive evidence (:func:`confirm_kiro_cli_offers_kas`)
+    and while KAS is selectable; otherwise it keeps the v2 launch. See
+    :data:`KIRO_SELECTION_BACKEND`.
+
+    Called only where the stored value is read (``_read_backend_choice``), never
+    from :func:`resolve_selected_backend`: an already-resolved Kiro CLI id may be
+    a degraded value's floor (harness-parity H3), not a pick.
+    """
+    if _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends():
+        return KIRO_SELECTION_BACKEND
+    return ACP_BACKEND_KIRO
 
 
 # ── Capability membership (harness-parity H6, H7) ──
@@ -816,7 +927,9 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
     ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_RELAY_INTERNAL_SANDBOX,
     ACP_BACKENDS_SELF_SERVED_ACP,
+    COPILOT_VERIFIED_VERSION,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     SelfServedLaunch,
     agent_process_markers,
@@ -833,6 +946,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
+    ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
     overlay_project_scope,
@@ -857,6 +971,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     CC_PERMISSION_MODE_ENV,
     DEFAULT_EFFORT_CONFIG_OPTION_ID,
+    EFFORT_CONFIG_OPTION_ABSENT_FOLDS,
     EFFORT_CONFIG_OPTION_IDS,
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
@@ -868,10 +983,14 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     resolve_cc_permission_mode,
 )
 from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-exported vocabulary
+    _PROMPT_COMMAND_NAME,
+    _PROMPT_LEADING_FILLER,
+    ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_GATE_PROBE_COMMAND,
     ACP_BACKEND_GATE_READBACK,
     ACP_BACKEND_PERMISSION_CONFIG,
     ACP_BACKEND_PERMISSION_SETTING,
+    ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_HOOKS_LIST,
@@ -886,7 +1005,9 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     gate_readback_for,
     permission_config_for,
     permission_setting_for,
+    prompt_command_issue,
     routing_for,
+    session_config_drift_issue,
 )
 from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
@@ -908,12 +1029,16 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
+    ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
+    escape_user_message_markup,
+    wrap_user_message,
 )

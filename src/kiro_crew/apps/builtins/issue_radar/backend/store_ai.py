@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 
 from .store_repos import repo_data_dir
 
@@ -123,7 +123,7 @@ def read_issue_ai_cache(
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
         return None
     if not isinstance(data, dict):
@@ -236,7 +236,7 @@ def read_pr_ai_cache(
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
         return None
     # A syntactically VALID but non-object root (``[]``, a bare string) would blow
@@ -322,7 +322,7 @@ def read_recommendations_cache(
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
         return None
     if not isinstance(data, dict):
@@ -413,7 +413,7 @@ def read_tagging_cache(owner: str, repo: str, root: Path | None = None) -> dict 
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
         return None
     if not isinstance(data, dict) or data.get("schema") != TAGGING_CACHE_SCHEMA:
@@ -599,7 +599,7 @@ def read_investigation(
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
         return None
 

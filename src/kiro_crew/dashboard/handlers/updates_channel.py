@@ -257,17 +257,16 @@ async def api_update_channel(request: web.Request) -> web.Response:
     self-updatable layout). That keeps a channel change from ever being an
     unattended, unconsented version jump.
 
-    **Not a governance bypass.** ``UpdatePins`` constrains the git ``source`` and
-    a ``min_version`` floor; it has no release-channel key, so there is no pin
-    for this to escape. When the pins define a command provider the endpoint
-    refuses outright — the provider's commands never read the channel file, so
-    a "successful" switch would be the lying switcher described above. Nor does
-    the endpoint grant a new capability: the channel
-    file is an ordinary file in the data home that the operator can already
-    write. What it adds is an authenticated, allowlist-validated path to the same
-    write. Introducing an enterprise channel pin is a governance change in its
-    own right — the profile parser fails closed on unknown keys, so a new key has
-    to be rolled out before it can be set.
+    **Not a governance bypass.** A channel the policy requires (``updates.channel``,
+    or ``stable`` in an enterprise build with no pin; ``update_layout``
+    ``policy_release_channel``) wins on read, so a switch to any other channel is
+    refused below with ``locked_by_policy`` rather than stored. When the pins
+    define a command provider the endpoint refuses outright — the provider's
+    commands never read the channel file, so a "successful" switch would be the
+    lying switcher described above. Nor does the endpoint grant a new capability:
+    the channel file is an ordinary file in the data home that the operator can
+    already write. What it adds is an authenticated, allowlist-validated path to
+    the same write.
     """
     owner_denied = await require_owner_dashboard_request(request, "update.channel")
     if owner_denied is not None:
@@ -323,10 +322,13 @@ async def api_update_channel(request: web.Request) -> web.Response:
             status=409,
         )
 
-    # An enterprise build follows stable; a file write here would be ignored on read.
-    from kiro_crew.edition_locks import LOCKED_BY_POLICY, local_enable_locked
+    # The policy's channel (stable in an enterprise build with no pin) wins on
+    # read, so a file write naming another channel would be ignored.
+    from kiro_crew.edition_locks import LOCKED_BY_POLICY
+    from kiro_crew.platform.update_layout import policy_release_channel
 
-    if local_enable_locked("updates.channel") and requested.strip().lower() != "stable":
+    required = await asyncio.to_thread(policy_release_channel)
+    if required and requested.strip().lower() != required:
         await _audit_update_event(
             request,
             operation="update.channel",
@@ -335,7 +337,7 @@ async def api_update_channel(request: web.Request) -> web.Response:
             resources=requested[:32],
         )
         return web.json_response(
-            {"error": LOCKED_BY_POLICY, "code": "locked_by_policy", "channel": "stable"},
+            {"error": LOCKED_BY_POLICY, "code": "locked_by_policy", "channel": required},
             status=409,
         )
 

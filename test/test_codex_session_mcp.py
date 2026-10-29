@@ -1716,8 +1716,11 @@ def test_real_codex_acp_advertises_image_prompts(codex_turns):
 @pytest.mark.real_adapter
 def test_real_codex_acp_steer_is_injected_into_the_running_turn(codex_turns):
     """Codex's membership in ``ACP_BACKENDS_STEERING_REQUEST`` (see ``backends_turns``)."""
-    from kiro_crew.acp.client_turn_control import steering_advertised
-    from kiro_crew.acp.types import STEERING_INJECTED, STEERING_STARTED_NEW_TURN
+    from kiro_crew.acp.types import (
+        STEERING_INJECTED,
+        STEERING_STARTED_NEW_TURN,
+        steering_advertised,
+    )
 
     m, ctx = codex_turns, codex_turns["_context"]
     assert steering_advertised(m.get("init")), ctx

@@ -177,6 +177,27 @@ class TestApiSpawn:
         # Prose still travels for the model to read and self-correct from.
         assert "available: scout" in body["error"]
 
+    def test_a_row_stopped_before_its_claim_is_not_answered_spawned(self) -> None:
+        """The refused-claim placeholder: accepted, then stopped while it
+        waited. Nothing runs, so the caller gets a typed 409, still ``counted``."""
+        mgr = _mgr()
+        mgr.spawn.return_value = _info(id="q3", queued=True, done=True, user_stopped=True)
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x"}))
+        assert resp.status == 409
+        body = _payload(resp)
+        assert body["code"] == mod.STOPPED_BEFORE_START_CODE == "stopped_before_start"
+        assert body["counted"] is True
+        assert "status" not in body
+
+    def test_a_run_stopped_after_it_started_keeps_its_spawned_answer(self) -> None:
+        """A registered run stopped during the start's last await is ``done`` and
+        ``user_stopped`` but not ``queued``: it ran, so its id is still returned."""
+        mgr = _mgr()
+        mgr.spawn.return_value = _info(id="r4", queued=False, done=True, user_stopped=True)
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x"}))
+        assert resp.status == 200
+        assert _payload(resp)["id"] == "r4"
+
     def test_success_coerces_string_flags_and_bounds_batch_total(self) -> None:
         mgr = _mgr()
         mgr.spawn.return_value = _info(id="a9")
@@ -366,6 +387,15 @@ class TestApiSpawnContinue:
         resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
         assert resp.status == status
         assert _payload(resp)["code"] == code
+
+    def test_a_continuation_stopped_before_its_claim_is_not_answered_spawned(self) -> None:
+        mgr = _mgr()
+        mgr.continue_conversation.return_value = _info(
+            id="run3", queued=True, done=True, user_stopped=True
+        )
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "stopped_before_start"
 
     def test_success_clamps_max_turns_and_echoes_conversation(self) -> None:
         mgr = _mgr()
@@ -977,6 +1007,19 @@ class TestApiSpawnRetry:
         mgr.claim_retry.return_value = ""
         mgr.spawn.return_value = None
         assert _run(mod.api_spawn_retry, self._req(mgr)).status == 429
+        assert mgr.settle_retry.call_args_list == [((old, None),)]
+
+    def test_a_retry_stopped_before_its_claim_releases_the_claim(self) -> None:
+        """No ``spawned`` answer for a retry that never ran, and the failed run
+        stays retryable: its claim is released, not settled with the dead id."""
+        mgr = _mgr()
+        old = _info(done=True, outcome="failed", _raw_task="t")
+        mgr.get.return_value = old
+        mgr.claim_retry.return_value = ""
+        mgr.spawn.return_value = _info(id="new", queued=True, done=True, user_stopped=True)
+        resp = _run(mod.api_spawn_retry, self._req(mgr))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "stopped_before_start"
         assert mgr.settle_retry.call_args_list == [((old, None),)]
 
     def test_falls_back_to_redacted_task_when_raw_is_empty(self) -> None:

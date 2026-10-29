@@ -1460,7 +1460,7 @@ class TestNoBlockingCallsOnTheLoop:
         assert offenders == [], offenders
 
     def test_the_reported_gate_is_offloaded_everywhere_it_is_used(self) -> None:
-        """The exact helpers the CI reviewer flagged, at every call site.
+        """The containment helpers are offloaded at every call site.
 
         ``safe_project_dir`` / ``safe_child`` are the containment gate, so they run in
         EVERY path-bearing handler. Each occurrence must therefore be inside a sync

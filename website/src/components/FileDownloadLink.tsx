@@ -8,9 +8,8 @@ import { downloadFileToDisk, fileDownloadUrl } from '../utils/fileReadUrl'
  *
  * It stays a real `<a href download>`, so copying the link or opening it in a
  * new tab still works. A plain click is taken over, because a bare navigation
- * cannot read the endpoint's answer: a file over the scan limit answers 409 and
- * must ask the owner first, and a refused file must say why instead of saving
- * the refusal's JSON as the file.
+ * cannot read the endpoint's answer: a failed download must say so instead of
+ * saving the error's JSON as the file.
  *
  * A failure renders right after the link unless the host passes `onError`:
  * a host whose link sits in a row of file actions takes the message and shows

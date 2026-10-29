@@ -230,6 +230,20 @@ class TestProjectHandlers:
         runner._apersist_runs.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_update_rejects_malformed_json_with_coded_400(self):
+        run = _make_run("r1")
+        runner = MagicMock()
+        runner._apersist_runs = AsyncMock()
+        runner._runs = {"r1": run}
+        req = _make_request(_make_app(runner=runner), method="PUT", match_info={"id": "r1"})
+        req.json = AsyncMock(side_effect=json.JSONDecodeError("Expecting value", "not json", 0))
+        resp = await api_project_update(req)
+        assert resp.status == 400
+        assert json.loads(resp.body) == {"error": "invalid JSON", "code": "invalid_json"}
+        assert run.name == "Test Run"
+        runner._apersist_runs.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_update_not_found(self):
         runner = MagicMock()
         runner._runs = {}

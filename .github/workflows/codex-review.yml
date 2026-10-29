@@ -34,6 +34,10 @@ permissions:
   contents: read
   pull-requests: write
   id-token: write
+  # Read-only: the push-budget count in "Write review prompt" lists this PR's
+  # earlier workflow runs (GET actions/workflows/<lane>.yml/runs). Without it
+  # the token gets a 403 there and the count is skipped.
+  actions: read
 
 concurrency:
   group: codex-review-${{ github.event.pull_request.number }}
@@ -64,7 +68,11 @@ jobs:
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'GPT 6.1 Review' || 'GPT 6.1 Review (same-repo lane, not applicable to forks)' }}"
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # Runaway/hang backstop only, NOT a per-review budget: each pass carries its
     # own PASS_WALL and self-terminates first. This wall MUST therefore stay
     # above the sum of the pass walls plus setup -- otherwise it, not the named
@@ -547,6 +555,66 @@ jobs:
               printf '%s\n' "$ledger"
               echo "ADJUDICATION_END::${nonce}"
             } >> /tmp/codex-prompt.md
+          fi
+
+          # PUSH BUDGET: a short section appended only once this PR has had
+          # PUSH_BUDGET_MIN blocked pushes, so a first-time review is exactly
+          # as long as it was. A blocked push is a DISTINCT earlier head of
+          # this PR that either failed one of the review-lane workflows or
+          # received a CHANGES_REQUESTED review; the current head is never
+          # counted, since nothing has been pushed past it. Everything is a
+          # GET. The section is a hint, not a gate: it can only ask the
+          # reviewer to list sibling sites, so a count this step could not
+          # read leaves the prompt as it was (a notice, never a failure),
+          # unlike the ledger above, whose missing read would re-litigate
+          # disposed findings. The text is staged from the BASE commit like
+          # the adjudication contract, with no checkout fallback: a PR must
+          # not edit the instructions that judge it, and while the file is
+          # absent on the base (this PR's own run) the section is simply off.
+          # It is deliberately a `sed` into the prompt, not a `cat` splice:
+          # the splices above mirror the unconditional prompt, and this
+          # section depends on the PR's push history.
+          PUSH_BUDGET_MIN=3
+          budget_prompt=".review-prompts-gpt/gpt-push-budget.md"
+          git show "$BASE_SHA:.github/review-prompts/gpt-push-budget.md" \
+            > "$budget_prompt" 2>/dev/null || true
+          push_budget_count() {
+            local branch lane runs shas
+            case "$PR" in ''|*[!0-9]*) return 1 ;; esac
+            branch="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.ref')" || return 1
+            [ -n "$branch" ] || return 1
+            shas="$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+              --jq '.[] | select(.state == "CHANGES_REQUESTED") | .commit_id')" || return 1
+            for lane in codex-review claude-review design-review ux-review first-principles-review security-scope-review; do
+              runs="$(gh api --method GET "repos/$REPO/actions/workflows/$lane.yml/runs" \
+                -f event=pull_request -f branch="$branch" -f per_page=100 --paginate \
+                --jq ".workflow_runs[] | select(.conclusion == \"failure\") | select(any(.pull_requests[]?; .number == $PR)) | .head_sha")" || return 1
+              shas="$shas"$'\n'"$runs"
+            done
+            printf '%s\n' "$shas" \
+              | jq -Rn --arg head "$HEAD" '[inputs | select(test("^[0-9a-f]{40}$")) | select(. != $head)] | unique | length'
+          }
+          if [ -s "$budget_prompt" ]; then
+            blocked_pushes=""
+            for attempt in 1 2 3; do
+              if blocked_pushes="$(push_budget_count)"; then
+                break
+              fi
+              blocked_pushes=""
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            case "$blocked_pushes" in
+              ''|*[!0-9]*)
+                echo "::notice::Could not count this PR's blocked pushes; the push-budget section is left out of this review prompt."
+                ;;
+              *)
+                if [ "$blocked_pushes" -ge "$PUSH_BUDGET_MIN" ]; then
+                  { echo; sed "s/%BLOCKED_PUSHES%/$blocked_pushes/g" "$budget_prompt"; } >> /tmp/codex-prompt.md
+                fi
+                ;;
+            esac
           fi
 
       # Assume the Bedrock role only now, immediately before the step that calls

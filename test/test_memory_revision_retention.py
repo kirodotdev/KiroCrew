@@ -257,7 +257,10 @@ def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
     assert any(
         statement.startswith("INSERT INTO memory_record_meta") for statement in opened[0].statements
     )
-    assert any(
+    # One accepted revision is within the V1 bound: the open-time pass looks for
+    # over-limit records and, finding none, deletes nothing.
+    assert any("HAVING count(*) >" in statement for statement in opened[0].statements)
+    assert not any(
         statement.startswith("DELETE FROM memory_revisions") for statement in opened[0].statements
     )
 

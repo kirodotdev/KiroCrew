@@ -675,6 +675,23 @@ def create_distribution(bucket: str, region: str, oac_id: str, site_id: str, pro
     return {"id": dist["Id"], "arn": dist["ARN"], "domain": dist["DomainName"]}
 
 
+#: The Sid of :func:`deny_insecure_transport_statement`, so a caller merging it into an
+#: existing policy can tell whether it is already there.
+DENY_INSECURE_TRANSPORT_SID = "KiroCrewDenyInsecureTransport"
+
+
+def deny_insecure_transport_statement(bucket: str, partition: str = "aws") -> dict:
+    """A bucket-policy statement that refuses every request not sent over TLS."""
+    return {
+        "Sid": DENY_INSECURE_TRANSPORT_SID,
+        "Effect": "Deny",
+        "Principal": "*",
+        "Action": "s3:*",
+        "Resource": [f"arn:{partition}:s3:::{bucket}", f"arn:{partition}:s3:::{bucket}/*"],
+        "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+    }
+
+
 def put_oac_bucket_policy(bucket: str, distribution_arn: str, profile: str) -> None:
     """Write the OAC bucket policy pinning AWS:SourceArn — MUST run after create_distribution."""
     policy = {

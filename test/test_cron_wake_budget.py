@@ -327,7 +327,7 @@ class TestCronTransientRetry:
         """A transient error AFTER prompt dispatch must not resubmit the turn.
 
         Tools may already have executed; a whole-callback retry would repeat
-        their side effects (GPT review finding on the first revision).
+        their side effects.
         """
         stream_calls = 0
 

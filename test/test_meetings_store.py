@@ -20,6 +20,7 @@ from meetings_helpers import (  # noqa: F401
     reset_module_state_fixture,
     root_fixture,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -36,24 +37,26 @@ class TestSafeMeetingId:
     @pytest.mark.parametrize(
         "raw",
         [
-            "../../etc/passwd",
-            "..",
-            ".hidden",
-            "a/b",
-            "a\\b",
-            "with space",
-            "semi;colon",
-            "null\x00byte",
-            "",
-            "   ",
+            *named_cases(
+                "test_rejects_unsafe",
+                "raw",
+                [
+                    "../../etc/passwd",
+                    "..",
+                    ".hidden",
+                    "a/b",
+                    "a\\b",
+                    "with space",
+                    "semi;colon",
+                    "null\x00byte",
+                    "",
+                    "   ",
+                ],
+            ),
+            *named_cases("test_rejects_non_string", "raw", [None, 5, [], {}, True]),
         ],
     )
-    def test_rejects_unsafe(self, raw):
-        with pytest.raises(store.MeetingsPathError):
-            store.safe_meeting_id(raw)
-
-    @pytest.mark.parametrize("raw", [None, 5, [], {}, True])
-    def test_rejects_non_string(self, raw):
+    def test_rejects_an_unsafe_id(self, raw):
         with pytest.raises(store.MeetingsPathError):
             store.safe_meeting_id(raw)
 

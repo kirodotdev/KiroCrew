@@ -142,9 +142,7 @@ class TestShouldPreventSleep:
         assert await srv._should_prevent_sleep(_state(sessions=MagicMock()), 0) is False
 
     @pytest.mark.asyncio
-    async def test_opt_out_allows_sleep_without_consulting_sessions(
-        self, monkeypatch
-    ) -> None:
+    async def test_opt_out_allows_sleep_without_consulting_sessions(self, monkeypatch) -> None:
         loader = MagicMock()
         loader.load.return_value = _cfg(prevent_sleep=False)
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
@@ -175,9 +173,7 @@ class TestShouldPreventSleep:
         loader = MagicMock()
         loader.load.return_value = _cfg(prevent_sleep=True)
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
-        sessions = MagicMock(
-            any_active_turn=MagicMock(side_effect=RuntimeError("map busy"))
-        )
+        sessions = MagicMock(any_active_turn=MagicMock(side_effect=RuntimeError("map busy")))
 
         assert await srv._should_prevent_sleep(_state(sessions=sessions), 0) is False
 
@@ -186,9 +182,7 @@ class TestShouldPreventSleep:
 
 
 class TestExtraFrameAncestors:
-    def test_out_of_range_stashed_port_is_rejected_not_trusted(
-        self, monkeypatch
-    ) -> None:
+    def test_out_of_range_stashed_port_is_rejected_not_trusted(self, monkeypatch) -> None:
         """A digits-only but out-of-range stashed claim must not become an origin.
 
         ``0`` and ``70000`` pass ``.isdigit()``, so only the range check stops
@@ -253,9 +247,7 @@ class TestDiscoverAppWindowEntries:
 
 class TestWindowEntryHandler:
     @pytest.mark.asyncio
-    async def test_handler_serves_the_file_bound_at_registration(
-        self, tmp_path
-    ) -> None:
+    async def test_handler_serves_the_file_bound_at_registration(self, tmp_path) -> None:
         entry = tmp_path / "src" / "apps" / "papyrus" / "board.html"
         entry.parent.mkdir(parents=True)
         entry.write_text("<h1>board</h1>", encoding="utf-8")
@@ -293,9 +285,7 @@ class TestWindowEntryHandler:
             assert await resp.text() == "<h1>new</h1>"
 
     @pytest.mark.asyncio
-    async def test_sweep_waits_out_a_handle_released_late(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    async def test_sweep_waits_out_a_handle_released_late(self, tmp_path, monkeypatch) -> None:
         """A sharing violation that clears is retried until the tree is gone."""
         old = tmp_path / "old"
         (old / "sub").mkdir(parents=True)
@@ -343,9 +333,7 @@ class TestWindowEntryHandler:
         assert old.exists()
 
     @pytest.mark.asyncio
-    async def test_app_window_entries_are_registered_as_get_routes(
-        self, tmp_path
-    ) -> None:
+    async def test_app_window_entries_are_registered_as_get_routes(self, tmp_path) -> None:
         """``_register_dist_static_routes`` must mount every discovered window.
 
         A missing mount is not a small failure: the request falls through to the
@@ -375,12 +363,10 @@ class TestWindowEntryHandler:
 class TestPrecomputeTelemetry:
     """Telemetry is best-effort: no individual failure may abort startup."""
 
-    def test_every_stage_failure_is_swallowed(self, monkeypatch) -> None:
+    def test_every_stage_failure_is_swallowed(self, monkeypatch, caplog) -> None:
         import kiro_crew.dashboard.handlers_system as hs
 
-        monkeypatch.setattr(
-            hs, "_get_owner_hash", MagicMock(side_effect=RuntimeError("no owner"))
-        )
+        monkeypatch.setattr(hs, "_get_owner_hash", MagicMock(side_effect=RuntimeError("no owner")))
         monkeypatch.setattr(
             hs, "_get_static_system_info", MagicMock(side_effect=RuntimeError("no os"))
         )
@@ -390,15 +376,18 @@ class TestPrecomputeTelemetry:
             srv, "current_context", MagicMock(return_value=SimpleNamespace(telemetry=telemetry))
         )
 
-        srv._precompute_telemetry(_state())  # must not raise
+        with caplog.at_level(logging.WARNING, logger=srv.logger.name):
+            srv._precompute_telemetry(_state())  # must not raise
 
         telemetry.record_event.assert_called_once_with(
             "gateway_start", {"owner_id_hash": "unknown", "os_type": "", "arch": ""}
         )
+        assert [r.getMessage() for r in caplog.records if r.name == srv.logger.name] == [
+            "Failed to pre-compute owner hash",
+            "Failed to pre-compute system info",
+        ]
 
-    def test_gateway_start_event_carries_the_precomputed_fields(
-        self, monkeypatch
-    ) -> None:
+    def test_gateway_start_event_carries_the_precomputed_fields(self, monkeypatch) -> None:
         import kiro_crew.dashboard.handlers_system as hs
 
         monkeypatch.setattr(hs, "_get_owner_hash", MagicMock(return_value="hash-1"))
@@ -454,9 +443,7 @@ class TestWriteSecretFileDescriptorCleanup:
         assert closed, "the open descriptor must be closed on the failure path"
         assert not secret_path.exists()
 
-    def test_close_failure_does_not_mask_the_original_error(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_close_failure_does_not_mask_the_original_error(self, tmp_path, monkeypatch) -> None:
         secret_path = tmp_path / ".local_secret"
         monkeypatch.setattr(
             srv.platform_compat,
@@ -512,7 +499,7 @@ class TestClaimedDashboardSlots:
 # ── _apply_startup_yolo ─────────────────────────────────────────────────
 
 
-def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch) -> None:
+def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch, caplog) -> None:
     """A broken ``yolo_duration`` seed must not abort the rest of startup."""
     monkeypatch.setattr(
         srv, "apply_config_duration", MagicMock(side_effect=RuntimeError("bad policy"))
@@ -521,9 +508,13 @@ def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch) -> None:
     monkeypatch.setattr(srv, "grant_declared_yolo", granted)
     cfg = SimpleNamespace(agent=SimpleNamespace(dangerously_skip_permissions=False))
 
-    srv._apply_startup_yolo(_state(), cfg)
+    with caplog.at_level(logging.WARNING, logger=srv.logger.name):
+        srv._apply_startup_yolo(_state(), cfg)
 
     # Opt-out config: the seed failure is logged, and no grant is attempted.
+    assert [r.getMessage() for r in caplog.records if r.name == srv.logger.name] == [
+        "Could not apply the configured YOLO duration"
+    ]
     assert not granted.called
 
 
@@ -533,7 +524,9 @@ def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch) -> None:
 class TestReviveIntendedInstances:
     @pytest.mark.asyncio
     async def test_no_intent_means_no_connect_attempt(self) -> None:
-        registry = MagicMock(list=MagicMock(return_value=[SimpleNamespace(id="a", was_connected=False)]))
+        registry = MagicMock(
+            list=MagicMock(return_value=[SimpleNamespace(id="a", was_connected=False)])
+        )
         manager = MagicMock(connect=AsyncMock())
 
         await srv._revive_intended_instances(registry, manager)
@@ -541,7 +534,7 @@ class TestReviveIntendedInstances:
         assert not manager.connect.called
 
     @pytest.mark.asyncio
-    async def test_one_failing_host_does_not_abort_the_rest(self) -> None:
+    async def test_one_failing_host_does_not_abort_the_rest(self, caplog) -> None:
         """Per-instance isolation is the whole point: a down host must leave its
         own tab in an error state without stopping the other revivals."""
         registry = MagicMock(
@@ -555,9 +548,7 @@ class TestReviveIntendedInstances:
         )
         results = {
             "boom": RuntimeError("ssh refused"),
-            "degraded": SimpleNamespace(
-                state=srv.TunnelState.ERROR, error="auth required"
-            ),
+            "degraded": SimpleNamespace(state=srv.TunnelState.ERROR, error="auth required"),
             "ok": SimpleNamespace(state=srv.TunnelState.CONNECTED, error=""),
         }
 
@@ -569,12 +560,21 @@ class TestReviveIntendedInstances:
 
         manager = MagicMock(connect=AsyncMock(side_effect=_connect))
 
-        await srv._revive_intended_instances(registry, manager)
+        with caplog.at_level(logging.INFO, logger=srv.logger.name):
+            await srv._revive_intended_instances(registry, manager)
 
         assert [c.args[0] for c in manager.connect.await_args_list] == [
             "boom",
             "degraded",
             "ok",
+        ]
+        # Each host's own outcome is reported, the failure included.
+        logged = [r.getMessage() for r in caplog.records if r.name == srv.logger.name]
+        assert logged == [
+            "Auto-reconnecting 3 instance(s) on startup",
+            "Startup auto-reconnect of boom failed",
+            "Startup auto-reconnect of degraded did not connect (error): auth required",
+            "Auto-reconnected instance ok",
         ]
 
 
@@ -789,9 +789,7 @@ class TestArmPreventSleepPoll:
         return state
 
     @pytest.mark.asyncio
-    async def test_poll_applies_the_predicate_then_releases_on_cancel(
-        self, monkeypatch
-    ) -> None:
+    async def test_poll_applies_the_predicate_then_releases_on_cancel(self, monkeypatch) -> None:
         polled = asyncio.Event()
 
         async def _should(_state_arg: Any, _port: int) -> bool:
@@ -843,9 +841,7 @@ class TestArmPreventSleepPoll:
         inhibitor = _FakeInhibitor()
         with caplog.at_level(logging.ERROR, logger=srv.logger.name):
             state = self._arm(monkeypatch, inhibitor, interval="not-a-number")
-            result = await asyncio.gather(
-                state._prevent_sleep_task, return_exceptions=True
-            )
+            result = await asyncio.gather(state._prevent_sleep_task, return_exceptions=True)
             await asyncio.sleep(0)  # let the done-callback run
 
         assert isinstance(result[0], TypeError)
@@ -959,9 +955,7 @@ class TestStartApiServerResidualPaths:
             lambda token: token.removeprefix("signed:"),
         )
 
-        runner, _state_obj = await _start_api(
-            tmp_path, monkeypatch, subagents=subagents
-        )
+        runner, _state_obj = await _start_api(tmp_path, monkeypatch, subagents=subagents)
         try:
             secret = (tmp_path / ".local_secret").read_text(encoding="utf-8").strip()
             # Drive the app through the in-process harness rather than the
@@ -993,9 +987,7 @@ class TestStartApiServerResidualPaths:
         assert "spawn exploded" in errors[-1]["error"]
 
     @pytest.mark.asyncio
-    async def test_a_successful_api_call_is_audited_as_ok(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    async def test_a_successful_api_call_is_audited_as_ok(self, tmp_path, monkeypatch) -> None:
         """The success arm of the audit must record the call, not only failures.
 
         (The middleware's non-``/api/`` pass-through is unreachable on this
@@ -1011,9 +1003,7 @@ class TestStartApiServerResidualPaths:
             # In-process harness, not the production listener -- see the sibling
             # test above for why.
             async with TestClient(TestServer(runner.app)) as client:
-                resp = await client.get(
-                    "/api/crons", headers={"X-Internal-Secret": secret}
-                )
+                resp = await client.get("/api/crons", headers={"X-Internal-Secret": secret})
                 assert resp.status == 200
         finally:
             await runner.cleanup()

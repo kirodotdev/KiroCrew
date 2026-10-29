@@ -1580,10 +1580,9 @@ def _convert_into(
         emitted["mcpServers"] = mcp_servers
 
     # Bounded HERE, over the assembled dict, rather than at each field as it is
-    # read. Three review rounds found three different unbounded fields in this
-    # same structure -- mcpServers, then the carried block and keywords, then
-    # displayName and description -- because a per-field bound only ever covers
-    # the fields someone remembered, and every one of them is foreign text this
+    # read. A per-field bound only ever covers the fields someone remembered
+    # (mcpServers, the carried block, keywords, displayName, description all
+    # live in this one structure), and every one of them is foreign text this
     # converter WRITES into app.json, which is read on every runtime load. One
     # pass over the finished dict covers a field added later too.
     #

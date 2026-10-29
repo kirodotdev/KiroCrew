@@ -1,6 +1,7 @@
 """Opting servers into the gateway stub.
 
-Which servers may be stubbed, recording each stub decision, and the set-stub route.
+Which servers may be stubbed, recording each stub decision, the set-stub route, and the
+batch launch preview the bulk stub review reads before it asks.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -28,6 +29,7 @@ from kiro_crew.dashboard.handlers.mcp_gateway_routes import (
     _MCP_GATEWAY_APPLY_LOCK,
     _assess_server,
     _collect_server_rows,
+    _env_pooling_outcome,
     _freeze_stub_servers,
     _launch_specs_for,
     _local_overlay_section,
@@ -71,7 +73,12 @@ def _record_stub_decisions(section: dict, names: list[str], stub: bool) -> None:
     silently never takes effect. Writing the decision
     instead leaves the roster alone, so the two layers can both keep moving.
 
-    A decision that AGREES with the roster deletes the override rather than
+    An OFF is always stored, even where the roster agrees: it is the marker
+    that the operator turned this server off, which the page-wide switch reads
+    so that turning sharing on never re-enables it. A False entry for a server
+    the roster does not list changes nothing the resolver produces.
+
+    An ON that AGREES with the roster deletes the override rather than
     storing it. The two are identical in effect today and differ tomorrow: stored,
     the entry would pin that server against a later roster change — so an
     operator toggling a server back to the roster's answer is asking to follow the
@@ -92,7 +99,7 @@ def _record_stub_decisions(section: dict, names: list[str], stub: bool) -> None:
     for name in names:
         if name in MANAGED_STUB_FOLLOWERS:
             overrides[name] = stub
-        elif (name in roster) == stub:
+        elif stub and name in roster:
             overrides.pop(name, None)
         else:
             overrides[name] = stub
@@ -163,7 +170,6 @@ def _stub_eligibility(
     from kiro_crew.mcp_gateway.evaluate import identity_for
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
-        _withheld_env_count,
         pool_identity_env_keys,
     )
     from kiro_crew.mcp_gateway.verdict_cache import load_cache
@@ -190,11 +196,12 @@ def _stub_eligibility(
         if not is_stdio or name in UNPOOLABLE_SERVERS:
             skipped.append({"name": name, "reason": "cannot_stub"})
             continue
-        if sharing_on and _withheld_env_count(
-            {k: "" for k in row["env_names"]},
-            forward_declared_env,
-            pool_identity_env_keys(),
-        ):
+        blocked_by_env, private = (
+            _env_pooling_outcome(row, forward_declared_env, pool_identity_env_keys())
+            if sharing_on
+            else (False, False)
+        )
+        if blocked_by_env:
             skipped.append({"name": name, "reason": "pooling_blocked_by_env"})
             continue
         preflight: tuple[bool, bool] | None = None
@@ -220,12 +227,64 @@ def _stub_eligibility(
             identity_keys=pool_identity_env_keys(),
             probe_current=(probe_current or {}).get(name, True),
         )
-        allowed = verdict.recommend_share if sharing_on else verdict.recommend_stub
+        # A server every declaration of which gets a connection-private backend
+        # has no co-tenants even with sharing on, so the stub bar applies to it.
+        allowed = verdict.recommend_share if sharing_on and not private else verdict.recommend_stub
         if not allowed:
             skipped.append({"name": name, "reason": "evidence_insufficient"})
             continue
         eligible.append(name)
     return eligible, skipped
+
+
+async def api_mcp_gateway_server_launches(request: web.Request) -> web.Response:
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_gateway_server_launches")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    raw_names = body.get("names") if isinstance(body, dict) else None
+    if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
+        return web.json_response(
+            {"error": "names must be a list of strings", "code": "names_not_string_list"},
+            status=400,
+        )
+    names = list(dict.fromkeys(n.strip() for n in raw_names if n.strip()))
+    if not names:
+        return web.json_response(
+            {"error": "names is required", "code": "names_required"}, status=400
+        )
+    if len(names) > _MAX_STUB_BATCH:
+        return web.json_response(
+            {
+                "error": f"names must hold at most {_MAX_STUB_BATCH} servers",
+                "code": "names_too_many",
+            },
+            status=400,
+        )
+    errors: dict[str, str] = {n: "invalid_server_name" for n in names if not _is_valid_mcp_name(n)}
+    valid = [n for n in names if n not in errors]
+    if not valid:
+        return web.json_response({"launches": {}, "errors": errors})
+    try:
+        launches = await asyncio.to_thread(launch_resolve.resolve_each_launch, valid)
+    except Exception as exc:
+        logger.warning("mcp launch resolution failed: %s", exc)
+        return web.json_response(
+            {"error": "could not resolve the launch", "code": "launch_resolve_failed"},
+            status=503,
+        )
+    previews: dict[str, Any] = {}
+    for name in valid:
+        code, preview = launch_resolve.launch_preview(name, launches)
+        if code is not None:
+            errors[name] = code
+        else:
+            previews[name] = preview
+    return web.json_response({"launches": previews, "errors": errors})
 
 
 async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:

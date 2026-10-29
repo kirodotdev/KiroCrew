@@ -644,11 +644,7 @@ def build_session_context(
 
     if essentials:
         prefix = next(
-            (
-                r
-                for r in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                if context.startswith(r)
-            ),
+            (r for r in ctx._CRITICAL_RULES_VARIANTS if context.startswith(r)),
             "",
         )
         context = prefix + essentials + context[len(prefix) :]

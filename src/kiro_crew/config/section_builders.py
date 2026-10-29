@@ -65,6 +65,7 @@ from kiro_crew.config.memory_sections import (
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
+    kind_routing_mode_from,
 )
 from kiro_crew.config.sections import (
     DEDUP_EVERY_N_SWEEPS_MAX,
@@ -104,9 +105,11 @@ from kiro_crew.config.service_sections import (
     CronHistoryConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     TaskRunnerConfig,
     WatchdogConfig,
     WorkLedgerConfig,
+    normalize_on_battery,
 )
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
@@ -179,6 +182,11 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
         prefer_structured_arming=prefer_structured_arming,
         max_runtime_secs=coerce_runtime_ceiling(section.get("max_runtime_secs")),
     )
+
+
+def _build_power_config(power_data: dict) -> PowerConfig:
+    section = SectionReader(PowerConfig, power_data)
+    return PowerConfig(on_battery=normalize_on_battery(section.get("on_battery")))
 
 
 def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
@@ -265,6 +273,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         persistence_enabled=section.read("persistence_enabled", _safe_bool),
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
+        kind_routing=kind_routing_mode_from(section.get("kind_routing")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),

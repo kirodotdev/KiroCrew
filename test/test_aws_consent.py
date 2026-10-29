@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -529,11 +530,12 @@ class TestAccountIsVerifiedNotAssumed:
         same = aws_consent.Identity(ok=True, account="111122223333")
         probe = AsyncMock(return_value=same)
         with patch.object(aws_consent, "probe_identity", probe):
-            asyncio.run(
+            granted, _reason = asyncio.run(
                 aws_consent.authorize(
                     aws_consent.SERVICE_POLLY, profile="voice", region="us-east-1"
                 )
             )
+        assert granted is True
         assert probe.await_args.kwargs.get("use_cache") is False
 
     def test_a_stale_cached_account_cannot_authorize(self, home):
@@ -812,7 +814,9 @@ class TestConsentEndpointRequiresTheOwner:
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
         with patch.object(handler.aws_consent, "audit_decision") as audit:
-            asyncio.run(handler._deny_non_owner(self._req(app="notes"), "aws_consent.grant"))
+            resp = asyncio.run(handler._deny_non_owner(self._req(app="notes"), "aws_consent.grant"))
+        assert resp.status == 403
+        assert json.loads(resp.text)["code"] == "dashboard_owner_required"
         assert [c.kwargs.get("outcome") for c in audit.call_args_list] == ["denied"]
 
     def test_the_denial_never_logs_the_caller_credential(self, home):
@@ -1068,9 +1072,13 @@ class TestConsentDecisionsAreAudited:
         assert allowed is True
         assert [c.kwargs.get("outcome") for c in audit.call_args_list] == ["verified"]
 
-    def test_an_audit_failure_does_not_break_the_gate(self, home):
+    def test_an_audit_failure_does_not_break_the_gate(self, home, caplog):
+        caplog.set_level(logging.DEBUG, logger=aws_consent.logger.name)
         with patch("kiro_crew.sel.sel", side_effect=RuntimeError("sel down")):
             aws_consent.audit_decision("polly", outcome="denied", detail="x")
+        logged = [r for r in caplog.records if r.name == aws_consent.logger.name]
+        assert [r.getMessage() for r in logged] == ["could not write the AWS consent audit event"]
+        assert str(logged[0].exc_info[1]) == "sel down"
 
 
 class TestTranscribeRefuses:
@@ -1281,8 +1289,12 @@ class TestIdentityProbeInputs:
         """
         _grant(profile="voice", region="us-east-1")
         with patch.object(aws_consent, "probe_identity") as probe:
-            aws_consent.is_granted(aws_consent.SERVICE_POLLY, profile="voice", region="us-east-1")
-            aws_consent.is_granted(aws_consent.SERVICE_POLLY, profile="other", region="x")
+            match = aws_consent.is_granted(
+                aws_consent.SERVICE_POLLY, profile="voice", region="us-east-1"
+            )
+            other = aws_consent.is_granted(aws_consent.SERVICE_POLLY, profile="other", region="x")
+        assert match[0] is True
+        assert other[0] is False
         assert probe.call_count == 0
 
 

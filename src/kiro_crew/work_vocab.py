@@ -21,7 +21,9 @@ from typing import Any, NotRequired, TypedDict
 #: make every such read answer "no board" instead of failing.
 WORK_FOLD_NAME: str = "work"
 
-WORK_ACTORS: tuple[str, ...] = ("conductor", "worker")
+#: ``person`` is the dashboard owner steering a worker from a Crew Mode chat's side
+#: panel: it writes one ``steer`` event on the worker's item and sets no field.
+WORK_ACTORS: tuple[str, ...] = ("conductor", "worker", "person")
 WORK_ACTIONS: tuple[str, ...] = (
     "create",
     "goal",
@@ -31,6 +33,7 @@ WORK_ACTIONS: tuple[str, ...] = (
     "close",
     "accept",
     "report",
+    "steer",
 )
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
@@ -54,7 +57,18 @@ WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
 WORK_BLOCKED_REASONS: tuple[str, ...] = ("approval", "needs_human")
 #: The statuses a ``reason`` may ride on.
 WORK_REASON_STATUSES: tuple[str, ...] = ("blocked", "question")
-WORK_EVENT_KINDS: tuple[str, ...] = ("create", "bind", "report", "decision", "verdict", "close")
+#: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's
+#: steer outranks the conductor's decision: the conductor reads new steer events
+#: before it decides and never overrules them.
+WORK_EVENT_KINDS: tuple[str, ...] = (
+    "create",
+    "bind",
+    "report",
+    "decision",
+    "verdict",
+    "close",
+    "steer",
+)
 #: Item records the crew log's ``work`` fold may HOLD for one board at once -- a
 #: memory bound on the fold, not a bound on the board's life. The fold forgets an
 #: item once it is closed and older than :data:`WORK_CLOSED_WINDOW` other closed

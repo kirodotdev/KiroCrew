@@ -112,7 +112,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       if (cursorAwaySubscribers === 0) ipcRenderer.send("focus-mode-watch-cursor", false);
     };
   },
-  // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
+  // Renderer signals main process to show/hide the DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
   // Windows custom titlebar: menu surfaces render in the dashboard so hover
   // can switch between them; command execution stays in the main process.
@@ -139,6 +139,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const handler = (_e, delta) => cb(delta);
     ipcRenderer.on("history:step", handler);
     return () => ipcRenderer.removeListener("history:step", handler);
+  },
+  // The trackpad's real finger-down ("begin") and finger-up ("end"), which
+  // main.js reads off Chromium's gesture-scroll events (see scroll-touch.js).
+  // macOS only; the page's swipe reader uses it to release a drag on the real
+  // lift-off. Anything but the two words is dropped here.
+  onScrollTouch: (cb) => {
+    const handler = (_e, phase) => {
+      if (phase === "begin" || phase === "end") cb(phase);
+    };
+    ipcRenderer.on("scroll-touch", handler);
+    return () => ipcRenderer.removeListener("scroll-touch", handler);
   },
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
@@ -238,6 +249,14 @@ contextBridge.exposeInMainWorld("crashReportsAPI", {
 // shell" and renders nothing.
 contextBridge.exposeInMainWorld("wslAPI", {
   detect: () => ipcRenderer.invoke("wsl:detect"),
+});
+
+// What the main window's close button does: "background" or "quit". The main
+// process returns the stored value only to the main window's own dashboard.
+// Absent in plain browsers and in the PWA.
+contextBridge.exposeInMainWorld("closeActionAPI", {
+  get: () => ipcRenderer.invoke("close-action:get"),
+  set: (action) => ipcRenderer.invoke("close-action:set", String(action || "")),
 });
 
 // File-open bridge for the chat path chip's "Open in editor" affordance. Hands
@@ -382,4 +401,8 @@ contextBridge.exposeInMainWorld("updateAPI", {
   // Auto-download opt-out (Settings > About). ON by default: a discovered
   // update downloads in the background and installs on the next quit.
   setAutoDownload: (enabled) => ipcRenderer.invoke("update:set-auto-download", enabled),
+  // Notify the main process that a security policy provider now governs (or no
+  // longer governs) this install's updates. Called from useUpdateSubscription
+  // whenever update_bundled_by_app and update_managed_by align. Fire-and-forget.
+  notifyPolicyGoverned: (governed) => ipcRenderer.send("update:notify-policy-governed", governed),
 });

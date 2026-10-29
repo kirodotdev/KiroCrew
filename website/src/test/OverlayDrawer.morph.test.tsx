@@ -20,6 +20,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import OverlayDrawer from '../components/OverlayDrawer'
+import { paneCovered } from '../hooks/paneVisibility'
 
 let reduceMotion = false
 
@@ -197,5 +198,26 @@ describe('OverlayDrawer slide mode', () => {
     expect(style).toContain('width: 320px')
     expect(style).toContain('x: X-MOTION-VALUE')
     expect(panel.querySelector('[data-testid="panel"]')).toBeTruthy()
+  })
+})
+
+// #23564: the phone's slide-mode drawer is drawn over the chat pane, so it
+// marks itself as covering it (paneVisibility); the desktop drawer sits beside
+// the pane and does not.
+describe('OverlayDrawer: covering the chat pane', () => {
+  it('marks the slide-mode drawer as covering only while it is open, and never the desktop drawer', () => {
+    // The same stand-in MotionValue the slide-mode test above uses: the
+    // framer-motion mock forwards it untouched.
+    const X = 'X-MOTION-VALUE' as unknown as import('framer-motion').MotionValue<number>
+    const slide = render(<OverlayDrawer open width={320} slideX={X} coversPane><div>x</div></OverlayDrawer>)
+    expect(paneCovered(document)).toBe(true)
+    // Sliding out: still mounted (the caller holds `open` until the slide-out
+    // ends), but no longer covering, so a tap that opened a chat and closed the
+    // drawer lands on a visible transcript.
+    slide.rerender(<OverlayDrawer open width={320} slideX={X} coversPane={false}><div>x</div></OverlayDrawer>)
+    expect(paneCovered(document)).toBe(false)
+    slide.unmount()
+    render(<OverlayDrawer open width={280}><div>x</div></OverlayDrawer>)
+    expect(paneCovered(document)).toBe(false)
   })
 })

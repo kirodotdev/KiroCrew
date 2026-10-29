@@ -158,6 +158,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_libproc_fd_bound _darwin_libproc_fd_handle _darwin_peer_is_loopback
         darwin_established_tcp_count _darwin_libc_sysctl _darwin_libc_sysctl_loaded
         _darwin_libc_sysctl_lock _darwin_sysctl_handle darwin_process_argv
+        _darwin_tb_frequency
         darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
         _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
         darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
@@ -263,7 +264,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _open_process_termination_handle open_process_termination_handle
         duplicate_asyncio_process_handle _windows_lineage_matches_lifetimes
         _windows_process_query_diagnostic _windows_descendant_failure_details
-        _windows_process_query_creation _windows_foreign_descendant_pids
+        _windows_process_query_creation _windows_foreign_descendant_pids _windows_is_older_orphan
         descendant_termination_handles close_process_handle descendant_termination_handles_async
         _JOB_OBJECT_LIMIT_ACTIVE_PROCESS _JOB_OBJECT_LIMIT_JOB_MEMORY
         _JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS apply_job_limits _TH32CS_SNAPTHREAD
@@ -307,6 +308,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _linux_available_mib host_total_mib host_available_mib MEMORY_PRESSURE_NORMAL
         MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
         _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
+        POWER_AC POWER_BATTERY POWER_UNKNOWN _LINUX_POWER_SUPPLY_ROOT _WIN_AC_OFFLINE
+        _WIN_AC_ONLINE _linux_supply_attr _linux_power_source _SystemPowerStatus
+        _windows_ac_line_status _windows_power_source power_source
         """.split()),
 }
 

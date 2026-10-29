@@ -91,9 +91,19 @@ class TestStopReasonCancelled:
             lambda text, *a, **kw: (text, MagicMock(action=None, text="")),
         )
         state.context_builder = ctx_builder
-        state.sessions.consume_needs_reinjection = MagicMock(return_value=True)
-        state.sessions.mark_needs_reinjection = MagicMock()
-        return state
+        # A flag store with the session manager's consume/mark semantics, so a
+        # test reads the flag the turn left behind instead of the calls it made.
+        flagged: set[str] = set()
+
+        def _consume(key: str) -> bool:
+            if key in flagged:
+                flagged.discard(key)
+                return True
+            return False
+
+        state.sessions.consume_needs_reinjection = MagicMock(side_effect=_consume)
+        state.sessions.mark_needs_reinjection = MagicMock(side_effect=flagged.add)
+        return flagged
 
     @pytest.mark.asyncio
     async def test_cancelled_turn_restores_the_reinjection_flag(self, tmp_path, monkeypatch):
@@ -113,8 +123,9 @@ class TestStopReasonCancelled:
             LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED),
         ]
         state = self._make_state_for_run_chat(tmp_path, monkeypatch)
-        self._wire_reinjection(state, tmp_path, monkeypatch)
+        flags = self._wire_reinjection(state, tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
+        flags.add(effective_session_key(slot))
         client = self._make_mock_client(events)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
 
@@ -122,6 +133,7 @@ class TestStopReasonCancelled:
 
         state.sessions.consume_needs_reinjection.assert_called_with(effective_session_key(slot))
         state.sessions.mark_needs_reinjection.assert_called_once_with(effective_session_key(slot))
+        assert flags == {effective_session_key(slot)}
 
     @pytest.mark.asyncio
     async def test_exception_mid_turn_restores_the_reinjection_flag(self, tmp_path, monkeypatch):
@@ -131,8 +143,9 @@ class TestStopReasonCancelled:
         from kiro_crew.dashboard.chat import _run_chat
 
         state = self._make_state_for_run_chat(tmp_path, monkeypatch)
-        self._wire_reinjection(state, tmp_path, monkeypatch)
+        flags = self._wire_reinjection(state, tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
+        flags.add(effective_session_key(slot))
 
         client = MagicMock()
 
@@ -147,6 +160,7 @@ class TestStopReasonCancelled:
         await _run_chat(state, slot, "hello")
 
         state.sessions.mark_needs_reinjection.assert_called_once_with(effective_session_key(slot))
+        assert flags == {effective_session_key(slot)}
 
     @pytest.mark.asyncio
     async def test_landed_turn_does_not_restore_the_reinjection_flag(self, tmp_path, monkeypatch):
@@ -160,8 +174,9 @@ class TestStopReasonCancelled:
             LLMEvent(kind=EVENT_COMPLETE),
         ]
         state = self._make_state_for_run_chat(tmp_path, monkeypatch)
-        self._wire_reinjection(state, tmp_path, monkeypatch)
+        flags = self._wire_reinjection(state, tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
+        flags.add(effective_session_key(slot))
         client = self._make_mock_client(events)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
         state.sessions.record_success = MagicMock()
@@ -170,6 +185,7 @@ class TestStopReasonCancelled:
 
         state.sessions.consume_needs_reinjection.assert_called_with(effective_session_key(slot))
         state.sessions.mark_needs_reinjection.assert_not_called()
+        assert flags == set()
         state.sessions.record_success.assert_called_once_with(effective_session_key(slot))
 
     @pytest.mark.asyncio

@@ -60,9 +60,10 @@ class TestConsumePendingReset:
     async def test_nothing_pending_tears_nothing_down(self, tmp_path, teardown):
         state, slot = _state(tmp_path), _slot()
 
-        await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
         getattr(state.sessions, teardown).assert_not_awaited()
+        assert torn_down is False
 
     @pytest.mark.asyncio
     async def test_successful_reset_clears_the_flag(self, tmp_path):
@@ -302,11 +303,13 @@ class TestConsumePendingReset:
         state, slot = _state(tmp_path), _slot()
         slot._pending_discard_conversation_key = "dashboard:chat-cov-1"
 
-        await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
         state.sessions.discard_conversation.assert_awaited_once_with(
             "dashboard:chat-cov-1", replay=False, skip_if_busy=True
         )
+        assert torn_down is True
+        assert slot._pending_discard_conversation_key is None
 
     @pytest.mark.asyncio
     async def test_discard_failure_leaves_the_flag_armed(self, tmp_path):
@@ -426,11 +429,13 @@ class TestConsumePendingDiscardBoundary:
         state, slot = _state(tmp_path), _slot()
         slot._pending_discard_conversation_key = "slack:C1:123"
 
-        await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
         state.sessions.discard_conversation.assert_awaited_once_with(
             "slack:C1:123", replay=False, skip_if_busy=True
         )
+        assert torn_down is True
+        assert slot._pending_discard_conversation_key is None
 
     @pytest.mark.asyncio
     async def test_a_manager_refusal_leaves_the_discard_armed(self, tmp_path):
@@ -570,11 +575,13 @@ class TestConsumePendingDiscardWaitsForSubagents:
         state.subagents = _subs([])
         slot._pending_discard_conversation_key = "dashboard:chat-cov-1"
 
-        await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
         state.sessions.discard_conversation.assert_awaited_once_with(
             "dashboard:chat-cov-1", replay=False, skip_if_busy=True
         )
+        assert torn_down is True
+        assert slot._pending_discard_conversation_key is None
 
     @pytest.mark.asyncio
     async def test_the_project_reset_is_deferred_on_children(self, tmp_path):
@@ -731,9 +738,10 @@ class TestCapArmedPrefetches:
 
 class TestPrefetchTtl:
     @pytest.mark.asyncio
-    async def test_replaced_slot_owner_keeps_the_session(self, tmp_path):
+    async def test_replaced_slot_owner_keeps_the_session(self, tmp_path, monkeypatch):
         state, slot = _state(tmp_path), _slot()
         state.get_slot = MagicMock(return_value=_slot("other"))
+        monkeypatch.setitem(chat_runner._armed_prefetches, "dashboard:chat-cov-1", object())
 
         # flake-ok: pre-existing worker-wide patch of the stdlib asyncio.sleep through chat_runner's asyncio, moved verbatim; tracked for a de-flake pass
         with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()):
@@ -741,12 +749,15 @@ class TestPrefetchTtl:
 
         state.get_slot.assert_called_once_with(slot.key)
         state.sessions.remove_if_unclaimed.assert_not_awaited()
+        # The arm window ends even though the session is kept.
+        assert "dashboard:chat-cov-1" not in chat_runner._armed_prefetches
 
     @pytest.mark.asyncio
-    async def test_running_turn_claims_the_session(self, tmp_path):
+    async def test_running_turn_claims_the_session(self, tmp_path, monkeypatch):
         state, slot = _state(tmp_path), _slot()
         state.get_slot = MagicMock(return_value=slot)
         slot.task = MagicMock(done=MagicMock(return_value=False))
+        monkeypatch.setitem(chat_runner._armed_prefetches, "dashboard:chat-cov-1", object())
 
         # flake-ok: pre-existing worker-wide patch of the stdlib asyncio.sleep through chat_runner's asyncio, moved verbatim; tracked for a de-flake pass
         with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()):
@@ -754,19 +765,29 @@ class TestPrefetchTtl:
 
         state.get_slot.assert_called_once_with(slot.key)
         state.sessions.remove_if_unclaimed.assert_not_awaited()
+        assert "dashboard:chat-cov-1" not in chat_runner._armed_prefetches
 
     @pytest.mark.asyncio
-    async def test_deleted_slot_still_tears_down_a_linked_session(self, tmp_path):
+    async def test_deleted_slot_still_tears_down_a_linked_session(self, tmp_path, caplog):
         """A channel-born slot's prefetch key is not the slot-derived one."""
         state, slot = _state(tmp_path), _slot()
         state.get_slot = MagicMock(return_value=None)
         state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
 
-        # flake-ok: pre-existing worker-wide patch of the stdlib asyncio.sleep through chat_runner's asyncio, moved verbatim; tracked for a de-flake pass
-        with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()):
+        with (
+            # flake-ok: pre-existing worker-wide patch of the stdlib asyncio.sleep through chat_runner's asyncio, moved verbatim; tracked for a de-flake pass
+            patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()),
+            caplog.at_level("INFO", logger=chat_runner.logger.name),
+        ):
             await chat_runner._prefetch_ttl(state, slot, "telegram:123")
 
         state.sessions.remove_if_unclaimed.assert_awaited_once_with("telegram:123")
+        expired = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == chat_runner.logger.name and "Resume prefetch" in r.getMessage()
+        ]
+        assert expired == ["Resume prefetch: unclaimed session telegram:123 expired after 600s"]
 
     @pytest.mark.asyncio
     async def test_cancellation_propagates(self, tmp_path):

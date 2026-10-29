@@ -76,14 +76,32 @@ _WINDOWS_CMD_LINE_LIMIT = 8191
 # when they could support it (e.g. dev/diagnostic servers that want the
 # operator to see one process per session).
 #
-# Empty, and nothing is excluded through it today. The intended signalling path
+# It holds only the credential vendors below. The intended signalling path
 # — a backend that does not advertise ``kirocrew.caller-identity`` in its
 # initialize response being refused for pooling — is NOT implemented: gatewayd
 # parses that capability only to decide whether to inject caller identity, and
 # no code path declines to pool a backend for lacking it. So this set is the
 # only mechanism of its kind that exists, and it is the one to reach for while
 # that is true, not a fallback for servers that cannot adopt the extension.
-UNPOOLABLE_SERVERS: frozenset[str] = frozenset()
+#
+# Credential vendors are listed here. Each chat's own copy runs inside that
+# chat's sandbox, which hides the credential directories and the ``~/.aws``
+# profile files (``sandbox_tiers``); a shared backend runs in ``gatewayd`` outside every
+# sandbox (``docs/architecture/mcp.md``). Sharing one would hand every chat a
+# vendor that can read what its own sandbox withholds, so it is never wrapped,
+# by the single-server toggle or by a bulk action.
+UNPOOLABLE_SERVERS: frozenset[str] = frozenset({"creds-agent", "local-creds-agent-mcp"})
+
+
+def is_unpoolable(name: str) -> bool:
+    """Whether *name*, or the alias it is injected under, is never pooled.
+
+    The one denylist test every path that hands a session a stub, or lets
+    ``gatewayd`` spawn a shared backend, asks. The rewriter applies it while it
+    writes an overlay; the readers apply it again so an overlay, sidecar or
+    approval written before a name was listed cannot still pool it.
+    """
+    return name in UNPOOLABLE_SERVERS or mcp_server_alias(name) in UNPOOLABLE_SERVERS
 
 
 def _build_stub_entry(

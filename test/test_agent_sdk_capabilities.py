@@ -362,6 +362,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "",
         "claude",
         "codex",
+        "copilot",
         "deepseek",
         "goose",
         "kas",
@@ -739,12 +740,18 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     from kiro_crew.agent_sdk.tool_gate import ENFORCED_ROUTINGS
     from kiro_crew.providers.mirrors.registry import MIRRORS, ProjectionKind, projection_for
 
+    # A fourth fact the three above assume: the harness asks about EVERY call, so
+    # ``_deny_zero_tools`` sees each one. Copilot CLI 1.0.100 reads a file inside the
+    # session's own directory without asking (measured, see the set's comment), so a
+    # total ban cannot be honoured there even though the three facts hold.
+    reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT}
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         routing = routing_for(backend)
         expected = routing is sdk_backends.Routing.AGENT_SPEC or (
             routing in ENFORCED_ROUTINGS
             and (backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY)
             and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
+            and backend not in reads_unasked
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
         assert actual == expected, (

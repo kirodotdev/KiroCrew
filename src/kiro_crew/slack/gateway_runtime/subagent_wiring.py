@@ -471,7 +471,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         nonlocal _slots_push_pending
         _slots_push_pending = False
         if self.dashboard_state:
-            self.dashboard_state.push_slots_update()
+            self.dashboard_state.push_subagent_patch()
 
     def _schedule_slots_push() -> None:
         nonlocal _slots_push_pending
@@ -718,6 +718,11 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # that yield is ``run()``'s memory barrier. Hold the pump until
         # ``_start_subagent_dispatch_after_memory_ready`` opens it.
         defer_queue_dispatch=True,
+        # The boot orphan sweep starts with the reaper below, before the dashboard
+        # has restored the tabs its notices belong in. ``run()`` releases them
+        # once the dashboard has rebuilt its tabs, channel ones included, and at
+        # once for the API-only server or a start that failed.
+        hold_orphan_notices=True,
     )
     # A parent that ends takes its children with it, on every backend. The
     # session lifecycle owns the boundary and drives both halves at each of its

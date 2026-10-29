@@ -22,6 +22,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import mediated_request_capability
 from kiro_crew.acp.client import (
     AcpError,
     AcpProcessDied,
@@ -112,6 +113,9 @@ async def cancel(
     auto-recovery.
     """
     self._stale_probe = _stale_probe
+    # A cancelled turn's approved mediated-secret calls must not run later on
+    # their delivered grants: revoke them before the cancel goes out.
+    mediated_request_capability.invalidate_session(self._session_key or "")
     self._cancelled = True
     self._cancel_hook_tasks()
     self._cancel_ts = time.monotonic()

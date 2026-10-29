@@ -130,6 +130,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import (
+    LEAKED_TOOL_CALL_NOTE,
     NO_TOOL_CALLS_NOTE,
     SUBAGENT_COMPLETION_META_KEY,
 )
@@ -219,7 +220,11 @@ from kiro_crew.dashboard.state import (
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
-from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
+from kiro_crew.dashboard.turn_dispatch import (
+    bounded_chat_turn,
+    mark_turn_unstarted,
+    spawn_guarded_turn,
+)
 from kiro_crew.embeddings import (
     embedding_model_is_custom,
     get_shared_embedder,
@@ -387,6 +392,7 @@ from kiro_crew.platform.update_capability import (
 )
 from kiro_crew.platform.update_governance import (
     commits_ahead,
+    fetch_and_pin_upstream,
     git_command_env,
     hidden_worktree_edits,
     is_primary_branch,
@@ -528,6 +534,8 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _kas_floor_gates_spawns,
     _live_session_agents,
     _live_session_work_dirs,
+    _main_stored_as_kiro,
+    _reconcile_live_config_with_kiro_verdict,
     _run_signing_key_preflight_bounded,
     _start_coder_retention,
     _start_kas_cli_floor,
@@ -550,6 +558,7 @@ from kiro_crew.slack.gateway_runtime.service_boot import (
 from kiro_crew.slack.gateway_runtime.subagent_injection import (
     _MAX_INJECT_ATTEMPTS,
     _injection_slot_busy,
+    _skip_inline_collected,
 )
 from kiro_crew.slack.gateway_runtime.subagent_report import (
     SUBAGENT_DIGEST_CHUNK_SIZE,
@@ -761,6 +770,7 @@ class GatewayOrchestrator:
     _pending_update_respawn: Callable[[], str] | None
     _pending_update_mandatory: bool
     _pending_update_mandatory_key: str
+    _pending_update_version: str
     _mandatory_update_deferred_at: float | None
     _mandatory_update_deferred_key: str | None
     _wheel_update_noticed: set[str]
@@ -1129,6 +1139,7 @@ class GatewayOrchestrator:
     channel_restarts_settled = _channel_lifecycle.channel_restarts_settled
     restart_channel = _channel_lifecycle.restart_channel
     _forget_superseded_start = _channel_lifecycle._forget_superseded_start
+    _publish_teams_webhook = _channel_lifecycle._publish_teams_webhook
     _close_channel_locked = _channel_lifecycle._close_channel_locked
     _on_slack_config_change = _channel_lifecycle._on_slack_config_change
     _on_default_agent_config_change = _channel_lifecycle._on_default_agent_config_change

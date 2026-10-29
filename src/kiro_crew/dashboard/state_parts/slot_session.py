@@ -18,13 +18,14 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
 ``_deferred_model_switch_key``, ``_pending_discard_from_wake``, ``_pending_memory_mode``, ``_pending_model_pick``,
 ``_pending_reset_history_key``, ``_prefetch_ttl_task``, ``_reasoning_effort``,
-``_recovery_chat_triggered``, ``_reports_to_creator``, ``_revived_by``, ``_session_requested_model``,
+``_recovery_chat_triggered``, ``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``,
+``_session_requested_model``,
 ``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
 ``_summary_turn_mark``, ``_tab_id``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
-``channel_origin``, ``created_at``, ``executor``, ``forked_from``, ``instance_id``,
+``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``, ``project``, ``recovery_retrigger_count``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
@@ -105,6 +106,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # made by name alone or restored from history. Display provenance for
     # the picker; never an authorization input.
     self.agent_kind = ""
+    # The agent Crew Mode turned on with ("" when the chat never turned it on):
+    # stamped by the agent switch (``crew_mode.stamp_for_switch``) and persisted,
+    # so the chat stays in Crew Mode after ``agent.crew_mode_agent`` changes.
+    self.crew_mode_agent = ""
     # ``"<app>/<agent>"`` when this session was opened by an app's palette
     # command to run as that app's OWN agent; "" otherwise. Every turn checks it
     # (``chat_runner``): the bare ``agent`` name must still resolve to that app's
@@ -292,6 +297,11 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: person's own tab, a fork, a restore. Read by
     #: ``DashboardState.creator_slot_count`` for ``MAX_SLOTS_PER_CREATOR``.
     self._created_by = ""
+    #: The ``created_by`` the session's saved metadata line names, read on every
+    #: hydration (restore, recent, resume). DISPLAY ONLY: the Crew Mode stamp reads
+    #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``). It
+    #: grants nothing: session-control ownership reads ``_created_by`` alone.
+    self._saved_created_by = ""
     #: The creator's ACP session id, FROZEN at mint (see ``session_control``).
     #: Read at the child's first turn to stamp ``parent_sid`` on the immutable
     #: ``session/opened`` crew log entry -- never re-read live, so a creator slot

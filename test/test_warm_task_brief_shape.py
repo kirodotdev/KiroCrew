@@ -282,6 +282,8 @@ _TEXT_FIELDS = [
     "next",
     "extra_title",
     "extra_item",
+    "body",
+    "widget",
 ]
 
 
@@ -398,3 +400,71 @@ def test_chinese_brief_uses_chinese_text_labels():
         "等你处理: 已经复现了失败。\n需要你:\n- 批准推送\n进度: 2 项中已完成 1 项\n"
         "还剩: 推送修复\n你让我做: 修复测试\n已做完:\n- 复现失败\n下一步:\n1. 应用修复"
     )
+
+
+def test_a_free_form_body_keeps_its_lines_and_replaces_the_quoted_request():
+    raw = json.dumps(
+        {
+            "headline": "Almost there 🎉",
+            "body": "You asked for a green nightly.\n\n\n- two fixes in\n- one to go\n"
+            + "x\n" * 40,
+        }
+    )
+    brief = warm_task_brief._parse_result(raw, "Fix the nightly", (2, 3))
+    assert brief is not None
+    lines = brief.body.split("\n")
+    assert lines[:4] == ["You asked for a green nightly.", "", "- two fixes in", "- one to go"]
+    assert len(lines) == warm_task_brief._MAX_BODY_LINES
+    # The body carries the reminder, so no fixed "You asked" line is added.
+    assert brief.asked == ""
+    assert warm_task_brief._brief_text(brief, "en").startswith(
+        "On track: Almost there 🎉\nProgress: 2 of 3 done\nYou asked for a green nightly.\n\n- two"
+    )
+    long = warm_task_brief._parse_result(json.dumps({"headline": "x", "body": "y " * 900}))
+    assert long is not None and len(long.body) == warm_task_brief._MAX_BODY_CHARS
+
+
+def test_a_widget_rides_meta_only_and_is_dropped_whole_over_the_cap():
+    html = '<div style="color:var(--accent)">2 fixes in</div>'
+    raw = json.dumps({"headline": "Ready.", "widget": f'<mcwidget title="x">{html}</mcwidget>'})
+    brief = warm_task_brief._parse_result(raw)
+    assert brief is not None and brief.widget == html
+    assert brief.as_meta()["widget"] == html
+    assert "<div" not in warm_task_brief._brief_text(brief, "en")
+    big = "<p>" + "a" * warm_task_brief._MAX_WIDGET_CHARS + "</p>"
+    brief = warm_task_brief._parse_result(json.dumps({"headline": "Ready.", "widget": big}))
+    assert brief is not None and brief.widget == "" and "widget" not in brief.as_meta()
+
+
+@pytest.mark.parametrize("field", ["body", "widget"])
+def test_a_private_key_with_a_bold_marker_in_its_header_is_redacted(field):
+    body = "MIIEowIBAAKCAQEA" + "q" * 128
+    begin = "-----BEGIN RSA PRI**VATE " + "KEY-----"
+    end = "-----END RSA " + "PRIVATE KEY-----"
+    pem = begin + "\n" + body + "\n" + body + "\n" + end
+    brief = warm_task_brief._parse_result(json.dumps({"headline": "Ready.", field: pem}))
+    assert brief is not None
+    rendered = json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+    assert body[:12] not in rendered
+
+
+def test_a_marker_opener_split_across_body_lines_is_defanged():
+    brief = warm_task_brief._parse_result(
+        json.dumps({"headline": "x", "body": "ok [\nOPTIONS: Go]"})
+    )
+    assert brief is not None and "[" not in brief.body
+
+
+def test_the_prompt_names_the_widget_rules():
+    prompt = warm_task_brief._PROMPT
+    for rule in (
+        "320px",
+        "prefers-reduced-motion",
+        "var(--accent)",
+        "No scripts",
+        "clickable",
+        "no chips, pills",
+        "done or pending",
+        "no background",
+    ):
+        assert rule in prompt

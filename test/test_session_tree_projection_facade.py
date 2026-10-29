@@ -135,7 +135,10 @@ BASE_MEMBER_KINDS = {
 BASE_BOUND_SIGNATURES = {
     "_schedule_checkpoint": "(self) -> 'None'",
     "cancel_pending_checkpoint": "(self) -> 'None'",
-    "_debounced_write": "(self, target: \"'Path | None'\" = None, epoch: 'int' = -1) -> 'None'",
+    "_debounced_write": (
+        "(self, target: \"'Path | None'\" = None, epoch: 'int' = -1, "
+        "root: \"'str | None'\" = None) -> 'None'"
+    ),
     "flush_checkpoint": "(self) -> 'bool'",
     "ensure_seeded": "(self, live_sids: \"'tuple[str, ...]'\" = ()) -> 'None'",
     "_retry_due_locked": "(self) -> 'bool'",

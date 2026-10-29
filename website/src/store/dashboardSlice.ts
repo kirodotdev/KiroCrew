@@ -12,7 +12,8 @@ import { bumpLastTsOverlay, dropCaughtUpLastTs, pruneLastTsOverlay, slotLastTsOf
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
-import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+export { selectPersonSlots } from './personSlots'
 
 /** A close tombstone entry (see `applySlots`). */
 interface CloseHold {
@@ -167,6 +168,9 @@ export interface DashboardState {
   approvalMode: string
   channelTrusted: boolean
   refreshTrigger: number
+  /** Bumped when the cron caches are re-read (see `invalidateRefreshQueries`):
+   *  what the Schedule page reloads its job list on. */
+  cronRefreshTrigger: number
   unreadSlots: string[]
   /** Watermarks for relayed clears: slot -> newest message ts that marked it
    *  unread. A cross-window `slot_read` clears the badge only when its read
@@ -248,6 +252,7 @@ const initialState: DashboardState = {
   approvalMode: 'normal',
   channelTrusted: false,
   refreshTrigger: 0,
+  cronRefreshTrigger: 0,
   ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
   unreadDrainHeld: true,
   slotsListPartial: false,
@@ -1460,6 +1465,7 @@ const dashboardSlice = createSlice({
     setPendingManualOrder(state, action: PayloadAction<string[] | null>) { state.pendingManualOrder = action.payload },
     setManualOrderError(state, action: PayloadAction<string>) { state.manualOrderError = action.payload },
     triggerRefresh(state) { state.refreshTrigger += 1 },
+    triggerCronRefresh(state) { state.cronRefreshTrigger += 1 },
     /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
      *  MANUAL reminder: records the relay-immune sentinel; only a local read
      *  in this window clears it. Object payload `{slot, ts?}` = message
@@ -1843,7 +1849,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, triggerCronRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 export { slotSurfaceKey, slotIsRemoteBound } from './slotIdentity'
@@ -1877,12 +1883,15 @@ function countUnreadByMode(
   if (unread.length === 0) return 0
   const surfaceByKey = new Map(slots.map(s => [s.key, slotSurfaceKey(s)]))
   const isHeldOrphan = heldOrphanTest(new Set(surfaceByKey.keys()), heldKeys, holdChannels, listPartial)
+  // A Crew Mode crew member is no row of the person's lists (its root's Crew
+  // panel lists it), so its unread entry is kept for that panel but not counted.
+  const crewMembers = crewMemberKeys(slots)
   // The chat surface ('') counts every slot the chat page renders, legacy
   // Autopilot slots included (see `isChatPageSurface`).
   const isChatSurface = mode === ''
   let count = 0
   for (const k of unread) {
-    if (isHeldOrphan(k)) continue
+    if (isHeldOrphan(k) || crewMembers.has(k)) continue
     const sk = surfaceByKey.get(k) ?? ''
     if (isChatSurface ? isChatPageSurface(sk) : sk === mode) count++
   }
@@ -1928,3 +1937,10 @@ export const selectSlotListPending = (state: { dashboard: DashboardState }): boo
 }
 
 export default dashboardSlice.reducer
+
+/** True when the local bundled gateway's policy provider governs this install.
+ * Shared by `usePolicyGovernedNotification`, `UpdateFoundModal`, `AboutPanel`. */
+export function selectPolicyGoverned(s: { dashboard: DashboardState }): boolean {
+  const st = s.dashboard.status
+  return st?.update_bundled_by_app === true && st?.update_managed_by === 'command' && st?.update_can_apply === true
+}

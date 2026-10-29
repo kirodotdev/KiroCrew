@@ -1,8 +1,8 @@
-"""Tests for the cycle-2 review finding: a partial root must carry a component map.
+"""A partial root must carry a component map.
 
 The `kirocrew-partial-` root exists so released versions refuse a selective bundle.
-This version accepts it -- and that acceptance created a new hole: `declared is None`
-falls through to all-components behaviour, which is correct for a pre-v3 COMPLETE
+This version accepts it, so it must not let `declared is None` fall through to
+all-components behaviour, which is correct for a pre-v3 COMPLETE
 archive and exactly wrong for a partial one.
 """
 

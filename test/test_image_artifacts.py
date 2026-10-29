@@ -595,8 +595,8 @@ class TestSchedulerGate:
 class TestAssetReadHardening:
     """The asset path must stay bounded, off-loop, and privately cached.
 
-    Each assertion here stands in for a review finding: reverting any one of
-    them reintroduces an availability or disclosure bug, not a style nit.
+    Reverting any one of these assertions reintroduces an availability or
+    disclosure bug, not a style nit.
     """
 
     def test_oversize_image_is_never_fully_read_into_memory(

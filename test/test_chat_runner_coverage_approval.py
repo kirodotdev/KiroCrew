@@ -37,6 +37,18 @@ from kiro_crew.trust_patterns import (
     exact_trust_pattern,
 )
 
+
+def _card_outcomes(slot) -> list:
+    """How each approval card the slot shows was resolved, in order."""
+    return [
+        json.loads(m["cls"]).get("resolved") for m in slot.messages if m.get("role") == "permission"
+    ]
+
+
+def _tool_rows(slot) -> list[str]:
+    return [m.get("content", "") for m in slot.messages if m.get("role") == "tool"]
+
+
 # ── _run_chat: auto-approve rungs ─────────────────────────────────────────
 
 
@@ -172,6 +184,8 @@ class TestRunChatAutoApproveRungs:
         await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == []
+        assert _tool_rows(slot) == ["🔧 Looking up the record"]
 
     @pytest.mark.asyncio
     async def test_trusted_pattern_append_persists_tool_meta_untruncated(self, tmp_path):
@@ -275,6 +289,7 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == ["rejected"]
 
     @pytest.mark.asyncio
     async def test_non_shell_identity_collision_cannot_auto_approve_other_tool(self, tmp_path):
@@ -356,6 +371,7 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == ["rejected"]
 
     @pytest.mark.asyncio
     async def test_browser_cli_presence_does_not_skip_shell_approval(self, tmp_path, monkeypatch):
@@ -381,6 +397,7 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == ["rejected"]
 
     @pytest.mark.asyncio
     async def test_browser_cli_explicit_trusted_pattern_still_auto_approves(self, tmp_path):
@@ -401,6 +418,8 @@ class TestRunChatAutoApproveRungs:
         await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == []
+        assert _tool_rows(slot) == ["🔧 Running: playwright-cli snapshot"]
 
     @pytest.mark.asyncio
     async def test_trusted_pattern_auto_approves_a_matching_command(self, tmp_path):
@@ -584,6 +603,8 @@ class TestRunChatAutoApproveRungs:
         await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == []
+        assert _tool_rows(slot) == ["🔧 Running: gh pr view 42 2>/dev/null"]
 
     @pytest.mark.asyncio
     async def test_trusted_pattern_rejects_an_invalid_tool_name(self, tmp_path):
@@ -620,6 +641,8 @@ class TestRunChatAutoApproveRungs:
 
         matcher.assert_not_called()
         client.approve_tool.assert_awaited_once()
+        # Session trust approves without a card and without a tool row.
+        assert _card_outcomes(slot) == []
 
     @pytest.mark.asyncio
     async def test_trust_reads_auto_approves_a_read_only_command(self, tmp_path):
@@ -634,6 +657,8 @@ class TestRunChatAutoApproveRungs:
         await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == []
+        assert _tool_rows(slot) == ["🔧 Running: ls -la"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -671,6 +696,98 @@ class TestRunChatAutoApproveRungs:
             and c.kwargs.get("outcome") == "auto_approved"
         ]
 
+    # ── Reads mode and Kiro Crew's own read-only MCP tools ───────────────────
+
+    @staticmethod
+    def _real_gate_state(tmp_path):
+        """A runner whose context builder carries a REAL ``HookManager``, so the
+        permission walks the gate's tiers rather than a scripted verdict."""
+        from kiro_crew.hooks import HookManager
+
+        context_builder = MagicMock()
+        context_builder.hooks = HookManager()
+        context_builder.build_message.return_value = ("hello", None)
+        return _runner_state(tmp_path, context_builder=context_builder)
+
+    @staticmethod
+    def _core_read(
+        server: str = "kirocrew-core", tool: str = "memory_recall", *, trusted: bool = True
+    ):
+        """A permission request for a first-party MCP read, as kiro-cli raises
+        it: the trusted ``_meta.kiro`` pair, no ``kind``, a model-authored title."""
+        return _permission(
+            title=f"Running: @{server}/{tool}",
+            tool_input=json.dumps({"query": "what did we decide"}),
+            tool_kind="",
+            is_shell=False,
+            tool_name=tool,
+            mcp_server_name=server,
+            mcp_identity_trusted=trusted,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reads_mode_auto_approves_a_first_party_read_only_mcp_tool(self, tmp_path):
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        slot._trust_reads = True
+        _set_stream(client, [self._core_read(), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == []
+        assert not _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_still_prompts_for_the_same_first_party_read(self, tmp_path):
+        """The proof is Reads mode's: a Normal slot shows the card as before."""
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        assert slot._trust_reads is False
+        state.push_slots_update.side_effect = lambda: _answer_card(slot, "rejected")
+        _set_stream(client, [self._core_read(), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == ["rejected"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "server,tool",
+        [
+            ("evil-server", "memory_recall"),  # same name, another server
+            ("kirocrew-core", "learn_add"),  # a core WRITE tool
+            ("kirocrew-core", "list_sessions"),  # a core tool kept off the list
+        ],
+    )
+    async def test_reads_mode_prompts_for_every_other_mcp_call(self, tmp_path, server, tool):
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        slot._trust_reads = True
+        state.push_slots_update.side_effect = lambda: _answer_card(slot, "rejected")
+        _set_stream(client, [self._core_read(server, tool), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == ["rejected"]
+
+    @pytest.mark.asyncio
+    async def test_reads_mode_prompts_when_the_identity_is_not_trusted(self, tmp_path):
+        """The pair without the provenance flag is prose, not identity: an
+        event that merely NAMES the core server and tool prompts."""
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        slot._trust_reads = True
+        state.push_slots_update.side_effect = lambda: _answer_card(slot, "rejected")
+        _set_stream(client, [self._core_read(trusted=False), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == ["rejected"]
+
     @pytest.mark.asyncio
     async def test_trust_reads_rejects_an_invalid_tool_name(self, tmp_path):
         state, client = _runner_state(tmp_path)
@@ -685,6 +802,7 @@ class TestRunChatAutoApproveRungs:
             await _drive(state, slot)
 
         client.reject_tool.assert_awaited_once_with("req-cov-1")
+        assert any("invalid: bad name" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
     async def test_live_timed_pattern_auto_approves_a_matching_command(self, tmp_path):
@@ -722,6 +840,8 @@ class TestRunChatAutoApproveRungs:
         await _drive(state, slot)
 
         assert client.approve_tool.await_args_list == [call("req-cov-1")]
+        assert _card_outcomes(slot) == []
+        assert _tool_rows(slot) == ["🔧 Running: ls -la"]
 
     @pytest.mark.asyncio
     async def test_timed_grant_ending_before_the_send_prompts_and_sends_nothing(
@@ -947,6 +1067,8 @@ class TestRunChatAutoApproveRungs:
             call("req-cov-2", deadline=deadline),
         ]
         client.reject_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == []
+        assert _tool_rows(slot) == ["🔧 Running: echo hi > out.txt"] * 2
 
 
 class TestRunChatApprovalWindow:
@@ -1001,6 +1123,8 @@ class TestRunChatApprovalWindow:
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         client.reject_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == ["approved"]
+        assert _tool_rows(slot) == ["✅ Running: ls -la"]
 
     @pytest.mark.asyncio
     async def test_redacted_command_is_allow_once_only(self, tmp_path):

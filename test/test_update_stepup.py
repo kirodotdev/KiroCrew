@@ -213,7 +213,7 @@ class TestStepUpModule:
         `kirocrew update approve` CLI) uses the default: its unlink cannot be
         serialized against a gateway re-arm, so an expired read must report
         absent WITHOUT touching the file — otherwise it could delete a fresh
-        request it never read (GPT review finding, head 82cd360d3). Cleanup
+        request it never read. Cleanup
         is the explicit clear_expired=True opt-in for gateway callers."""
         pending = update_stepup.arm("9.9.9", "stable")
         monkeypatch.setattr(
@@ -973,6 +973,24 @@ class TestApproveEndpoint:
         payload = json.loads(resp.body.decode())
         assert resp.status == 409
         assert payload["code"] == "approve_below_min_version"
+        assert payload["governance"] is True
+        assert update_stepup.read_pending() is None
+        assert req.app["state"]._background_tasks == set()
+
+    async def test_channel_pin_landing_after_arm_refuses_approve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A channel pin in the arm-to-approve window must win, like the source pin."""
+        pending = update_stepup.arm("0.5.0", "nightly")
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_layout.policy_release_channel", lambda: "stable"
+        )
+        req = _request({"nonce": pending.nonce})
+        resp = await updates.api_update_approve(req)
+        payload = json.loads(resp.body.decode())
+        assert resp.status == 403
+        assert payload["code"] == "approve_blocked_by_policy"
         assert payload["governance"] is True
         assert update_stepup.read_pending() is None
         assert req.app["state"]._background_tasks == set()

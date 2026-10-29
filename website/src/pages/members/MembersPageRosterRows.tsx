@@ -1,8 +1,9 @@
 /**
  * The roster list's entries. `MemberRow` is one crewmate's row: it reads that
  * crewmate's own `roster` projection (one hook call per row, so a frame
- * re-renders just that row) and draws the face, name, status line, unread and
- * needs-you marks, the loop indicator and the star. `CrewmateEmptyHero` is the
+ * re-renders just that row) and draws the row itself through `CrewmateRowBody`
+ * (the face, name, status line and markers the switcher's rows share) plus the
+ * star. `CrewmateEmptyHero` is the
  * intentionally-empty roster's one call to action, with the Advanced door.
  * `MembersPageRosterColumn` (MembersPageRoster.tsx) renders both; above md the
  * thread column (MembersPageThread.tsx) carries the hero instead.
@@ -11,17 +12,17 @@
  * Crewmates page in its "See what it looks like" dialog. A visible change here
  * makes that picture stale — re-shoot with `scripts/capture-feature-previews.mjs`.
  */
-import { Plus, Square, Star } from 'lucide-react'
-import { Badge, Btn } from '../../components/ui'
+import { Plus, Star } from 'lucide-react'
+import { Btn } from '../../components/ui'
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
-import { crewDisplayName } from '../../components/AgentSelector'
 import CrewAvatar from '../../components/CrewAvatar'
-import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
-import { isAutomationActive, type AutomationRecord } from '../../monitoring/automation'
+import { type AutomationRecord } from '../../monitoring/automation'
 import { motion } from 'framer-motion'
 import { cn } from '../../lib/utils'
-import { ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../../components/listShell'
+import { ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS } from '../../components/listShell'
+import CrewmateRowBody from './CrewmateRowBody'
+import { type MemberSignals } from './rosterFilter'
 import { useMemberProjection } from '../../state/useMemberProjection'
 import type { RosterView } from '../../state/memberProjectionTypes'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -33,8 +34,9 @@ import { type TFn } from './membersPageModel'
  *  frame re-render just this row. The projected roster view overrides the
  *  server row field-by-field when present; a field the projection omits (or a
  *  gateway with no projections block) falls back to the row. Presence
- *  (`running`) and the driving list stay on live slots in the parent and are
- *  not projected here. */
+ *  (`running`), the needs-you and unread readings and the on-watch record stay
+ *  on live slots in the parent (`signalsOf`, `automationOf`) and are not
+ *  projected here. */
 export function MemberRow({
   m,
   t,
@@ -43,9 +45,7 @@ export function MemberRow({
   toggleStar,
   starPending,
   slotKeyOf,
-  isRunning,
-  isUnread,
-  isNeedsYou,
+  signalsOf,
   automationOf,
   reduceMotion,
   scrollActiveRowIntoView,
@@ -60,11 +60,9 @@ export function MemberRow({
   toggleStar: (m: MemberRosterRow) => void
   starPending: Set<string>
   slotKeyOf: (m: MemberRosterRow) => string
-  isRunning: (m: MemberRosterRow) => boolean | undefined
-  isUnread: (m: MemberRosterRow) => boolean
-  /** The crewmate's turn is parked on an approval or a question — the same
-   *  reading the status filter and the switcher row take (`signalsOf`). */
-  isNeedsYou: (m: MemberRosterRow) => boolean
+  /** The page's one per-row reading (running / needs-you / unread / on watch /
+   *  goal), the same the status filters count and the switcher's rows draw. */
+  signalsOf: (m: MemberRosterRow) => MemberSignals
   /** The normalized automation record for this crewmate's own slot. */
   automationOf: (m: MemberRosterRow) => AutomationRecord | null
   reduceMotion: boolean | null
@@ -81,9 +79,9 @@ export function MemberRow({
   // cannot say which of the two it describes.
   const roster = useMemberProjection<RosterView>(slugCollides ? null : m.slug, 'roster')
   // The projected view over the server row: projection wins field-by-field
-  // when present, so slotKeyOf / isRunning / isUnread and the display read the
-  // pushed value. `running` is intentionally NOT overridden — it is live
-  // presence, resolved from slots in the parent.
+  // when present, so slotKeyOf / signalsOf and the display read the pushed
+  // value. `running` is intentionally NOT overridden — it is live presence,
+  // resolved from slots in the parent.
   //
   // `last_message` goes the other way, and the direction is the point.
   // Every other field here is config-derived, so the event log is where it is
@@ -117,8 +115,6 @@ export function MemberRow({
         last_message: m.last_message || roster.last_message,
       }
     : m
-  const automation = automationOf(view)
-  const loopOn = isAutomationActive(automation)
   // `layout` on the row, so the ONE move the recency re-sort makes is
   // followable: a row relocating to the top on the user's own send is a
   // persistent, already-identified element changing place, and an instant
@@ -160,115 +156,18 @@ export function MemberRow({
           )}
           aria-current={view.name === activeName ? 'true' : undefined}
         >
-          <span
-            className="relative shrink-0"
-            style={faceOnStage ? { visibility: 'hidden' } : undefined}
-            data-testid="member-row-face"
-            data-entrance-empty={faceOnStage ? '' : undefined}
-          >
-            {/* The face reacts: it animates while the member works and
-                flashes its finished / failed expression on the turn's
-                trailing edge. The dot below stays presence-only — a
-                finished turn is not presence. */}
-            <CrewMonitoredAvatar
-              seed={view.name}
-              avatar={view.avatar}
-              slotKey={slotKeyOf(view)}
-              running={!!isRunning(view)}
-              automation={automation}
-              indicatorTestId="member-loop-indicator"
-              size={36}
-              working="subtle"
-            />
-            {/* Presence dot renders only while the member is working —
-                an idle member shows nothing rather than a gray dot,
-                which read as a broken/disabled state. */}
-            {isRunning(view) && (
-              <span
-                className="absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg bg-ok"
-                aria-hidden="true"
-                data-testid="member-presence-dot"
-              />
-            )}
-            {/* On watch is drawn by CrewMonitoredAvatar from the same record
-                this row uses for its visible label. */}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{crewDisplayName(view)}</span>
-            {/* Last-message preview, like a session row — presence
-                already rides the avatar dot, so a textual Idle/Working
-                label says nothing the dot does not. A "Stopped" chip
-                leads the preview when the thread's NEWEST event is a
-                Stop press: the server skips the stop card's JSON, so the
-                preview is the last conversational line, which reads as
-                ongoing work on a thread the user has stopped — the chip
-                is the honest marker over it. It is localized HERE, not
-                sent as a word from the server, whose preview is computed
-                without the client's locale. The chip is `shrink-0` so
-                the preview, not the label, is what truncates. The server
-                flag is false once a newer real message lands, so the chip
-                cannot outlive the stop. */}
-            <span className={`flex items-center gap-1 ${ROW_STATUS_CLS} text-muted min-w-0`}>
-              {view.last_message_stopped && (
-                <span
-                  className="inline-flex items-center gap-0.5 shrink-0 font-medium text-danger"
-                  data-testid="member-stopped-indicator"
-                >
-                  <Square size={9} fill="currentColor" className="lucide-inline" aria-hidden="true" />
-                  {t('pages.membersPage.stopped_indicator')}
-                </span>
-              )}
-              {/* The mark's word, so it reads without a tooltip (touch,
-                  reduced motion). Accent, like the mark. */}
-              {loopOn && (
-                <Badge
-                  variant="muted"
-                  className="shrink-0 px-1.5 py-0 text-[11px] font-sans bg-accent-subtle text-accent"
-                  data-testid="member-loop-label"
-                >
-                  {t('pages.membersPage.loop_on')}
-                </Badge>
-              )}
-              <span className="block truncate min-w-0">{view.last_message || '\u00a0'}</span>
-            </span>
-          </span>
-          {/* Needs-you marker on the row's right edge, leading the unread
-              dot: the switcher's own cue (CrewmateSwitcher's row), so the
-              full roster and the folded one agree about who is parked on
-              a question. A `warn` dot that is a named image plus the same
-              muted word, `aria-hidden` because the dot's name already says
-              the fuller sentence; the two labels are the existing
-              `filter_status_needs_you` / `team_needs_you` keys. */}
-          {isNeedsYou(view) && (
-            <span className="flex items-center gap-1 shrink-0" data-testid="member-needs-you">
-              <span
-                className="w-2 h-2 rounded-full shrink-0 bg-warn"
-                role="img"
-                aria-label={t('pages.membersPage.filter_status_needs_you')}
-                title={t('pages.membersPage.filter_status_needs_you')}
-                data-testid="member-needs-you-dot"
-              />
-              <span className="text-[11px] text-muted whitespace-nowrap" aria-hidden="true">{t('pages.membersPage.team_needs_you')}</span>
-            </span>
-          )}
-          {/* Unread marker on the row's right edge — the IM convention
-              (and where the rail badge sits), vertically centered by the
-              row's items-center. w-2 h-2 filled with the STATUS token
-              like ChatSidebar's unread dot (#10479/#10488) — not brand
-              accent, which a theme also spends on links and chips — with
-              a real accessible name: nothing else on the row says
-              "unread". The left side is taken — presence rides the
-              avatar. */}
-          {isUnread(view) && (
-            <span
-              className="w-2 h-2 rounded-full shrink-0"
-              style={{ background: 'var(--ok)' }}
-              role="img"
-              aria-label={t('pages.membersPage.unread_message')}
-              title={t('pages.membersPage.unread_message')}
-              data-testid="member-unread-dot"
-            />
-          )}
+          {/* The row itself (face, name, status line, right-edge markers) is
+              the switcher's row too: CrewmateRowBody. */}
+          <CrewmateRowBody
+            m={view}
+            signals={signalsOf(view)}
+            automation={automationOf(view)}
+            slotKey={slotKeyOf(view)}
+            size={36}
+            surface="page"
+            testIdPrefix="member"
+            faceOnStage={faceOnStage}
+          />
         </button>
         {/* Star: always rendered when starred. Unstarred: visible below md
             (touch has no hover or keyboard focus to reveal it), hover /

@@ -154,10 +154,10 @@ _NO_WRITER: dict[str, str] = {
     "agentcore-inbound": "no producer left in the tree",
 }
 
-#: Directory leaves deliberately left out of the pre-create list for now.
-_HELD_OUT: dict[str, str] = {
-    "policy_cache": "governance trust root with a cache-only carve-out; not proven inert",
-}
+#: Directory leaves deliberately left out of the pre-create list for now. ``policy_cache``
+#: is pre-created: an empty one is no cache to every reader, and the gateway publishes
+#: into it (``test_policy_cache_sandbox_view.py``).
+_HELD_OUT: dict[str, str] = {}
 
 #: Leaves that are FILES: the ``isfile``-guarded loop and its own materialisers own them.
 _FILE_LEAVES: frozenset[str] = frozenset(

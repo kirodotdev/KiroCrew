@@ -8,6 +8,7 @@ import type { SubagentQueuedReason } from '../../pages/chat/subagentQueuedReason
 import type { McpAppRenderPayload } from '../../lib/mcpAppSrcdoc'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { ErrorReport } from '../../utils/errorReport'
+import type { AgentSwitchNotice } from '../../utils/agentSwitchFeedback'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
 import type { ParkedThinking } from './thinking'
 
@@ -230,6 +231,14 @@ export interface ChatState {
    *  active when it did, so the swap in `handleResumeSession` retires only
    *  the tab that resume replaced. */
   lastResumeActivation?: { requestId: string; replaced: string | null } | null
+  /** The last session the user OPENED by a gesture, set when that open's
+   *  transcript load lands (`switchSlot.fulfilled` for a switch marked
+   *  `gesture`, which only user-initiated opens set; see `SwitchSlotArg`). `seq` counts the opens,
+   *  so opening the same session again is a new value. A restore, an
+   *  automatic move or a failed load never sets it. Read by
+   *  `useAckCronNotesInView`: opening a cron run's chat is what marks its bell
+   *  note read (#23564). */
+  userOpen?: { key: string; seq: number }
   /** Forks started in this window that will open their child when they
    *  succeed and `forkMayOpen` allows it. Creates are tracked by
    *  `foregroundCreateId`. While either is pending, the chat page does not
@@ -410,7 +419,7 @@ export interface ChatState {
   /** Transient feedback for agent-rebind failures shared by the picker and
    *  global cycle shortcuts, and for a new chat that could not get its own
    *  session folder. The App shell owns rendering and expiry. */
-  agentSwitchNotice: { message: string } | null
+  agentSwitchNotice: AgentSwitchNotice | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean

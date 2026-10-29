@@ -701,6 +701,17 @@ class TestSpawn:
         assert reply.startswith("⚠️ Subagent `r2` was not started: waiting for memory")
 
     @pytest.mark.asyncio
+    async def test_a_spawn_stopped_before_it_started_is_not_announced(self) -> None:
+        """Stopped while it waited: queued, done and user-stopped with no error.
+        Nothing runs, so the reply must not announce a start."""
+        manager = MagicMock(max_concurrent=2)
+        manager.spawn.return_value = SimpleNamespace(
+            id="s1", queued=True, done=True, user_stopped=True, error=""
+        )
+        reply = await spawn_task_reply("do it", manager) or ""
+        assert reply == "⚠️ Subagent `s1` was stopped before it started; nothing ran."
+
+    @pytest.mark.asyncio
     async def test_an_empty_argument_declines(self) -> None:
         assert await spawn_task_reply("", MagicMock()) is None
         assert await spawn_command_reply("spawn    ", MagicMock()) is None

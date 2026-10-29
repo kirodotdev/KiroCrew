@@ -47,7 +47,9 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 #: off it. A name bound only by ``import <module>`` of a stdlib module is left out
 #: (SD39): nothing reads ``json`` or ``re`` off the facade, and pinning one would
 #: fail on the removal of an unused import. The project module objects it imports
-#: ARE pinned, because owner functions read them as facade globals.
+#: ARE pinned, because owner functions read them as facade globals. The Slack status
+#: reaction is one ack reaction, so it binds no debounce, stall watchdog,
+#: tool-to-phase map or one-shot ``done`` reaction, and none of those is pinned.
 _BASE_NAMES = frozenset("""
     ACTIVATION_REVIEW APPROVAL_AUTO APPROVAL_INTERACTIVE AcpError AcpProcessDied
     AcpPromptBusy AcpTimeoutError Any ConfigReadError ContextBuilder ConversationLog
@@ -63,17 +65,17 @@ _BASE_NAMES = frozenset("""
     StreamRedactor SubagentManager TOOL_AUTO_APPROVE TOOL_DENY TRUNCATION_NOTICE
     TYPE_CHECKING Task TaskRunner ThreadReplies TurnCeilingExceeded UnknownMemoryStore
     _ACTION_APPROVE _ACTION_REJECT _ACTION_TRUST _APPROVAL_TIMEOUT _BANG_TO_SLASH
-    _CC_AGENT_NAME_RE _CIRCUIT_BREAKER_THRESHOLD _CODING_KINDS _CODING_TOOLS
+    _CC_AGENT_NAME_RE _CIRCUIT_BREAKER_THRESHOLD
     _COMMENT_HOLD_MAX _COMPACTION_FAILED_RETRIES _COMPACTION_RETRY_NOTICE _CURSOR
-    _CompactionReplay _DEFAULT_PHASE_EMOJIS _EDIT_INTERVAL _IMMEDIATE_PHASES
+    _CompactionReplay _DEFAULT_PHASE_EMOJIS _EDIT_INTERVAL
     _INCOGNITO_TOKEN_RE _LinkedApproval _LinkedApprovalEvent _NO_RESPONSE _OUTCOME_APPROVED
-    _OUTCOME_REJECTED _PHASE_DEBOUNCE_SECS _PHASE_EMOJIS _PendingApproval
+    _OUTCOME_REJECTED _PHASE_EMOJIS _PendingApproval
     _RESTRICTED_WRITE_MSG _REVIEW_DRAFT_MAX _REVIEW_DRAFT_TTL _REVIEW_PLACEHOLDER_TS
-    _SLACK_OWNED_FIELDS _SLACK_SECTION_TEXT_LIMIT _STALL_EMOJI_HARD _STALL_EMOJI_SOFT
-    _STALL_HARD_SECS _STALL_SOFT_SECS _STATUS_WORKING _STEER_NOTICE_BOUND_SECS
-    _STREAM_CONTINUED _TEMPORARY_TOKEN_RE _TERMINAL_PHASES _THINKING _THINKING_PLACEHOLDER
-    _THINKING_PREVIEW_LIMIT _TRUNCATION_MARKER _VoiceConfig _WEB_KINDS _WEB_TOOLS
-    _YOLO_TTL_SECS _add_phase_reaction _add_trusted_session _allowed_users
+    _SLACK_OWNED_FIELDS _SLACK_SECTION_TEXT_LIMIT
+    _STATUS_WORKING _STEER_NOTICE_BOUND_SECS
+    _STREAM_CONTINUED _TEMPORARY_TOKEN_RE _THINKING _THINKING_PLACEHOLDER
+    _THINKING_PREVIEW_LIMIT _TRUNCATION_MARKER _VoiceConfig
+    _YOLO_TTL_SECS _add_trusted_session _allowed_users
     _append_footer_actions _apply_privacy_mode _at_tag_line_start _background_tasks
     _build_approval_blocks _build_phase_emojis _build_sessions_blocks _build_title_prompt
     _cached_default_agent _collect_recent_sessions_off_loop _comment_hold_is_protocol
@@ -92,7 +94,7 @@ _BASE_NAMES = frozenset("""
     _safe_final_update _safe_update _safe_voice_reply _set_default_agent
     _shared_trusted_sessions _should_auto_approve_spawn _steer_host_deny _str_or_default
     _thread_agents _thread_incognito _thread_projects _thread_temporary _titled_threads
-    _tool_to_phase _tracking_channels _trusted_sessions _tts_available
+    _tracking_channels _trusted_sessions _tts_available
     _vc _voice_reply_fn add_trusted_session admit_inbound_callback
     adopt_slack_config agent_spec_stems annotations append_and_surface
     apply_config_duration auto_title await_replay_gap build_cancelled_turn_preamble
@@ -172,8 +174,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         handle_interaction
         """.split()),
     "reactions": tuple("""
-        StatusReactionController _add_phase_reaction _tool_to_phase phase_emojis
-        refresh_phase_emojis
+        StatusReactionController phase_emojis refresh_phase_emojis
         """.split()),
     "stream": tuple("""
         _at_tag_line_start _comment_hold_is_protocol _filter_options_brackets
@@ -226,8 +227,9 @@ _SPLIT_HELPERS: dict[str, str] = {
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
-#: captured from the one-module file before the split.
-_BASE_SHAPE_DIGEST = "6c782deaca93e4395ca8d4f47f8b25ce32071d2cd1a36e7828a746e227ab45f7"
+#: captured from the one-module file before the split, less the two reaction-trail
+#: names deleted with the trail (``_add_phase_reaction``, ``_tool_to_phase``).
+_BASE_SHAPE_DIGEST = "4345ad1233f0afb979e1c8be4f5ae174bbde211628f8b610ef3f3e4959caf2eb"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in
@@ -304,7 +306,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 
 
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
-    assert len(_BASE_NAMES) == 321
+    assert len(_BASE_NAMES) == 308
     assert sorted(name for name in _BASE_NAMES if not hasattr(handler, name)) == []
 
 
@@ -455,7 +457,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 81
+    assert len(names) == len(set(names)) == 79
     assert not set(_SPLIT_HELPERS) & set(names)
 
 
@@ -507,7 +509,7 @@ def test_every_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 89
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 87
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -612,7 +614,7 @@ def test_a_moved_class_keeps_its_owner_module() -> None:
     assert handler.StatusReactionController.__module__ == f"{_OWNER_PACKAGE}.reactions"
     assert handler._PendingApproval.__module__ == f"{_OWNER_PACKAGE}.approvals"
     assert handler._AnswerStream.__module__ == f"{_OWNER_PACKAGE}.stream"
-    method = handler.StatusReactionController.set_phase
+    method = handler.StatusReactionController.start
     assert method.__globals__ is vars(handler)
 
 
@@ -924,7 +926,6 @@ def test_the_corpus_sweep_finds_the_seams_the_suite_is_known_to_patch() -> None:
         "_owner_id",
         "kiro_agents_dir",
         "_EDIT_INTERVAL",
-        "_STALL_SOFT_SECS",
         "_trusted_sessions",
     } <= patched, sorted(patched)
     assert sorted(name for name in patched if not hasattr(handler, name)) == []

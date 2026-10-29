@@ -329,9 +329,7 @@ def test_dynamic_import_of_an_unrelated_module_is_clean(gate):
 def test_an_undecidable_fromlist_under_the_boundary_is_a_violation(gate):
     """The invariant, not a list of container shapes.
 
-    Three review rounds each closed one `fromlist` shape and revealed the next --
-    tuple/list, then set and dict keys, then starred unpacking, dict-unpack and
-    literal concatenation. Enumerating shapes cannot converge: `('acp',) * 1`,
+    Enumerating `fromlist` shapes cannot converge: `('acp',) * 1`,
     `('a' + 'cp',)`, `frozenset({'acp'})` and a comprehension all import the same
     package. So the rule is inverted: when `name` is an ancestor of a forbidden
     root, CLEAN requires proving the `fromlist` names none of it, and anything the

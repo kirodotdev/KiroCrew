@@ -103,14 +103,19 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
         # Records come out of the same pass for the reason _redact_segment
         # gives: after this line only the placeholder exists, so an
         # interrupted reply would otherwise lose what it explains for good.
-        _redacted, _blocked, _redactions = _redact_segment(slot, turn.assistant_text)
+        _ordered: list[bool] = []
+        _redacted, _blocked, _redactions = _redact_segment(
+            slot, turn.assistant_text, _ordered_out=_ordered
+        )
         _note_reply_row(
             slot,
             slot.append(
                 "assistant",
                 _redacted,
                 "msg msg-a",
-                meta=_segment_row_meta(slot, _blocked, _redactions),
+                meta=_segment_row_meta(
+                    slot, _blocked, _redactions, links_ordered=_ordered == [True]
+                ),
             ),
         )
         # Saved once per turn: a recovery arm saves it here, and a cancel
@@ -245,8 +250,8 @@ def _attach_abnormal_turn_stats(
     footer, because there is no row to carry one.
 
     The row is mutated in place; it reaches disk because the turn's
-    ``finally`` runs ``_flush_file_changes``, which marks the slot dirty on
-    every exit. Best-effort: a failure never disturbs the cancel teardown or
+    ``finally`` awaits ``_flush_file_changes_off_loop``, whose on-loop attach
+    marks the slot dirty on every exit. Best-effort: a failure never disturbs the cancel teardown or
     the usage row.
 
     Only a row THIS runner appended (``slot._turn_reply_mids``) can carry

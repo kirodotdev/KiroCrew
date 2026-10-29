@@ -55,6 +55,7 @@ class TestSubagentPostToolUseHook:
                 kind=EVENT_TOOL_RESULT,
                 tool_call_id="t-1",
                 tool_output="hello world",
+                tool_final=True,
             )
 
         sessions = _mock_sessions()
@@ -100,6 +101,10 @@ class TestSubagentPostToolUseHook:
             f"stripped, got {kwargs['tool_name']!r}"
         )
         assert kwargs["tool_response"] == {"output": "hello world"}
+        # The child's own key, for per-session attribution, beside the
+        # parent's key that marks the event as a subagent's.
+        assert kwargs["session_key"] == "subagent:t01"
+        assert kwargs["parent_session_key"] == "slack:C:T"
 
     @pytest.mark.asyncio
     async def test_post_tool_use_truncates_long_output(self) -> None:
@@ -125,6 +130,7 @@ class TestSubagentPostToolUseHook:
                 kind=EVENT_TOOL_RESULT,
                 tool_call_id="t-2",
                 tool_output=long_output,
+                tool_final=True,
             )
 
         sessions = _mock_sessions()
@@ -218,7 +224,9 @@ class TestSubagentPostToolUseHook:
 
         async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
             yield LLMEvent(kind=EVENT_TOOL_CALL, title="X", tool_call_id="t-4")
-            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t-4", tool_output="ok")
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="t-4", tool_output="ok", tool_final=True
+            )
             yield LLMEvent(kind=EVENT_COMPLETE)
 
         sessions = _mock_sessions()

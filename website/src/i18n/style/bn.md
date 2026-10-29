@@ -87,7 +87,7 @@ Checked by `catalogParity.test.ts`.
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
 | sentence-final Latin-period debt does not exceed 30 | `bnStyle.test.ts` |
 | changed values use তুমি, never আপনি | `bnStyle.test.ts` (`I18N_BASE_REF`) |
-| Bengali-digit debt does not exceed 8 | `bnStyle.test.ts` |
+| no value uses Bengali digits | `bnStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

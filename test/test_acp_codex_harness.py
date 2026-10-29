@@ -37,6 +37,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_card_handshake_fields import live_init
 
 from kiro_crew.acp.client import (
     CLIENT_NAME,
@@ -1154,9 +1155,10 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
 
 
 def _handle_on(backend: str) -> AcpSessionHandle:
-    """A handle whose runtime names *backend* -- the only thing these answers read."""
+    """A handle whose runtime names *backend*, on codex-acp 2.2.2's live handshake."""
     rt = MagicMock()
     rt.acp_backend = backend
+    rt.initialize_result = live_init("codex/steering-live.jsonl")
     return AcpSessionHandle("s1", asyncio.Queue(), rt)
 
 
@@ -1486,6 +1488,28 @@ class TestTheRuntimeSendsCodexNoAgentMode:
             await rt.create_session(cwd="/w", agent="kirocrew")
 
         assert METHOD_SET_MODE in plane.methods
+
+
+class TestTheRuntimePersistsTheAdvertisedModelCacheForCodex:
+    @pytest.mark.asyncio
+    async def test_create_session_feeds_and_persists_once(self, monkeypatch):
+        """codex is in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION, so the shared runtime
+        feeds the advertised-model cache and then offloads its persist after
+        session/new; the kiro side of the same gate is pinned in
+        test_acp_runtime_load_session.py."""
+        feed = MagicMock()
+        monkeypatch.setattr(AcpSessionHandle, "_feed_advertised_model_cache", feed)
+        spy = AsyncMock()
+        monkeypatch.setattr(AcpSessionHandle, "_persist_advertised_models_if_changed", spy)
+        rt = _codex_runtime()
+        plane = _ControlPlane(_codex_session_new_response())
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            await rt.create_session(cwd="/w", agent="kirocrew")
+
+        feed.assert_called_once()
+        spy.assert_awaited_once()
 
 
 class TestTheRuntimeArmsCodexPermissionRouting:

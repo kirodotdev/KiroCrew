@@ -593,6 +593,22 @@ def _warn_skill_link_outside_roots(link: Path, target: str) -> None:
     )
 
 
+#: Directory names the skill walk never descends: package-manager and bytecode
+#: trees a skill's own scripts install next to it. Third-party packages ship
+#: their own ``SKILL.md`` files inside them (Playwright does, under
+#: ``node_modules/playwright-core``), and indexing those would put vendored
+#: copies in discovery beside the user's skills. No user skill lives in one of
+#: these trees, so the skip removes nothing a user placed. ``.venv`` and other
+#: dot-directories are already skipped by the dot rule. ``build`` and ``dist``
+#: are left out on purpose: either can be a real skill's name.
+_VENDORED_DIR_NAMES = frozenset({"node_modules", "__pycache__", "site-packages"})
+
+
+def _skippable_skill_dir(name: str) -> bool:
+    """Whether the skill walk must not descend a directory called *name*."""
+    return name.startswith(".") or name in _VENDORED_DIR_NAMES
+
+
 def _iter_skill_files(
     base: Path,
     *,
@@ -630,7 +646,7 @@ def _iter_skill_files(
             return []
         results: list[tuple[str, Path]] = []
         for dirpath, dirs, files in _walk_confined_skill_tree(base):
-            dirs[:] = [name for name in dirs if not name.startswith(".")]
+            dirs[:] = [name for name in dirs if not _skippable_skill_dir(name)]
             if "SKILL.md" not in files:
                 continue
             skill_file = Path(dirpath) / "SKILL.md"
@@ -706,7 +722,7 @@ def _iter_skill_files(
                 is_dir = entry.is_dir()
             except OSError:
                 is_dir = False
-            if is_dir and not entry.name.startswith("."):
+            if is_dir and not _skippable_skill_dir(entry.name):
                 children.append(directory / entry.name)
             elif not is_dir and entry.name == "SKILL.md":
                 has_skill = True

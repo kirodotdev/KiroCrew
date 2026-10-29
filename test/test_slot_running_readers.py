@@ -165,6 +165,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # same way, through _switch_target_busy.
                 ("crewmate_worker_reload.py", "_is_busy"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slot_reset_conversation"),
+                # Image repair rebuilds the session through the shared
+                # reload_slot_session path, so it refuses a reserved slot via
+                # _slot_replaced_while_queued before re-issuing the turn, the
+                # same reservation read reset_conversation and reload make.
+                ("chat_api/slot_lifecycle.py", "api_chat_slot_repair_images"),
                 ("chat_api/resume.py", "api_chat_slot_resume"),
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
@@ -177,6 +182,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
                 ("chat_turn/queue_drain.py", "_drain_parked_queues"),
+                # The hand-off for a dispatch that never ran a turn's tail: that
+                # task has ended, so this reads a send's reservation.
+                ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
                 ("chat_turn/eager_spawn.py", "_eager_spawn"),
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
@@ -242,8 +250,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: both
             for site in {
+                # The side panel's steer into a Crew Mode worker: a RUNNING turn takes
+                # it as a steer, and only an unreserved slot has its queued text
+                # started now, the composer's own two questions.
+                ("handlers/crew_workers.py", "_deliver_as_person"),
                 ("chat_api/slot_detail.py", "api_chat_slot_detail"),
-                ("chat_api/chat_send.py", "api_chat"),
+                ("chat_api/chat_send.py", "_api_chat_send"),
                 ("responsive_chat.py", "accept"),
                 ("chat_regenerate.py", "_destructive_history_busy"),
                 ("chat_regenerate.py", "api_chat_slot_edit_resend"),
@@ -258,11 +270,14 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         # way api_send_message starts one (spawn_guarded_turn, then slot.task).
         # The Daily Goal Reminder's hidden turn shares the same publisher.
         ("mate_welcome.py", "dispatch_hidden_turn"),
-        ("chat_api/chat_send.py", "api_chat"),
+        ("chat_api/chat_send.py", "_api_chat_send"),
         ("chat_regenerate.py", "api_chat_slot_edit_resend"),
         ("chat_regenerate.py", "api_chat_slot_regenerate"),
         ("chat_rewind.py", "api_chat_slot_rewind"),
         ("chat_turn/queue_cycle.py", "_launch_synthesis"),
+        # The cycle end of a dispatch that never ran a turn's tail holds the
+        # floor the way the synthesis launch does.
+        ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),

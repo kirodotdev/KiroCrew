@@ -7,7 +7,11 @@ import hashlib
 import logging
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_utils import slack_mirror_is_paused
+from kiro_crew.dashboard.chat_utils import (
+    RecoveryPayload,
+    is_synthetic_recovery_item,
+    slack_mirror_is_paused,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, parse_session_key
@@ -739,6 +743,25 @@ async def _deliver_cross_surface_user_message(
 
 _MIRROR_ECHO_LIMIT = 500
 
+#: The dashboard -> Slack mirror's working placeholder, posted under the prompt
+#: echo and deleted once the task stream, the answer or the turn's end takes over.
+_MIRROR_THINKING = "💭 _Thinking…_"
+
+
+async def _retire_mirror_thinking(slack_client: Any, channel: str | None, ts: str) -> str:
+    """Delete the mirror's "Thinking…" placeholder *ts*; return the new (empty) ts.
+
+    Best-effort and never raises: the placeholder is decoration, and a failed
+    delete must not fail a turn that already delivered. Returns ``""`` either
+    way, so the caller stops owing the delete and never repeats it.
+    """
+    if ts and channel:
+        try:
+            await slack_client.delete_message(channel, ts)
+        except Exception:
+            logger.debug("Failed to delete the mirror's Thinking placeholder", exc_info=True)
+    return ""
+
 
 def _prepare_mirror_msg(raw_user_message: str) -> str:
     """Prepare a user message for the cross-surface / Slack mirror echo.
@@ -761,3 +784,64 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
     # Mark the cut. A bare slice ends mid-word with nothing after it, which
     # reads as a message that broke rather than one that was shortened.
     return safe[: _MIRROR_ECHO_LIMIT - 1] + "…"
+
+
+def _prompt_typed_in_dashboard(turn: Any) -> bool:
+    """Whether this turn's prompt is one a person typed in the dashboard.
+
+    The mirror echo (Slack's ``> 💬`` quote and the cross-surface leg) exists to
+    show a remote surface what was asked in the dashboard. It is an ALLOWLIST:
+    every condition is a positive structural stamp the dispatch set, and each
+    defaults to the answer "no", so a producer added later is never echoed
+    until it says it is the person. None is read off the message text, which
+    anyone can write to look like a banner.
+
+    * ``_directive_user_origin``: the dispatch says the session's own human sent
+      it. Every injector (monitor / autonudge / work-ledger wake, cron, task
+      runner, sub-agent completion, ``session_send``, an app, auto-resume)
+      passes False or leaves the False default; a queue batch carries it only
+      when EVERY entry does.
+    * not ``_directive_channel_origin``: a message typed in a linked channel (the
+      Slack thread or code channel itself, or a Telegram/Teams/Discord hand-off)
+      is already on that surface. A merged batch is channel-origin when ANY
+      entry is, so a mixed batch stays unechoed.
+    * the turn's actor is ``user``: no dispatch claimed it for a producer and it
+      is not a loop's self-wake.
+    * not a runner-authored payload, a recovery requeue (host-built text, or the
+      person's words a second time) or a queue entry restored from disk (its
+      stamps are a writable file's, not observed). The one recovery let through
+      is a verbatim replay of a dashboard prompt whose first attempt died before
+      its echo was posted (``_recovery_echo_owed``, carried on the requeued entry
+      by ``_mirror_echo_owed``), so the thread never shows an answer without its
+      question, and never shows the question twice.
+    """
+    return bool(
+        turn._directive_user_origin
+        and not turn._directive_channel_origin
+        and turn._crew_log_actor == "user"
+        # Read before the slash gate binds it when a turn fails that early;
+        # ``_synthetic_payload`` is its runner-text half.
+        and not getattr(turn, "_is_synthetic", turn._synthetic_payload)
+        and (not turn._synthetic_recovery_turn or turn._recovery_echo_owed)
+        and not turn._turn_provenance_restored
+    )
+
+
+#: Queue-entry meta: this verbatim recovery replay still owes the mirror its echo.
+MIRROR_ECHO_OWED_META_KEY = "mirrorEchoOwed"
+
+
+def _mirror_echo_owed(turn: Any) -> bool:
+    """Whether *turn*'s prompt qualifies for the echo and it has not been posted."""
+    return not getattr(turn, "_mirror_echo_posted", False) and _prompt_typed_in_dashboard(turn)
+
+
+def _batch_recovery_echo_owed(consumed: list[Any]) -> bool:
+    """Every consumed entry is a verbatim recovery replay stamped as still owing its echo."""
+    return bool(consumed) and all(
+        isinstance(item, dict)
+        and is_synthetic_recovery_item(item)
+        and item.get("payload") == RecoveryPayload.ORIGINAL
+        and (item.get("meta") or {}).get(MIRROR_ECHO_OWED_META_KEY) is True
+        for item in consumed
+    )

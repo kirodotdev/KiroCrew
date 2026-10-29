@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
-import { agentSwitchFailureMessage, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -25,6 +25,7 @@ import { api } from '../api/client'
 import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { i18nT } from '../i18n/t'
+import { slotRowByKey } from '../store/slotIndex'
 
 /**
  * `ChatPane`'s agent and model pickers, bound to the pane's own slot through
@@ -52,7 +53,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   const agentsRefreshTrigger = useAppSelector((s) => s.dashboard.refreshTrigger ?? 0)
   // This pane takes no project prop, so read THIS slot's project from the store:
   // it scopes which project-local agents exist, so a project change must refetch.
-  const paneProject = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey)?.project || undefined)
+  const paneProject = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey)?.project || undefined)
   const { agents: installedAgents, choices: catalogChoices, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey, paneProject)
   // The picker lists every catalog row (a member and a template of one name
   // are two rows). A roster source that exposes only the folded list -- one
@@ -208,9 +209,9 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
       // performAgentSlotSwitch mirrors exactly what the response names.
       await performAgentSlotSwitch(slotKey, name, dispatch, kind)
     } catch (e) {
-      const msg = agentSwitchFailureMessage(e)
-      dispatch(setAgentSwitchNotice(msg))
-      setSwitchError(msg)
+      const notice = agentSwitchFailureNotice(e, name)
+      dispatch(setAgentSwitchNotice(notice))
+      setSwitchError(notice.message)
     }
   }, [dispatch, slotKey])
   const switchModel = useCallback(async (name: string) => {
@@ -271,9 +272,9 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
       // Same failure surface as switchAgent above: the shared notice toast,
       // plus the in-pane notice (the toast alone would be the only report of
       // a write that did not persist).
-      const msg = agentSwitchFailureMessage(e)
-      dispatch(setAgentSwitchNotice(msg))
-      setSwitchError(msg)
+      const notice = agentSwitchErrorNotice(e)
+      dispatch(setAgentSwitchNotice(notice))
+      setSwitchError(notice.message)
       // Keep the rejected backend value available in developer diagnostics.
       // eslint-disable-next-line no-console
       console.error('[ChatPane] switchModel failed', e)

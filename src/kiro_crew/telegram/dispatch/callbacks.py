@@ -266,13 +266,16 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
                 store_route_preference=picker.store_route_preference,
             )
         else:
-            outcome = await self._apply_agent(picker.route, value)
+            outcome = await self._apply_agent(picker.route, value, label)
+        # An agent button's label can be a crew's display name, so the audit
+        # records the exact spec id it resolved to instead.
+        audited = value if prefix == "g:" and value else label
         facade.sel().log_api_access(
             caller=str(cb.user_id) or "unknown",
             operation=operation,
             outcome="allowed",
             source="telegram",
-            resources=f"{resource}={label}",
+            resources=f"{resource}={audited}",
         )
         # One edit carries both the result text and the retired keyboard, so
         # the buttons never outlive the choice they represent.

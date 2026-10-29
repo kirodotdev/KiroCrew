@@ -77,14 +77,14 @@ def test_a_row_without_an_asks_entry_still_gets_its_reply_button() -> None:
     assert "Array.isArray(e.options) ? e.options : []" in lookup_body
 
 
-#: The host's own allowlist (website/src/hooks/useFrameOpenLink.ts PR_URL_RE).
+#: The PR shape the page builds from an item's repo and number.
 PR_URL = r"/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+\/?$/"
 
 
 def test_a_pr_chip_asks_the_host_to_open_it_and_never_opens_it_itself() -> None:
-    """The frame has no allow-popups: a PR opens only through the host's bridge."""
+    """The frame has no allow-popups: a link opens only through the host's bridge."""
     script = _script()
-    body = _function("openPr")
+    body = _function("openLink")
     assert "parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')" in body
     assert PR_URL in script
     for banned in ("window.open", "href", "<a ", "target"):
@@ -99,6 +99,31 @@ def test_a_pr_link_is_built_from_the_items_own_repo_and_checked_before_drawing()
     draw = _function("drawItems")
     # No URL, no link: the same chip as before, as text.
     assert "} else if (pr) chips.appendChild(chip(" in draw
+
+
+def test_an_items_artifact_values_that_can_open_become_host_links() -> None:
+    """A worker reports evidence as ``artifacts`` (name -> value). A value the host can
+    open (an artifact, a session, an issue, another web page) is drawn as a button
+    that asks the host; a path on disk or a branch name is not drawn at all."""
+    m = re.search(r"var LINKABLE = /(.+)/;", _script())
+    assert m, "no LINKABLE rule"
+    linkable = re.compile(m.group(1))
+    body = _function("linksOf")
+    assert "LINKABLE.test(v)" in body and "out.length < 6" in body
+    draw = _function("drawItems")
+    assert "linksOf(it)" in draw and "openLink(u)" in draw
+    for value in (
+        "/artifacts/weekly-report",
+        "/chat?sid=chat-1-2",
+        "/settings/chat",
+        "/schedule",
+        "https://github.com/a/b/issues/3",
+        "https://example.com/x",
+        "http://example.com",
+    ):
+        assert linkable.match(value), value
+    for value in ("/home/me/wt", "crew/x/branch", "/chatter", "javascript:x"):
+        assert not linkable.match(value), value
 
 
 def test_live_keys_off_the_workers_status_not_a_masked_field() -> None:

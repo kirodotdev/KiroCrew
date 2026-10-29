@@ -1,8 +1,8 @@
 import { useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../../store'
 import { appendSlotMessage, startLocalTurn, endLocalTurn } from '../../store/chatSlice'
 import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { mintSendId } from '../../utils/sendDelivery'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { api } from '../../api/client'
@@ -13,7 +13,7 @@ import { i18nT } from '../../i18n/t'
 /** The top bar's "Request a Feature": a new session that files the request as an agent turn. */
 export function useRequestFeature(colorTheme: string) {
   const dispatch = useAppDispatch()
-  const navigate = useNavigate()
+  const navigate = useAskingNavigate()
   // The Provider's store, for reads inside async callbacks (requestFeature):
   // the module-level singleton would bypass a test-injected store.
   const appStore = useAppStore()
@@ -36,7 +36,7 @@ export function useRequestFeature(colorTheme: string) {
     const meta = { sendId, [FEATURE_REQUEST_ROW_META_KEY]: true }
     const visibleMessage = i18nT('app.i_d_like_to_request_a_feature')
     // The request is filed in its own session either way; only a user still
-    // where they asked is brought to it.
+    // where they asked, on a page that agrees to be left, is brought to it.
     showCreatedChat(view, navigate)
     // Both optimistic writes are addressed to the slot this flow CREATED, not
     // the active one: createSlot.fulfilled has a switched-away guard, so when

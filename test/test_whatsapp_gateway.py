@@ -28,6 +28,7 @@ class FakeState:
     def __init__(self) -> None:
         self.whatsapp_connected: bool | None = None
         self.whatsapp_connect_error: str | None = None
+        self.whatsapp_connect_failed: bool | None = None
         self.registered: list[Any] = []
 
     def register_channel_transport(self, transport: Any) -> None:
@@ -99,6 +100,7 @@ def test_missing_extra_reports_error_and_returns_none(monkeypatch):
     assert state.whatsapp_connect_error == (
         "The gateway started without neonize. Restart it once neonize is installed."
     )
+    assert state.whatsapp_connect_failed is True
 
 
 def test_missing_extra_without_state_is_still_a_noop(monkeypatch):
@@ -165,6 +167,37 @@ def test_start_wires_client_transport_dispatcher_and_connects(monkeypatch):
     client.on_state_change("logged_out", "unlinked")
     assert state.whatsapp_connected is False
     assert "logged_out" in (state.whatsapp_connect_error or "")
+
+
+@pytest.mark.parametrize(
+    ("new_state", "failed"),
+    [
+        ("connected", False),
+        ("unpaired", False),
+        ("pairing", False),
+        ("logged_out", True),
+        ("banned", True),
+        ("error", True),
+    ],
+)
+def test_state_observer_writes_the_failure_flag(monkeypatch, new_state, failed):
+    """The flag is the verdict the panel reads; the error text is only detail."""
+    _patch_success(monkeypatch)
+    state = FakeState()
+    client = asyncio.run(maybe_start_whatsapp(_orch(state=state)))
+    client.on_state_change(new_state, "detail")
+    assert state.whatsapp_connect_failed is failed
+
+
+def test_state_observer_clears_the_flag_on_reconnect(monkeypatch):
+    _patch_success(monkeypatch)
+    state = FakeState()
+    client = asyncio.run(maybe_start_whatsapp(_orch(state=state)))
+    client.on_state_change("error", "disconnected (auto-reconnecting)")
+    assert state.whatsapp_connect_failed is True
+    client.on_state_change("connected", "")
+    assert state.whatsapp_connect_failed is False
+    assert state.whatsapp_connect_error == ""
 
 
 def test_start_pins_the_session_store_to_the_protected_path(monkeypatch, tmp_path):
@@ -243,6 +276,7 @@ def test_connect_failure_is_swallowed_and_recorded(monkeypatch):
     assert asyncio.run(maybe_start_whatsapp(orch)) is None
     assert state.whatsapp_connected is False
     assert "pairing socket refused" in (state.whatsapp_connect_error or "")
+    assert state.whatsapp_connect_failed is True
 
 
 def test_connect_failure_without_state_returns_none(monkeypatch):

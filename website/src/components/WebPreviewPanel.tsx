@@ -969,7 +969,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             <button
               type="button"
               onClick={view.start}
-              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 transition-opacity cursor-pointer border-none"
+              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-accent-fg hover:opacity-90 transition-opacity cursor-pointer border-none"
             >
               <Play size={13} /> {i18nT('components.webPreviewPanel.start_browser_view')}
             </button>
@@ -1333,7 +1333,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               <button
                 type="button"
                 onClick={() => commit(pending)}
-                className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 transition-opacity cursor-pointer border-none"
+                className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-accent-fg hover:opacity-90 transition-opacity cursor-pointer border-none"
               >
                 <Globe size={13} /> {i18nT('components.webPreviewPanel.load_preview')}
               </button>

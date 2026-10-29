@@ -4,11 +4,9 @@ the conductor's slot, and which units that board spans.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any, Final, cast
 
-# Reads the work-unit listing (``work_crew_log_units``) from ``session_ledger``.
-from kiro_crew import session_ledger
 from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
 from kiro_crew.crew_log.projection_catalogue import KNOWN_TYPES
 from kiro_crew.crew_log.projection_ledger import _ledger_iso
@@ -33,87 +31,6 @@ from kiro_crew.work_vocab import (
 # --------------------------------------------------------------------------- #
 # work -- the conductor work board, keyed by the conductor's slot
 # --------------------------------------------------------------------------- #
-
-
-def _work_units(
-    slot: str,
-    conductor_units: Sequence[str],
-    *,
-    limit: int | None = None,
-    on_drop: "Callable[[int], None] | None" = None,
-) -> "tuple[str, ...]":
-    """The conductor's units followed by every bound worker's, oldest first.
-
-    *limit* caps what is RETAINED and stops the bind scan once reached, for a caller
-    whose own bound covers this list. It is optional because the two callers differ:
-    the ``work`` fold reads one board and is bounded by that, while ``workstreams``
-    follows nested boards and so states its own ceiling. Without it a bounded caller
-    still pays an unbounded peak here -- the whole listing lands in a list before the
-    caller can measure it, which is the bound describing a state the list already left.
-
-    A worker's report is appended to the WORKER's log, and that log's header names
-    the worker's own slot, so the header index alone never reaches it. The
-    conductor's ``bind`` entries carry ``worker_session_key``: each names a slot whose
-    units join the fold after the conductor's. A worker bound to several boards
-    carries the conductor's ``slot`` on every entry, and the fold keeps only the
-    entries naming this board, so the extra units add nothing that is not this
-    board's.
-    """
-    if limit is not None and limit <= 0:
-        return ()
-    # Bounded BEFORE the logs are opened: the bind scan below reads every entry of
-    # every conductor unit, so a cap applied to its output would still pay to read
-    # units it then discards.
-    #
-    # THE NEWEST ARE KEPT. These are oldest-first, so taking the head keeps a
-    # long-lived crewmate's oldest work and drops what it is doing now -- a dashboard
-    # showing finished boards and hiding the live one. The tail is what a reader came
-    # for, and the fold order below is unchanged: this selects which units, not the
-    # order they are folded in.
-    if limit is not None:
-        listed = list(conductor_units)
-        if on_drop is not None and len(listed) > limit:
-            on_drop(len(listed) - limit)
-        conductor_units = listed[-limit:]
-    workers: list[str] = []
-    seen: set[str] = set()
-    for unit_id in conductor_units:
-        handle = open_session_log(unit_id)
-        if handle is None:
-            continue
-        for entry in handle.iter_from(1, known=KNOWN_TYPES):
-            if entry.type != WORK_ENTRY_TYPE:
-                continue
-            data = entry.data
-            if _as_str(data.get("slot")) != slot:
-                continue
-            # A BASELINE names its worker too, and it is the only record of that
-            # binding once the ``bind`` entry's unit is pruned: a board rebuilt from
-            # baselines has the worker in every item and no `bind` action anywhere, so
-            # a scan for the action alone collects none of their units and every task
-            # on that board reports a cost nobody can be charged for.
-            if data.get("action") != "bind" and data.get("baseline") is not True:
-                continue
-            worker = data.get("worker_session_key")
-            if isinstance(worker, str) and worker and worker not in seen:
-                seen.add(worker)
-                workers.append(worker)
-    units = list(conductor_units)
-    known = set(units)
-    for worker in workers:
-        for unit_id in session_ledger.work_crew_log_units(worker):
-            if unit_id in known:
-                continue
-            if limit is not None and len(units) >= limit:
-                # Counted, not just stopped: a worker's units refused here are boards
-                # and spend the snapshot will not carry, and a reader told nothing
-                # reads the short answer as the whole one.
-                if on_drop is not None:
-                    on_drop(1)
-                continue
-            known.add(unit_id)
-            units.append(unit_id)
-    return tuple(units)
 
 
 def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
@@ -142,7 +59,13 @@ def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
                 continue
             names_board = False
             for entry in handle.iter_from(1, known=KNOWN_TYPES):
-                if entry.type == WORK_ENTRY_TYPE and _as_str(entry.data.get("slot")) == slot:
+                if (
+                    entry.type == WORK_ENTRY_TYPE
+                    and _as_str(entry.data.get("slot")) == slot
+                    and not entry.data.get("relay")
+                ):
+                    # A relayed copy sits in a PARENT board's log; that parent is no
+                    # party to this board's records, and its copies are not originals.
                     names_board = True
                     break
             if names_board:
@@ -163,6 +86,9 @@ def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
 #: full fold that reports omissions, because only such a fold may be a prefix of the
 #: board.
 WORK_ITEM_LIMIT: Final[int] = WORK_STORED_ITEM_LIMIT
+
+#: The summary an open, bound item renders before any report has reached the board's log.
+WORK_AWAITING_REPORT: Final[str] = "waiting for next report"
 
 #: The states an item closes in; the writer's ``TERMINAL_ITEM_STATES``.
 _WORK_CLOSED_STATES: Final[tuple[str, ...]] = ("accepted", "rejected", "abandoned")
@@ -311,6 +237,11 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
     if entry.type != WORK_ENTRY_TYPE:
         return
     data = entry.data
+    if data.get("relay"):
+        # A sub-board's record copied up into a parent's log, for the parent's report
+        # fold. The sub-board's own units hold the original; a fold that meets the copy
+        # too (the rebuild joining the parent) must not apply it twice.
+        return
     if not state["slot"]:
         # Unbound (a caller that folded units without naming the board): only a
         # conductor's OWN action names its board. A report this session filed
@@ -367,11 +298,10 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
     # eventually reads as stale while it is in fact current.
     #
     # The GREATEST accepted stamp, not the last one written, because the fold order is
-    # by UNIT and never by time: ``_work_units`` yields the conductor's units first and
-    # then each bound worker's, so a worker report appended before the conductor's
-    # latest round is folded after it. An unconditional write hands the board that older
-    # stamp, the age inflates to the gap between the two, and a current board reads as
-    # stale -- reproducibly, since the log order never changes. Scoped to the current
+    # by UNIT and never by time: a board's units are folded one after another, so an
+    # entry appended before another unit's latest round can be folded after it. An
+    # unconditional write hands the board that older stamp, the age inflates to the gap
+    # between the two, and a current board reads as stale -- reproducibly, since the log order never changes. Scoped to the current
     # board generation for free: the reset above runs first and clears both keys, so a
     # purged board's newest stamp cannot pin a board born after it.
     if entry.time >= state["last_entry_ms"]:
@@ -582,11 +512,27 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
     entries in either relative order yields the same fields -- which is what lets
     one board be folded unit by unit when the units interleave in time. The event
     tail is the one place order shows, and it is kept in time order on insert.
+
+    The operator's rebuild also joins worker logs, so a report can be met twice. The
+    board's copy (``board_copy``) is always applied, in the board's log order. The
+    worker's mirror of it (``mirror``) is never applied: the board's copy already was.
+    Any other worker-log report predates board copies (or was written when the board
+    had no unit): it is applied as before until the item holds a board copy, and adds
+    only its event line after that, so it cannot undo a newer report.
     """
     action = _as_str(data.get("action"))
     actor = _as_str(data.get("actor"))
-    if actor == "worker":
-        if action != "report":
+    if actor == "person":
+        # A person's steer moves no field; it is only the event line below.
+        if action != "steer":
+            return
+    elif actor == "worker":
+        if action != "report" or data.get("mirror") is True:
+            return
+        if data.get("board_copy") is True:
+            item["_board_reported"] = True
+        elif item.get("_board_reported"):
+            _work_apply_event(item, data, stamp_ms, action)
             return
         for name in _WORK_WORKER_FIELDS:
             if name in data:
@@ -615,6 +561,13 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         elif action == "accept":
             # A pending run belongs to the bar it measured; the new bar starts its own.
             item["pending_since"] = None
+    _work_apply_event(item, data, stamp_ms, action)
+
+
+def _work_apply_event(
+    item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int, action: str
+) -> None:
+    """*data*'s event line onto *item*'s tail, when it carries one."""
     kind = _as_str(data.get("event_kind"))
     if not kind:
         return
@@ -722,9 +675,21 @@ def _work_render(state: dict[str, Any]) -> WorkBoardView:
         if item is None:
             continue
         rendered = {
-            key: value for key, value in item.items() if key != "events" and key != "_unrecorded"
+            key: value
+            for key, value in item.items()
+            if key not in ("events", "_unrecorded", "_board_reported")
         }
         rendered["schema"] = 1
+        if (
+            item["state"] not in _WORK_CLOSED_STATES
+            and item["worker_session_key"]
+            and item["status"] is None
+            and not item["summary"]
+        ):
+            # Bound, open, and no report in this board's own log yet: the worker has not
+            # reported since its reports began landing here. Said in the summary, which a
+            # reader shows, rather than in ``status``, whose values are the worker's own.
+            rendered["summary"] = WORK_AWAITING_REPORT
         rendered["events"] = [
             {key: value for key, value in event.items() if key != "_t"} for event in item["events"]
         ]

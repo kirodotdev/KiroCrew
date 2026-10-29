@@ -3477,7 +3477,10 @@ Remote Crew is present inside a pane, and a refused connect explains itself.
 The switcher draws the tree: a chained crew renders under its parent, indented one
 step with a connector glyph, and its subtitle names the crew it goes through as well
 as the machine. Children grey out with their parent, because they share its tunnel.
-The tab bar itself stays flat -- a chained crew's chip carries the path
+A chained crew whose parent has no tab (never connected) is drawn at the top level
+rather than hidden, still names that parent in its subtitle (resolved from the full
+instance list), and reads unreachable through it, since a parent with no tab is not
+connected. The tab bar itself stays flat -- a chained crew's chip carries the path
 (`parent › child`) instead of an indent, so it does not read as just another
 top-level crew.
 

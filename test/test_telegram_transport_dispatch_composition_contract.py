@@ -290,6 +290,7 @@ MOVED_MEMBERS = {
     "midturn": ("_handle_busy", "_handle_resumed_busy"),
     "pickers": (
         "_agent_choices",
+        "_agent_labels",
         "_apply_agent",
         "_apply_model",
         "_consume_picker",
@@ -332,9 +333,14 @@ BASE_MEMBERS = {
     "_addresses_this_bot": ("function", "(self, msg: 'InboundMessage') -> 'bool'"),
     "_agent_choices": (
         "function",
-        "(self, names: 'list[str]') -> 'tuple[tuple[str, str], ...]'",
+        "(self, names: 'list[str]', labels: 'dict[str, str] | None' = None) "
+        "-> 'tuple[tuple[str, str], ...]'",
     ),
-    "_apply_agent": ("function", "(self, route: 'tuple[str, str]', agent_id: 'str') -> 'str'"),
+    "_apply_agent": (
+        "function",
+        "(self, route: 'tuple[str, str]', agent_id: 'str', label: 'str' = '') -> 'str'",
+    ),
+    "_agent_labels": ("staticmethod", "() -> 'dict[str, str]'"),
     "_apply_model": (
         "function",
         "(self, route: 'tuple[str, str]', model_id: 'str', session_key: 'str | None' = None, "

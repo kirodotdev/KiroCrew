@@ -235,14 +235,14 @@ class TestIdentityEnvCarriage:
         assert _env(el) == {}
 
     def test_an_OPT_IN_crew_server_gets_no_identity_EITHER(self):
-        """The deliberate line, and the one that shrank this PR.
+        """The deliberate line: opt-in crew servers carry no identity.
 
         ``kirocrew-work`` and ``kirocrew-dashboard`` are Crew's own binaries, but
         they are ``opt_in`` sets that arrive from the agent spec UNREPLACED — so the
-        spec chose their command, args and env. Earlier revisions tried to hand them
-        the key behind a provenance check, and the reviewer found two ways through it
-        in two rounds (a borrowed name, then a spec-supplied ``PYTHONPATH`` beside a
-        genuine command). The credential now rides only what Crew derives itself.
+        spec chose their command, args and env. A provenance check cannot make them
+        safe to hand the key: a borrowed name, or a spec-supplied ``PYTHONPATH``
+        beside a genuine command, gets through it. The credential rides only what
+        Crew derives itself.
 
         Reaching this function at all would be a bug — ``codex_withheld_servers``
         drops them upstream — so this pins the second half of the rule rather than

@@ -92,11 +92,11 @@ hold on its own: one that waited a third of the orphan threshold or more means
 that queue is saturated and the tick holds; prompt ones and nothing slow mean the
 queue is being served and a job that has waited a quarter of an hour in it is not
 in it at all, whatever another label's queue is doing. The typical carrier is the
-run's own sibling jobs: a fast-gate run queues fourteen jobs on one label within
-a second, and thirteen of them starting in under a minute while the fourteenth
-sits for an hour and a half is the dropped-dispatch shape exactly (a slow start on
-another label that afternoon held that orphan unhealed for six hours before this
-reading existed).
+run's own sibling jobs: a fast-gate run queues three jobs on one label within a
+second (a ci.yml run, many more), and the siblings starting in under a minute
+while one sits for an hour and a half is the dropped-dispatch shape exactly (a
+slow start on another label that afternoon held that orphan unhealed for six
+hours before this reading existed).
 
 Only when the orphan's own queue served nothing that qualifies -- a single-job
 run, or a run whose orphans span two queues -- is the fleet-wide, label-blind
@@ -239,7 +239,6 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "build.yml",
     "ci.yml",
     "code-review.yml",
-    "cross-platform.yml",
     "dependency-review.yml",
     "dependency-vulnerability.yml",
     "fast-gate.yml",
@@ -247,10 +246,9 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "main-ratchet-audit.yml",
     "pages.yml",
     "pr-merge-conflict-label.yml",
+    "pr-policy.yml",
     "pr-readiness.yml",
-    "pr-scope.yml",
     "release.yml",
-    "screenshot-evidence.yml",
     "sensitive-change-review.yml",
 )
 # Put the workflows that carry routine pull-request traffic ahead of release
@@ -323,10 +321,8 @@ HEAL_SAFE_WORKFLOWS: frozenset[str] = frozenset(
 HEAL_SAFE_PULL_REQUEST_WORKFLOWS: frozenset[str] = frozenset(
     {
         "code-review.yml",
-        "cross-platform.yml",
         "dependency-review.yml",
-        "pr-scope.yml",
-        "screenshot-evidence.yml",
+        "pr-policy.yml",
     }
 )
 _PUBLISH_OR_DEPLOY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
@@ -397,6 +393,9 @@ RATE_LIMIT_MARKER_ID = 0
 # clean tick. Negative, so it can never collide with a run id or with the marker
 # above.
 LISTING_TRUNCATED_MARKER_ID = -1
+# The key of the one unread candidate standing for the young runs the pre-cancel
+# re-read's evidence page did not list. Never a run id: GitHub run ids are positive.
+YOUNG_BAND_UNREAD_ID = -3
 # `pending` runs are held by their concurrency group and have no jobs; they are
 # listed so the summary can say WHY they wait, never acted on.
 CANDIDATE_STATUSES = ("in_progress", "queued", "pending")
@@ -438,6 +437,21 @@ REPO_LISTING_MAX_WINDOWS = 3
 # could not be read in full has hidden nothing actionable, and failing a tick over
 # it would go red exactly during the saturation this script exists to survive.
 ACTIONABLE_CANDIDATE_STATUSES = ("in_progress", "queued")
+# One page of the runs YOUNGER than ``candidate_threshold``, read per actionable
+# status alongside the bounded candidate listing. Those runs cannot hold a slow
+# start or be orphaned, but a prompt CodeBuild start inside one is still dispatch
+# evidence (``run_watchdog`` reads jobs for every admitted run, young ones
+# included). One page (PAGE_SIZE runs) covers ``LIVE_EVIDENCE_RESERVE`` (10). The
+# read is best-effort: a shortfall is logged, never a tick failure, since a run
+# younger than the line cannot hold the slow start the hold looks for. The
+# pre-cancel re-read still counts its shortfall as an unread run
+# (``YOUNG_BAND_UNREAD_ID``), because those runs cross the line while it judges.
+EVIDENCE_LISTING_PAGES = 1
+# Pages used by the pre-cancel re-read's young-band pass. Larger than
+# EVIDENCE_LISTING_PAGES so a watched run past the first page is found before
+# the cancel is judged. If the band is not exhausted after this many pages the
+# cancel is held as if the band were not fully seen (fail closed).
+YOUNG_BAND_MAX_PAGES = 5
 
 # The jobs of ONE run, so the page count is bounded by the run's own matrix rather
 # than by fleet load: the widest watched workflow expands to a few hundred jobs, so
@@ -849,7 +863,6 @@ from runner_watchdog_parts.listing import (  # noqa: E402,F401
     _runs_path,
     drop_ghost_runs,
     gather_all_candidate_runs,
-    list_all_candidate_runs,
     list_jobs,
     list_recent_cancelled_runs,
     list_runs,
@@ -962,6 +975,11 @@ def render_summary(verdicts: list[RunVerdict], outcomes: dict[int, str], policy:
     return "\n".join(lines) + "\n"
 
 
+def _candidate_threshold(policy: Policy) -> str:
+    """``created=`` bound of a candidate listing: runs at least ``saturation_wait`` old."""
+    return (policy.now - policy.saturation_wait).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def run_watchdog(
     api: Api,
     policy: Policy,
@@ -1011,9 +1029,15 @@ def run_watchdog(
 
     listing_truncated: list[str] = []
     try:
+        # The sweep lists only runs old enough to hold a slow start (and so every
+        # orphan) in full, so a burst of younger runs cannot push an orphan past the
+        # windows; the young band comes back as one best-effort evidence page. The
+        # pre-cancel re-read below is bounded the same way on its own clock.
+        candidate_threshold = _candidate_threshold(policy)
         candidate_runs, listing_abort, listing_truncated = gather_all_candidate_runs(
             api,
             policy.repo,
+            candidate_threshold=candidate_threshold,
             get=lambda path: cheap_retry(lambda: api.get(path)),
             log=log,
         )
@@ -1162,15 +1186,48 @@ def run_watchdog(
         # no read at all -- the run's own re-read then sits immediately before
         # its cancel. Read against the wall clock of the sweep; a fleet that
         # cannot be re-read fails closed (nothing cancelled on stale evidence).
-        if "evidence" in fresh or "error" in fresh:
+        if "evidence" in fresh or "error" in fresh or "truncated" in fresh:
             return
         read_at = replace(policy, now=tick.now())
         try:
             latest = DispatchEvidence()
-            fresh_runs = list_all_candidate_runs(api, policy.repo, log=log)
+            # Bounded like the sweep, at the re-read's own clock, so the burst the
+            # bound exists for cannot truncate it: a run younger than the line
+            # cannot hold a slow start. It fails closed when the bounded listing
+            # still could not list every run past the line -- those are the runs
+            # that could hold the slow start the partial-evidence hold exists to
+            # see, so a cancel judged without them would act during the very
+            # saturation it missed.
+            young_unread: list[str] = []
+            threshold = _candidate_threshold(read_at)
+            fresh_runs, fresh_abort, fresh_truncated = gather_all_candidate_runs(
+                api,
+                policy.repo,
+                candidate_threshold=threshold,
+                young_unread=young_unread,
+                young_band_max_pages=YOUNG_BAND_MAX_PAGES,
+                log=log,
+            )
+            if fresh_abort is not None:
+                raise fresh_abort
+            if fresh_truncated:
+                fresh["truncated"] = "; ".join(fresh_truncated)
+                return
             bounded_fresh, latest.unread_candidates = live_runs_within_read_bound(
                 fresh_runs, read_at, log
             )
+            if young_unread:
+                # The young-band read hit its page cap before exhausting the band:
+                # fail closed. Cancel nothing when there might be more watched runs
+                # in the unread portion that could hold a slow start.
+                latest.unread_candidates[YOUNG_BAND_UNREAD_ID] = parse_timestamp(
+                    threshold
+                ) + timedelta(seconds=1)
+                log(
+                    "::notice::the pre-cancel re-read young band overflowed its page cap "
+                    f"({YOUNG_BAND_MAX_PAGES} pages); the unread runs hold the cancel as "
+                    "unread candidates"
+                )
             for run in bounded_fresh:
                 latest.absorb(list_jobs(api, policy.repo, int(run["id"])), read_at)
             # This read exists only because a cancel is about to be judged, so the
@@ -1184,6 +1241,17 @@ def run_watchdog(
 
     def fresh_hold(verdict: RunVerdict) -> tuple[str, str, str | None] | None:
         prime_fresh_evidence()
+        if "truncated" in fresh:
+            # Failed, not deferred: a deep burst would defer every tick and every
+            # tick would be green while the orphan keeps its slot -- the same reason
+            # a truncated sweep listing reds the tick.
+            return (
+                SKIPPED_NO_DISPATCH_EVIDENCE,
+                f"the pre-cancel re-read did not list every live run old enough to hold a slow "
+                f"start ({fresh['truncated']}); nothing healed, since one among the unread runs "
+                f"cannot be ruled out",
+                OUTCOME_LISTING_TRUNCATED,
+            )
         if "error" in fresh:
             # A one-off error (a 502) is genuinely deferrable: nothing was touched,
             # the run stays orphaned and the next tick re-reads it. A RATE LIMIT is

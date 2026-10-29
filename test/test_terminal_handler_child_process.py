@@ -391,6 +391,26 @@ class TestChildExitStatus:
         assert await terminal._child_exit_status(sess) is None
 
 
+class _ClientSocket:
+    """What the browser tab sees: the control frames it received and how it closed.
+
+    The real ``_send_owner_control_frame`` and ``_close_terminal_ws_bounded`` drive
+    it, so a frame here is one the handler actually put on the wire.
+    """
+
+    def __init__(self):
+        self.closed = False
+        self.frames: list[dict] = []
+        self.close_code: int | None = None
+
+    async def send_str(self, data):
+        self.frames.append(json.loads(data))
+
+    async def close(self, code=None):
+        self.closed = True
+        self.close_code = code
+
+
 class TestHandlePtyReaderEnd:
     """The reader loop ends for two reasons that must not be conflated: the
     shell exiting (tell the window, close the tab, reap) and a deliberate
@@ -450,35 +470,28 @@ class TestHandlePtyReaderEnd:
     async def test_an_unavailable_status_is_reported_as_null(self):
         """A dead child whose code cannot be read is distinct from a code of 0,
         so the frame carries null rather than inventing one."""
-        ws = MagicMock()
+        ws = _ClientSocket()
         sess = _make_session(alive=False, ws=ws)
         sess.proc = None  # no child to ask: the status is unavailable
         registry = {sess.session_id: sess}
-        with (
-            patch.object(
-                terminal, "_send_owner_control_frame", AsyncMock(return_value=True)
-            ) as send,
-            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()),
-            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
-        ):
+        with patch.object(terminal, "_kill_session", AsyncMock()) as kill:
             await terminal._handle_pty_reader_end(registry, sess)
-        send.assert_awaited_once_with(sess, ws, {"type": "exit", "status": None})
+        assert ws.frames == [{"type": "exit", "status": None}]
+        assert ws.close_code == terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        assert registry == {}
         kill.assert_awaited_once_with(sess)
 
     @pytest.mark.asyncio
     async def test_silent_when_the_session_was_deliberately_torn_down(self):
         """DELETE and the orphan sweep pop the entry BEFORE closing the fd, so
         the resulting OSError must not reach the client as an exit."""
-        sess = _make_session(alive=False, ws=MagicMock())
+        ws = _ClientSocket()
+        sess = _make_session(alive=False, ws=ws)
         registry: dict = {}  # already popped by the teardown path
-        with (
-            patch.object(terminal, "_send_owner_control_frame", AsyncMock()) as send,
-            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close,
-            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
-        ):
+        with patch.object(terminal, "_kill_session", AsyncMock()) as kill:
             await terminal._handle_pty_reader_end(registry, sess)
-        send.assert_not_awaited()
-        close.assert_not_awaited()
+        assert (ws.frames, ws.closed) == ([], False)
+        assert sess.ws is ws
         kill.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -489,7 +502,8 @@ class TestHandlePtyReaderEnd:
         user killed themselves, and reap a freed fd twice. A non-zero status is
         used deliberately -- the note is published before the lock, so it is the
         one effect a guard inside the lock cannot hold back."""
-        sess = _make_session(alive=False, ws=MagicMock())
+        ws = _ClientSocket()
+        sess = _make_session(alive=False, ws=ws)
         registry = {sess.session_id: sess}
         bus = MagicMock()
 
@@ -499,13 +513,10 @@ class TestHandlePtyReaderEnd:
 
         with (
             patch.object(terminal, "_child_exit_status", side_effect=pop_during_status),
-            patch.object(terminal, "_send_owner_control_frame", AsyncMock()) as send,
-            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close,
             patch.object(terminal, "_kill_session", AsyncMock()) as kill,
         ):
             await terminal._handle_pty_reader_end(registry, sess, bus=bus)
-        send.assert_not_awaited()
-        close.assert_not_awaited()
+        assert (ws.frames, ws.closed) == ([], False)
         kill.assert_not_awaited()
         bus.push.assert_not_called()
 

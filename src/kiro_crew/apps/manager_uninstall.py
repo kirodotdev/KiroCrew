@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 from kiro_crew import platform_compat
@@ -36,6 +37,7 @@ from kiro_crew.apps.manager_tree import (
     _is_generated_deps_artifact_name,
     _remove_any_shape,
 )
+from kiro_crew.atomic_write import on_event_loop
 from kiro_crew.config.loader import (
     ConfigReadError,
     config_local_path,
@@ -46,6 +48,55 @@ from kiro_crew.config.loader import (
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.manager")
+
+#: Windows sharing (32) and lock (33) violations: another process holds a file
+#: in the tree open. Both clear once that process closes the handle.
+_SHARING_VIOLATION_WINERRORS = (32, 33)
+#: Bounded wait for a holder to let go: about three seconds in total, long
+#: enough for a just-stopped backend to close its log, short enough that an app
+#: that never releases still fails the uninstall promptly.
+_RMTREE_MAX_ATTEMPTS = 15
+_RMTREE_BACKOFF_SECONDS = 0.2
+
+
+def _rmtree_app_dir(dest: Path) -> None:
+    """``shutil.rmtree(dest)``, retrying the Windows sharing-violation window.
+
+    On Windows, deleting a file another process holds open raises
+    ``PermissionError`` with ``winerror`` 32 (or 33 for a byte-range lock), so a
+    backend still closing its ``backend.log`` or an editor with an app file open
+    fails the whole uninstall. Each retry resumes the delete on whatever is left,
+    so the tree goes as soon as the holder releases. Every other error, and every
+    error on POSIX (which unlinks open files), propagates on the first attempt.
+
+    The retry sleeps, so it is skipped on a thread running an event loop, the
+    same gate :func:`kiro_crew.atomic_write.replace_with_retry` uses; the
+    dashboard route already runs the uninstall in an executor.
+
+    When the budget runs out the raised error names the held file, so the user
+    knows what to close before retrying.
+    """
+    for attempt in range(_RMTREE_MAX_ATTEMPTS):
+        try:
+            shutil.rmtree(dest)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in _SHARING_VIOLATION_WINERRORS:
+                raise
+            held = exc.filename or str(dest)
+            if attempt == _RMTREE_MAX_ATTEMPTS - 1 or on_event_loop():
+                raise PermissionError(
+                    exc.errno,
+                    f"{held} is held open by another process. Stop the app's "
+                    f"backend or close the program using that file, then uninstall again",
+                ) from exc
+            logger.debug(
+                "app dir delete contended at %s; retrying (attempt %d/%d)",
+                held,
+                attempt + 1,
+                _RMTREE_MAX_ATTEMPTS,
+            )
+            time.sleep(_RMTREE_BACKOFF_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -288,12 +339,12 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                     )
             if _data_pin is not None:
                 _data_pin.close()
-            shutil.rmtree(dest)
+            _rmtree_app_dir(dest)
             if tmp_data.is_dir():
                 dest.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(tmp_data), str(data))
         else:
-            shutil.rmtree(dest)
+            _rmtree_app_dir(dest)
         # Point of commit: every destructive step succeeded, the app is
         # uninstalled - NOW the quarantined trees die. A tree that resists
         # deletion here is logged, not fatal: under its doomed name it is

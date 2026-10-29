@@ -994,14 +994,21 @@ test("the update runtime loads without Electron and without load-time effects", 
   const updateFiles = [nodePath.join(electronDir, "auto-update.js")];
   const runtimeDir = nodePath.join(electronDir, "runtime", "update");
   const owners = nodeFs.readdirSync(runtimeDir).filter((name) => name.endsWith(".js")).sort();
-  assert.deepStrictEqual(owners, ["feed-lane.js", "freshness-gate.js", "managed-lane.js", "state-reporter.js"]);
+  assert.deepStrictEqual(owners, [
+    "feed-lane.js", "freshness-gate.js", "managed-lane.js", "policy-channel.js", "state-reporter.js",
+  ]);
   // Who composes whom: the facade composes the two lanes and the reporter; the
-  // feed lane composes its own freshness gate, which the facade never sees.
+  // feed lane composes its own freshness gate, which the facade never sees; the
+  // IPC registrar reads the policy channel and hands it to the facade.
   const composedBy = {
     "feed-lane.js": { file: updateFiles[0], path: "./runtime/update/feed-lane" },
     "managed-lane.js": { file: updateFiles[0], path: "./runtime/update/managed-lane" },
     "state-reporter.js": { file: updateFiles[0], path: "./runtime/update/state-reporter" },
     "freshness-gate.js": { file: nodePath.join(runtimeDir, "feed-lane.js"), path: "./freshness-gate" },
+    "policy-channel.js": {
+      file: nodePath.join(electronDir, "ipc-registrar.js"),
+      path: "./runtime/update/policy-channel",
+    },
   };
   for (const owner of owners) {
     updateFiles.push(nodePath.join(runtimeDir, owner));
@@ -1111,6 +1118,8 @@ test("getInfo and every lifecycle payload keep their key order", async () => {
     "channel",
     "stampedChannel",
     "channelSwitchable",
+    "channelLockedByPolicy",
+    "requiredChannel",
     "channelPreference",
     "laneVersion",
     "runningAheadOfLane",

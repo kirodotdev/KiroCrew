@@ -18,7 +18,9 @@ from urllib.parse import quote
 
 from kiro_crew.conductor_patrol import reply_line
 from kiro_crew.mcp_dashboard_caller_scope import (
+    CREW_MODE_FOLDER_NOTE,
     _caller_app_scope,
+    _caller_in_crew_tree,
     _refuse_tree_shaping_if_unverifiable,
 )
 from kiro_crew.mcp_dashboard_folder_tree import _chat_folder_paths
@@ -26,6 +28,7 @@ from kiro_crew.mcp_dashboard_references import (
     _ensure_chat_folder_path,
     _get_rows,
     _resolve_chat_folder_id,
+    _resolve_chat_folder_ref,
 )
 from kiro_crew.mcp_tools.dashboard_client import DashboardError
 from kiro_crew.mcp_tools.table import ToolContext
@@ -42,6 +45,7 @@ def _resolve_folder_for_new_session(
     folder_ref: str,
     verb: str,
     preflight: Callable[[str], str | None] | None = None,
+    crew_project: bool = False,
 ) -> tuple[str, str, str, str | None]:
     """``(folder_id, folder_label, made_note, error)`` for filing a NEW session.
 
@@ -82,6 +86,31 @@ def _resolve_folder_for_new_session(
     scope_rows, scope_err = _get_rows(ctx.client, "/api/chat/slots")
     if scope_err:
         return "", "", "", redact(f"Error: {scope_err}")
+    if _caller_in_crew_tree(gate_key, scope_rows):
+        # A chat that turned Crew Mode on keeps its sessions out of the person's
+        # folders: no path segment is created and the reply says so. With
+        # *crew_project* (``session_create`` only, whose server route files nothing
+        # for a Crew Mode caller) an EXISTING folder is still named, which gives the
+        # child that folder's project directory.
+        if not crew_project:
+            return "", "", CREW_MODE_FOLDER_NOTE, None
+        crew_folders, crew_err = _get_rows(ctx.client, "/api/chat/folders")
+        if crew_err:
+            return "", "", "", redact(f"Error: {crew_err}")
+        # The shared resolver, creating nothing. A folder that does not exist (one
+        # the conductor's instructions would have created) names no project
+        # directory and is ignored like the folder itself: the dispatch goes ahead
+        # unfiled and the note says so. An AMBIGUOUS reference is still refused: it
+        # would pick a project directory nobody chose.
+        crew_id, _created, crew_ref_err = _resolve_chat_folder_ref(
+            folder_ref, crew_folders, create_missing=False
+        )
+        if crew_ref_err:
+            if crew_ref_err.startswith("folder not found"):
+                return "", "", CREW_MODE_FOLDER_NOTE, None
+            return "", "", CREW_MODE_FOLDER_NOTE, redact(f"Error: {crew_ref_err}")
+        # The id only: the session is not filed there, so no label says it is.
+        return crew_id, "", CREW_MODE_FOLDER_NOTE, None
     if _caller_app_scope(gate_key, scope_rows):
         return (
             "",
@@ -221,6 +250,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         str(args.get("folder") or ""),
         "filing a new session at creation",
         preflight=_preflight_create,
+        crew_project=True,
     )
     if fld_err:
         return fld_err
@@ -234,7 +264,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         )
     except DashboardError as refused:
         return f"Error: {_refused(refused, made_note)}"
-    filed = f" filed in `{folder_label}`" if folder_label else ""
+    crew_mode = bool(resp.get("crew_mode") or resp.get("folder_ignored"))
+    filed = f" filed in `{folder_label}`" if folder_label and not crew_mode else ""
     on_model = f" on model `{resp['model']}`" if resp.get("model") else ""
     if resp.get("reasoning_effort"):
         on_model += f" at reasoning effort `{resp['reasoning_effort']}`"
@@ -250,9 +281,15 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         )
     if resp.get("autocompact_pct") is not None:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
+    # A Crew Mode chat's worker is in the sidebar but filed in no folder.
+    where = (
+        "the user's sidebar, unfiled (this chat is in Crew Mode)"
+        if crew_mode
+        else "the user's sidebar"
+    )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
-        "It is empty and waiting in the user's sidebar; watch it with "
+        f"It is empty and waiting in {where}; watch it with "
         "session_read_message." + reply_line(resp) + _worker_capabilities_line(resp)
     )
 
@@ -649,13 +686,28 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
 
 def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
     payload = {"message": args["message"], "mode": args["mode"]}
+    # A call that names no audience is refused HERE, before any request. Kiro CLI
+    # drops an empty `targets: []` from the call, so "no audience" reaches this
+    # function as a missing key, and a bare body is the one thing that must never be
+    # sent: a gateway older than this tool reads a body without `targets` as every
+    # session the caller created. The backend refuses the same call, so a new
+    # gateway gives the same answer; this check only covers the older one.
+    if args.get("targets") is None and args.get("all") is not True:
+        return (
+            "Error: could not broadcast: no audience selected: name the sessions in "
+            "targets, or pass all: true to reach every session you created "
+            "(target_required). Nothing was sent."
+        )
     # The VALUE decides, not the key: the validator keeps an explicit JSON
     # `null` as the field's `None` default, so a presence test would send
-    # `None` into `list()`. `None` and omission both select the default
-    # audience, while an explicitly empty list is still forwarded for the
-    # backend to refuse rather than widened to that audience here.
+    # `None` into `list()`. A list is forwarded as given, an empty one included:
+    # a gateway older than this tool refuses an explicit empty list but reads a
+    # bare body as "every session you created", so dropping `[]` here would turn
+    # an empty audience into a fleet-wide send during a mixed-version rollout.
     if args.get("targets") is not None:
         payload["targets"] = list(args["targets"])
+    if args.get("all") is True:
+        payload["all"] = True
     try:
         resp = ctx.client.post(
             "/api/session-control/broadcast",

@@ -26,7 +26,7 @@ import type { ChatSlot } from '../types'
 
 type Opts = Parameters<typeof useComposerChips>[0]
 
-function harness() {
+function harness(over: Partial<Opts> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
   const provider = {
@@ -39,7 +39,7 @@ function harness() {
     currentSlot: { key: 'slot-a', agent: 'builder', model: 'm-2' } as ChatSlot,
     defaultAgent: 'default',
     pendingAgent: '',
-    installedAgents: [],
+    installedAgents: [{ name: 'builder', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', selection_kind: 'member' }],
     provider: provider as never,
     availableModels: [],
     codexPairModels: false,
@@ -48,6 +48,7 @@ function harness() {
     dispatch: vi.fn() as never,
     queryClient,
     showActionError: vi.fn(),
+    ...over,
   }
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -84,6 +85,42 @@ describe('pinning the shown model to the agent', () => {
     const note = (opts.dispatch as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]).find(a => a.type?.endsWith('addNotification'))
     expect(note.payload).toMatchObject({ kind: 'agent', priority: 'critical', title, body })
     expect(typeof note.payload.ts).toBe('string')
+  })
+})
+
+describe('which agent the pin row may target (#25099)', () => {
+  const templateRow = { name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', selection_kind: 'template' as const }
+
+  it('offers no target on a template-bound session, so the row is withheld', () => {
+    const { hook } = harness({
+      currentSlot: { key: 'slot-t', agent: 'kirocrew', agent_kind: 'template', model: 'm-2' } as ChatSlot,
+      installedAgents: [templateRow],
+    })
+    expect(hook.result.current._modelPinAgent).toBe('')
+    expect(hook.result.current._modelPinPinned).toBe(false)
+  })
+
+  it('offers no target when the slot kind is unset but the name is only a template', () => {
+    const { hook } = harness({
+      currentSlot: { key: 'slot-t', agent: 'kirocrew', model: 'm-2' } as ChatSlot,
+      installedAgents: [templateRow],
+    })
+    expect(hook.result.current._modelPinAgent).toBe('')
+  })
+
+  it('offers no target for a template-bound slot even when a crew agent shares its name', () => {
+    const { hook } = harness({
+      currentSlot: { key: 'slot-t', agent: 'kirocrew', agent_kind: 'template', model: 'm-2' } as ChatSlot,
+      installedAgents: [{ ...templateRow, selection_kind: 'member' }],
+    })
+    expect(hook.result.current._modelPinAgent).toBe('')
+  })
+
+  it('keeps the crew agent as the target on a member session', () => {
+    const { hook } = harness({
+      currentSlot: { key: 'slot-m', agent: 'builder', agent_kind: 'member', model: 'm-2' } as ChatSlot,
+    })
+    expect(hook.result.current._modelPinAgent).toBe('builder')
   })
 })
 

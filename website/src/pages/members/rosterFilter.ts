@@ -43,8 +43,11 @@ export interface MemberSignals {
   needsYou: boolean
   /** The DM thread has a message the user has not seen. */
   unread: boolean
-  /** An auto-nudge loop is armed on the member's slot and active. */
+  /** On watch: the member will act again without being asked -- an active
+   *  monitor loop on its slot, or its heartbeat on. */
   patrolling: boolean
+  /** The member holds at least one goal. */
+  goal: boolean
 }
 
 export type MemberStatusFilter = 'working' | 'needs_you' | 'unread' | 'patrolling'
@@ -98,7 +101,7 @@ export interface RosterQuery {
 
 interface RosterRowLike {
   name: string; display_name?: string; starred?: boolean; source?: unknown; last_active_ts?: number
-  dashboard_created?: unknown; has_dm_message?: unknown; last_message?: unknown
+  dashboard_created?: unknown; has_dm_message?: unknown; has_user_dm_message?: unknown; last_message?: unknown
   kiro_agent?: unknown
 }
 
@@ -123,21 +126,39 @@ function matchesSearch(m: RosterRowLike, needle: string): boolean {
   )
 }
 
-/** Whether the roster lists a row WITHOUT being asked for it: a crewmate whose
- *  DM thread holds a message (`has_dm_message`) -- whoever sent it, the user,
- *  the crewmate, a scheduled run -- or one the user starred, or Mate, the first
- *  crewmate the product creates, which is listed from the start so its welcome
- *  has a row to open. A conversation with no messages is otherwise not listed,
- *  as a messages app lists no empty thread; the search still reaches it, and
- *  the open one is listed while open (`chosen`). The built-in `default`
- *  crewmate follows the same rule.
+/** The reserved main member every install carries. Not a crewmate the person
+ *  created, and listed only once the person has talked to it. */
+const RESERVED_DEFAULT_MEMBER = 'default'
+
+/** Whether the roster lists a row WITHOUT being asked for it:
  *
- *  A row from an older gateway carries no `has_dm_message`, and is listed:
+ *  - one the user starred;
+ *  - Mate, the first crewmate the product creates, listed from the start so
+ *    its welcome has a row to open;
+ *  - the reserved `default` member, only once its thread holds a message the
+ *    PERSON sent (`has_user_dm_message`): a welcome, a scheduled run, an
+ *    auto-nudge or a relayed message does not list it;
+ *  - a crewmate the person created (`dashboard_created`: on the Crewmates
+ *    page, or by approving Mate's `crewmate.create` / `crewmate.import` card),
+ *    even while its chat is empty and was never opened;
+ *  - any other row (template-derived, synced, app-made, legacy built-ins) once
+ *    its DM thread holds a message (`has_dm_message`), whoever sent it.
+ *
+ *  A conversation the product made on its own is otherwise not listed, as a
+ *  messages app lists no empty thread; the search still reaches it, and the
+ *  open one is listed while open (`chosen`).
+ *
+ *  An older gateway sends neither `dashboard_created` nor `has_dm_message`
+ *  nor `has_user_dm_message`: a row missing `has_user_dm_message` keeps the
+ *  `has_dm_message` rule, and a row missing `has_dm_message` is listed, since
  *  hiding on an absent field would blank the roster on a mixed-version deploy. */
 export function listedByDefault(m: RosterRowLike): boolean {
   if (m.starred === true) return true
-  // Mate, the first crewmate the product creates, is listed from the start.
   if (isAssistantMember(m)) return true
+  if (m.name === RESERVED_DEFAULT_MEMBER && m.has_user_dm_message !== undefined) {
+    return m.has_user_dm_message === true
+  }
+  if (m.name !== RESERVED_DEFAULT_MEMBER && m.dashboard_created === true) return true
   if (m.has_dm_message === undefined) return true
   return m.has_dm_message === true
 }

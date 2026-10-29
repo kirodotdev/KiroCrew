@@ -96,3 +96,32 @@ async def test_get_resolves_the_defaults_path_off_the_event_loop_thread(tmp_path
 
     assert json.loads(response.body) == {"name": "defaults"}
     assert resolvers and threading.get_ident() not in resolvers
+
+
+@pytest.mark.asyncio
+async def test_get_answers_a_coded_503_when_the_spec_stays_contended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Windows a writer's os.replace makes the open fail with PermissionError.
+    # Once the retry budget is spent the GET answers a retryable 503 instead of
+    # a bare 500 from the uncaught exception.
+    from kiro_crew import atomic_write
+
+    installed = tmp_path / "kirocrew.json"
+    installed.write_text(json.dumps({"name": "kirocrew"}), encoding="utf-8")
+
+    def _contended(path: Any, **kwargs: Any) -> bytes:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(atomic_write, "read_bytes_with_retry", _contended)
+    with (
+        patch("kiro_crew.dashboard.handlers._installed_agent_config", return_value=installed),
+        patch(
+            "kiro_crew.dashboard.handlers._find_agent_config",
+            return_value=tmp_path / "defaults.json",
+        ),
+    ):
+        response = await api_agent_config(make_mocked_request("GET", "/api/agent/config"))
+
+    assert response.status == 503
+    assert json.loads(response.body)["code"] == "config_busy"

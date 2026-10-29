@@ -104,6 +104,7 @@ from kiro_crew.portability_templates import (
     unbundled_agent_templates,
 )
 from kiro_crew.portability_vetting import (
+    _disable_imported_script_hooks,
     _read_manifest_bytes,
     _sanitize_imported_crons,
     _strip_host_local_store_state,
@@ -816,6 +817,11 @@ def apply_import_zip(
         # on, so calling them "rejected" would tell the user their jobs are gone.
         if paused_crons:
             summary["paused_crons"] = paused_crons
+        # Script hooks get the same treatment as command/script crons: they run a
+        # shell command on their own when their event fires, so they arrive off.
+        disabled_hooks = _disable_imported_script_hooks(snap / "hooks.json")
+        if disabled_hooks:
+            summary["disabled_hooks"] = disabled_hooks
 
         # Before EITHER branch, for the same reason the cron re-vet is: both branches copy
         # the tree below. No export writes these entries, so an archive carrying one was

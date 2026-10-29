@@ -64,6 +64,7 @@ from typing import Dict, FrozenSet, Protocol, Tuple, runtime_checkable
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -738,6 +739,51 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # ``session/prompt`` with -32603 ``... no API key for provider route
         # "deepseek-official"; store DEEPSEEK_API_KEY ...``.
         signed_out_signature="no API key for provider route",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_COPILOT,
+        # Copilot CLI resolves its GitHub credential in this order (its own
+        # authentication reference): ``COPILOT_GITHUB_TOKEN``, ``GH_TOKEN``,
+        # ``GITHUB_TOKEN``, the OS keychain under the service ``copilot-cli``, a
+        # PLAINTEXT ``config.json`` in its home when no keychain is reachable (which
+        # is the case inside Crew's sandbox, with no session bus), and last the
+        # GitHub CLI's own token. The plaintext file is the one leaf this harness
+        # itself STORES that a path can name, so it is the one on the floor; the
+        # keychain is fenced by the OS, and the GitHub CLI's store is that tool's.
+        credential_leaves=(".copilot/config.json",),
+        # ``COPILOT_HOME`` relocates the whole home (``copilot help environment``:
+        # "defaults to $HOME/.copilot"), so it stands in for the leaf's parent and
+        # the relocated file keeps only its final segment.
+        home_override_env_vars=("COPILOT_HOME",),
+        override_relative_leaves=("config.json",),
+        # The one leaf the mask must spare: this harness is enforced
+        # (``Routing.SESSION_CONFIG``), so the mask denies its child the whole
+        # credential floor, and the same file carries its settings and, without a
+        # keychain, its own token. The read gate still refuses the leaf to the
+        # AGENT's file tools, so the two controls cover different readers.
+        adapter_own_leaves=(".copilot/config.json",),
+        # Action only, and no state: a provider of the operator's own
+        # (``COPILOT_PROVIDER_BASE_URL``) needs no GitHub sign-in at all.
+        sign_in_remedy=(
+            "GitHub Copilot CLI signs in on its own — run copilot login in a "
+            "terminal, or sign the GitHub CLI in with gh auth login, which Copilot "
+            "CLI falls back to. A model provider of your own "
+            "(COPILOT_PROVIDER_BASE_URL) needs no GitHub sign-in."
+        ),
+        signed_out_message=(
+            "GitHub Copilot CLI is not signed in. Run `copilot login` in your "
+            "terminal (or `gh auth login`, which Copilot CLI falls back to), then "
+            "start a new chat."
+        ),
+        # Excluded deliberately: it signs in with a GitHub credential of its own, so a
+        # ``kiro-cli logout`` says nothing about whether a running session can still
+        # reach its model.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        # Copilot CLI 1.0.100, driven live with an empty home (no stored token and no
+        # GitHub CLI to fall back to), answers ``session/new`` with -32000
+        # ``Authentication required`` and creates no session.
+        signed_out_signature="Authentication required",
     ),
 )
 

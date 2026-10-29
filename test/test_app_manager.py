@@ -566,6 +566,87 @@ class TestUninstall:
         assert result.ok
         assert not (app_home / "apps" / "test-app").exists()
 
+    @staticmethod
+    def _sharing_violation(path):
+        """The ``PermissionError`` Windows raises deleting a file another process holds open."""
+        exc = PermissionError(13, "The process cannot access the file", str(path))
+        exc.winerror = 32
+        return exc
+
+    def _hold_app_dir(self, monkeypatch, app_root, *, releases_after, exc_factory):
+        """Make ``rmtree`` of *app_root* fail ``releases_after`` times, then delete it."""
+        import kiro_crew.apps.manager_uninstall as uninstall_mod
+
+        monkeypatch.setattr(uninstall_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        real_rmtree = shutil.rmtree
+        attempts = []
+
+        def held_rmtree(path, *args, **kwargs):
+            if str(path) == str(app_root):
+                attempts.append(path)
+                if releases_after is None or len(attempts) <= releases_after:
+                    raise exc_factory(Path(path) / "backend.log")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", held_rmtree)
+        return attempts
+
+    @pytest.mark.parametrize("keep_data", [False, True])
+    def test_uninstall_retries_a_file_held_open_until_it_is_released(
+        self, tmp_path, app_home, monkeypatch, keep_data
+    ):
+        """A sharing violation on the app dir delete clears once the holder lets go."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch, app_root, releases_after=2, exc_factory=self._sharing_violation
+        )
+
+        result = uninstall_app("test-app", keep_data=keep_data)
+
+        assert result.ok, result.error
+        assert len(attempts) == 3
+        assert not (app_root / APP_MANIFEST_FILENAME).exists()
+
+    def test_uninstall_fails_naming_the_file_still_held_after_the_retries(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """A holder that never releases fails the purge, names the file, keeps the app."""
+        import kiro_crew.apps.manager_uninstall as uninstall_mod
+
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch, app_root, releases_after=None, exc_factory=self._sharing_violation
+        )
+
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert not result.ok
+        assert len(attempts) == uninstall_mod._RMTREE_MAX_ATTEMPTS
+        assert str(app_root / "backend.log") in result.error
+        assert "held open by another process" in result.error
+        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+
+    def test_uninstall_does_not_retry_a_permission_error_that_is_not_a_sharing_violation(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """Only winerror 32/33 is transient; any other refusal fails on the first attempt."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch,
+            app_root,
+            releases_after=None,
+            exc_factory=lambda path: PermissionError(13, "Access is denied", str(path)),
+        )
+
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert not result.ok
+        assert len(attempts) == 1
+        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+
     def test_uninstall_removes_the_agent_lock_and_gateway_overlay(
         self, tmp_path, app_home, monkeypatch
     ):

@@ -14,7 +14,7 @@ Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``, ``member_context``,
-``memory_mode``, ``start_priority``.
+``memory_mode``, ``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
@@ -253,6 +253,11 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
         outcome = "auth_required"
         raise
     finally:
+        # A remote start's stage ends with the start, so a Stop never leaves one stale.
+        from kiro_crew.session_environment import clear_start_stage
+
+        key = meta.get("session_key")
+        clear_start_stage(key if isinstance(key, str) else None)
         self._emit_kiro_startup_metric(t0, phases, outcome, meta)
 
 
@@ -408,8 +413,14 @@ async def _load_session_with_retry(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    require_replay: bool = False,
 ) -> AcpSessionHandle | None:
     """Resume via session/load, retrying past a stale native session lock.
+
+    ``require_replay`` is passed through to ``AcpRuntime.load_session``: the
+    caller sets it for KAS, which answers a load of a missing record with a new
+    empty one that looks resumed, so only its replayed turns prove history came
+    back. A refused load takes the fresh-session-plus-replay path.
 
     F2 load-recovery (Phase 1). A kiro-cli holder killed uncleanly can leave
     its per-session lock held for a short window; re-issuing session/load a
@@ -436,6 +447,7 @@ async def _load_session_with_retry(
             member_session_key=member_session_key,
             session_key=session_key,
             channel_id=channel_id,
+            require_replay=require_replay,
         )
 
     swept = False
@@ -592,12 +604,15 @@ async def _start_kiro_runtime_impl(
     from kiro_crew.coder.session_launch import prepare_for_session
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.session_environment import session_environments_enabled
+    from kiro_crew.session_environment import report_start_stage, session_environments_enabled
 
     config = live.snapshot()
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    # Who governance judges: a crew member runs on a template, and its own name
+    # is what a task profile binds to; a template-only session is its template.
+    governed_agent = self._crew_agent or agent or "kirocrew"
     remote = (
         await prepare_for_session(
             session_key, before_compute=runtime.check_remote_workspace_supported
@@ -614,6 +629,7 @@ async def _start_kiro_runtime_impl(
         # A fresh guest worker per runtime: the bridge spends its one-use secret.
         assert remote is not None
         target.check_remote_workspace_supported()
+        report_start_stage(session_key, "connecting")
         server = await remote.launch.workspace_server(remote.workdir)
         relay = remote.launch.relay
         target.set_remote_workspace(
@@ -627,6 +643,15 @@ async def _start_kiro_runtime_impl(
                 "close": functools.partial(remote.launch.close_relay, relay),
             }
         )
+        # GitHub git from the workspace goes through this gateway, which holds
+        # the credential (remote_session/git_gateway.py). In the background:
+        # it never delays the start, and a failure only costs git access.
+        begin_git_proxy = getattr(remote.launch, "begin_git_proxy", None)
+        if callable(begin_git_proxy) and session_key:
+            begin_git_proxy(
+                session_key, agent=governed_agent, app=getattr(self, "owning_app", "") or ""
+            )
+        report_start_stage(session_key, "starting_agent")
 
     from kiro_crew.session_environment import (
         forget_remote_workspace,
@@ -758,6 +783,7 @@ async def _start_kiro_runtime_impl(
                         member_session_key=self._member_session_key(),
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
+                        require_replay=self.is_kas_backend,
                     )
                 finally:
                     phases["session_load"] = (time.monotonic() - _t_load) * 1000.0

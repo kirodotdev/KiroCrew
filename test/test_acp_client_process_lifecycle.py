@@ -2,7 +2,7 @@
 
 import asyncio
 import signal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
@@ -608,8 +608,13 @@ class TestKillProcess:
             patch("kiro_crew.acp.client._kill_escaped_children") as mock_esc,
         ):
             await client._kill_process()
-            mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
-            mock_esc.assert_called_once()
+            assert mock_killpg.call_args_list == [call(12345, signal.SIGTERM)]
+            assert mock_esc.call_count == 1
+        # A clean exit on SIGTERM never escalates to SIGKILL.
+        from kiro_crew import platform_compat
+
+        assert client._kill_sent == (int(platform_compat.SIGTERM), "stop requested")
+        assert proc.kill.call_count == 0
 
     @pytest.mark.asyncio
     async def test_sigterm_timeout_then_sigkill(self):
@@ -842,7 +847,7 @@ class TestResetStateExtended:
         mock_usp.assert_not_called()
         assert client._pid is None  # in-memory state is still cleared
 
-    def test_untracks_dead_children_retains_live(self):
+    def test_untracks_dead_children_retains_live(self, caplog):
         """Dead children are untracked; a live child is retained (partial-reap:
         killpg missed a child in another process group)."""
         client = AcpClient()
@@ -856,10 +861,13 @@ class TestResetStateExtended:
         with (
             patch("kiro_crew.session_pid._pid_gone_or_unmanaged", side_effect=_gone),
             patch("kiro_crew.session._untrack_child_pids") as mock_uc,
+            caplog.at_level("WARNING", logger="kiro_crew.acp.client"),
         ):
             client._reset_state()
 
-        mock_uc.assert_called_once_with({5678: None})
+        assert mock_uc.call_args_list == [call({5678: None})]
+        warnings = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.acp.client"]
+        assert any("Retained tracking for 1 live child" in m and "9012" in m for m in warnings)
 
     def test_cancels_stderr_task(self):
         client = AcpClient()
@@ -882,31 +890,31 @@ class TestKillProcessPipeClose:
 
     @pytest.mark.asyncio
     async def test_pipes_closed_before_kill(self):
+        order: list[str] = []
         client = AcpClient()
         proc = MagicMock()
         proc.returncode = None
-        stdin_mock = MagicMock()
-        stdout_mock = MagicMock()
-        stderr_mock = MagicMock()
-        proc.stdin = stdin_mock
-        proc.stdout = stdout_mock
-        proc.stderr = stderr_mock
+        proc.stdin = MagicMock()
+        proc.stdin.close.side_effect = lambda: order.append("stdin")
+        proc.stdout = MagicMock()
+        proc.stdout.close.side_effect = lambda: order.append("stdout")
+        proc.stderr = MagicMock()
+        proc.stderr.close.side_effect = lambda: order.append("stderr")
         proc.wait = AsyncMock(return_value=0)
         client._process = proc
         client._pid = 100
         client._child_pids = {}
 
         with (
-            patch("os.killpg"),
+            patch("os.killpg", side_effect=lambda _pg, _sig: order.append("killpg")),
             patch("os.getpgid", return_value=100),
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.acp.client._kill_escaped_children"),
         ):
             await client._kill_process()
 
-        stdin_mock.close.assert_called_once()
-        stdout_mock.close.assert_called_once()
-        stderr_mock.close.assert_called_once()
+        # Closing first unblocks pending reads and writes before the signal lands.
+        assert order == ["stdin", "stdout", "stderr", "killpg"]
 
     @pytest.mark.asyncio
     async def test_pipe_close_exception_ignored(self):

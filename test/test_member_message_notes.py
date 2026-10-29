@@ -28,6 +28,19 @@ from kiro_crew.notifications.bus import SYSTEM_CHANNELS
 ADA = {"slug": "ada", "name": "Ada"}
 
 
+@pytest.fixture(autouse=True)
+def _clear_async_state():
+    """Clear module-level async state in member_message_notes between tests.
+
+    _pending holds live asyncio Tasks; a stale reference from a closed event loop
+    causes asyncio.gather to hang because the done-callback never fires on the
+    old loop, blocking every subsequent test on the same xdist worker.
+    """
+    member_message_notes._pending.clear()
+    yield
+    member_message_notes._pending.clear()
+
+
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)

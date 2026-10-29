@@ -1557,7 +1557,7 @@ class TestNotifyNudgeExpired:
             cycle_count=4,
             stopped_reason=APPROVAL_STALL_REASON,
         )
-        orch._notify_nudge_expired(loop)
+        assert orch._notify_nudge_expired(loop) is True
         assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
 
     def test_no_dashboard_state_is_a_no_op(self):

@@ -1129,13 +1129,18 @@ def test_the_unassignable_set_is_derived_from_the_registry(monkeypatch):
     ``kirocrew-debug`` is withheld on the same derivation. Its host-wide views are
     gated in the route to the owner's own dashboard tab, so a worker would reach
     only refusals; granting it would spend the worker's context on tools that
-    cannot answer it."""
+    cannot answer it.
+
+    ``kirocrew-secrets`` is withheld on the same derivation. Its one tool sends a
+    request carrying an owner's stored credential and runs only from a member
+    conversation the owner approves it in, so a worker has no call it could make."""
     assert agent._worker_unassignable_servers() == frozenset(
         {
             "kirocrew-dashboard",
             "kirocrew-crew-log",
             "kirocrew-debug",
             "kirocrew-panel",
+            "kirocrew-secrets",
         }
     )
     monkeypatch.setitem(

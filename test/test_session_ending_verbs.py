@@ -733,6 +733,8 @@ class TestDestroy:
             await mgr.destroy("k1")
 
         provider.shutdown.assert_awaited_once()
+        assert map_deleted is True
+        assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
     async def test_destroy_deletes_map_before_end_metric_can_yield(self, cfg):
@@ -1145,16 +1147,13 @@ class TestCloseAllPersistence:
         mock_provider.client.backend = ""  # kiro-cli backend
 
         mgr._sessions["dashboard:slot0"] = _Session(provider=mock_provider)
-        with patch.object(mgr._session_map, "set") as mock_set:
-            await mgr.close_all()
+        await mgr.close_all()
         # provider= is persisted so the next-startup detect_provider_switch
         # does not see a missing label and falsely fire an acp/cc switch.
-        mock_set.assert_called_once_with(
-            "dashboard:slot0",
-            "sid-persist-test",
-            provider="acp",
-            cwd="/tmp/test",
-        )
+        stored = mgr._session_map
+        assert stored.mapped_sid("dashboard:slot0") == "sid-persist-test"
+        assert stored.get_provider("dashboard:slot0") == "acp"
+        assert stored.get_cwd("dashboard:slot0") == "/tmp/test"
 
 
 class TestRemove:

@@ -31,6 +31,10 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     prewarm_enabled_check,
     session_control_enabled,
 )
+from kiro_crew.dashboard.session_control_parts.crew_filing import (
+    _crew_filing_answer,
+    _in_turned_on_crew_tree,
+)
 from kiro_crew.dashboard.session_control_parts.session_create import _record_spawn
 from kiro_crew.dashboard.session_control_parts.session_titles import _clean_new_session_title
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
@@ -97,9 +101,10 @@ async def fork_session(
     (``chat_fork.fork_slot``), so what the child inherits -- agent, model,
     memory store and mode, project, folder, tags, the ``forked_from`` link --
     is exactly what a person's fork inherits, and for the same memory-boundary
-    reasons no override of agent, model or mode is taken here. The one exception
-    is the sidebar pin: a person's fork of a pinned session is pinned, this
-    child never is, because pinned marks a session as human-owned.
+    reasons no override of agent, model or mode is taken here. The exceptions
+    are the folder (a Crew Mode caller's child is unfiled) and the sidebar pin:
+    a person's fork of a pinned session is pinned, this child never is,
+    because pinned marks a session as human-owned.
 
     *source* defaults to the CALLER'S OWN session, which is the case this verb
     exists for: an agent splitting its own long investigation into several
@@ -333,11 +338,19 @@ async def fork_session(
                 status=429,
             )
 
+    in_crew_tree = False
+
     def _stamp(child: Any) -> None:
+        nonlocal in_crew_tree
+
         child._created_by = caller_key
         child._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
         child._lineage_minted = True
-        posture["trust"] = bool(getattr(live_caller, "_trust", False))
+        from kiro_crew.dashboard.approval_posture import trust_carries
+
+        # A card-scoped trust ("Trust this crew member") covers the caller's own
+        # tools only, so a fork does not inherit it (``trust_carries``).
+        posture["trust"] = trust_carries(live_caller)
         posture["trust_reads"] = bool(getattr(live_caller, "_trust_reads", False))
         child._trust = posture["trust"]
         child._trust_reads = posture["trust_reads"]
@@ -347,7 +360,12 @@ async def fork_session(
             # The caller chose this name, so it is final: the fork's own
             # background title pass and the refresh both leave it alone.
             child._title_origin = "user"
-        if folder_id:
+        # The caller's tree decides filing, not the transcript source's. Clear
+        # even an inherited folder before the fork's first save and broadcast.
+        in_crew_tree = _in_turned_on_crew_tree(state, caller_key)
+        if in_crew_tree:
+            child.folder_id = ""
+        elif folder_id:
             child.folder_id = folder_id
 
     result = await fork_slot(
@@ -405,6 +423,7 @@ async def fork_session(
         "source": source_slot.key,
         "messages": result.messages,
         "folder_id": child.folder_id or None,
+        **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
     }
 
 

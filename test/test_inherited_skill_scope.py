@@ -13,10 +13,15 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import native_skill_projection_helpers
 import pytest
 
 from kiro_crew import agent_discovery, context, skill_trust
 from kiro_crew.acp import skill_projection as projection
+
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 
 
 @pytest.fixture

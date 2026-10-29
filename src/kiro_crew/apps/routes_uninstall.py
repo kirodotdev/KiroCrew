@@ -628,8 +628,8 @@ async def _run_uninstall(
         # lookup rather than a structural one. This also matches how every other
         # caller of this lock outside `dashboard/handlers` reaches it (see
         # `mcp.py`, `messaging.py`, `core.py`, `computer_use.py`,
-        # `mcp_discover.py`) — the lock has no neutral home yet, and giving it one
-        # is a ~15-file refactor that does not belong in this change.
+        # `mcp_discover.py`) — the lock has no neutral home yet; giving it one
+        # is a ~15-file refactor of its own.
         from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
         async with _get_config_lock():

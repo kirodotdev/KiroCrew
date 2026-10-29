@@ -1402,7 +1402,7 @@ function DrivePaneGate({ pane, account, drive, driveQ, children }: {
       {/* No bucket yet, so the pane carries the one action that changes that. */}
       {drive && !drive.exists && (
         <div data-testid="capability-drive-setup">
-          <SetupCard account={id} region={setupRegion} />
+          <SetupCard account={id} region={setupRegion} searchedRegion={drive.searched_region} />
         </div>
       )}
     </section>

@@ -138,6 +138,21 @@ def _slack_double() -> MagicMock:
     return slack
 
 
+class _SlackOutbox(MagicMock):
+    """A Slack client that keeps every ``(channel, text)`` it was asked to post."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.posts: list[tuple[str, str]] = []
+
+    async def open_dm(self, user: str) -> str:
+        return "D_OWNER"
+
+    async def post_message(self, channel: str, text: str, *args: Any, **kwargs: Any) -> str:
+        self.posts.append((channel, text))
+        return "111.1"
+
+
 def _job(**overrides: Any) -> CronJob:
     defaults: dict[str, Any] = dict(
         id="j1",
@@ -618,13 +633,13 @@ class TestRunFailureAlertChannelLeg:
         stands the Slack leg down -- so the alert lands on the origin conversation
         and never on the destination the user named.
         """
-        slack = _slack_double()
+        slack = _SlackOutbox()
         orch, tr = _discord_orch(slack=slack)
         job = _job(script="raise SystemExit(1)", message="", channel="C_PINNED")
         await _alert_run_failure(orch, job, "boom")
-        tr.send_message.assert_not_awaited()
-        slack.post_message.assert_awaited()
-        assert slack.post_message.await_args.args[0] == "C_PINNED"
+        assert _sent(tr) == ""
+        assert [channel for channel, _ in slack.posts] == ["C_PINNED"]
+        assert "boom" in slack.posts[0][1]
 
     @pytest.mark.asyncio
     async def test_a_pinned_alert_that_throws_leaves_dedup_alone(self):
@@ -661,13 +676,13 @@ class TestRunFailureAlertChannelLeg:
     @pytest.mark.asyncio
     async def test_an_escaping_channel_error_still_leaves_the_slack_alert(self):
         """The alert's outer guard would swallow the whole rest of the alert."""
-        slack = _slack_double()
+        slack = _SlackOutbox()
         orch, _tr = _discord_orch(slack=slack)
         orch._deliver_cron_to_channel = AsyncMock(side_effect=RuntimeError("transport imploded"))
         job = _job(script="raise SystemExit(1)", message="", channel="C_SLACK")
         await _alert_run_failure(orch, job, "boom")
-        slack.post_message.assert_awaited()
-        assert "boom" in slack.post_message.await_args.args[1]
+        assert [channel for channel, _ in slack.posts] == ["C_SLACK"]
+        assert "boom" in slack.posts[0][1]
 
 
 class TestAgentCrashAlertChannelLeg:
@@ -708,13 +723,13 @@ class TestAgentCrashAlertChannelLeg:
     @pytest.mark.asyncio
     async def test_a_pinned_channel_takes_the_crash_alert_too(self):
         """Same pin rule as the run-failure and result legs."""
-        slack = _slack_double()
+        slack = _SlackOutbox()
         orch, tr = _discord_orch(slack=slack)
         job = _job(channel="C_PINNED")
         await self._crash(orch, job)
-        tr.send_message.assert_not_awaited()
-        slack.post_message.assert_awaited()
-        assert slack.post_message.await_args.args[0] == "C_PINNED"
+        assert _sent(tr) == ""
+        assert [channel for channel, _ in slack.posts] == ["C_PINNED"]
+        assert "context assembly exploded" in slack.posts[0][1]
 
     @pytest.mark.asyncio
     async def test_silent_job_crashes_quietly(self):

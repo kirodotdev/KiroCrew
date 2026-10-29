@@ -368,6 +368,15 @@ export interface TimelineEvent {
   path?: string | null
   line?: number | null
   url?: string | null
+  // comment / review_comment — the forge's own id for the comment. Unique within
+  // its thread (Azure DevOps numbers comments per thread), so a key pairs it with
+  // `thread_id`. Absent when the forge did not send one.
+  id?: number | string | null
+  // comment / review_comment — the opaque reply handle (GitHub: root inline review
+  // comment id; GitLab: discussion id; Azure DevOps: PR thread id). Absent or null
+  // when the comment cannot be replied to in a thread, e.g. a GitHub conversation
+  // comment; the timeline then falls back to a quote-reply.
+  thread_id?: string | null
 }
 
 export interface IssueDetailResponse {
@@ -526,6 +535,27 @@ export interface PrReviewResponse {
   id: number | null
   state: string | null
   submitted_at: string | null
+}
+
+/** One comment of a timeline batch: a new top-level comment, or a reply into the
+ * thread `thread_id` names. */
+export interface CommentBatchItem {
+  body: string
+  thread_id: string | null
+}
+
+/** `POST /comments`. `posted` lists the items that reached the forge by their index
+ * in the request; `failed` names the first item that did not (later items were not
+ * attempted). */
+export interface CommentBatchResponse {
+  owner: string
+  repo: string
+  number: number
+  target: 'issue' | 'pull'
+  posted: { index: number; id: number | string | null; url: string | null }[]
+  failed: { index: number; error: string } | null
+  /** Indexes of items the forge may or may not have taken: never resent. */
+  unknown?: number[]
 }
 
 export interface PrCommentResponse {

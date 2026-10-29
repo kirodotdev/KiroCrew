@@ -13,6 +13,7 @@ on ``execute_bash``/``shell``), not by ``security.py``'s underscored
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from kiro_crew.cloud import connect as connect_mod
@@ -475,8 +476,36 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cloud_iam_policy(_args: argparse.Namespace) -> int:
-    print(iam.policy_json())
+def _cloud_iam_policy(args: argparse.Namespace) -> int:
+    """Print the launcher policy, or with ``--host-policies`` its addendum.
+
+    stdout stays one JSON document either way, so it can be piped straight into
+    ``aws iam create-policy``. When the edition adds host policies, the plain form
+    says on stderr that a second policy is needed and how to print it.
+    """
+    want_addendum = getattr(args, "host_policies", False)
+    if not want_addendum:
+        # The main policy does not depend on the edition seam, so it is printed
+        # even when the addendum below cannot be built.
+        print(iam.policy_json())
+    try:
+        addendum = iam.host_policy_document()
+    except AWSError as exc:
+        # stderr, so stdout stays the one JSON document already printed.
+        print(str(exc), file=sys.stderr)
+        return 1
+    if want_addendum:
+        if addendum is None:
+            ui.fail("This build adds no host policies, so there is no second policy to apply.")
+            return 1
+        print(json.dumps(addendum, indent=2))
+        return 0
+    if addendum is not None:
+        print(
+            "This build also attaches host policies to each instance role. Apply a "
+            "second policy from `kirocrew cloud iam-policy --host-policies` beside this one.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -508,6 +537,8 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     from kiro_crew.cloud import source as source_mod
 
     profile, region = _resolve(args)
+    if getattr(args, "upgrade", False):
+        return _cloud_iam_boundary_upgrade(args, profile, region)
     boundaries = [
         ("Instance permissions boundary", source_mod.ensure_instance_boundary),
         ("Fargate crew task-role boundary", source_mod.ensure_crew_boundary),
@@ -553,24 +584,37 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     return 0
 
 
-#: The doctor's next step for a refused ``aws`` CLI or plugin with no fix command,
-#: by ``ssm`` refusal code. A root gateway and the strict policy are not cleared
-#: by an ownership change, and another account's file must not be made trusted:
-#: the step for it is a copy from AWS, in folders only root or this account own.
-_REFUSAL_NEXT_STEP = {
-    "other_owner": (
-        "Install a copy with AWS's own installer, then rerun. That copy runs only if "
-        "it and every folder above it belong to root or to the account the gateway "
-        "runs as. If a folder such as /usr/local/bin belongs to the other account, an "
-        "administrator must make root its owner first (see the Remote Crew on EC2 guide)."
-    ),
-    "root_gateway": "Start the gateway from a regular account instead of root, then rerun.",
-    "strict_policy": (
-        "Install it where only root can change the file and its folders, at a path "
-        "with no symbolic links, then rerun."
-    ),
-    "": "Fix the file's ownership or permissions so the check passes, then rerun.",
-}
+def _cloud_iam_boundary_upgrade(args: argparse.Namespace, profile: str, region: str) -> int:
+    """`iam-boundary --upgrade`: re-version boundaries an earlier build created (admin).
+
+    Needed once per account when this build's instance boundary carries the
+    edition's ``cloud_instance_policy`` statements and the account's boundary was
+    created without them; a launch refuses it until then and names this step.
+    Only a boundary holding exactly that earlier document is changed. A missing
+    or hand-edited one is reported and left alone.
+    """
+    from kiro_crew.cloud import source as source_mod
+
+    targets = [("Instance permissions boundary", False)]
+    if getattr(args, "ssm_kms", False):
+        targets.append(("KMS-session instance boundary", True))
+    failed = False
+    for label, kms in targets:
+        try:
+            outcome = source_mod.upgrade_instance_boundary(profile, region, kms=kms)
+        except AWSError as exc:
+            failed = True
+            ui.fail(str(exc))
+            if exc.missing_action:
+                ui.detail(f"Grant `{exc.missing_action}` and retry.")
+            if exc.action == "sts:GetCallerIdentity":
+                break
+            continue
+        if outcome == source_mod.UPGRADE_UPGRADED:
+            ui.ok(f"{label} upgraded to this build's document.")
+        else:
+            ui.ok(f"{label} already holds this build's document; nothing changed.")
+    return 1 if failed else 0
 
 
 def _cloud_doctor(args: argparse.Namespace) -> int:
@@ -589,7 +633,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     elif (cli_refusal := ssm.aws_cli_refusal()) is not None:
         # Found but refused: the install link would put the same refused file back.
         ui.fail(f"aws CLI found at {cli_refusal.path} but refused: {cli_refusal.reason}")
-        ui.detail(_REFUSAL_NEXT_STEP.get(cli_refusal.code, _REFUSAL_NEXT_STEP[""]))
+        ui.detail(ssm.REFUSAL_NEXT_STEP.get(cli_refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
     if ssm.session_manager_plugin_installed():
@@ -607,7 +651,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
                 f"Then make its install directory root-owned and rerun: {refusal.remedy_command}"
             )
         else:
-            ui.detail(_REFUSAL_NEXT_STEP.get(refusal.code, _REFUSAL_NEXT_STEP[""]))
+            ui.detail(ssm.REFUSAL_NEXT_STEP.get(refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
         ui.warn("session-manager-plugin not found — needed to connect over SSM")
         ui.detail(ssm.session_manager_plugin_install_hint())
@@ -636,6 +680,10 @@ def _ensure_session_manager_plugin() -> bool:
     """Install the local Session Manager plugin when a cloud command needs SSM tunnels."""
     if ssm.session_manager_plugin_installed():
         return True
+    if ssm.reinstall_cannot_clear_refusal():
+        # Refused inside AWS's install tree: a reinstall rewrites the same file.
+        ui.fail(ssm.session_manager_plugin_unavailable_message())
+        return False
     ui.warn("session-manager-plugin is required for SSM dashboard tunnels.")
     ui.detail("KiroCrew can install AWS's official Session Manager plugin locally.")
     if not ui.confirm("Install session-manager-plugin now?", default=True):

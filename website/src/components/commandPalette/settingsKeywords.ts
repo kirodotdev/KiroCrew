@@ -32,9 +32,6 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'voice.auto-speak-responses': ['automatic speech', 'auto read'],
   'voice.language': ['stt', 'dictation', 'microphone', 'whisper', 'transcribe', 'speech-to-text'],
 
-  // Developer
-  'developer.developer-mode': ['dev mode', 'debug', 'advanced', 'power user'],
-
   // Notifications
   'notifications.play-sound-on-new-notifications': ['alert', 'audio', 'mute', 'silent'],
   'notifications.sources': ['mute', 'priority', 'channel', 'per-app', 'silence'],

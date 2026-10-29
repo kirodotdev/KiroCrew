@@ -25,6 +25,7 @@ from kiro_crew.agent import (
     _atomic_json_write,
     _declined_foreign_spec_write,
     entry_as_enabled,
+    gateway_routed_names,
     kiro_agents_dir_path,
     rebuild_agent_config_reporting,
 )
@@ -1022,6 +1023,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MCP_RESOLVE_REFRESH_LOCK,
         _assess_server,
         _collect_server_rows,
+        _env_pooling_outcome,
         _freeze_stub_servers,
         _launch_specs_for,
         _load_shareability_state,
@@ -1038,6 +1040,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_STUB_BATCH,
         _record_stub_decisions,
         _stub_eligibility,
+        api_mcp_gateway_server_launches,
         api_mcp_gateway_set_stub,
     )
     from kiro_crew.dashboard.handlers.mcp_probe import (  # noqa: F401
@@ -1061,6 +1064,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _probe_currency,
         _quarantine_verdicts,
         _read_global_mcps,
+        _recheck_routed,
         _record_probe_verdicts,
         _run_mcp_probe,
         _stamp_config_state,
@@ -1547,7 +1551,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
 #   ``mcp_agent_sync`` -- Copying servers into the Kiro Crew agent spec; the agent-home refusal.
 #   ``mcp_probe`` -- The probe cache, quarantine, shareability measurement and the listing routes.
 #   ``mcp_gateway_routes`` -- The shared gateway's status, enable, refresh and per-server routes.
-#   ``mcp_gateway_stubs`` -- Which servers may be stubbed, and the set-stub route.
+#   ``mcp_gateway_stubs`` -- Which servers may be stubbed, the set-stub route, its launch preview.
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.dashboard.handlers.mcp_config_files",

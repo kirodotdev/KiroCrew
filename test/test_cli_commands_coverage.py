@@ -1385,11 +1385,16 @@ class TestRunAppMcpServer:
         assert "run_mcp_server" in capsys.readouterr().err
 
     def test_runner_is_invoked(self) -> None:
-        runner = MagicMock()
-        with patch(
-            "importlib.import_module", return_value=SimpleNamespace(run_mcp_server=runner)
-        ) as imp:
+        # The server's own exit status must reach the shell unchanged.
+        runner = MagicMock(side_effect=SystemExit(4))
+        with (
+            patch(
+                "importlib.import_module", return_value=SimpleNamespace(run_mcp_server=runner)
+            ) as imp,
+            pytest.raises(SystemExit) as exc,
+        ):
             cc._run_app_mcp_server("my-app")
+        assert exc.value.code == 4
         runner.assert_called_once_with()
         # Hyphens in app names map to underscores in the module path.
         assert imp.call_args[0][0].endswith("my_app.mcp_server")

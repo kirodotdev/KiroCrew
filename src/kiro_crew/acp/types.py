@@ -17,6 +17,7 @@ from typing import Any
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -69,6 +70,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
+    ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
@@ -80,6 +82,10 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     model_registry_namespace,
     overlay_project_scope,
     selectable_backends,
+)
+from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for importers
+    escape_user_message_markup,
+    wrap_user_message,
 )
 
 # Declared per harness rather than listed as a capability set: whether a
@@ -137,6 +143,11 @@ EVENT_SUBAGENT_ACTIVITY = "subagent_activity"
 EVENT_STEER_QUEUED = "steer_queued"
 EVENT_STEER_CONSUMED = "steer_consumed"
 EVENT_STEER_CLEARED = "steer_cleared"
+#: kiro-cli dropped every steer it was still holding, unread, because
+#: ``_session/steer/clear`` asked it to (``AgentExecutionUserMessageCleared``).
+#: Not KAS's ``steering_cleared``, which arrives after a turn ends and names steers
+#: the turn already read (``EVENT_STEER_CLEARED``).
+EVENT_STEER_DROPPED = "steer_dropped"
 #: A typed :class:`StructuredStatus` from the EXECUTION LAYER (the versioned
 #: ``kirocrew/status`` extension on a routed ``session/update`` frame, or the
 #: watchdog's own post-stall classification). Never derived from model text —
@@ -177,6 +188,12 @@ MAX_STEERING_TEXT_CHARS = 64_000
 # (``SEND_ABORT_MS``), so an answer slower than this sends the steer down the
 # caller's queue path instead of leaving the request to time out.
 STEERING_ANSWER_WAIT_SECS = 8.0
+# kiro-cli's request to drop every steer it holds and has not yet handed to the
+# turn (``ACP_BACKENDS_STEER_RETRACT``), and how long its answer is waited for.
+# The answer comes from kiro-cli's request handler, not from the turn, so a
+# healthy session answers in milliseconds.
+METHOD_SESSION_STEER_CLEAR = "_session/steer/clear"
+STEER_CLEAR_ANSWER_WAIT_SECS = 5.0
 
 
 def steering_outcome(result: object) -> str:
@@ -189,6 +206,18 @@ def steering_outcome(result: object) -> str:
         return ""
     outcome = result.get("outcome")
     return outcome if isinstance(outcome, str) else ""
+
+
+def steering_advertised(init_resp: object) -> bool:
+    """Whether an ``initialize`` result advertises the ``_session/steering`` request.
+
+    The extension is advertised at the TOP level of the result, as
+    ``_meta.steering.supported``, a sibling of ``agentCapabilities``. Only a
+    literal ``true`` counts.
+    """
+    meta = init_resp.get("_meta") if isinstance(init_resp, dict) else None
+    steering = meta.get("steering") if isinstance(meta, dict) else None
+    return isinstance(steering, dict) and steering.get("supported") is True
 
 
 METHOD_SESSION_LOAD = "session/load"
@@ -405,6 +434,7 @@ PROVIDER_LABEL_OPENCODE = "opencode"
 PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
+PROVIDER_LABEL_COPILOT = "copilot"
 
 #: Backend id -> its label. The mapping is what ``provider_label`` resolves
 #: through, so a harness's label and the answer a session persists under are one
@@ -424,6 +454,7 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
     ACP_BACKEND_PI: PROVIDER_LABEL_PI,
     ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
     ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
+    ACP_BACKEND_COPILOT: PROVIDER_LABEL_COPILOT,
 }
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
@@ -563,6 +594,12 @@ STOP_REASON_TOOL_STALL = "error: tool stall"
 # it deliberately triggers NO retry — the user-visible compaction notice
 # already explains what happened, and this only releases the slot.
 STOP_REASON_COMPACTION_FAILED = "error: compaction failed"
+# Signalled by the session handle when a session/cancel got no ack within the
+# cancel grace window and the runtime is still up: the caller is unblocked with
+# this completion and the runtime is kept for its other sessions. Kept in the
+# "error:" family, so it classifies as ``failed``; to the caller that sent the
+# cancel it is that cancel, left unanswered.
+STOP_REASON_CANCEL_UNACKED = "error: cancel unacked"
 
 # ── Stop-reason classes ──
 #
@@ -1085,6 +1122,20 @@ class AcpEvent:
     #: maps to its kiro-cli policy name. False on every other harness, whose
     #: bare ids the gate reads under their own name only.
     kas_builtin_ids: bool = False
+    #: spec_granted_builtins: on a KAS session's OWN permission request (never a
+    #: sub-session's), the built-ins the active agent's spec grants that the KAS
+    #: policy keeps at ``ask`` (``AcpSessionHandle.kas_crew_answered``). Written by
+    #: the session handle from the projection it registered, never from the
+    #: frame. The gate's ``spec-builtin-grant`` tier reads it, after every deny
+    #: tier and governance, and approves only a host-identified built-in it names.
+    #: Empty everywhere else, which grants nothing.
+    spec_granted_builtins: frozenset[str] = frozenset()
+    #: spec_granted_commands: on the same requests, the agent's
+    #: ``toolsSettings.shell.allowedCommands`` as Python regexes
+    #: (``AcpSessionHandle.kas_crew_answered_commands``), written the same way. The
+    #: ``spec-builtin-grant`` tier approves a shell call whose recovered command
+    #: fullmatches one. Empty everywhere else, which grants nothing.
+    spec_granted_commands: tuple[str, ...] = ()
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``

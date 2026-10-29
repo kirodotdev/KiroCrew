@@ -305,7 +305,7 @@ def _report_unredacted_upload() -> None:
     )
 
 
-def _report_unresolved_payload(selected: list[str]) -> None:
+def _report_unresolved_payload(selected: list[str], *, uploading: bool = True) -> None:
     """Name the components in this bundle that carry uncertified credential material.
 
     A backup is NOT redacted, and that is deliberate: it goes to a destination the
@@ -325,6 +325,14 @@ def _report_unresolved_payload(selected: list[str]) -> None:
     if not riding:
         return
     print(f"ℹ️  Riding this bundle, uncertified for sharing: {', '.join(sorted(riding))}.")
+    if not uploading:
+        # A local bundle: no off-host copy follows, so there is no "below" to point to.
+        print(
+            "   `config` carries credentials in plaintext at rest, and so does this "
+            "bundle. Treat it as secret, and narrow it with --components if you do not "
+            "need all of it."
+        )
+        return
     print(
         "   `config` carries credentials in plaintext at rest. Whether the copy that "
         "leaves this host still does is reported below; the bundle on local disk always "
@@ -630,7 +638,20 @@ def snapshot_main(
         )
         return 1
 
-    out = Path(args.output_dir or _default_snapshot_dir())
+    # `list` and `ls` read as the listing verb (`kirocrew snapshot list`), but the
+    # optional positional takes any word as the output directory, so they silently
+    # wrote a full bundle into `./list/` and pruned it. Refused unless they name a
+    # directory that already exists, which is the only case the user could mean it.
+    output_dir = getattr(args, "output_dir", None)
+    if output_dir in ("list", "ls") and not Path(output_dir).is_dir():
+        print(
+            f"❌ {output_dir!r} is not a snapshot directory, and no snapshot was taken.\n"
+            f"   Did you mean `kirocrew snapshot --list`? To write into a directory\n"
+            f"   named {output_dir!r}, create it first or pass ./{output_dir}/."
+        )
+        return 1
+
+    out = Path(output_dir or _default_snapshot_dir())
 
     if args.list_snapshots:
         if not out.is_dir():
@@ -832,6 +853,9 @@ def snapshot_main(
         return 1
 
     print(f"✅ Snapshot created: {outfile} ({human})")
+    # The bundle on local disk is not redacted either, so it gets the same notice as
+    # the copy that leaves the host: which components carry credential material.
+    _report_unresolved_payload(selected, uploading=False)
 
     _audit("snapshot_created", f"{outfile} ({human})")
 
@@ -905,6 +929,91 @@ def _is_gateway_running() -> bool:
             return True
     except OSError:
         return False
+
+
+def _hold_back_executables(
+    snap: Path, mc: Path, components: list[str] | None, mode: str
+) -> dict[str, list[str]]:
+    """Switch off, in the staged bundle, every cron and hook that would run a command.
+
+    Uses the dashboard import's own helpers, so both ways in apply one rule: a
+    command or script cron is restored paused (a command failing the ``cron_add``
+    vet is dropped), and a script hook is restored disabled. Message-only crons and
+    skill-only hooks run nothing and are left as they are. Returns the names, for
+    :func:`_report_held_back`, keyed ``dropped`` / ``paused`` / ``hooks``, plus
+    ``kept_crons``: the names a merge's destination already has.
+    """
+    # Imported here: the portability family imports this module at load time.
+    from kiro_crew import portability
+
+    _disable_imported_script_hooks = portability._disable_imported_script_hooks
+    _sanitize_imported_crons = portability._sanitize_imported_crons
+
+    held: dict[str, list[str]] = {"dropped": [], "paused": [], "hooks": [], "kept_crons": []}
+    if _want(components, "crons"):
+        # The restore judges the store's shape itself (merge skips an unusable one,
+        # replace validates it), so only the vet and the pause are applied here.
+        held["dropped"], held["paused"] = _sanitize_imported_crons(
+            snap / "crons.json", drop_malformed=False
+        )
+        if mode == "merge":
+            # A merge skips a bundle job whose name the home already has, so those
+            # names are not the bundle's and must not be reported as restored.
+            held["kept_crons"] = sorted(_cron_names(mc / "crons.json"))
+    if _want(components, "config"):
+        # Merge keeps an existing hooks.json, so the bundle's hooks only land where
+        # there is none. Still switched off either way; only named when installed.
+        installs_hooks = mode == "replace" or not os.path.lexists(mc / "hooks.json")
+        hooks = _disable_imported_script_hooks(snap / "hooks.json")
+        if installs_hooks:
+            held["hooks"] = hooks
+    return held
+
+
+def _cron_names(path: Path) -> set[str]:
+    """The job names in a cron store, or none when it cannot be read as one.
+
+    Read through the merge's own one-open reader: non-blocking, so a FIFO at the
+    name cannot hang the restore, and anything but one regular file is refused.
+    """
+    try:
+        text, _seen, _fd = _read_cron_store_once(path, what="cron store")
+        data = json.loads(text)
+    except (OSError, ValueError, RecursionError):
+        return set()
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list):
+        return set()
+    return {j["name"] for j in jobs if isinstance(j, dict) and isinstance(j.get("name"), str)}
+
+
+def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
+    """Name what the restore switched off or dropped, and how to turn it back on.
+
+    A paused job is named only when it is in the live store after the restore and
+    was not there before: a merge skips a same-named job and can refuse the whole
+    cron file, and neither installs anything to switch on.
+    """
+    if held["paused"]:
+        installed = _cron_names(mc / "crons.json") - set(held["kept_crons"])
+        held["paused"] = [name for name in held["paused"] if name in installed]
+    if held["dropped"]:
+        print(
+            "⚠️  Not restored: these cron jobs have a command that fails the check "
+            "`cron_add` applies:"
+        )
+        for name in held["dropped"]:
+            print(f"     {_safe_name(_terminal_safe(name))}")
+    if held["paused"]:
+        print("⏸  Restored PAUSED: these cron jobs run a command or script:")
+        for name in held["paused"]:
+            print(f"     {_safe_name(_terminal_safe(name))}")
+        print("   Check each one, then resume it on the dashboard's Schedules page.")
+    if held["hooks"]:
+        print("⏸  Restored DISABLED: these hooks run a shell command:")
+        for name in held["hooks"]:
+            print(f"     {_safe_name(_terminal_safe(name))}")
+        print("   Check each one, then enable it on the dashboard's Hooks page.")
 
 
 def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None) -> int:
@@ -1324,6 +1433,18 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             )
             print(f"❌ {e}")
             return 1
+        # A bundle may come from someone else, so anything in it that runs a shell
+        # command on its own is installed switched off -- the same rule the dashboard
+        # import applies. Done on the staged copy, after the source checks above have
+        # judged the files as the archive carried them, and before either mode reads it.
+        try:
+            held_back = _hold_back_executables(snap, mc, components, mode)
+        except OSError as exc:
+            # Only the staged copy was touched: live state is as it was.
+            _audit("state_restore_rejected", f"reason=staging_rewrite_failed detail={exc}")
+            print(f"❌ Could not prepare the bundle's crons and hooks: {exc}")
+            print("   Nothing was restored; your current state is unchanged.")
+            return 1
         # Contained here rather than allowed to propagate: a refusal is a decision
         # this command made on purpose, and a traceback would read like a crash and
         # bury the one sentence saying what to do about it.
@@ -1449,5 +1570,6 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     comp_str = ",".join(components) if components else "all"
     _audit("state_restored", f"mode={mode} components={comp_str} from={snap_path.name}")
 
+    _report_held_back(held_back, mc)
     print("\n⚠️  Restart kirocrew gateway to pick up changes: kirocrew restart")
     return 0

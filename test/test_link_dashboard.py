@@ -62,16 +62,18 @@ class TestFooterBlocksLinkDashboard:
             {"type": "context", "elements": [{"type": "mrkdwn", "text": "Finished in 5s"}]}
         ]
         return _append_footer_actions(
-            footer_blocks, options, thread_ts, linked_session_key, dashboard_state,
+            footer_blocks,
+            options,
+            thread_ts,
+            linked_session_key,
+            dashboard_state,
         )
 
     def test_button_added_when_in_thread_not_linked_with_dashboard(self) -> None:
         blocks = self._build_footer("1234.0", None, MagicMock())
         actions = [b for b in blocks if b.get("type") == "actions"]
         assert len(actions) == 1
-        assert any(
-            e["action_id"] == LINK_DASHBOARD_ACTION for e in actions[0]["elements"]
-        )
+        assert any(e["action_id"] == LINK_DASHBOARD_ACTION for e in actions[0]["elements"])
 
     def test_button_not_added_when_no_thread_ts(self) -> None:
         blocks = self._build_footer("", None, MagicMock())
@@ -88,17 +90,16 @@ class TestFooterBlocksLinkDashboard:
         actions = [b for b in blocks if b.get("type") == "actions"]
         assert len(actions) == 0
 
-    def test_button_appended_to_existing_actions_block(self) -> None:
-        """When OPTIONS are present, button is appended to the existing actions block."""
-        blocks = self._build_footer(
-            "1234.0", None, MagicMock(), options=["A", "B"]
-        )
+    def test_button_gets_its_own_row_after_an_options_card(self) -> None:
+        """After an OPTIONS card the button is its own row, so answering the card
+        (which replaces the card's rows) leaves the link in place."""
+        blocks = self._build_footer("1234.0", None, MagicMock(), options=["A", "B"])
         actions = [b for b in blocks if b.get("type") == "actions"]
-        assert len(actions) == 1
-        action_ids = [e["action_id"] for e in actions[0]["elements"]]
-        assert LINK_DASHBOARD_ACTION in action_ids
-        # OPTIONS checkboxes are also present
-        assert any(aid == "options_checkboxes" for aid in action_ids)
+        assert len(actions) == 2
+        card_ids = [e["action_id"] for e in actions[0]["elements"]]
+        assert LINK_DASHBOARD_ACTION not in card_ids
+        assert card_ids[0].startswith("options_choice_")
+        assert [e["action_id"] for e in actions[1]["elements"]] == [LINK_DASHBOARD_ACTION]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -140,7 +141,9 @@ def link_orch(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_link_dashboard_creates_slot_and_imports(link_orch: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_link_dashboard_creates_slot_and_imports(
+    link_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from kiro_crew.slack import interactions
 
     mock_sel_inst = MagicMock()

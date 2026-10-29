@@ -489,10 +489,10 @@ _PROTECTING = ("finally", "except BaseException")
 
 
 def test_every_post_mutation_await_is_individually_protected():
-    """Both review rounds found the same class: an await between a state mutation and its
-    settlement or cleanup, guarded only by an `except Exception` that a CancelledError walks
-    straight past. Bound to the SPECIFIC await rather than the function, so a newly-added
-    sibling await in an already-protected function cannot pass by association."""
+    """An await between a state mutation and its settlement or cleanup needs more than an
+    `except Exception`, which a CancelledError walks straight past. Bound to the SPECIFIC
+    await rather than the function, so a newly-added sibling await in an already-protected
+    function cannot pass by association."""
     for name, target, func in _MUST_BE_PROTECTED:
         awaits = _await_protections(func)
         matching = [(text, stack) for text, stack in awaits if target in text]

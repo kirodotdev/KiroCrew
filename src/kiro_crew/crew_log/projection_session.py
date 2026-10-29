@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.crew_log.prefix_extent import PrefixExtent, extent_at, extent_holds
 from kiro_crew.crew_log.projection_catalogue import (
     KNOWN_TYPES,
     PROJECTION_NAMES,
@@ -21,13 +22,13 @@ from kiro_crew.crew_log.projection_kernel import Checkpoint, initial, projection
 from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session_log import _log_identity, log_origin, open_session_log
 from kiro_crew.crew_log.schema import Entry
-from kiro_crew.crew_log.store import CrewLog, log_exception_text
+from kiro_crew.crew_log.store import CrewLog, ReadCursor, ResumePoint, log_exception_text
 from kiro_crew.projection import ProjectionRegistry, Savepoint, attribute_seq
 
 if TYPE_CHECKING:
     # Type-only: the savepoint module imports the fold surface, so a runtime
     # import here would close the cycle its function-local imports avoid.
-    from kiro_crew.crew_log.checkpoint import PrefixWitness
+    from kiro_crew.crew_log.checkpoint import CutWitness, DiskResume, PrefixWitness
 
 
 # --------------------------------------------------------------------------- #
@@ -74,6 +75,27 @@ class SessionProjections:
     #: detects an in-place same-size rewrite that size alone cannot distinguish;
     #: ``None`` keeps older bundles safe by forcing one validating walk.
     mtime_ns: int | None = None
+
+    #: The unit's settled cut count read BEFORE the pass that built this bundle, set only
+    #: when the same count still read so after it and every earlier bundle in the chain
+    #: this one continued carried it too. It is the bundle's CUSTODY of the prefix it was
+    #: folded from: a cut is the only thing that changes a committed record, so a later
+    #: pass that reads the same count may write a savepoint from this state without
+    #: folding the prefix again. ``None`` -- a log with no counter, a count that moved, a
+    #: bundle from before this field -- vouches for nothing, and a write then waits for a
+    #: pass that folds the prefix itself.
+    cuts: int | None = None
+
+    #: Where the pass that built this bundle stopped reading, as a byte position, so the
+    #: next incremental pass opens the file there instead of decoding every record below
+    #: ``last_seq``. Re-checked by the store against the live file before every use.
+    resume: "ResumePoint | None" = None
+
+    #: :mod:`~kiro_crew.crew_log.prefix_extent` at :attr:`resume`, taken when this bundle
+    #: was built. A later pass continuing this bundle uses :attr:`resume` and
+    #: :attr:`cuts` only while it still holds, so a file replaced or rewritten in place
+    #: under a cached bundle is walked from the top -- and its damage refused -- as before.
+    extent: "PrefixExtent | None" = None
 
     def projection(self, name: str) -> Projection:
         """One rendered projection, or raise ``bad_data`` for an unknown name."""
@@ -131,18 +153,18 @@ def fold_session(
     folding from seq 1.
     """
     wanted = tuple(require_name(name) for name in names)
-    bundle, stable, handle, prefix = _fold_attempt(
+    bundle, stable, handle, prefix, owes_point = _fold_attempt(
         session_id, wanted, since=since, log=log, resume=True
     )
     if stable:
-        return _persisted(bundle, handle=handle, prefix=prefix)
+        return _persisted(bundle, handle=handle, prefix=prefix, owes_point=owes_point)
     # The file's identity changed WHILE it was being folded: the unit was removed
     # and recreated between the identity read and the pass, so the entries just
     # consumed may belong to a different file than the state they were folded onto.
     # One more attempt, from scratch -- no cached bundle, no savepoint, and a freshly
     # opened handle, since the one this call was given does not name the file it was
     # opened on.
-    bundle, stable, handle, prefix = _fold_attempt(
+    bundle, stable, handle, prefix, _owes = _fold_attempt(
         session_id, wanted, since=None, log=None, resume=False
     )
     if stable:
@@ -192,8 +214,11 @@ def _fold_attempt(
     since: SessionProjections | None,
     log: CrewLog | None,
     resume: bool,
-) -> tuple[SessionProjections, bool, CrewLog | None, PrefixWitness | None]:
-    """One pass for :func:`fold_session`. ``(bundle, the file held still, handle, witness)``.
+) -> tuple[SessionProjections, bool, CrewLog | None, "CutWitness | PrefixWitness | None", bool]:
+    """One pass for :func:`fold_session`.
+
+    ``(bundle, the file held still, handle, witness, a tail position is owed)``. The last
+    is :attr:`~kiro_crew.crew_log.checkpoint.DiskResume.owes_point`, for :func:`_persisted`.
 
     The middle element is what makes the pass checkable. ``iter_from`` opens the
     log by NAME, so a unit removed and recreated mid-pass hands this function a
@@ -207,7 +232,7 @@ def _fold_attempt(
     """
     handle = log if log is not None else open_session_log(session_id)
     if handle is None:
-        return (empty_session(session_id, wanted), True, None, None)
+        return (empty_session(session_id, wanted), True, None, None, False)
     last_seq = handle.last_seq
     origin, size, mtime_ns = _log_identity(handle)
     # What the pass trusted about the file before reading it, so the same two things
@@ -215,7 +240,7 @@ def _fold_attempt(
     # digest: re-running the load is what re-checks it, and that keeps one routine
     # deciding whether a savepoint describes this file.
     resumed_from: SessionProjections | None = None
-    prefix_seen: PrefixWitness | None = None
+    prefix_seen: "CutWitness | PrefixWitness | None" = None
     # Whether this pass is standing on state an EARLIER call folded. That decides
     # whether it may write a savepoint at all, because a savepoint has to carry a
     # digest of the bytes its state came from. A pass that resumed from DISK carries
@@ -232,6 +257,10 @@ def _fold_attempt(
     # folds the prefix itself, which is a lag the module already allows for: resuming
     # from an older savepoint replays the tail and reaches the same value.
     reused_cached_state = False
+    # Byte positions the savepoints stored, keyed by the seq they point at, for the tail
+    # read to seek to instead of decoding every record below the savepoint.
+    points: "dict[int, ResumePoint]" = {}
+    owes_point = False
 
     def held_still() -> bool:
         """Whether the file still matches everything this pass trusted about it.
@@ -251,7 +280,7 @@ def _fold_attempt(
 
         if log_origin(handle) != origin:
             return False
-        if prefix_seen is not None and not savepoints.prefix_unchanged(handle, prefix_seen):
+        if prefix_seen is not None and not savepoints.witness_unchanged(handle, prefix_seen):
             return False
         if resumed_from is None:
             return True
@@ -270,10 +299,23 @@ def _fold_attempt(
         and since.last_seq <= last_seq
         and all(name in since.checkpoints for name in wanted)
     )
+    # The settled cut count before this pass, and the custody it gives the state (see
+    # ``SessionProjections.cuts``). A cached bundle keeps custody only when it was
+    # folded under this same count, which is what lets a warm pass write a savepoint
+    # from the state it already holds instead of re-folding the prefix to earn one.
+    cuts_before = handle.cuts()
+    custody: int | None = cuts_before
     if reusable and since is not None:
         base: dict[str, Checkpoint] = {name: since.checkpoints[name] for name in wanted}
         saved_seq = since.saved_seq
         reused_cached_state = True
+        # Growth is expected here (the bundle is continued over an appending log); the
+        # cut count, required for custody below, is what vouches for the prefix.
+        files_held = extent_holds(handle, since.extent, grown_ok=True)
+        if since.cuts is None or since.cuts != cuts_before or not files_held:
+            custody = None
+        if files_held and since.resume is not None and since.resume.seq == since.last_seq:
+            points = {since.resume.seq: since.resume}
         _note_session_fold_origin("warm")
     else:
         # No bundle in hand, so ask the disk before folding the file. A savepoint
@@ -288,8 +330,11 @@ def _fold_attempt(
         # retry must not read it. It is private for that reason -- the one caller
         # that needs it is the retry, and a public switch would be a surface with
         # no production caller.
-        resumed = _resume_from_disk(handle, wanted) if resume else None
-        if resumed is not None:
+        disk = _resume_from_disk(handle, wanted) if resume else None
+        resumed = disk.bundle if disk is not None else None
+        if disk is not None and resumed is not None:
+            points = disk.points
+            owes_point = disk.owes_point
             base.update(resumed.checkpoints)
             saved_seq = resumed.saved_seq
             resumed_from = resumed
@@ -310,9 +355,17 @@ def _fold_attempt(
     # pass that ends somewhere else -- the file grew under it, or the handle's own seq
     # was stale -- matches no fold in the bundle and writes nothing, which costs the
     # savepoint rather than the read: what this fold SERVES is unaffected either way.
-    if not reused_cached_state and savepoints.write_is_earned(last_seq, saved_seq):
-        prefix_seen = savepoints.prefix_witness(handle, last_seq)
     from_seq = min((cp.last_seq for cp in base.values()), default=0) + 1
+    # A position is owed only to a pass that WALKS: one with nothing new to read finds no
+    # position to give, and must not pay for a witness it cannot write.
+    owes_point = owes_point and from_seq <= last_seq
+    if not reused_cached_state and (owes_point or savepoints.write_is_earned(last_seq, saved_seq)):
+        prefix_seen = savepoints.fold_witness(handle, last_seq)
+    elif custody is not None and savepoints.write_is_earned(last_seq, saved_seq):
+        # A warm pass whose bundle has custody of its prefix under the count read just
+        # now: the cut witness is sound for it for the reason it is for any pass, and
+        # ``held_still`` re-reads the count after the pass.
+        prefix_seen = savepoints.CutWitness(seq=last_seq, cuts=custody)
     if from_seq > last_seq and (
         not reused_cached_state
         or (
@@ -337,6 +390,9 @@ def _fold_attempt(
         # matches, which costs one validating walk before that bundle's next O(1)
         # poll. A pass that did NOT reuse a cached bundle is covered by the
         # digest machinery instead, so it keeps the fast return unconditionally.
+        quiet_point = _reached_point(
+            ReadCursor(), last_seq, since if reused_cached_state else None, points
+        )
         return (
             SessionProjections(
                 session_id=session_id,
@@ -346,13 +402,32 @@ def _fold_attempt(
                 saved_seq=saved_seq,
                 size=size,
                 mtime_ns=mtime_ns,
+                cuts=_custody_kept(handle, custody),
+                # The position this bundle stands at: the cached bundle's own, or on a
+                # read that resumed from disk the one its savepoint stored, so the next
+                # advance continuing this bundle seeks instead of walking the prefix.
+                resume=quiet_point,
+                extent=(
+                    since.extent
+                    if reused_cached_state and since is not None
+                    else extent_at(handle, quiet_point)
+                ),
             ),
             held_still(),
             handle,
             prefix_seen,
+            owes_point,
         )
-    grown = _drive_session(_session_registry(wanted), session_id, base, handle)
+    cursor = ReadCursor()
+    grown = _drive_session(
+        _session_registry(wanted), session_id, base, handle, points=points, cursor=cursor
+    )
     reached = max((cp.last_seq for cp in grown.values()), default=last_seq)
+    point = _reached_point(cursor, reached, since if reused_cached_state else None, points)
+    if prefix_seen is not None and cursor.at is not None and cursor.at.seq == prefix_seen.seq:
+        # The position of the record the witness ends at, from THIS pass's own walk, so
+        # the savepoint it is written into lets the next resume seek there.
+        prefix_seen = prefix_seen._replace(resume=cursor.at)
     return (
         SessionProjections(
             session_id=session_id,
@@ -362,11 +437,38 @@ def _fold_attempt(
             saved_seq=saved_seq,
             size=size,
             mtime_ns=mtime_ns,
+            cuts=_custody_kept(handle, custody),
+            resume=point,
+            extent=extent_at(handle, point),
         ),
         held_still(),
         handle,
         prefix_seen,
+        owes_point,
     )
+
+
+def _custody_kept(handle: CrewLog, custody: "int | None") -> "int | None":
+    """*custody* if the unit's settled cut count still reads as it, else ``None``."""
+    if custody is None:
+        return None
+    return custody if handle.cuts() == custody else None
+
+
+def _reached_point(
+    cursor: ReadCursor,
+    reached: int,
+    since: "SessionProjections | None",
+    points: "Mapping[int, ResumePoint] | None" = None,
+) -> "ResumePoint | None":
+    """The position of the record at *reached*: this walk's, the cached bundle's it
+    continued, or the one a savepoint stored -- whichever names that record."""
+    if cursor.at is not None and cursor.at.seq == reached:
+        return cursor.at
+    if since is not None and since.resume is not None and since.resume.seq == reached:
+        return since.resume
+    stored = points.get(reached) if points else None
+    return stored if stored is not None and stored.seq == reached else None
 
 
 # The savepoint module imports the fold surface it persists from the facade, which
@@ -374,15 +476,24 @@ def _fold_attempt(
 # here would close that cycle.
 
 
-def _resume_from_disk(handle: CrewLog, wanted: Sequence[str]) -> SessionProjections | None:
-    """The savepoints for *wanted* beside *handle*'s log, or ``None``."""
+def _resume_from_disk(handle: CrewLog, wanted: Sequence[str]) -> "DiskResume":
+    """The savepoints for *wanted* beside *handle*'s log, with their tail positions.
+
+    Through :func:`~kiro_crew.crew_log.checkpoint.load_resumable`, which also rewrites,
+    once, a file still witnessed by a full prefix digest with evidence a later resume can
+    check in O(1) reads.
+    """
     from kiro_crew.crew_log import checkpoint as savepoints
 
-    return savepoints.load(handle, wanted)
+    return savepoints.load_resumable(handle, wanted)
 
 
 def _persisted(
-    bundle: SessionProjections, *, handle: CrewLog | None, prefix: PrefixWitness | None
+    bundle: SessionProjections,
+    *,
+    handle: CrewLog | None,
+    prefix: "CutWitness | PrefixWitness | None",
+    owes_point: bool = False,
 ) -> SessionProjections:
     """*bundle*, with its savepoint on disk brought forward if a write is owed.
 
@@ -399,7 +510,7 @@ def _persisted(
         return bundle
     from kiro_crew.crew_log import checkpoint as savepoints
 
-    return savepoints.save(handle, bundle, prefix=prefix)
+    return savepoints.save(handle, bundle, prefix=prefix, owes_point=owes_point)
 
 
 # --------------------------------------------------------------------------- #
@@ -524,6 +635,9 @@ def _drive_session(
     session_id: str,
     base: Mapping[str, Checkpoint],
     handle: CrewLog,
+    *,
+    points: "Mapping[int, ResumePoint] | None" = None,
+    cursor: "ReadCursor | None" = None,
 ) -> dict[str, Checkpoint]:
     """*base* carried forward over every entry of *handle* above it.
 
@@ -545,7 +659,9 @@ def _drive_session(
     and serving a value past it would hide it.
     """
     try:
-        registry.prime_checkpointed(session_id, _HeldCheckpoints(base), {}, _tail_reader(handle))
+        registry.prime_checkpointed(
+            session_id, _HeldCheckpoints(base), {}, _tail_reader(handle, points, cursor)
+        )
         return _cells_as_checkpoints(registry, session_id)
     except Exception:
         log_exception_text(
@@ -567,13 +683,39 @@ def _drive_session(
     return _cells_as_checkpoints(cold, session_id)
 
 
-def _tail_reader(handle: CrewLog) -> Callable[[int], Iterable[Entry]]:
-    """The kernel's tail source for *handle*: the entries strictly above a watermark."""
+def _above(entries: Iterable[Entry], floor: int) -> Iterator[Entry]:
+    """*entries* with every seq at or below *floor* left out."""
+    for entry in entries:
+        if entry.seq > floor:
+            yield entry
+
+
+def _tail_reader(
+    handle: CrewLog,
+    points: "Mapping[int, ResumePoint] | None" = None,
+    cursor: "ReadCursor | None" = None,
+) -> Callable[[int], Iterable[Entry]]:
+    """The kernel's tail source for *handle*: the entries strictly above a watermark.
+
+    *points* are byte positions a savepoint stored, by the seq of the record each names.
+    The one at the watermark lets the walk open the file there; ``iter_from`` checks it
+    against the live file first and walks from the top when it does not hold, so it
+    changes what is read and never what is yielded. *cursor* receives where this walk
+    stopped, for the savepoint the pass may write.
+    """
 
     def tail_from(watermark: int) -> Iterable[Entry]:
         # The kernel's empty watermark is -1 and a checkpoint's is 0; both mean
         # nothing consumed, and the log's own first seq is 1.
-        return handle.iter_from(max(watermark, 0) + 1, known=KNOWN_TYPES)
+        floor = max(watermark, 0)
+        resume = points.get(floor) if points else None
+        if cursor is None or floor == 0 or resume is not None:
+            return handle.iter_from(floor + 1, known=KNOWN_TYPES, resume=resume, cursor=cursor)
+        # No stored position: the walk starts AT the floor's own record and drops it
+        # here, so the cursor names that record even when nothing above it arrived.
+        # Without it a session resumed from a file with no stored position could not
+        # learn one, and would decode its whole log on every restart.
+        return _above(handle.iter_from(floor, known=KNOWN_TYPES, cursor=cursor), floor)
 
     return tail_from
 

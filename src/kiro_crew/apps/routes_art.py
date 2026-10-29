@@ -49,6 +49,10 @@ from kiro_crew.apps.registry import (
     minimal_env,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+)
 from kiro_crew.apps.routes_static import _CONTENT_TYPES
 from kiro_crew.dashboard.conditional_get import conditional_response
 from kiro_crew.pinned_fs import (
@@ -460,6 +464,9 @@ async def _fetch_git_blob(
         logger.warning("blob clone credential target did not match repository identity")
         return False
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     # SSRF gate: a configured external registry's (untrusted) index can list an
     # app ``repo`` pointing at an internal address (e.g. ``https://127.0.0.1/x``)
@@ -518,7 +525,7 @@ async def _fetch_git_blob(
             clone_mode = "strict"
             clone_env = anonymous_git_env()
         clone_root = Path(tmp_root)
-        if credentialed_transport:
+        if isolate_transport:
             # A combined credentialed clone performs fetch and checkout in one
             # process. Repository-controlled filters (and checkout-time hooks)
             # would therefore inherit the one-shot URL rewrite containing the
@@ -568,7 +575,7 @@ async def _fetch_git_blob(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=clone_env,
+                env=_git_network_env(clone_env, git_url),
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)

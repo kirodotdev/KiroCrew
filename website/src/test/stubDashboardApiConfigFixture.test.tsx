@@ -22,8 +22,10 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import {
   KIROCREW_CONFIG_FIXTURE,
+  KIRO_BACKEND_CONFIG_FIXTURE,
   AGENT_CONFIG_FIXTURE,
 } from '../../scripts/lib/stub-dashboard-api.mjs'
+import { ACP_BACKEND_KIRO, configuredAcpBackend, isKiroBackend } from '../api/acpBackend'
 
 vi.mock('../api/client')
 
@@ -113,5 +115,16 @@ describe('stub-dashboard-api config fixture', () => {
   it('serves an agent-config fixture the MCP view can read', () => {
     expect(AGENT_CONFIG_FIXTURE.name).toBeTypeOf('string')
     expect(AGENT_CONFIG_FIXTURE.mcpServers).toBeTypeOf('object')
+  })
+
+  // The credit-pill and Kiro Account harnesses photograph the Kiro backend's
+  // surface. The base fixture leaves `agent.acp_backend` unset, which resolves
+  // to the default harness; once that stopped being kiro, a failed or empty
+  // usage read hid the pill and closed the modal, and those frames timed out.
+  it('offers a config that resolves to the Kiro backend for the credit harnesses', () => {
+    expect(configuredAcpBackend(KIRO_BACKEND_CONFIG_FIXTURE)).toBe(ACP_BACKEND_KIRO)
+    expect(isKiroBackend(KIRO_BACKEND_CONFIG_FIXTURE)).toBe(true)
+    // Everything else is the base fixture, so the pages it renders still render.
+    expect({ ...KIRO_BACKEND_CONFIG_FIXTURE, agent: KIROCREW_CONFIG_FIXTURE.agent }).toEqual(KIROCREW_CONFIG_FIXTURE)
   })
 })

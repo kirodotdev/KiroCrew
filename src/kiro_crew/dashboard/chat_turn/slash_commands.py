@@ -34,10 +34,10 @@ from kiro_crew.security import redact
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _BLOCKED_SLASH_COMMANDS,
-        ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         ACP_BACKENDS_COMPACT,
         ACP_BACKENDS_LOCAL_CLEAR,
+        ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
         MAX_PROMPT_BYTES,
         DashboardState,
         KiroCrewConfig,
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
     from kiro_crew.dashboard.chat_turn.recovery import (
         _COMPACT_FAIL_REASON_MAX_CHARS,
+        COMPACT_FRESH_SESSION_NOTICE,
         COMPACT_REPLAY_PENDING_NOTICE,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -689,6 +690,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             return _Flow.END
 
     # ── Harness commands on KAS, which has no command channel ──
+    # (``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``; GET /api/slash-commands reads the
+    # same set to leave these commands out of the / menu.)
     # The session handle runs a command natively only on kiro-cli; KAS gets it
     # as session/prompt text, and KAS has no built-in /clear there, so the
     # model reads "/clear" as a request and the conversation stays. KAS also
@@ -708,7 +711,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     ):
         _command_backend = await _slash_command_backend(state, session_key)
-        if _command_backend == ACP_BACKEND_KAS or (
+        if _command_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS or (
             _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
         ):
             turn_exit.local_command = first_word
@@ -725,6 +728,13 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._dispatch_lock_held = False
     _mirror_stream_ts: str = ""
     turn._mirror_stream_ts = _mirror_stream_ts
+    # The task stream opens lazily on the first mirrored tool call; one attempt
+    # per turn, so a stream Slack refuses is not re-requested on every tool.
+    turn._mirror_stream_tried = False
+    # ts of the mirror's "Thinking…" placeholder; "" once it has been deleted.
+    turn._mirror_thinking_ts = ""
+    # Whether this turn posted its prompt echo; a recovery requeue reads it.
+    turn._mirror_echo_posted = False
     _mirror_chan: str | None = ""
     turn._mirror_chan = _mirror_chan
     _mirror_active_task = ""
@@ -761,6 +771,7 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
     client = turn.client
     first_word = turn.first_word
     saw_compaction = turn.saw_compaction
+    session_key = turn.session_key
     slot = turn.slot
     state = turn.state
     # /compact acknowledged but compaction deferred — send a lightweight
@@ -810,6 +821,20 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
             # whole compaction timeout. Nothing was compacted, so skills
             # context is not re-armed and the lease stays for the next prompt.
             _append_compaction_notice(state, slot, COMPACT_REPLAY_PENDING_NOTICE)
+        elif (
+            not capabilities_of(client).compacts_inline
+            and state.sessions.first_turn_history_owed_pending(session_key) is True
+        ):
+            # A FRESH provider session (a brand-new chat) that no ordinary
+            # prompt has reached yet: the first-turn history debt is armed at
+            # admission and only a kept non-slash turn settles it, so the
+            # native session holds no conversation. kiro-cli ends this turn
+            # with "Conversation too short to compact." and sends no
+            # compaction status, the same shape as the replay case
+            # above. Answer now rather than wait out the compaction timeout;
+            # nothing was compacted, so the debt and skills context stay as
+            # they are for the next prompt.
+            _append_compaction_notice(state, slot, COMPACT_FRESH_SESSION_NOTICE)
         elif capabilities_of(client).compacts_inline:
             _restore_skills_context_after_compaction(turn)
             msg = "✅ Conversation compacted."

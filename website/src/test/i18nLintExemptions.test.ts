@@ -389,6 +389,17 @@ describe('string comparison is a position exemption', () => {
     // The snake exemption is narrow: one lowercase run per underscore, no spaces.
     expect(await lint(`export const LABEL = 'save changes_now'`)).toHaveLength(1)
   })
+
+  it('keeps a versioned snake_case wire token exempt', async () => {
+    // Real site: the `fold_delta.1` socket capability in hooks/websocket/foldWatch.ts.
+    expect(await lint(`export const FOLD_CAP = 'fold_delta.1'`)).toEqual([])
+    expect(await lint(`export const cap = 'fold_delta.12'`)).toEqual([])
+  })
+
+  it('still reports copy that only looks like a versioned token', async () => {
+    expect(await lint(`export const LABEL = 'Version 1.2'`)).toHaveLength(1)
+    expect(await lint(`export const LABEL = 'save changes_now.1'`)).toHaveLength(1)
+  })
 })
 
 describe('Gateway wire markers with a bracketed ALL-CAPS tag are exempt', () => {
@@ -435,5 +446,12 @@ describe('capability retention protocol sentinel', () => {
   it('allows the exact wire mask but still reports prose around it', async () => {
     expect(await lint("export const mask = '[REDACTED]'" )).toEqual([])
     expect(await lint("export const label = 'Keep [REDACTED] value'" )).not.toEqual([])
+  })
+})
+
+describe('config-path attributes', () => {
+  it('exempts a configKey naming an underscored section, but not the label beside it', async () => {
+    expect(await lint('export const A = () => <X configKey="session_environments.coder_url" />')).toEqual([])
+    expect(await lint('export const B = () => <X configKey="session_environments.coder_url" label="Coder URL" />')).toHaveLength(1)
   })
 })

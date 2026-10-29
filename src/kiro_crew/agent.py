@@ -415,6 +415,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         describe_search_path,
         emit_env,
         entry_as_enabled,
+        gateway_routed_names,
         invalid_disabled_flag,
         kiro_oauth_wire_entry,
         mcp_entries_muted,
@@ -703,6 +704,21 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
     "kirocrew-mate": {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-mate"),
     },
+    # Mediated secret requests (``mcp_secrets``): one tool,
+    # ``call_api_with_secret``, that sends a write to an owner-authorized https
+    # origin with a Custom secret the agent never sees. ``opt_in`` like the
+    # assignable sets above: the trust boundary is the host endpoint, not the
+    # mount, so an agent that is not granted the set loses nothing it could use,
+    # and a default session spends no process and no context on it.
+    #
+    # No ``autoApprove`` key, and none may ever be added: an autoApproved MCP
+    # tool is approved inside kiro-cli and never reaches ``hooks.on_tool_call``,
+    # and the approval is where the single-use capability the host endpoint
+    # demands is minted (``mediated_request_capability``).
+    "kirocrew-secrets": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-secrets"),
+        "opt_in": True,
+    },
 }
 
 
@@ -964,6 +980,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "describe_search_path",
         "emit_env",
         "entry_as_enabled",
+        "gateway_routed_names",
         "invalid_disabled_flag",
         "kiro_oauth_wire_entry",
         "mcp_entries_muted",

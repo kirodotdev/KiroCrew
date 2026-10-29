@@ -103,7 +103,6 @@ async function session(browser, pod, theme, { stt = false, sttDelayMs = 0, membe
   if (status !== 200) throw new Error(`theme PUT ${status}`)
   await page.evaluate((t) => {
     localStorage.setItem('mc-theme', t)
-    localStorage.setItem('mc-preview-crew', '1')
   }, theme)
   if (!members) return { ctx, page }
   await page.goto(`${pod.base_url}/members?member=${MEMBER}`, { waitUntil: 'load' })

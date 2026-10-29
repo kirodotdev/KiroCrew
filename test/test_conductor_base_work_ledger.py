@@ -248,7 +248,9 @@ async def test_a_pipeline_conductor_item_lands_on_a_workstreams_board(tmp_path, 
     )
     assert resp.status == 200, resp.text
 
-    assert [d["action"] for d in recorded] == ["goal", "create", "bind", "report"]
+    # The report is recorded twice: the worker's copy and the board's copy.
+    assert [d["action"] for d in recorded] == ["goal", "create", "bind", "report", "report"]
+    recorded = recorded[:-1]
     item = wl.read_work_item(PIPELINE, item_id)
     assert item is not None and item.status == "done"
 

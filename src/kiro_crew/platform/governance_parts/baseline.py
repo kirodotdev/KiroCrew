@@ -11,7 +11,9 @@ document would carry for it, parsed by the same per-control parser a remote
 policy goes through. ``BASELINE_UNGATED`` lists the scopes that keep Crew's own
 default, with the reason. Every catalog scope (aliases aside) is in exactly one
 of the two; ``test_governance_enterprise_baseline.py`` fails on a new scope that
-is in neither.
+is in neither. ``BASELINE_INNER_LISTS`` holds the inner lists a remote policy
+must name itself: one it leaves out keeps its baseline even though it named the
+capability.
 
 Two rows differ from the appendix in detail. ``tools`` holds the LOCAL read-only
 built-ins only (``fs_read``, ``glob``, ``grep``): ``web_fetch`` and ``web_search``
@@ -30,6 +32,13 @@ from typing import Dict, Mapping
 
 _OFF: Mapping[str, object] = {"mode": "allow", "allow": []}
 _CAPABILITY_OFF: Mapping[str, object] = {"enabled": False}
+# The appendix rows "Deploy regions", "Publish audiences" and "Deploy accounts":
+# off, with no minimal set.
+_PUBLISH_LISTS_OFF: Mapping[str, Mapping[str, object]] = {
+    "regions": _OFF,
+    "audience": _OFF,
+    "accounts": _OFF,
+}
 
 # Crew's default workspace root: ``config.paths._default_workspace_base()`` joined
 # with ``_WORKSPACE_DIR_NAME``. The base is ``~/workplace`` everywhere, or
@@ -50,6 +59,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "approval_modes": {"mode": "allow", "allow": ["normal", "trust", "trust_reads"]},
     "mcp": {"mode": "allow", "allow": ["@kirocrew-core"]},
     "apps": _OFF,
+    "app_versions": _OFF,
     "commands": _OFF,
     "filesystem.read": {
         "mode": "allow",
@@ -72,20 +82,46 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # ``publish_provider.DEFAULT_PROVIDER``.
     "capabilities.publish": {
         "enabled": True,
-        "scopes": {"destinations": {"mode": "allow", "allow": ["default"]}},
+        "scopes": {"destinations": {"mode": "allow", "allow": ["default"]}, **_PUBLISH_LISTS_OFF},
     },
     "capabilities.theme_persona": _CAPABILITY_OFF,
     "capabilities.theme_install": _CAPABILITY_OFF,
     "capabilities.telemetry": _CAPABILITY_OFF,
     "capabilities.tailnet_origin": _CAPABILITY_OFF,
+    # ``dashboard.urls._BIND_LOCAL``; never queried, since loopback is the floor.
+    "bind_address": {"mode": "allow", "allow": ["127.0.0.1"]},
+    # This machine's loopback origins are the floor and are never queried.
+    "dashboard_origins": _OFF,
+    "capabilities.computer_use": _CAPABILITY_OFF,
     "capabilities.mobile_connect": _CAPABILITY_OFF,
     "capabilities.social_share": _CAPABILITY_OFF,
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
     "capabilities.decisions": _CAPABILITY_OFF,
     "capabilities.decisions_local": _CAPABILITY_OFF,
+    "capabilities.extension_install": _CAPABILITY_OFF,
+    "capabilities.app_dev_mode": _CAPABILITY_OFF,
+}
+
+#: Inner lists of a capability that keep their baseline when the remote policy
+#: names the capability but not the list. Without this, a policy that turns
+#: ``publish`` on to name its destinations would leave every region, audience and
+#: account open, because an unnamed inner list permits.
+BASELINE_INNER_LISTS: Dict[str, Mapping[str, Mapping[str, object]]] = {
+    "capabilities.publish": _PUBLISH_LISTS_OFF,
 }
 
 BASELINE_UNGATED: Dict[str, str] = {
     "approval_mode": "ordinal; never item-queried, so Crew's own approval default applies",
     "sandbox.min_level": "ordinal; the RFC appendix keeps Crew's current sandbox default",
 }
+
+# Enterprise minimal values for the policy-only fields outside ``controls``, filled
+# into the authority before tiers compose (``tiers._with_enterprise_baseline``) so a
+# local tier can only narrow them, and read again where each is consumed.
+#: ``updates.channel`` (appendix "Update channel"): stable.
+ENTERPRISE_UPDATE_CHANNEL = "stable"
+#: ``yolo_max_seconds`` (appendix "Auto-approval duration"): the shortest selectable
+#: duration, ``agent.yolo_duration`` ``30m``. The baseline already denies ``yolo``.
+ENTERPRISE_YOLO_MAX_SECONDS = 1800
+#: ``channels.posture.slack.allowed_channel_ids`` (appendix "Slack channels"): none.
+ENTERPRISE_SLACK_CHANNELS: Mapping[str, object] = _OFF

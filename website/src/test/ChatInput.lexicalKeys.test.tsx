@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
@@ -53,6 +53,9 @@ describe('ChatInput Lexical composer: keyboard chords match the textarea', () =>
     renderWithProviders(<Host onSend={onSend} />)
     const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     expect(input).toHaveAttribute('data-lexical-composer')
+    // Flush the useEffect that registers the Lexical key-down handler so it is
+    // installed before the synthetic event fires.
+    await act(async () => {})
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', ctrlKey: true, shiftKey: true })
     // The chord starts the optimize request, and the send path is never taken.
     // The generous timeouts cover a loaded CI coverage shard, where the mocked
@@ -67,12 +70,13 @@ describe('ChatInput Lexical composer: keyboard chords match the textarea', () =>
     const onSteer = vi.fn()
     renderWithProviders(<Host onSend={onSend} onSteer={onSteer} isRunning canSteer onStop={vi.fn()} />)
     const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
+    await act(async () => {})
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', ctrlKey: true })
-    expect(onSend).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
     expect(onSteer).not.toHaveBeenCalled()
     // One-shot: the next plain Enter is back to the split's own mode.
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
-    expect(onSteer).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1))
   })
 
   it('a bare Escape while a turn runs stops it, as in the textarea (#22315)', async () => {
@@ -80,8 +84,9 @@ describe('ChatInput Lexical composer: keyboard chords match the textarea', () =>
     renderWithProviders(<Host isRunning onStop={onStop} />)
     const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     expect(input).toHaveAttribute('data-lexical-composer')
+    await act(async () => {})
     fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' })
-    expect(onStop).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1))
     // A modified Escape is not the binding.
     fireEvent.keyDown(input, { key: 'Escape', code: 'Escape', shiftKey: true })
     expect(onStop).toHaveBeenCalledTimes(1)

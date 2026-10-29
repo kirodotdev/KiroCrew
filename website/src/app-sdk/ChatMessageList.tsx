@@ -24,7 +24,7 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
-import { createDisplayItemReconciler, hasToolStep } from '../pages/chat/groupDisplayItems'
+import { createDisplayItemReconciler, hasToolStep, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import {
   type MessageRenderer,
@@ -436,6 +436,9 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
         <CollapsibleToolGroup
           count={nonPerm.length}
+          // This host groups only reasoning rows and permissions, so the rows it
+          // counts are reasoning steps, not tool calls; the pill says so.
+          reasoningOnly={nonPerm.length > 0 && nonPerm.every(m => (REASONING_ROLES as readonly string[]).includes(m.role))}
           autoExpand={(running && item.startIdx >= versioned.messages.length - 5) || !!handleApproveBatch}
           hasPermission={unresolvedPerms.length > 0}
           isRunning={running}

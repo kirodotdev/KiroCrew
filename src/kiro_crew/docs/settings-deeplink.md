@@ -97,8 +97,11 @@ second form meeting a translated dashboard, not a stale registry.
 - Controls whose label is computed at runtime rather than written in the panel.
   They are skipped by generation, so a control missing from the file is not
   necessarily missing from the UI.
-- Everything outside Settings — the Developer page, Customize, and the
-  App Store each have their own routes and are not enumerated here.
+- Everything outside Settings — Customize and the App Store each have their
+  own routes and are not enumerated here. The developer views (logs, system,
+  MCP Management and the rest) are pages of Settings → Developer
+  (`/settings/developer/<page>`), but only their controls that the generator
+  indexes appear in the registry.
 - Config keys with no control at all. Those are set in `config.json` or with
   `kirocrew config`; see [configuration.md](configuration.md).
 

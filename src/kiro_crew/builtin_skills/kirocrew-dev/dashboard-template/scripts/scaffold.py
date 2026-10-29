@@ -1194,7 +1194,15 @@ def main(argv: list[str] | None = None) -> int:
             texts=text_fields(args.fold),
             unchecked=unchecked_sources(args.fold),
         )
-        root = args.out_root if args.out_root is not None else repo_root()
+        if args.out_root is not None:
+            try:
+                root = args.out_root.expanduser()
+            except RuntimeError as exc:
+                # ``~user`` for an account that does not exist; surface it the
+                # same way as any other bad --out-root rather than a traceback.
+                raise ScaffoldError(f"cannot resolve --out-root {args.out_root}: {exc}") from exc
+        else:
+            root = repo_root()
         files = emit(args.slug, args.fold, fields, root)
     except ScaffoldError as exc:
         print(f"scaffold: {exc}", file=sys.stderr)

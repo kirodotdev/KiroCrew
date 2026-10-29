@@ -35,7 +35,11 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers import _prompt_read_within_root
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import (
+    EmbedAdmissionTimeout,
+    acquire_embed_admission,
+    run_in_embed_pool,
+)
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
@@ -55,8 +59,10 @@ if TYPE_CHECKING:
         _find_prompt,
         _get_skills,
         _maybe_inject_persona,
+        _MemoryUnavailable,
         context_omissions,
         embed_startup_query,
+        injection_receipts,
         is_sensitive_path,
         logger,
         prefetch_session_memory,
@@ -80,6 +86,20 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+
+
+# How long a context-bearing turn waits to ENTER the memory embed pool before it
+# gives up and surfaces a visible error instead of waiting unbounded. Only the
+# ADMISSION wait is bounded; the build's own work (embedding, file reads) is not,
+# because the hang this guards is a saturated memory-admission semaphore where
+# other concurrent memory builds and non-recall embed-pool work hold every one of
+# its slots and the turn sits on "thinking" with no deadline. (Background
+# consolidation does not contend here -- it runs on its own memory-background
+# pool, not on the embed pool these slots gate.)
+# Sized well above a healthy build joining a busy pool yet strictly below the
+# backend's post-dispatch stall detector (``_STALE_TURN_TIMEOUT``, 90s), so a
+# saturated pool reads as a clear turn error here rather than later as a stall.
+_BUILD_ADMISSION_TIMEOUT_SECS = 60.0
 
 
 async def _session_replay_history(
@@ -558,6 +578,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
     """Build the prompt the turn sends: a slash command's, the context builder's or the bare message."""
     _trusted_prompt_tail: str | None
     slot_ctx_omitted: dict[str, dict[str, Any]]
+    slot_ctx_receipts: dict[str, dict[str, Any]]
     _context_is_new = turn._context_is_new
     _current_replay_message = turn._current_replay_message
     _is_quick_prompt = turn._is_quick_prompt
@@ -602,6 +623,38 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # The difference against len(message) at build_message time is how
         # far the user's text was pushed down — its offset for split_blocks.
         _core_msg_len = len(message)
+        # Bound ONLY the wait to ENTER the memory embed pool, taken here -- just
+        # before the first one-shot input this branch consumes (the replay
+        # suppression flag in _session_replay_history, the subagent-failure
+        # drain, prev_turn_cancelled, the pending-context drain) or writes into
+        # build_message's delivery records. A saturated pool -- every slot held
+        # by concurrent memory builds and other non-recall embed-pool work
+        # (consolidation runs on its own memory-background pool, not these slots)
+        # -- would otherwise leave this turn on "thinking" with no deadline.
+        # Acquiring the slot FIRST means a timeout
+        # has consumed nothing to restore and leaves no abandoned build thread.
+        # The reservation is held across the non-pool awaits below (replay, store
+        # init, folder reads, prewarm) -- the atomicity this guards requires it,
+        # and those are bounded local work, not the unbounded admission wait. The
+        # build future takes over the slot's release once submitted, so on the
+        # success path the slot frees the moment the build finishes (before the
+        # stream); _turn_settle_debts settles the reservation on every exit, a
+        # no-op once the future already released it and the real release only on a
+        # pre-submit error (the timeout path reserved nothing). Stored straight
+        # onto the turn and never held under a bare local, so the except arms and
+        # _turn_settle_debts read the one storage cell (turn-plumbing contract).
+        try:
+            turn._admission_slot = await acquire_embed_admission(_BUILD_ADMISSION_TIMEOUT_SECS)
+        except EmbedAdmissionTimeout as exc:
+            # The pool stayed saturated past the deadline. Nothing above ran, so
+            # no input was consumed; surface the retryable memory-unavailable
+            # card the gateway already renders rather than hang. The next turn
+            # re-reads every one-shot untouched.
+            raise _MemoryUnavailable(
+                "memory_unavailable: the memory pool was busy and this turn's "
+                "context could not be prepared in time; nothing was sent -- "
+                "try again in a moment"
+            ) from exc
 
         # Record that a non-slash context-bearing turn ASSEMBLED its history
         # replay — this is the ``elif state.context_builder:`` arm, so a slash
@@ -643,8 +696,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     build_cancelled_turn_preamble,  # circular: context -> dashboard.chat -> chat_runner (can't top-level: context imports chat at module load); circular: context -> chat -> chat_runner; circular: context -> chat
                 )
 
-                preamble = build_cancelled_turn_preamble(
-                    state.context_builder.conversation_log, session_key
+                preamble = await asyncio.to_thread(
+                    build_cancelled_turn_preamble,
+                    state.context_builder.conversation_log,
+                    session_key,
                 )
                 if preamble:
                     message = preamble + "\n\n" + message
@@ -730,6 +785,16 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 board_tags = resolve_board_tags(_slot_tags, state._tags) or None
         except Exception:
             logger.debug("board_tags resolution failed", exc_info=True)
+        # A ROOT session's own page, as the [DASHBOARD] block names it (a crewmate's
+        # rides in its member section instead). The root test is the one the page's
+        # read and write routes apply; the block is empty until a page is adopted.
+        session_dashboard: str | None = None
+        try:
+            from kiro_crew.dashboard_agentic import root_session_dashboard_block
+
+            session_dashboard = await root_session_dashboard_block(slot) or None
+        except Exception:
+            logger.debug("session dashboard block failed", exc_info=True)
         _color_theme = getattr(slot, "color_theme", "")
         # Governance gate: installed-pack persona injection
         # is a governable capability. A policy can force-disable it wholesale
@@ -875,12 +940,18 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # the collection gathers them for the ``context/composed`` _turn_dispatch_gates writes.
         # It opens around the build alone, so only THIS turn's composition lands in
         # it, and the worker thread sees it through the context the pool copies.
-        with context_omissions.collect() as _ctx_omitted:
+        # The lesson tiers record WHICH rows they kept the same way, for the
+        # injection receipt _turn_dispatch_gates writes beside it.
+        with (
+            context_omissions.collect() as _ctx_omitted,
+            injection_receipts.collect() as _ctx_receipts,
+        ):
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
                 _context_is_new,
                 session_key,
+                _admission_held=turn._admission_slot,
                 agent=kiro_agent or slot.agent or None,
                 resumed=_provider_has_history,
                 workspace=slot.workspace or None,
@@ -895,6 +966,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 exclude_last_n=1,
                 folder_path=folder_path,
                 board_tags=board_tags,
+                session_dashboard=session_dashboard,
                 model_window=model_window,
                 # Member DM threads get the four-layer member identity block.
                 # `slot.agent` is the member the human picked (the crew name);
@@ -917,14 +989,23 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # whose text the person did not write (a recovery or Continue
                 # continuation, the synthesis prompt, an MCP App's message). A
                 # sub-agent completion is the parent's own work coming back, so
-                # its echoed task and result trigger nothing either.
+                # its echoed task and result trigger nothing either. A loop's
+                # wake matches the loop's own message, not the cycle header.
                 skill_trigger_text=(
-                    "" if _is_synthetic or turn._turn_actor == "subagent" else _jev_route_text
+                    ""
+                    if _is_synthetic or turn._turn_actor == "subagent"
+                    else (
+                        _jev_route_text
+                        if turn._skill_trigger_text is None
+                        else turn._skill_trigger_text
+                    )
                 ),
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)
         turn.slot_ctx_omitted = slot_ctx_omitted
+        slot_ctx_receipts = dict(_ctx_receipts)
+        turn.slot_ctx_receipts = slot_ctx_receipts
         # The reported span is valid for the message as build_message
         # returned it. Several later steps PREPEND to the finished prompt
         # (incognito/temporary notice, re-injected history, hook context, a
@@ -985,6 +1066,19 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     _terminal_synthetic = turn._terminal_synthetic
     session_key = turn.session_key
     state = turn.state
+    # Settle the embed-pool admission reservation _turn_build_prompt opened (if
+    # any). Release here ONLY when no build future took ownership -- a pre-submit
+    # error left the reservation open. On the success path the build was
+    # submitted, so its future owns the release (its thread can outlive a
+    # cancelled turn) and frees the slot when the build finishes; releasing here
+    # would free it while that thread still ran. The timeout path reserved
+    # nothing (slot is None). Synchronous on purpose -- _turn_settle_debts must
+    # stay suspension-free, which the slot's plain release() allows. Spelled as
+    # turn._admission_slot throughout (never a bare local) per the turn-plumbing
+    # contract.
+    if turn._admission_slot is not None and not turn._admission_slot.handed_off:
+        turn._admission_slot.release()
+        turn._admission_slot = None
     # Replay settlement belongs on the one path every turn exit crosses.
     # A clean, non-synthetic landed end_turn is the only ordinary terminal
     # whose fresh native transcript is durable enough to replace the prior
@@ -1017,7 +1111,7 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     # re-queue. Put the flag back here rather than at the success check in
     # _turn_context_usage, because most of those paths never reach it;
     # without this the index is lost for the remaining life of the session.
-    # Wrapped for the same reason as the flush in _turn_release_handles (chat_turn/turn_entry.py).
+    # Wrapped for the same reason as the flush in _turn_flush_file_changes (chat_turn/turn_entry.py).
     #
     # The member condition rides the same re-arm for the same reason: a
     # member DM's FIRST turn that dies before landing (MemberRulesUnreadable

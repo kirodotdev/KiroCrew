@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { useLayoutEffect, useRef } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { render, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { BlockedLinkChip, RedactionCardSlot, RedactionCoach, RedactionProvider, REVEAL_MS, setAllowHold, useRedactionUi } from '../components/RedactionCards'
+import { LocalOverlayRoot } from '../components/overlayRoot'
 import { api } from '../api/client'
 import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 
@@ -765,5 +766,35 @@ describe('first reply with removed values', () => {
     expect(block.compareDocumentPosition(coach) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(coach.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(coach.querySelector('ol')?.className).toContain('list-decimal')
+  })
+})
+
+describe('card behavior across Crew switches', () => {
+  // The card is an inline transcript element (not portalled). When the local
+  // Crew is hidden behind a remote one, the card stays open and mounted so the
+  // allow hold is preserved. Only the Escape key handler stands down.
+
+  it('keeps the card open and does not close on Escape while the local Crew is hidden', () => {
+    function Harness() {
+      const [hidden, setHidden] = useState(false)
+      return (
+        <LocalOverlayRoot hidden={hidden}>
+          <RedactionProvider credentials={[]} blockedLinks={[link()]}>
+            <BlockedLinkChip domain="reviews.corp.example" placeholder={PH('reviews.corp.example')} block="0.0" />
+            <RedactionCardSlot ids="rx-link-reviews.corp.example~0.0" />
+            <button onClick={() => setHidden(true)} data-testid="switch-crew">switch</button>
+          </RedactionProvider>
+        </LocalOverlayRoot>
+      )
+    }
+    const { getByTestId, queryByTestId } = render(<Harness />)
+    // Open the card.
+    fireEvent.click(getByTestId('blocked-link-inspect'))
+    expect(queryByTestId('blocked-link-card')).toBeTruthy()
+    // Switch to a remote Crew and fire Escape on it.
+    fireEvent.click(getByTestId('switch-crew'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    // Card must still be open: closing it would clear the allow hold.
+    expect(queryByTestId('blocked-link-card')).toBeTruthy()
   })
 })

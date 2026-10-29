@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { fmtDateFields, fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { copyToClipboard } from '../../utils/clipboard'
+import { localDaysAgo } from '../chat/sessionOrder'
 
 export function typeBadgeVariant(t: string): 'ok' | 'warn' | 'err' | 'aim' {
   if (['design_doc', 'code_doc'].includes(t)) return 'aim'
@@ -15,8 +16,9 @@ export function formatDate(iso: string) {
 }
 
 export function formatRelativeDate(iso: string): string {
-  const diff = Math.max(0, Date.now() - new Date(iso).getTime())
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+  // Local calendar days, not elapsed 24h periods: a sync at 23:00 seen at 00:30
+  // is "yesterday". A future instant (clock skew) folds into today.
+  const days = Math.max(0, localDaysAgo(new Date(), new Date(iso)))
   if (days === 0) return 'today'
   if (days === 1) return 'yesterday'
   if (days < 7) return i18nT('pages.knowledge.helpers.days_ago', { n: days })

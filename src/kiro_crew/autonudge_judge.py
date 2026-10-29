@@ -1215,6 +1215,11 @@ READ_ONLY_BUILTIN_TOOLS: frozenset[str] = _HOST_READ_ONLY_BUILTIN_TOOLS | frozen
 #: say -- labelled acted. That is one flat row in the curve, the error this module
 #: already prices as cheap. ``test_wake_judge_feedback`` pins the absence, so re-adding
 #: a tier reddens rather than passing quietly.
+#:
+#: The approval gate's ``hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS`` is not that tier and
+#: is deliberately not reused here. It answers a different question -- whether the
+#: agent can change the USER'S world, which an index build inside the gateway's own
+#: data directory does not -- so a name on it still counts as acted for this label.
 
 
 def tool_changed_something(

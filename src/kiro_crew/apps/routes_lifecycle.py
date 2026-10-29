@@ -131,40 +131,24 @@ async def _deregister_app_off_loop(name: str) -> RegistrationResult:
 
 
 async def _stop_backend_and_observe(name: str) -> tuple[int | None, bool]:
-    """Stop *name*'s backend and report what the probe could establish.
+    """Stop *name*'s backend on uninstall and report what the probe established.
 
-    Returns the port it is STILL listening on, if any, and whether the probe had
-    gateway-owned evidence of which port to look at. Both halves are needed,
-    because ``None`` from the probe means "nothing observed", NOT "definitely
-    stopped": with no recorded port the probe falls back to the declared one in
-    ``app.json``, which sits inside the app directory and is writable by any app
-    trusted to run code. By the time the stop runs, ``onUninstall`` has already
-    executed app-controlled code in that directory, so a fixed-port backend this
-    gateway never tracked could have relabelled its port -- or dropped its
-    ``entryPoint`` -- and the fallback would then probe the wrong port and answer
-    ``None``. Reporting that as a clean stop is the same mistake as believing the
-    stop's boolean, one level further out.
-
-    ``stop_app_backend``'s own return value cannot answer the first half. It is
-    ``False`` both for "there was nothing to stop" (never started, already dead)
-    and for "something is running that I did not stop" (a fixed-port backend never
-    adopted at boot, an adoption with no usable PIDs), and ``True`` only says the
-    process it was TRACKING is gone -- which is silent about a detached worker the
-    app spawned for itself. Those need opposite handling, so the port is OBSERVED
-    rather than the flag believed. Same contract ``teardown_app_runtime`` applies
-    on disable and on trust withdrawal.
-
-    The hint is captured BEFORE the stop because the stop drops both the live
-    tracking entry and the pidfile record, and those are the only gateway-owned
-    evidence of which port this backend actually used.
+    Runs :func:`kiro_crew.apps.teardown.stop_backend_and_observe`, the one
+    spelling of the hint / stop / probe sequence that disable and trust withdrawal
+    share, with this module's bindings of the three backend functions so a patch
+    through ``kiro_crew.apps.routes`` reaches them. On uninstall ``onUninstall``
+    has already run app code in the app directory, so the declared port the probe
+    falls back to may be stale; the second half of the result says whether a
+    gateway-owned hint existed.
     """
-    loop = asyncio.get_running_loop()
-    port_hint = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
-    await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
-    live_port = await loop.run_in_executor(
-        subprocess_executor(), lambda: unstopped_backend_port(name, port_hint=port_hint)
+    from kiro_crew.apps.teardown import stop_backend_and_observe
+
+    return await stop_backend_and_observe(
+        name,
+        recorded=recorded_backend_port,
+        stop=stop_app_backend,
+        probe=unstopped_backend_port,
     )
-    return live_port, port_hint is not None
 
 
 async def _app_may_run_after_install(name: str, *, fresh_install: bool = False) -> bool:

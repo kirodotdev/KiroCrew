@@ -180,9 +180,29 @@ class TestStatus:
             "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
         ):
-            _status(self._make_args())
+            with pytest.raises(SystemExit) as exc:
+                _status(self._make_args())
+        assert exc.value.code == 1
         out = capsys.readouterr().out
-        assert "not running" in out
+        assert out == "Kiro Crew gateway is not running.\n  Start it with: kirocrew gateway\n"
+
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            urllib.error.HTTPError("http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None),
+            urllib.error.HTTPError("http://127.0.0.1:5476/api/status", 500, "Error", {}, None),
+            urllib.error.URLError(TimeoutError("timed out")),
+            TimeoutError("timed out"),
+            RuntimeError("unexpected"),
+        ],
+        ids=["auth", "http-error", "connect-timeout", "read-timeout", "unexpected"],
+    )
+    def test_status_exits_zero_when_a_gateway_answers(self, side_effect):
+        """Every state in which something answers the port returns without exiting."""
+        from kiro_crew.cli_server import _status
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=side_effect):
+            assert _status(self._make_args()) is None
 
     def test_status_timeout_reports_busy_not_down(self, capsys):
         """A URLError-wrapped timeout reads as busy through the shared classifier."""
@@ -269,7 +289,9 @@ class TestStatusAgainstAClosedPort:
         from kiro_crew.cli_server import _status
 
         port = self._closed_port()
-        _status(argparse.Namespace(port=port))
+        with pytest.raises(SystemExit) as exc:
+            _status(argparse.Namespace(port=port))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "Kiro Crew gateway is not running." in out
         assert "busy" not in out

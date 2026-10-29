@@ -150,6 +150,10 @@ class SlotAgentSwitchCaller(NamedTuple):
     #: Append the session-switch boundary row on commit. Off for a caller that
     #: writes its own ``/agent`` announcement line, so the switch is marked once.
     notice: bool = True
+    #: The Crew Mode migration (``dashboard/crew_mode_migration.py``) moving a Crew
+    #: Mode root onto the configured conductor. Its move turns nothing on, so it is
+    #: not counted as Crew Mode turning on.
+    crew_mode_migration: bool = False
 
     @classmethod
     def for_request(cls, request: web.Request) -> SlotAgentSwitchCaller:
@@ -168,6 +172,13 @@ class SlotAgentSwitchCaller(NamedTuple):
         # own request could do, never widened to the dashboard's.
         # The in-turn command appends its own announcement line, so no notice.
         return cls(app=slot._app or "", remote="", owner=False, own_turn=True, notice=False)
+
+    @classmethod
+    def for_crew_mode_migration(cls) -> SlotAgentSwitchCaller:
+        # The gateway itself, applying the owner's own ``agent.crew_mode_agent``:
+        # owner authority (the config is the owner's), no app scope, and the
+        # boundary row so the transcript shows where the conductor changed.
+        return cls(app="", remote="crew_mode_migration", owner=True, crew_mode_migration=True)
 
     @property
     def scope(self) -> web.Request | Mapping[str, Any]:
@@ -251,6 +262,77 @@ def agent_switch_outcome(resp: web.Response) -> tuple[bool, dict[str, Any]]:
     if not isinstance(body, dict):
         body = {}
     return resp.status == 200 and bool(body.get("ok")), body
+
+
+#: The refusal code for a switch that would take a Crew Mode root off Crew Mode.
+CREW_MODE_LOCKED = "crew_mode_locked"
+
+
+def _has_user_message(slot: _ChatSlot) -> bool:
+    """Whether *slot*'s transcript has a user message: in its window, or trimmed to disk."""
+    if getattr(slot, "_disk_older_count", 0):
+        return True
+    return any(isinstance(row, dict) and row.get("role") == "user" for row in slot.messages)
+
+
+def _crew_mode_lock_refusal(
+    slot: _ChatSlot, agent_name: str, agent_kind: Any, caller: SlotAgentSwitchCaller
+) -> web.Response | None:
+    """409 ``crew_mode_locked`` when *slot* is a Crew Mode root and this switch moves it.
+
+    Until the chat's first user message, Crew Mode can be turned off again: a
+    switch onto a template that is not a conductor passes. From the first message
+    on it is locked: a Crew Mode root never moves to another agent, whoever asks
+    (the picker, the in-turn ``/agent`` command, a session-control send of
+    ``/agent``). A re-pick of the agent it is on is a session reset and passes.
+    The one other move allowed is onto the configured conductor
+    (``agent.crew_mode_agent``) in the template namespace, whoever asks: the Crew
+    Mode migration, or a person moving a root the migration never visited. Read under
+    the slot lock, so a switch that turned Crew Mode on just before this one is seen.
+    """
+    from kiro_crew import crew_mode
+
+    if not crew_mode.slot_is_crew_mode_root(slot):
+        return None
+    # A re-pick of the agent the root is on, in the namespace it is on: a session
+    # reset. The namespace must be spelled: a name-only pick resolves to a crewmate
+    # of the same name first, which would be Crew Mode off.
+    same = (
+        agent_name == slot.agent
+        and agent_kind != ""
+        and agent_kind in ("template", slot.agent_kind)
+    )
+    if same:
+        return None
+    if (
+        agent_kind in ("", "template")
+        and not crew_mode.stamp_for_switch(agent_name, "template")
+        and not _has_user_message(slot)
+    ):
+        return None
+    if agent_name == crew_mode.crew_mode_agent() and agent_kind == "template":
+        # Onto the configured conductor, in the template namespace: still Crew Mode,
+        # on the conductor the config names. The migration's move, and a person's
+        # own move of a root the migration never visited (reopened after it finished,
+        # or stamped with a conductor an update retired). The namespace must be
+        # spelled: a name-only pick resolves to a crewmate of the same name first,
+        # which would be Crew Mode off.
+        return None
+    sel().log_api_access(
+        caller=caller.remote or caller.app or "dashboard",
+        operation="chat.slot_agent",
+        outcome="denied",
+        source=CREW_MODE_LOCKED,
+        resources=f"slot={slot.key}",
+        error="a Crew Mode chat stays on its conductor",
+    )
+    return web.json_response(
+        {
+            "error": "this chat is in Crew Mode, which stays on its conductor",
+            "code": CREW_MODE_LOCKED,
+        },
+        status=409,
+    )
 
 
 async def switch_slot_agent(
@@ -346,6 +428,7 @@ async def switch_slot_agent(
     # slot._lock, then the session lock. An ExitStack because the session
     # lock's KEY is only known after the in-lock read below, and locking on
     # any earlier read could leave this holding the wrong session lock.
+    crew_turned_on = False
     async with contextlib.AsyncExitStack() as _stack:
         await _stack.enter_async_context(slot._lock)
         # Re-authorize after the await above (see _slot_replaced_while_queued):
@@ -379,6 +462,28 @@ async def switch_slot_agent(
         denied = _app_cancel_denied(caller.scope, slot, "chat.slot_agent", session_key)
         if denied is not None:
             return denied
+        # The lock reads the transcript for a user message; a restored row that was
+        # never opened still has its window on disk, so load it off the loop first.
+        # A failed load leaves the window pending, and the lock's read would then
+        # load it inline on the loop, so the switch is refused (retryable) instead.
+        try:
+            await load_window_off_loop(slot)
+        except Exception:
+            logger.warning(
+                "agent switch: transcript window of %s could not be loaded off the loop",
+                slot.key,
+                exc_info=True,
+            )
+            return web.json_response(
+                {
+                    "error": "Could not read the chat's transcript. Try again.",
+                    "code": "history_unavailable",
+                },
+                status=503,
+            )
+        locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)
+        if locked is not None:
+            return locked
         owner_request = caller.owner
         if not owner_request:
             # Permitted chat users keep template and legacy V1 choices, but
@@ -386,6 +491,11 @@ async def switch_slot_agent(
             # before any slot, provider or history mutation.
             try:
                 choice_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                # The switch decides Crew Mode by this config's conductor, so the
+                # remembered name is refreshed from the same read.
+                from kiro_crew import crew_mode as _crew_mode
+
+                _crew_mode.remember(choice_cfg)
                 await warm_project_agent_names(
                     slot.project or None, operation="api_chat_slot_agent", source="dashboard"
                 )
@@ -490,6 +600,9 @@ async def switch_slot_agent(
         committed_agent_kind: str | None = None
         try:
             cfg = KiroCrewConfig.load()
+            from kiro_crew import crew_mode as _crew_mode
+
+            _crew_mode.remember(cfg)
             # Resolve by the name being STORED, which is exactly the name dispatch
             # will resolve later (`chat_runner` -> resolve_agent_bindings(
             # slot.agent)). Looking it up as an alias first and taking THAT
@@ -685,10 +798,45 @@ async def switch_slot_agent(
                 {"error": "slot changed during agent resolution", "code": "session_rebound"},
                 status=409,
             )
+        # The Crew Mode lock, read again in this same no-await window: the check
+        # above ran before agent resolution, and a send that lands while resolution
+        # awaits (a slash command completes without either switch lock) gives an
+        # empty root its first user message, which is what locks it.
+        locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)
+        if locked is not None:
+            return locked
         slot.agent = _CommitToken(agent_name)
         slot.agent_kind = _CommitToken(new_agent_kind)
         committed_agent = slot.agent
         committed_agent_kind = slot.agent_kind
+        # Crew Mode turning on stamps the agent it turned on with, so the chat stays
+        # in Crew Mode on that conductor after ``agent.crew_mode_agent`` changes. A
+        # re-pick of the stamped agent keeps it; any other pick clears it.
+        from kiro_crew import crew_mode
+
+        prior_crew_stamp = getattr(slot, crew_mode.STAMP_FIELD, "") or ""
+        new_crew_stamp = crew_mode.stamp_for_switch(agent_name, new_agent_kind) or (
+            prior_crew_stamp if agent_name == prior_crew_stamp else ""
+        )
+        if caller.crew_mode_migration and not prior_crew_stamp:
+            # The migration moves a conductor chat from before Crew Mode had a
+            # switch; it turns nothing on, so the chat keeps its folders and its
+            # History the way it had them. A stamped root's stamp follows the move.
+            new_crew_stamp = ""
+        slot.crew_mode_agent = new_crew_stamp
+        # Counted below, once the switch has committed: Crew Mode turning on is a
+        # move from an agent that is not a conductor onto one.
+        # The migration moving a root between conductors turns nothing on, even when
+        # the conductor it leaves is absent from the config.
+        crew_turned_on = (
+            bool(new_crew_stamp)
+            and not caller.crew_mode_migration
+            and prior_agent not in crew_mode.conductor_agents()
+            and str(prior_agent or "") != prior_crew_stamp
+        )
+        # The metadata line carries the stamp only when this switch moves one, so a
+        # chat that never turned Crew Mode on keeps the line it had.
+        crew_stamp_moves = bool(new_crew_stamp or prior_crew_stamp)
         # The resolved namespace decides, not the request's spelling alone: a
         # name-only pick can still change member/template (the member lookup
         # answered by the shared template, or the reverse), which is a rebind
@@ -770,6 +918,7 @@ async def switch_slot_agent(
             if slot.agent is committed_agent and slot.agent_kind is committed_agent_kind:
                 slot.agent = prior_agent
                 slot.agent_kind = prior_agent_kind
+                slot.crew_mode_agent = prior_crew_stamp
                 if (
                     committed_active_fallback_model is not None
                     and slot._active_fallback_model is committed_active_fallback_model
@@ -806,7 +955,16 @@ async def switch_slot_agent(
         # Children guard, shared with reload/model: the reset tears down the
         # runtime attached sub-agents run on, so a parent that is idle but
         # still has children must refuse rather than discard their work.
-        children_409 = await _subagents_attached_response(state, slot, session_key, "slot_agent")
+        # A cancel (the migration's task, a dropped request) landing in any await
+        # between the commit and the metadata write unwinds the commit, so a slot is
+        # never left on the new agent with nothing reset and nothing persisted.
+        try:
+            children_409 = await _subagents_attached_response(
+                state, slot, session_key, "slot_agent"
+            )
+        except asyncio.CancelledError:
+            _rollback_switch()
+            raise
         if children_409 is not None:
             _rollback_switch()
             return children_409
@@ -846,7 +1004,7 @@ async def switch_slot_agent(
             reset_verdict = await _reset_slot_session_or_warn(
                 state, slot, session_key, switch_kind="agent"
             )
-        except Exception:
+        except BaseException:
             # The identity probe proved the pop never happened: the old
             # session is still alive on the old binding, so the committed
             # values describe a switch that did not take — and the acting tab
@@ -888,7 +1046,7 @@ async def switch_slot_agent(
                     reset_verdict = await _reset_slot_session_or_warn(
                         state, slot, session_key, switch_kind="agent"
                     )
-                except Exception:
+                except BaseException:
                     _rollback_switch()
                     state.push_slots_update()
                     raise
@@ -940,7 +1098,15 @@ async def switch_slot_agent(
                     await drained_to_thread(
                         conversation_log.update_metadata,  # type: ignore[union-attr]
                         _history_key_for(name),
-                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
+                        {
+                            "agent": str(slot.agent),
+                            "agent_kind": slot.agent_kind,
+                            **(
+                                {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                                if crew_stamp_moves
+                                else {}
+                            ),
+                        },
                     )
                 except Exception:
                     logger.warning(
@@ -957,7 +1123,15 @@ async def switch_slot_agent(
                 await drained_to_thread(
                     conversation_log.update_metadata,
                     _history_key_for(name),
-                    {"agent": agent_name, "agent_kind": new_agent_kind},
+                    {
+                        "agent": agent_name,
+                        "agent_kind": new_agent_kind,
+                        **(
+                            {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                            if crew_stamp_moves
+                            else {}
+                        ),
+                    },
                 )
             except asyncio.CancelledError:
                 # Drain the writer before restoring history, and retain both
@@ -993,7 +1167,15 @@ async def switch_slot_agent(
                     await drained_to_thread(
                         state.conversation_log.update_metadata,
                         _history_key_for(name),
-                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
+                        {
+                            "agent": str(slot.agent),
+                            "agent_kind": slot.agent_kind,
+                            **(
+                                {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                                if crew_stamp_moves
+                                else {}
+                            ),
+                        },
                     )
                 except Exception:
                     logger.warning(
@@ -1021,7 +1203,15 @@ async def switch_slot_agent(
                         await drained_to_thread(
                             state.conversation_log.update_metadata,
                             _history_key_for(name),
-                            {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
+                            {
+                                "agent": str(slot.agent),
+                                "agent_kind": slot.agent_kind,
+                                **(
+                                    {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                                    if crew_stamp_moves
+                                    else {}
+                                ),
+                            },
                         )
 
             try:
@@ -1202,6 +1392,22 @@ async def switch_slot_agent(
         # changes nothing the row could name, so it appends none.
         if caller.notice and agent_changed:
             await _append_session_switch_notice(slot, "agent", agent_name)
+    # Crew Mode is a chat on the conductor TEMPLATE. Landing on it puts the work-ledger
+    # board on a ROOT session's own page (its side panel Overview), so the board lives
+    # there and the per-turn [DASHBOARD] block names it. Only a page nothing was adopted
+    # on yet; leaving the conductor changes nothing on the page.
+    from kiro_crew.dashboard_agentic import adopt_crew_mode_board_on_switch
+
+    if crew_turned_on:
+        from kiro_crew import crew_mode as _cm
+        from kiro_crew.metrics import crew_mode as crew_mode_metrics
+
+        crew_mode_metrics.record_turned_on("switch", repeat=bool(_cm.known_roots() - {slot.key}))
+    # The migration moving a chat that never turned Crew Mode on changes nothing on
+    # its page either; a stamped root's move keeps the board it has (nothing is
+    # adopted over a page already chosen).
+    if not (caller.crew_mode_migration and not prior_crew_stamp):
+        await adopt_crew_mode_board_on_switch(slot, agent_name, state)
     # The reset destroyed any eagerly created session; picking an agent is
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.

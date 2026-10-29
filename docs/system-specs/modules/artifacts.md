@@ -502,7 +502,7 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `GET` | `/api/artifacts/{slug}/versions` | `{slug, versions: [int]}` |
 | `GET` | `/api/artifacts/{slug}/versions/{n}` | Specific version content |
 | `GET` | `/api/artifact-folders` | Folder tree with `item_count` + breadcrumb `path` |
-| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task |
+| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task (at most one in flight per folder: a rename during it queues only the latest name, deleting the folder drops that queued request, and the in-flight task is never cancelled) |
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
@@ -1047,7 +1047,10 @@ deliberately does NOT delegate to `delete()`: re-checking under the lock and the
 calling a method that re-acquires it reopens the same window between the two
 acquisitions, so the removal is inlined.
 
-**Star semantics in `WidgetFrame`.** `exists` and `pinned` are separate states:
+**Star semantics in `WidgetFrame`** (the slug, probe and star live in the
+`useWidgetArtifact` hook of `website/src/components/WidgetArtifact.tsx`, which the
+HTML frame and the markdown-bodied widget, `MarkdownWidget`, both draw from, so a
+widget without an iframe keeps the same link and star). `exists` and `pinned` are separate states:
 `{exists: true, pinned: false}` is the normal steady state, so the star renders
 hollow (offering to save) while the title still links to `/artifacts/<slug>`.
 Starring pins; if the artifact is absent (a pre-feature widget, a failed
@@ -1661,7 +1664,8 @@ to this kind would store content no reader can parse.
   as a crewmate's Dashboard frame. A link in the page opens through the host:
   `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
   and `window.open`, into a `kirocrew-dashboard:open` message, and
-  `useFrameLinkBridge` opens an absolute `http(s)` URL only on a real click in
+  `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
+  against its origin, only on a real click in
   that frame, once per click, with no dialog. The shim decides a click after
   the page's own handlers, so a click the page cancels posts nothing. The host
   opens at once only when it can tie the click to the asking frame

@@ -177,12 +177,21 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    needs its own selectors. */
 .app-icon-nav.is-lit .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .group\/nav:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
+/* An app's declared inactive icon (ui.pages[].iconInactiveUrl): the rail
+   renders both variants and shows the idle one only on an unlit, unhovered
+   nav row. Anywhere else the normal icon shows. */
+.app-nav-icon-idle{display:none}
+.app-icon-nav:not(.is-lit) .app-nav-icon-idle{display:inline-flex}
+.app-icon-nav:not(.is-lit) .app-nav-icon-lit{display:none}
+.group\/nav:hover .app-icon-nav .app-nav-icon-idle{display:none}
+.group\/nav:hover .app-icon-nav .app-nav-icon-lit{display:inline-flex}
 
 @import "./styles/chat-transcript.css";
 @import "./styles/scrollbars-and-touch-hit.css";
 @import "./styles/shell-chrome.css";
 @import "./styles/focus-and-state-cues.css";
 @import "./styles/sidebar-and-side-panel.css";
+@import "./styles/crew-mode.css";
 @import "./styles/highlights-and-page-zoom.css";
 @import "./styles/liquid-glass.css";
 @import "./styles/content-fit.css";

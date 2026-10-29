@@ -469,9 +469,14 @@ def _delegate_to_kiro_internal_sandbox(
             tool_name=_command_log_label(argv),
             tool_kind="subprocess",
             outcome="delegated",
+            # The Windows branch delegates on the caller's classification alone and
+            # does not read the internal-sandbox setting (a fresh install has no
+            # settings file; see test_windows_fail_closed_optin.py), so the record
+            # names isolation as left to kiro-cli rather than claiming it is on.
             resources=(
-                "Windows Kiro backend delegation: kiro internal sandbox owns "
-                "this spawn; Kiro Crew has no native Windows sandbox backend"
+                "Windows Kiro backend delegation: isolation left to kiro-cli's "
+                "built-in sandbox (kiro_internal_sandbox unconfirmed); Kiro Crew "
+                "has no native Windows sandbox backend"
                 if sys.platform == "win32"
                 else "macOS sandbox mutual exclusion: kiro internal sandbox on -> "
                 "Kiro Crew seatbelt off for this kiro-cli spawn"

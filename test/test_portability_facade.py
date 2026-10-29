@@ -21,6 +21,7 @@ import ast
 import functools
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
@@ -311,6 +312,69 @@ def test_the_layering_check_can_fail() -> None:
     assert _layering_gaps(trees) == {
         OWNERS[0]: [OWNERS[-1]],
         OWNERS[1]: [FACADE],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Who imports an owner
+# --------------------------------------------------------------------------- #
+
+
+def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
+    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    base = node.module or ""
+    if node.level:
+        package = module.split(".")[: -node.level]
+        base = ".".join([*package, *([node.module] if node.module else [])])
+    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
+
+
+def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
+    """The files among *sources* (relative to *root*) whose code imports a family owner."""
+    found = set()
+    for path, text in sources:
+        rel = path.relative_to(root)
+        module = ".".join([root.name, *rel.with_suffix("").parts])
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+                name in OWNERS for name in _imported_modules(node, module)
+            ):
+                found.add(rel.as_posix())
+    return found
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    root = Path(portability.__file__).resolve().parent
+    family = {f"{name.rpartition('.')[2]}.py" for name in (FACADE, *OWNERS)}
+    sources = source_corpus.iter_candidate_sources(require_all=("portability_",))
+    importers = _owner_importers(
+        ((path, text) for path, text in sources if path.is_relative_to(root)), root
+    )
+    assert importers & (family - {"portability.py"})  # owners import the owners below them
+    assert importers - family == set()
+
+
+def test_the_owner_import_scan_finds_an_outside_importer(tmp_path: Path) -> None:
+    root = tmp_path / "kiro_crew"
+    owner = OWNERS[0].rpartition(".")[2]
+    sources = {
+        root / "pkg" / "caller.py": f"from kiro_crew.{owner} import x\n",
+        root / "other.py": f"from kiro_crew import {owner} as low\n",
+        root / "plain.py": f"import kiro_crew.{owner}\n",
+        root / "relative.py": f"from .{owner} import x\n",
+        root / "deep" / "up.py": f"from .. import {owner}\n",
+        root / "facade_user.py": "from kiro_crew.portability import x\n",
+    }
+    assert _owner_importers(sources.items(), root) == {
+        "pkg/caller.py",
+        "other.py",
+        "plain.py",
+        "relative.py",
+        "deep/up.py",
     }
 
 

@@ -266,7 +266,7 @@ def _seed_turn_timeout(slot: Any, meta: Optional[dict]) -> None:
     unhydrated, so its saves carry the on-disk value forward instead of
     replacing it with "follow the global".
     """
-    from kiro_crew.dashboard.slot_persistence.metadata_codec import _validate_turn_timeout_secs
+    from kiro_crew.dashboard.slot_persistence.metadata_values import _validate_turn_timeout_secs
 
     if meta is None:
         slot.turn_timeout_secs = None

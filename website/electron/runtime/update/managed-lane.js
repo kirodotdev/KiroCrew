@@ -29,6 +29,10 @@ function createManagedLane({
   managedPath,
   launchCheckDelayMs,
   checkIntervalMs,
+  // When a security policy provider governs this install's updates, the managed
+  // lane must also stand down: the policy provider and the EXTERNALLY-MANAGED
+  // command would otherwise both try to apply updates on the same install.
+  isPolicyGoverned = () => false,
   log,
 }) {
   // MANAGED AUTO-UPDATE (marker-driven): the marker carries the very
@@ -262,6 +266,12 @@ function createManagedLane({
       log.info("[update] managed quit handler fired with no pending update — not applying");
       return;
     }
+    // If policy governance became active since the check found a pending update,
+    // the policy provider owns the install. Do not apply the managed command.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy governed: skipping managed deferred install on quit");
+      return;
+    }
     let stillOn = false;
     try { stillOn = !!getAutoDownloadPreference(); } catch (err) {
       log.error("[update] getAutoDownloadPreference threw on quit — not installing", err);
@@ -287,6 +297,13 @@ function createManagedLane({
         log.error("[update] managed stop on quit errored", err);
       }
       log.info("[update] managed deferred install on quit — running update command");
+      // Re-check governance after the gateway stopped: policy may have arrived
+      // during the shutdown await (same race as the feed-lane manual path).
+      if (isPolicyGoverned()) {
+        log.info("[update] policy governed (post-gateway-stop managed): quitting without applying");
+        app.exit(0);
+        return;
+      }
       const { code } = await runUpdateCommand();
       if (code === 0) {
         app.relaunch();
@@ -324,6 +341,15 @@ function createManagedLane({
   // still resolving only when that run has finished.
   let checkInFlight = null;
   function managedCheck() {
+    // Policy stand-down: if a security policy provider governs this install,
+    // the managed lane's own check/apply must not run — both would otherwise
+    // try to apply updates on the same install.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy governed: managed check suppressed");
+      disarmManagedQuit();
+      emit("not-available");
+      return Promise.resolve();
+    }
     // An install owns the state until it relaunches or fails, as in the feed
     // lane: a check requested now is skipped, re-surfacing "installing" for a
     // caller (the Check button) that cleared the card first.
@@ -406,6 +432,16 @@ function createManagedLane({
       return;
     }
     foundVersion = version;
+    // Re-check governance: if the policy provider became active while the
+    // check command was running, discard the result so two update paths do
+    // not compete on the same install.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy governed (post-command): discarding managed check result");
+      foundVersion = null;
+      disarmManagedQuit();
+      emit("not-available");
+      return;
+    }
     if (stagedVersion === version) {
       // The user already took Download for this version and the ready dialog
       // is (or was) up. Re-surface it rather than demoting the card back to
@@ -452,6 +488,15 @@ function createManagedLane({
         return;
       }
       log.error("[update] managed stop before install errored", err);
+    }
+    // Re-check governance after the gateway stopped: policy may have arrived
+    // during the shutdown await (same race as managed deferred install on quit).
+    if (isPolicyGoverned()) {
+      log.info("[update] policy governed (post-gateway-stop managed install): canceling");
+      managedInstalling = false;
+      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      emit("not-available");
+      return;
     }
     const { code } = await runUpdateCommand();
     if (code === 0) {

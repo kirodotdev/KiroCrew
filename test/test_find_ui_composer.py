@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import ui_index
 
@@ -196,13 +197,47 @@ def test_uploading_a_file_still_answers_artifacts_first() -> None:
 @pytest.mark.parametrize(
     ("query", "lang"),
     [
-        ("send a letter", "en"),
-        ("take a break", "en"),
-        ("where are my keys", "en"),
-        ("chat about dinner", "en"),
-        ("寄一封信", "zh-CN"),
-        ("休息一下", "zh-CN"),
+        *named_cases(
+            "test_unrelated_questions_are_no_match",
+            ("query", "lang"),
+            [
+                ("send a letter", "en"),
+                ("take a break", "en"),
+                ("where are my keys", "en"),
+                ("chat about dinner", "en"),
+                ("寄一封信", "zh-CN"),
+                ("休息一下", "zh-CN"),
+            ],
+        ),
+        *named_cases(
+            "test_unrelated_and_vague_questions_stay_no_match",
+            ("query", "lang"),
+            [
+                ("help", "en"),
+                ("stop", "en"),
+                ("帮助", "zh-CN"),
+                ("停止", "zh-CN"),
+                ("where are my keys", "en"),
+                ("chat about dinner", "en"),
+                ("how do I uninstall my refrigerator", "en"),
+                ("我的钥匙在哪", "zh-CN"),
+                ("晚饭吃什么", "zh-CN"),
+                ("xqzv blorp flim", "en"),
+                ("zzzz", "zh-CN"),
+            ],
+        ),
+        *named_cases(
+            "test_unrelated_phrasings_are_no_match",
+            ("query", "lang"),
+            [
+                ("notify my boss", "en"),
+                ("report my taxes", "en"),
+                ("where are my keys", "en"),
+                ("chat about dinner", "en"),
+                ("给老板发通知", "zh-CN"),
+            ],
+        ),
     ],
 )
-def test_unrelated_questions_are_no_match(query: str, lang: str) -> None:
+def test_an_unrelated_question_is_no_match(query: str, lang: str) -> None:
     assert ui_index.find_ui(query, lang)["status"] == "no_match", query

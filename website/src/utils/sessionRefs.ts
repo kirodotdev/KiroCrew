@@ -121,7 +121,11 @@ export function sessionRefUrl(ref: SessionRef): string {
 export function sanitizeRefTitle(title: string, max = 80): string {
   const flat = title.replace(/\s+/g, ' ').replace(/[[\]\\<>]/g, '').trim()
   if (!flat) return ''
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+  if (flat.length <= max) return flat
+  // Cut on a code-point boundary so an emoji is never sent as half a pair.
+  const head = flat.slice(0, max - 1)
+  const last = head.charCodeAt(head.length - 1)
+  return `${last >= 0xd800 && last <= 0xdbff ? head.slice(0, -1) : head}…`
 }
 
 /** The markdown link appended to the outgoing message for one staged ref. */

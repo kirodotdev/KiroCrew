@@ -10,6 +10,7 @@ the configured mode clamped to the governance floor. One of the owners
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import stat
@@ -231,6 +232,98 @@ def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[
         if not carveout_shadowed_by_foreign_mask(target, mode=mode)
         and not carveout_chain_has_planted_link(target)
     )
+
+
+def enterprise_policy_cache_view(
+    mode: str = "standard", extra_hidden_dirs: tuple[str, ...] = ()
+) -> tuple[str, ...]:
+    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an enterprise build.
+
+    An enterprise build always enters the central tier (RFC D2), including a Kiro Crew
+    MCP server kiro-cli starts inside the agent sandbox. That process reaches neither the
+    sign-in nor the control plane, so it resolves the ceiling from the cache in cache-only
+    mode (``policy_distribution_source.cache_only``) and fails closed without it. The cache
+    holds only the document the agent is already governed by, a digest of the build's
+    fixed source and the fetch validators; no credential. The vault and every other
+    credential path stay hidden.
+
+    Lifted the way ``apps/backend.py`` lifts it for a cache-only backend: one spelling,
+    refused when it sits beneath a foreign mask (:func:`carveout_shadowed_by_foreign_mask`),
+    and kept read-only by the plan for every spelling (``sandbox_plan.is_policy_cache_dir``).
+    ``()`` in an oss build, so an oss sandbox is unchanged.
+
+    Also ``()``, so the cache stays masked and a cache-only child fails closed, when:
+
+    * one of the caller's own *extra_hidden_dirs* is the cache or an ancestor of it. A
+      lift cancels every mask that contains it, so lifting would take down a mask the
+      caller asked for (a whole crew home hidden from agent-authored test code);
+    * the metadata is in the format older builds wrote, which recorded the source URL
+      in plain text, and a pre-signed URL is a credential. The gateway's next fetch or
+      304 rewrites it without the source.
+    """
+    try:
+        from kiro_crew.edition import is_enterprise
+
+        if not is_enterprise():
+            return ()
+        target = os.path.join(str(config_dir()), _POLICY_CACHE_LEAF)
+    except Exception:
+        logger.debug("could not resolve the governance cache for the sandbox", exc_info=True)
+        return ()
+    if extra_hidden_dirs and _caller_mask_contains(target, extra_hidden_dirs):
+        return ()
+    if carveout_shadowed_by_foreign_mask(target, mode=mode):
+        return ()
+    if _policy_cache_meta_names_its_source(target):
+        logger.warning(
+            "the governance cache still carries its source in plain text; keeping it hidden "
+            "from the sandbox until the gateway's next fetch rewrites it"
+        )
+        return ()
+    return (target,)
+
+
+def _caller_mask_contains(target: str, hidden: tuple[str, ...]) -> bool:
+    """Would a lift of *target* cancel one of the caller's *hidden* masks?
+
+    Checked both as written (the Seatbelt plan compares spellings) and with the crew-home
+    alias fold the namespace plan applies (``sandbox_plan.fold_crew_home_alias``), so a
+    mask spelled under ``$HOME`` still counts when the data home resolves elsewhere. An
+    alias table that cannot be built reads as "contains": the mask is kept.
+    """
+    try:
+        aliases = _crew_home_alias_roots()
+    except Exception:
+        logger.debug("could not resolve the crew-home aliases", exc_info=True)
+        return True
+    folded_target = sandbox_plan.fold_crew_home_alias(os.path.abspath(target), aliases)
+    for path in hidden:
+        if sandbox_plan.hidden_path_contains_visible_path(path, (target,)):
+            return True
+        folded = sandbox_plan.fold_crew_home_alias(os.path.abspath(path), aliases)
+        if sandbox_plan.hidden_path_contains_visible_path(folded, (folded_target,)):
+            return True
+    return False
+
+
+#: The cache's metadata leaf, mirroring ``policy_distribution_cache._CACHE_META_LEAF``.
+_POLICY_CACHE_META_LEAF = "policy.meta.json"
+
+
+def _policy_cache_meta_names_its_source(cache: str) -> bool:
+    """Does the cache metadata carry a plaintext ``source``? Unreadable reads as yes."""
+    try:
+        with open(os.path.join(cache, _POLICY_CACHE_META_LEAF), "rb") as handle:
+            raw = handle.read(64 * 1024)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        meta = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return True  # the reader refuses it anyway, and its bytes are not known to be clean
+    return not isinstance(meta, dict) or "source" in meta
 
 
 def crew_home_visible_spellings(path: str) -> tuple[str, ...]:

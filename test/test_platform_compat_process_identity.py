@@ -10,6 +10,7 @@ narrow liveness on Linux. A topic of the ``test_platform_compat`` family; see
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import os
 import re
@@ -729,7 +730,110 @@ class TestOwnProcessStartTime:
                 return size
 
         monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _FakeLib())
+        monkeypatch.setattr(pc, "_darwin_tb_frequency", lambda: 1_000_000_000)
         assert pc._darwin_process_cpu_nanos(4242) == 7_500_000_000
+
+    @staticmethod
+    def _taskinfo_lib(user: int, system: int):
+        class _FakeLib:
+            @staticmethod
+            def proc_pidinfo(_pid, _flavor, _arg, buf, size):
+                raw = bytearray(size)
+                raw[pc._DARWIN_PTI_TOTAL_USER_OFFSET : pc._DARWIN_PTI_TOTAL_USER_OFFSET + 8] = (
+                    user
+                ).to_bytes(8, "little")
+                raw[pc._DARWIN_PTI_TOTAL_SYSTEM_OFFSET : pc._DARWIN_PTI_TOTAL_SYSTEM_OFFSET + 8] = (
+                    system
+                ).to_bytes(8, "little")
+                buf.raw = bytes(raw)
+                return size
+
+        return _FakeLib()
+
+    def test_darwin_cpu_nanos_scales_mach_ticks_by_the_tb_frequency(self, monkeypatch):
+        """``proc_taskinfo`` counts Mach ticks. Apple Silicon's timebase runs at
+        24 MHz, so 180M ticks of CPU are 7.5 s, not 0.18 s."""
+        lib = self._taskinfo_lib(168_000_000, 12_000_000)
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: lib)
+        monkeypatch.setattr(pc, "_darwin_tb_frequency", lambda: 24_000_000)
+        assert pc._darwin_process_cpu_nanos(4242) == 7_500_000_000
+
+    def test_darwin_cpu_nanos_without_a_tb_frequency_is_none(self, monkeypatch):
+        """An unscaled count would be wrong by the timebase factor: refuse it."""
+        lib = self._taskinfo_lib(7_000_000_000, 500_000_000)
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: lib)
+        monkeypatch.setattr(pc, "_darwin_tb_frequency", lambda: None)
+        assert pc._darwin_process_cpu_nanos(4242) is None
+
+    @staticmethod
+    def _sysctl_libc(answers: dict, rc: int = 0, size: int = 8):
+        """A libc whose ``sysctlbyname`` answers *answers* and whose
+        ``mach_timebase_info`` answers 1/1, as Rosetta 2 does for an x86_64
+        process on Apple Silicon."""
+
+        class _FakeLibc:
+            asked: list = []
+
+            @staticmethod
+            def sysctlbyname(name, buf, size_ref, _newp, _newlen):
+                _FakeLibc.asked.append(name)
+                if rc != 0 or name not in answers:
+                    return rc or -1
+                ctypes.memmove(buf, answers[name].to_bytes(8, "little"), size)
+                size_ref._obj.value = size
+                return 0
+
+            @staticmethod
+            def mach_timebase_info(ref):
+                ref._obj.numer = 1
+                ref._obj.denom = 1
+                return 0
+
+        return _FakeLibc()
+
+    def test_tb_frequency_reads_the_sysctl(self, monkeypatch):
+        libc = self._sysctl_libc({b"hw.tbfrequency": 24_000_000})
+        monkeypatch.setattr(pc, "_darwin_sysctl_handle", lambda: libc)
+        assert pc._darwin_tb_frequency() == 24_000_000
+        assert libc.asked == [b"hw.tbfrequency"]
+
+    def test_tb_frequency_accepts_a_32_bit_answer(self, monkeypatch):
+        libc = self._sysctl_libc({b"hw.tbfrequency": 24_000_000}, size=4)
+        monkeypatch.setattr(pc, "_darwin_sysctl_handle", lambda: libc)
+        assert pc._darwin_tb_frequency() == 24_000_000
+
+    def test_rosetta_timebase_does_not_undercount_cpu(self, monkeypatch):
+        """Under Rosetta 2 ``mach_timebase_info`` answers 1/1 while
+        ``proc_taskinfo`` still counts native 24 MHz ticks. The reader takes the
+        scale from ``hw.tbfrequency``, so 1 s of CPU (24M ticks) reads 1 s, not
+        the 24 ms a 1/1 timebase would give -- which the 10 ms movement floor
+        would otherwise see as near idle."""
+        libc = self._sysctl_libc({b"hw.tbfrequency": 24_000_000})
+        monkeypatch.setattr(pc, "_darwin_sysctl_handle", lambda: libc)
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: self._taskinfo_lib(24_000_000, 0))
+        assert pc._darwin_process_cpu_nanos(4242) == 1_000_000_000
+
+    @pytest.mark.parametrize(
+        ("answers", "rc", "size"),
+        [
+            ({b"hw.tbfrequency": 0}, 0, 8),
+            ({b"hw.tbfrequency": 24_000_000}, 5, 8),
+            ({b"hw.tbfrequency": 24_000_000}, 0, 2),
+            ({}, 0, 8),
+        ],
+    )
+    def test_tb_frequency_refuses_zero_a_failed_call_or_a_wrong_size(
+        self, monkeypatch, answers, rc, size
+    ):
+        libc = self._sysctl_libc(answers, rc=rc, size=size)
+        monkeypatch.setattr(pc, "_darwin_sysctl_handle", lambda: libc)
+        assert pc._darwin_tb_frequency() is None
+
+    def test_tb_frequency_without_a_libc_is_none(self, monkeypatch):
+        monkeypatch.setattr(pc, "_darwin_sysctl_handle", lambda: None)
+        assert pc._darwin_tb_frequency() is None
+        monkeypatch.setattr(pc, "_darwin_sysctl_handle", lambda: object())
+        assert pc._darwin_tb_frequency() is None
 
     def test_darwin_cpu_nanos_refuses_a_mismatched_struct_size(self, monkeypatch):
         """Same layout check as the start-time probe: a partial fill answers None."""

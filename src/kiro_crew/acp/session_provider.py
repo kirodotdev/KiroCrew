@@ -438,6 +438,12 @@ class AcpSessionProvider(LLMProvider):
         return value if isinstance(value, str) else ""
 
     @property
+    def kas_agent_prompt_notice(self) -> str:
+        """See ``AcpSessionHandle.kas_agent_prompt_notice``."""
+        value = getattr(self._handle, "kas_agent_prompt_notice", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def work_scratch_dir(self) -> Path | None:
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir
@@ -724,6 +730,15 @@ class AcpSessionProvider(LLMProvider):
     def supports_steer(self) -> bool:
         """True when the backing handle takes a user's mid-turn steer."""
         return self._handle.supports_steer
+
+    @property
+    def supports_steer_retract(self) -> bool:
+        """True when the backing handle can take back a steer its turn has not read."""
+        return self._handle.supports_steer_retract is True
+
+    async def clear_pending_steers(self) -> bool | None:
+        """Forward a steer clear to the session handle (kiro ``_session/steer/clear``)."""
+        return await self._guarded(self._handle.clear_pending_steers(), own_write_only=True)
 
     @property
     def steer_needs_loss_recovery(self) -> bool:
@@ -1422,6 +1437,11 @@ class AcpSessionProvider(LLMProvider):
     def agent_version(self) -> str:
         """The version the backing process runs — see :attr:`AcpSessionHandle.agent_version`."""
         return self._handle.agent_version
+
+    @property
+    def initialize_result(self) -> dict:
+        """The backing process's ``initialize`` result — see :attr:`AcpSessionHandle.initialize_result`."""
+        return self._handle.initialize_result
 
     @property
     def _session_id(self) -> str:

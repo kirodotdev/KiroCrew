@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from kiro_crew.work_ledger_records import (
+    ACCEPTANCE_GH_REPO,
     ACCEPTANCE_KINDS,
     ACCEPTANCE_PLACEHOLDERS,
     ACCEPTANCE_READ_FIELDS,
@@ -481,8 +482,9 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
     Non-concrete means: an empty acceptance (the absence of a bar); a ``kind`` outside
     :data:`ACCEPTANCE_KINDS`; a placeholder STRING (blank, or ``"TBD"`` in any case) in
     a field this ``kind``'s evaluator reads; or one of those fields mistyped — a
-    ``pr_checks`` ``pr`` that is not a positive integer, a ``file`` ``path`` that is not
-    a string, a ``file`` ``exists`` that is not a bool. An explicit ``null`` in an
+    ``pr_checks`` or ``pr_merged`` ``pr`` that is not a positive integer, a
+    ``pr_merged`` ``repo`` that is not a string of the evaluator's own pattern, a ``file`` ``path`` that is not a string, a ``file`` ``exists`` that
+    is not a bool. An explicit ``null`` in an
     OPTIONAL read field is absence, which the evaluator handles, so it is concrete; in a
     required one the type rule refuses it.
 
@@ -508,6 +510,14 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
         pr = acceptance.get("pr")
         # ``bool`` is an ``int`` subclass, and ``pr: true`` is not a pull request.
         if isinstance(pr, bool) or not isinstance(pr, int) or pr < MIN_PR:
+            return False
+    if kind == "pr_merged":
+        pr = acceptance.get("pr")
+        if isinstance(pr, bool) or not isinstance(pr, int) or pr < MIN_PR:
+            return False
+        # Required here, unlike ``pr_checks``, and held to the evaluator's pattern.
+        repo = acceptance.get("repo")
+        if not isinstance(repo, str) or not ACCEPTANCE_GH_REPO.fullmatch(repo):
             return False
     if kind == "file":
         if not isinstance(acceptance.get("path"), str):

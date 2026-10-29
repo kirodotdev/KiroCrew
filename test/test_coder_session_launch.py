@@ -232,6 +232,27 @@ async def test_prepare_for_session_is_none_without_a_choice(tmp_path, monkeypatc
 
 
 @sync
+async def test_a_subagent_start_reports_provisioning_on_itself_not_its_root(tmp_path, monkeypatch):
+    root, child = "dashboard:root-p", "subagent:child-p"
+    workspace = await _remote(tmp_path, monkeypatch, root)
+    fake = session_launch.CoderSessionEnvironments._client(None)
+    fake.workspaces[workspace] = replace(fake.workspaces[workspace], status="stopped")
+    assert _choices(tmp_path).inherit(child, root) == "dev"
+    se.clear_start_stage(root)
+    se.clear_start_stage(child)
+    try:
+        prepared = await session_launch.prepare_for_session(child)
+        assert prepared.workspace == workspace
+        assert f"start {workspace}" in fake.calls
+        # The child's start clears only its own key, so the root must hold none.
+        assert se.start_progress(root) is None
+        assert se.start_progress(child)["stage"] == "provisioning"
+    finally:
+        se.clear_start_stage(root)
+        se.clear_start_stage(child)
+
+
+@sync
 async def test_pool_bypass_reads_the_choice_and_fails_closed(tmp_path, monkeypatch):
     _home(monkeypatch, tmp_path)
     assert await get_or_create._session_runs_remotely("k") is False
@@ -343,6 +364,60 @@ async def test_login_runner_discards_stderr_and_bounds_stdout(
     assert spawn.call_args.kwargs["cwd"] == str(tmp_path)
 
 
+def test_start_progress_reports_stage_and_total_elapsed_then_clears():
+    se.clear_start_stage("sess-p")
+    assert se.start_progress("sess-p") is None
+    se.report_start_stage("sess-p", "checking")
+    se.report_start_stage("sess-p", "bogus")  # unknown stages are ignored
+    se.report_start_stage("", "checking")  # keyless reports are ignored
+    assert se.start_progress("sess-p")["stage"] == "checking"
+    se.report_start_stage("sess-p", "provisioning")
+    progress = se.start_progress("sess-p")
+    assert progress["stage"] == "provisioning"
+    assert progress["elapsed_s"] >= progress["stage_elapsed_s"] >= 0
+    se.clear_start_stage("sess-p")
+    assert se.start_progress("sess-p") is None
+
+
+def test_start_progress_lists_every_stage_entered_even_between_polls():
+    """A stage can finish between polls; a skipped stage is one never entered."""
+    key = "sess-entered"
+    se.clear_start_stage(key)
+    try:
+        for stage in ("checking", "connecting", "connecting", "starting_agent"):
+            se.report_start_stage(key, stage)
+        progress = se.start_progress(key)
+        assert progress["stage"] == "starting_agent"
+        # In order, once each; provisioning never ran.
+        assert progress["entered"] == ["checking", "connecting", "starting_agent"]
+    finally:
+        se.clear_start_stage(key)
+    # A new start begins a new list.
+    se.report_start_stage(key, "checking")
+    try:
+        assert se.start_progress(key)["entered"] == ["checking"]
+    finally:
+        se.clear_start_stage(key)
+
+
+def test_a_start_for_a_session_already_attached_here_is_a_reconnect():
+    key = "sess-reconnect"
+    se.clear_start_stage(key)
+    se.forget_remote_workspace(key)
+    try:
+        se.report_start_stage(key, "checking")
+        assert se.start_progress(key)["reconnect"] is False  # first connection
+        se.remember_remote_workspace(key, "Dev", "/w")  # attached mid-start
+        se.report_start_stage(key, "starting_agent")
+        assert se.start_progress(key)["reconnect"] is False  # decided at start
+        se.clear_start_stage(key)
+        se.report_start_stage(key, "checking")  # a later restart reconnects
+        assert se.start_progress(key)["reconnect"] is True
+    finally:
+        se.clear_start_stage(key)
+        se.forget_remote_workspace(key)
+
+
 def test_a_live_parents_placement_outlasts_the_runtimes_that_end_around_it(monkeypatch):
     # Admission reads a parent's placement from this bounded table; each entry
     # leaves when its own runtime ends, so ended runtimes never evict a live one.
@@ -361,6 +436,50 @@ def test_a_live_parents_placement_outlasts_the_runtimes_that_end_around_it(monke
     assert se.remote_workspace_for("dash:parent") == ("Dev", "/w")
     se.forget_remote_workspace("dash:parent", owner=replacement)
     assert se.remote_workspace_for("dash:parent") is None
+
+
+def test_a_resume_respawn_keeps_the_sessions_health_read(monkeypatch):
+    # Resume recovery reuses the prepared environment and registers no read; the
+    # dead runtime's end-watcher can fire before the replacement remembers the
+    # workspace, so that runtime's own end must not drop the session's read.
+    monkeypatch.setattr(se, "_remote_workspaces", {})
+    monkeypatch.setattr(se, "_remote_workspace_owners", {})
+    monkeypatch.setattr(se, "_health_readers", {})
+
+    async def reader(key):
+        return {}
+
+    dead, replacement = object(), object()
+    se.register_remote_health("dash:s", reader)
+    se.remember_remote_workspace("dash:s", "Dev", "/w", owner=dead)
+    se.forget_remote_workspace("dash:s", owner=dead)
+    se.remember_remote_workspace("dash:s", "Dev", "/w", owner=replacement)
+    assert se._health_readers["dash:s"] is reader
+    # A session that now runs on this machine drops it.
+    se.forget_remote_workspace("dash:s")
+    assert "dash:s" not in se._health_readers
+
+
+def test_start_progress_is_bounded():
+    for i in range(se._START_PROGRESS_MAX + 10):
+        se.report_start_stage(f"leak-{i}", "checking")
+    try:
+        assert len(se._start_progress) <= se._START_PROGRESS_MAX
+    finally:
+        for i in range(se._START_PROGRESS_MAX + 10):
+            se.clear_start_stage(f"leak-{i}")
+
+
+@sync
+async def test_prepare_reports_provisioning_only_when_compute_must_start(tmp_path, monkeypatch):
+    fake = FakeCoder()
+    seen: list[str] = []
+    monkeypatch.setattr(session_launch, "report_start_stage", lambda key, stage: seen.append(stage))
+    await _envs(tmp_path, fake).prepare("sess-q", "dev")  # creates
+    assert seen == ["provisioning"]
+    seen.clear()
+    await _envs(tmp_path, fake).prepare("sess-q", "dev")  # already running
+    assert seen == []
 
 
 def test_subagent_inherits_the_root_owner_and_a_local_parent_writes_nothing(tmp_path):
@@ -457,6 +576,38 @@ async def test_forget_subagent_environment_is_best_effort(tmp_path, monkeypatch)
 
 
 @sync
+async def test_a_finished_subagent_drops_its_health_read(monkeypatch):
+    monkeypatch.setattr(se, "_health_readers", {})
+    monkeypatch.setattr(se, "_remote_memory", {})
+    monkeypatch.setattr(se, "_refresh_attempted", {})
+
+    async def reader(key):
+        return {}
+
+    se.register_remote_health("sub-done", reader)
+    se.remember_remote_memory("sub-done", 1, 2)
+    await session_launch.forget_subagent_environment("sub-done")
+    assert "sub-done" not in se._health_readers and se.remote_memory_for("sub-done") is None
+
+
+def test_ended_sessions_health_reads_never_evict_a_running_ones(monkeypatch):
+    monkeypatch.setattr(se, "_health_readers", {})
+    monkeypatch.setattr(se, "_remote_workspaces", {})
+    monkeypatch.setattr(se, "_remote_workspace_owners", {})
+
+    async def reader(key):
+        return {}
+
+    # The oldest entry belongs to a session whose runtime is still running.
+    se.register_remote_health("dash:live", reader)
+    se.remember_remote_workspace("dash:live", "Dev", "/w", owner=object())
+    for n in range(se._REMOTE_WORKSPACES_MAX + 5):
+        se.register_remote_health(f"dash:ended-{n}", reader)
+    assert "dash:live" in se._health_readers
+    assert len(se._health_readers) == se._REMOTE_WORKSPACES_MAX
+
+
+@sync
 async def test_prepare_waits_for_a_registry_lock_held_by_a_worker_thread(tmp_path):
     """On-loop calls would refuse while a sweeper thread briefly holds the lock."""
     fake = FakeCoder()
@@ -490,32 +641,79 @@ async def test_an_inherited_session_prepares_its_owners_workspace(tmp_path, monk
     assert not await session_launch.inherit_environment_for_subagent("dashboard:other", "sub-10")
     seen = []
 
-    async def fake_prepare(self, key, profile):
-        seen.append((key, profile))
+    async def fake_prepare(self, key, profile, *, progress_key=None):
+        seen.append((key, profile, progress_key))
         return "prepared"
 
     monkeypatch.setattr(session_launch.CoderSessionEnvironments, "prepare", fake_prepare)
 
     monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace(session_environments=_config()))
     assert await session_launch.prepare_for_session("sub-9") == "prepared"
-    assert seen == [("dashboard:root", "dev")]
+    assert seen == [("dashboard:root", "dev", "sub-9")]
+    # The [RESOURCES] refresh for this session reads its workspace through Coder.
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder import session_browse
+
+    try:
+        assert se._health_readers["sub-9"] is session_browse.session_health
+    finally:
+        se.forget_remote_workspace("sub-9")
     assert await session_launch.prepare_for_session("sub-10") is None
+    assert "sub-10" not in se._health_readers
 
 
-def test_browse_is_read_only(tmp_path):
+def test_browse_is_read_only_and_root_confined(tmp_path):
     root = tmp_path / "root"
     (root / "src").mkdir(parents=True)
     (root / "src" / "a.py").write_bytes(b"print(1)\n")
     ws = wt.Workspace(str(root))
+    listing = wt.browse(ws, {"op": "list", "path": "."})
+    assert listing["entries"] == [{"name": "src", "dir": True}] and listing["path"] == "."
+    read = wt.browse(ws, {"op": "read", "path": "src/a.py"})
+    assert read["content"] == "print(1)\n" and read["binary"] is False
+    assert "outside the workspace" in wt.browse(ws, {"op": "read", "path": "../x"})["error"]
     # No write/run op exists on this entry point, whatever is asked.
-    for op in ("write", "write_file", "run_command", "edit_file", "list", "read"):
+    for op in ("write", "write_file", "run_command", "edit_file"):
         assert wt.browse(ws, {"op": op, "path": "src/a.py", "content": "x"})["error"]
     assert (root / "src" / "a.py").read_text() == "print(1)\n"
 
 
-def test_the_guest_has_no_write_mode(tmp_path):
-    with pytest.raises(SystemExit):
-        wt.main(["--root", str(tmp_path), "--write"])
+@sync
+async def test_browse_session_runs_the_guest_browse_through_coder(tmp_path, monkeypatch):
+    await _remote(tmp_path, monkeypatch, "dashboard:remote")
+    with pytest.raises(session_browse.NotRemote):
+        await session_browse.browse_session("dashboard:local", "list", ".")
+    seen = {}
+
+    async def fake_run(argv, stdin, env, **limits):
+        seen.update(argv=argv, stdin=stdin, limits=limits)
+        return b'{"root": "/workspace/app", "path": ".", "entries": []}'
+
+    monkeypatch.setattr(session_browse, "run_collect", fake_run)
+    out = await session_browse.browse_session("dashboard:remote", "list", "src/../x; rm -rf /")
+    assert out["entries"] == []
+    assert seen["argv"][:5] == ["coder", "--url", URL, "ssh", "--disable-autostart"]
+    # The path rides stdin as JSON, never the command line.
+    assert "rm -rf" not in " ".join(seen["argv"]) and b"rm -rf" in seen["stdin"]
+    assert "--browse" in seen["argv"][-1] and "/workspace/app" in seen["argv"][-1]
+    with pytest.raises(ValueError):
+        await session_browse.browse_session("dashboard:remote", "write", ".")
+    # Machine metrics reach the dashboard only through session_health.
+    with pytest.raises(ValueError):
+        await session_browse.browse_session("dashboard:remote", "stats", ".")
+
+
+def test_write_request_saves_refuses_stale_and_stays_in_root(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"one\n")
+    ws = wt.Workspace(str(root))
+    assert wt.write_request(ws, {"path": "a.txt", "content": "two\n", "expected": "one\n"})["ok"]
+    assert (root / "a.txt").read_text() == "two\n"
+    stale = wt.write_request(ws, {"path": "a.txt", "content": "three\n", "expected": "one\n"})
+    assert stale["conflict"] is True and (root / "a.txt").read_text() == "two\n"
+    assert "outside" in wt.write_request(ws, {"path": "../x", "content": "x"})["error"]
+    assert wt.write_request(ws, {"path": "new/b.txt", "content": "b"})["ok"]
 
 
 def test_git_views_are_read_only_and_handle_non_repos(tmp_path):
@@ -539,10 +737,125 @@ def test_git_views_are_read_only_and_handle_non_repos(tmp_path):
     assert status["git"] is True and "?? f.txt" in status["output"]
 
 
-def test_the_browse_mode_has_no_metrics_op(tmp_path):
-    assert wt.browse(wt.Workspace(str(tmp_path)), {"op": "stats"}) == {
-        "error": "op must be git_status"
+@sync
+async def test_remote_terminal_argv_is_coder_ssh_without_autostart(tmp_path, monkeypatch):
+    workspace = await _remote(tmp_path, monkeypatch, "dashboard:t")
+    with pytest.raises(session_browse.NotRemote):
+        await session_browse.remote_terminal_argv("dashboard:local")
+    argv = await session_browse.remote_terminal_argv("dashboard:t")
+    assert argv == ["coder", "--url", URL, "ssh", "--disable-autostart", workspace]
+
+
+def test_stats_reports_numbers_only(tmp_path):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    stats = wt.browse(wt.Workspace(str(tmp_path)), {"op": "stats"})
+    assert stats["cpus"] >= 1 and stats["disk"]["total_bytes"] > 0
+    assert set(stats) <= {"arch", "cpus", "load", "memory", "disk", "uptime_s"}
+
+
+def test_guest_unknown_op_reply_keeps_the_prefix_session_health_matches(tmp_path):
+    # _ask reinstalls stale guest files when the guest's reply starts with
+    # "op must be"; a reworded reply would switch that fallback off.
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    reply = wt.browse(wt.Workspace(str(tmp_path)), {"op": "no-such-op", "path": "."})
+    assert reply["error"].startswith("op must be")
+
+
+def test_container_stats_report_the_cgroup_ceiling_not_the_host_node(tmp_path, monkeypatch):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    gib = 1024**3
+    # The host node: 64 GiB, 40 GiB available, 32 CPUs.
+    monkeypatch.setattr(wt, "_meminfo", lambda: {"MemTotal": 64 * gib, "MemAvailable": 40 * gib})
+    monkeypatch.setattr(wt.os, "cpu_count", lambda: 32)
+    # Windows has no getloadavg: stub it so the uncontained case reports load anywhere.
+    monkeypatch.setattr(wt.os, "getloadavg", lambda: (1.0, 0.5, 0.25), raising=False)
+    # The container: a 4 GiB limit with 3 GiB in use, and a 2-CPU quota.
+    monkeypatch.setattr(wt, "_cgroup_memory", lambda: (4 * gib, 3 * gib))
+    monkeypatch.setattr(wt, "_cgroup_cpus", lambda: 2)
+    stats = wt.browse(wt.Workspace(str(tmp_path)), {"op": "stats"})
+    assert stats["memory"] == {"total_bytes": 4 * gib, "available_bytes": 1 * gib}
+    assert stats["cpus"] == 2
+    # The host node's load and uptime are not the container's: left out.
+    assert "load" not in stats and "uptime_s" not in stats
+    # No cgroup limit (a VM workspace): the machine's own figures stand.
+    monkeypatch.setattr(wt, "_cgroup_memory", lambda: None)
+    monkeypatch.setattr(wt, "_cgroup_cpus", lambda: None)
+    stats = wt.browse(wt.Workspace(str(tmp_path)), {"op": "stats"})
+    assert stats["memory"] == {"total_bytes": 64 * gib, "available_bytes": 40 * gib}
+    assert stats["cpus"] == 32
+    assert "load" in stats
+
+
+def test_cgroup_readers_parse_v2_files_and_ignore_max(tmp_path, monkeypatch):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    (tmp_path / "num").write_text("4294967296\n")
+    (tmp_path / "max").write_text("max\n")
+    assert wt._cgroup_number(str(tmp_path / "num")) == 4294967296
+    assert wt._cgroup_number(str(tmp_path / "max")) is None
+    assert wt._cgroup_number(str(tmp_path / "absent")) is None
+    stat = tmp_path / "memory.stat"
+    stat.write_text("anon 1000\nfile 9000\ninactive_file 6000\nactive_file 3000\n")
+    assert wt._cgroup_inactive_file(str(stat), "inactive_file") == 6000
+    assert wt._cgroup_inactive_file(str(tmp_path / "absent"), "inactive_file") == 0
+
+
+def test_cgroup_working_set_excludes_reclaimable_page_cache(tmp_path, monkeypatch):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    gib = 1024**3
+    files = {
+        "/sys/fs/cgroup/memory.max": str(4 * gib),
+        # 3.5 GiB "in use", of which 2.5 GiB is reclaimable cache after a build.
+        "/sys/fs/cgroup/memory.current": str(int(3.5 * gib)),
+        "/sys/fs/cgroup/memory.stat": f"anon {gib}\ninactive_file {int(2.5 * gib)}\n",
     }
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if path in files:
+            (tmp_path / "f").write_text(files[path])
+            return real_open(tmp_path / "f", *args, **kwargs)
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    # The working set is 1 GiB, so 3 GiB of the 4 GiB limit is available.
+    assert wt._cgroup_memory() == (4 * gib, 1 * gib)
+
+
+@pytest.mark.parametrize("sample_kind", ["normal", "at_cap", "oversized", "invalid_encoding"])
+def test_guest_meminfo_reads_one_bounded_complete_sample(monkeypatch, sample_kind):
+    import io
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    sample = b"MemTotal: 8192 kB\nMemAvailable: 2048 kB\n"
+    expected = {"MemTotal": 8192 * 1024, "MemAvailable": 2048 * 1024}
+    if sample_kind in {"at_cap", "oversized"}:
+        size = wt.MAX_READ_BYTES + (sample_kind == "oversized")
+        sample += b"#" * (size - len(sample))
+    if sample_kind == "oversized":
+        expected = {}
+    elif sample_kind == "invalid_encoding":
+        sample += b"\xff"
+        expected = {}
+    reads = []
+
+    class Sample(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    def fake_open(path, mode):
+        assert (path, mode) == ("/proc/meminfo", "rb")
+        return Sample(sample)
+
+    monkeypatch.setattr(wt, "open", fake_open, raising=False)
+    assert wt._meminfo() == expected
+    assert reads == [wt.MAX_READ_BYTES + 1]
 
 
 @sync
@@ -575,3 +888,247 @@ async def test_unsaved_work_on_a_stopped_workspace_is_unknown_and_never_starts_i
 
     monkeypatch.setattr(session_browse, "_ask", running)
     assert await session_browse.unsaved_work("k") == "1 uncommitted file, 2 unpushed commits"
+
+
+@sync
+async def test_health_installs_current_guest_files_when_the_guest_predates_stats(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.coder import session_browse
+
+    # Driven through the real _ask, which owns the one reinstall path: one
+    # install and one retry, even when the reinstall does not take.
+    async def health_with(guest_replies):
+        installs, sent = [], []
+
+        async def fake_resolve(key):
+            shell = SimpleNamespace(workspace="crewenv-x", argv=lambda command: ["sh", command])
+            return session_browse._Target(shell, "/w", "b")
+
+        async def old_guest(argv, payload, env, **kwargs):
+            sent.append(json.loads(payload))
+            return guest_replies[len(sent) - 1]
+
+        class FakeLaunch:
+            def __init__(self, binding_id, shell):
+                pass
+
+            async def install(self):
+                installs.append(True)
+
+        monkeypatch.setattr(session_browse, "_resolve", fake_resolve)
+        monkeypatch.setattr(session_browse, "run_collect", old_guest)
+        monkeypatch.setattr(session_browse, "RemoteWorkerLaunch", FakeLaunch)
+        health = await session_browse.session_health("k")
+        assert installs == [True]
+        assert sent == [{"op": "stats", "path": "."}] * 2
+        return health
+
+    stale = json.dumps({"error": "op must be list, read or git_status"}).encode()
+    health = await health_with([stale, json.dumps({"cpus": 4}).encode()])
+    assert health["state"] == "running" and health["stats"] == {"cpus": 4}
+    health = await health_with([stale, stale])
+    assert health["state"] == "unavailable" and health["error"].startswith("op must be")
+
+
+@sync
+async def test_health_reports_stopped_without_starting(tmp_path, monkeypatch):
+    from kiro_crew.coder import session_browse
+
+    async def fake_resolve(key):
+        return session_browse._Target(SimpleNamespace(workspace="crewenv-x"), "/w", "b")
+
+    async def stopped(target, mode, request):
+        raise session_browse.WorkspaceNotRunning("stopped")
+
+    monkeypatch.setattr(session_browse, "_resolve", fake_resolve)
+    monkeypatch.setattr(session_browse, "_ask", stopped)
+    assert await session_browse.session_health("k") == {
+        "workspace": "crewenv-x",
+        "workdir": "/w",
+        "state": "stopped",
+    }
+
+    async def running(target, mode, request):
+        assert request == {"op": "stats", "path": "."}
+        return {"cpus": 2}
+
+    monkeypatch.setattr(session_browse, "_ask", running)
+    health = await session_browse.session_health("k")
+    assert health["state"] == "running" and health["stats"] == {"cpus": 2}
+
+
+@sync
+async def test_health_is_unreachable_with_the_developer_flag_off(tmp_path, monkeypatch):
+    # The card's read goes through the real choices gate: with KIROCREW_DEV_MODE
+    # off even a bound chat reads as local, so nothing is resolved or asked.
+    _home(monkeypatch, tmp_path)
+    _choices(tmp_path).set("dashboard:bound", "dev")
+    assert _choices(tmp_path).resolve("dashboard:bound") == ("dev", "dashboard:bound")
+
+    async def never_asked(target, mode, request):
+        raise AssertionError("flag off must not reach the workspace")
+
+    monkeypatch.setattr(session_browse, "_ask", never_asked)
+    monkeypatch.delenv("KIROCREW_DEV_MODE")
+    with pytest.raises(session_browse.NotRemote):
+        await session_browse.session_health("dashboard:bound")
+
+
+@sync
+async def test_health_caches_the_workspace_memory_for_the_resources_line(tmp_path, monkeypatch):
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder import session_browse
+
+    async def fake_resolve(key):
+        return session_browse._Target(SimpleNamespace(workspace="crewenv-x"), "/w", "b")
+
+    async def running(target, mode, request):
+        return {"memory": {"available_bytes": 3 * 1024**3, "total_bytes": 8 * 1024**3}}
+
+    monkeypatch.setattr(session_browse, "_resolve", fake_resolve)
+    monkeypatch.setattr(session_browse, "_ask", running)
+    se.forget_remote_workspace("k-mem")
+    try:
+        await session_browse.session_health("k-mem")
+        cached = se.remote_memory_for("k-mem")
+        assert cached is not None and cached[:2] == (3 * 1024**3, 8 * 1024**3)
+        # Fresh: a context build does not start another read.
+        called = []
+        se.register_remote_health("k-mem", lambda key: called.append(key))
+        se.refresh_remote_memory_soon("k-mem")
+        assert called == [] and "k-mem" not in se._remote_memory_refreshing
+        # Switching back to local drops the reading.
+        se.forget_remote_workspace("k-mem")
+        assert se.remote_memory_for("k-mem") is None
+    finally:
+        se.forget_remote_workspace("k-mem")
+
+
+@sync
+async def test_a_stale_workspace_memory_reading_refreshes_in_the_background(monkeypatch):
+    import asyncio
+
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder import session_browse
+
+    calls = []
+
+    async def fake_health(key):
+        calls.append(key)
+        se.remember_remote_memory(key, 5 * 1024**3, 8 * 1024**3)
+        return {}
+
+    monkeypatch.setattr(session_browse, "session_health", fake_health)
+    se.forget_remote_workspace("k-stale")
+    try:
+        se.register_remote_health("k-stale", fake_health)
+        se.refresh_remote_memory_soon("k-stale")
+        se.refresh_remote_memory_soon("k-stale")  # one read in flight at a time
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert calls == ["k-stale"]
+        cached = se.remote_memory_for("k-stale")
+        assert cached is not None and cached[0] == 5 * 1024**3
+        assert "k-stale" not in se._remote_memory_refreshing
+    finally:
+        se.forget_remote_workspace("k-stale")
+
+
+@sync
+async def test_a_read_that_caches_nothing_is_not_retried_within_a_minute(monkeypatch):
+    import asyncio
+
+    from kiro_crew import session_environment as se
+
+    calls = []
+
+    async def stopped_health(key):
+        # A stopped / unreachable workspace reports no memory, so nothing is cached.
+        calls.append(key)
+        return {"state": "stopped"}
+
+    se.forget_remote_workspace("k-nocache")
+    try:
+        se.register_remote_health("k-nocache", stopped_health)
+        se.refresh_remote_memory_soon("k-nocache")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        se.refresh_remote_memory_soon("k-nocache")  # the next turn, seconds later
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert calls == ["k-nocache"] and se.remote_memory_for("k-nocache") is None
+    finally:
+        se.forget_remote_workspace("k-nocache")
+
+
+def test_workspace_memory_refresh_is_a_no_op_without_an_event_loop(monkeypatch):
+    from kiro_crew import session_environment as se
+
+    monkeypatch.setattr(se, "_refresh_loop", None)
+    se.register_remote_health("k-noloop", lambda key: None)
+    try:
+        se.refresh_remote_memory_soon("k-noloop")
+        assert "k-noloop" not in se._remote_memory_refreshing
+    finally:
+        se.forget_remote_workspace("k-noloop")
+
+
+@sync
+async def test_a_remote_session_without_a_registered_health_read_is_never_read(monkeypatch):
+    import asyncio
+
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder import session_browse
+
+    calls = []
+
+    async def coder_health(key):
+        calls.append(key)
+        return {}
+
+    # Another provider's session: attached on the loop, no Coder health read.
+    monkeypatch.setattr(session_browse, "session_health", coder_health)
+    se.forget_remote_workspace("k-other")
+    try:
+        se.remember_remote_workspace("k-other", "Fargate", "/w")
+        se.refresh_remote_memory_soon("k-other")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert calls == [] and "k-other" not in se._remote_memory_refreshing
+    finally:
+        se.forget_remote_workspace("k-other")
+
+
+@sync
+async def test_a_context_build_off_the_loop_schedules_the_refresh_onto_the_runtime_loop(
+    monkeypatch,
+):
+    import asyncio
+
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder import session_browse
+    from kiro_crew.testing.wait import async_wait_until
+
+    calls = []
+
+    async def fake_health(key):
+        calls.append(key)
+        se.remember_remote_memory(key, 5 * 1024**3, 8 * 1024**3)
+        return {}
+
+    monkeypatch.setattr(session_browse, "session_health", fake_health)
+    monkeypatch.setattr(se, "_refresh_loop", None)
+    se.forget_remote_workspace("k-thread")
+    try:
+        # The runtime start runs on the loop and records it.
+        se.remember_remote_workspace("k-thread", "Coder MicroVM", "/w")
+        se.register_remote_health("k-thread", fake_health)
+        # build_message runs on a worker thread (run_in_embed_pool), where
+        # get_running_loop raises: the read must still be scheduled.
+        await asyncio.to_thread(se.refresh_remote_memory_soon, "k-thread")
+        await async_wait_until(lambda: se.remote_memory_for("k-thread") is not None, timeout=10)
+        assert calls == ["k-thread"]
+        await async_wait_until(lambda: "k-thread" not in se._remote_memory_refreshing, timeout=10)
+    finally:
+        se.forget_remote_workspace("k-thread")

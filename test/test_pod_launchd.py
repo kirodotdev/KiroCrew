@@ -399,7 +399,7 @@ def test_stop_does_not_treat_a_generic_print_failure_as_unloaded(cfg, monkeypatc
 
 
 def test_stop_preserves_everything_when_the_unload_cannot_be_confirmed(cfg, monkeypatch):
-    """Blocking review finding: a failed/hung unload must NOT tear anything down.
+    """A failed/hung unload must NOT tear anything down.
 
     If the label is still loaded when the wait expires, the gateway may be
     alive — deleting its plist (or letting the caller delete its HOME) while
@@ -695,8 +695,8 @@ def test_up_failure_cleanup_stops_the_pod_inside_the_mutex(cfg, monkeypatch, tmp
 
 
 def test_ls_translates_orphan_probe_failures_to_the_documented_error(cfg, monkeypatch):
-    """A LaunchdError escaping pod ls printed a traceback instead of the
-    documented one-line `pod: <msg>` refusal (review finding)."""
+    """A LaunchdError in pod ls must print the documented one-line
+    `pod: <msg>` refusal, not a traceback."""
     import argparse
 
     from kiro_crew.pod import cli as pod_cli

@@ -79,12 +79,29 @@ _DEFAULT_KIRO_AGENT = "kirocrew"
 #: record is attributed to the CLI even if the key ever gains a suffix.
 _CLI_SEL_SOURCE = "cli"
 
-#: The only answer that approves a tool call, the key advertised for refusing
-#: one, and the key that refuses it WITH a typed reply to the agent. Matched
-#: exactly -- see :func:`_prompt_answer`.
-_ALLOW_KEY = "a"
-_DENY_KEY = "d"
+#: The answer that approves a tool call, the key advertised for refusing one,
+#: and the key that refuses it WITH a typed reply to the agent. Matched exactly
+#: -- see :func:`_prompt_answer`. ``y`` / ``n`` are Kiro CLI's own
+#: tool-permission keys (``crates/chat-cli/src/cli/chat/mod.rs``), so muscle
+#: memory from ``kiro-cli chat`` carries over instead of a habitual ``y`` being
+#: read as a denial.
+_ALLOW_KEY = "y"
+_DENY_KEY = "n"
 _OTHER_KEY = "o"
+#: An unadvertised alias for allow, so a user who learned ``a`` from this
+#: prompt is not suddenly refused. Temporary: it is removed one release after
+#: the ``y`` / ``n`` keys ship (tracked in the CLI spec). ``d`` needs no entry
+#: because every unrecognised answer already denies.
+_LEGACY_ALLOW_KEYS = frozenset({"a"})
+#: Kiro CLI's "trust this tool for the session". Not honoured here: this CLI
+#: has no persistent approval (see :func:`_answer_permission`), so ``t`` denies
+#: like any other unrecognised answer, but says why instead of looking like a
+#: misread allow.
+_TRUST_KEY = "t"
+_TRUST_UNSUPPORTED_NOTICE = (
+    "   Denied: trusting a tool for the session is not available in kirocrew chat. "
+    f"Answer {_ALLOW_KEY} to allow each call once."
+)
 
 #: Audit codes. Stable and machine-readable, mirroring the dashboard's own
 #: ``error="hook_deny"``: an audit record must not restate the path or command a
@@ -671,7 +688,7 @@ def _kind_text(event: LLMEvent) -> str:
 class _PromptAnswer:
     """What the person at the terminal answered a permission prompt with.
 
-    ``allowed`` is True ONLY for the exact allow token. ``reply`` is non-empty
+    ``allowed`` is True ONLY for an exact allow token. ``reply`` is non-empty
     only when the person chose ``o`` and typed something: the call is refused
     and that text goes back to the agent as their answer (see
     :func:`_steer_user_reply`). Every other answer is a plain denial.
@@ -682,11 +699,14 @@ class _PromptAnswer:
 
 
 async def _prompt_answer(event: LLMEvent) -> _PromptAnswer:
-    """Ask the human, and allow ONLY on the exact allow token.
-    Matched exactly rather than by first letter: a prefix match reads ``abort``
-    as an allow, which is the opposite of what the person typing it means.
-    Anything else -- an unrecognised word, a blank line, EOF -- denies, so the
-    safe answer is the one a user gets by doing nothing.
+    """Ask the human, and allow ONLY on an exact allow token.
+    The allow tokens are ``y`` and the unadvertised legacy ``a``. Matched
+    exactly rather than by first letter: a prefix match reads ``yank`` or
+    ``abort`` as an allow, which is the opposite of what the person typing it
+    means. Anything else -- an unrecognised word, a blank line, EOF -- denies,
+    so the safe answer is the one a user gets by doing nothing. ``t`` (Kiro
+    CLI's trust-for-session) denies too, with a notice, because there is no
+    session grant here to honour it with.
 
     The exact ``o`` token asks a second question: a free-text reply the agent
     receives instead of a bare denial ("use the staging bucket instead", "show
@@ -739,8 +759,11 @@ async def _prompt_answer(event: LLMEvent) -> _PromptAnswer:
         f"[{_OTHER_KEY}] other (reply to the agent): "
     )
     choice = answer.strip().lower()
-    if choice == _ALLOW_KEY:
+    if choice == _ALLOW_KEY or choice in _LEGACY_ALLOW_KEYS:
         return _PromptAnswer(allowed=True)
+    if choice == _TRUST_KEY:
+        print(_TRUST_UNSUPPORTED_NOTICE)
+        return _PromptAnswer(allowed=False)
     if choice != _OTHER_KEY:
         return _PromptAnswer(allowed=False)
     reply = await _read_line("   Your reply (the tool will not run; blank to just deny): ")

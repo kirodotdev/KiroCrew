@@ -667,6 +667,22 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def supports_steer_retract(self) -> bool:
+        """True when a steer the turn has not read yet can be taken back with
+        :meth:`clear_pending_steers`. Default False, granted by opt-in."""
+        return False
+
+    async def clear_pending_steers(self) -> bool | None:
+        """Ask the backend to drop every steer its turn has not read yet.
+
+        True when the backend answered the request, False when it refused it or
+        has none, None when no answer came in time. An answer is not evidence that
+        anything was dropped; the backend reports that separately, as
+        ``EVENT_STEER_DROPPED`` on the turn. Default False: nothing is sent.
+        """
+        return False
+
+    @property
     def steer_needs_loss_recovery(self) -> bool:
         """True when a steer this provider accepted can still be dropped.
 

@@ -28,6 +28,7 @@ import { useTableColumnWidths, type TableColumnSpec } from '../hooks/useTableCol
 import { useAppSelector, useAppDispatch } from '../store'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { SaveCreateLabel, scheduleLabel, scheduleMinutes } from '../utils/cronUtils'
+import { isPartlyBlocked } from '../utils/cronPartlyBlocked'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { ResizableTableHead, SortableTableHead } from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
@@ -58,6 +59,7 @@ import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
+import { browserTimeZone, isValidTimeZone } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -187,16 +189,31 @@ const fmtIn = (ts?: number | null) => {
  * Empty-state folder chip with confirm-before-delete, inline rename, and error display.
  * Uses the same inline-edit pattern as CronFolderHeader (Enter=commit, Escape=cancel).
  */
-function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFolder; onRename: (name: string) => void; onDelete: () => void; error: string | null }) {
+export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFolder; onRename: (name: string) => void; onDelete: () => void; error: string | null }) {
   const [confirming, setConfirming] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(folder.name)
   const ime = useImeGuard()
 
+  // The chip name is a plain span, so the folder-actions trigger is the only
+  // control that opens the rename and stays mounted through it. Closing the
+  // editor unmounts the focused input, and a browser then drops focus to
+  // `document.body`, so Enter and Escape hand focus back to that trigger. A
+  // pointer blur moves nothing: the user already chose where focus goes. The
+  // move waits a frame so it runs after the render that closes the editor.
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // Set when the Rename item is picked, read once when the menu finishes
+  // closing (see `onCloseAutoFocus` below).
+  const renamePickedRef = useRef(false)
+
   const commitRename = () => {
     const trimmed = editName.trim()
     if (trimmed && trimmed !== folder.name) onRename(trimmed)
+  }
+  const closeEditor = (reason: 'enter' | 'escape' | 'blur') => {
+    if (reason !== 'escape') commitRename()
     setEditing(false)
+    if (reason !== 'blur') requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
   }
 
   return (
@@ -211,9 +228,9 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
             value={editName}
             onChange={e => setEditName(e.target.value)}
             {...ime.bindEnter({
-              onEnter: commitRename,
-              onEscape: () => setEditing(false),
-              onBlur: commitRename,
+              onEnter: () => closeEditor('enter'),
+              onEscape: () => closeEditor('escape'),
+              onBlur: () => closeEditor('blur'),
             })}
           />
         ) : (
@@ -222,12 +239,27 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
         <span className="text-[12px] text-muted">{i18nT('pages.schedulePage.cronFolders.job_count', { count: 0 })}</span>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Btn className="!p-1 !border-none ml-auto" aria-label={i18nT('pages.schedulePage.cronFolders.folder_actions')}>
+            <Btn ref={triggerRef} className="!p-1 !border-none ml-auto" aria-label={i18nT('pages.schedulePage.cronFolders.folder_actions')}>
               <MoreHorizontal size={14} />
             </Btn>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[140px]">
-            <DropdownMenuItem onSelect={() => { setEditName(folder.name); setTimeout(() => setEditing(true), 0) }}>
+          <DropdownMenuContent
+            align="end"
+            className="min-w-[140px]"
+            // Radix restores focus to the trigger when the menu closes, on a
+            // timer that runs AFTER the rename input has mounted and taken
+            // focus. That restore blurs the input, and the blur commits the
+            // unchanged name and closes the editor the user just opened. When
+            // Rename was picked the input already holds focus, so skip the
+            // restore; Delete keeps it, so its confirmation appears with focus
+            // still on the trigger beside it.
+            onCloseAutoFocus={e => {
+              if (!renamePickedRef.current) return
+              renamePickedRef.current = false
+              e.preventDefault()
+            }}
+          >
+            <DropdownMenuItem onSelect={() => { setEditName(folder.name); renamePickedRef.current = true; setTimeout(() => setEditing(true), 0) }}>
               <Pencil size={13} className="shrink-0" />
               <span>{i18nT('pages.schedulePage.cronFolders.rename')}</span>
             </DropdownMenuItem>
@@ -352,11 +384,13 @@ export default function SchedulePage() {
   const [renderTz, setRenderTz] = useState<string>(() => {
     try {
       const stored = localStorage.getItem(RENDER_TZ_STORAGE_KEY)
-      if (stored) return stored
+      // A stored zone may be junk ("undefined" from an earlier build that
+      // saved a missing browser zone): keep only names Intl accepts.
+      if (isValidTimeZone(stored)) return stored
     } catch {
       // localStorage unavailable (private mode) — fall through to default
     }
-    return Intl.DateTimeFormat().resolvedOptions().timeZone
+    return browserTimeZone()
   })
   useEffect(() => {
     try {
@@ -438,10 +472,13 @@ export default function SchedulePage() {
   }, [])
   useEffect(() => { load() }, [load])
 
-  // Auto-reload when backend pushes a 'crons' refresh (e.g. job starts/ends,
-  // or a run is cancelled) — supersedes interval polling for is_running state.
-  const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
-  useEffect(() => { if (refreshTrigger > 0) { load(); refreshFolders() } }, [refreshTrigger, load, refreshFolders])
+  // Auto-reload when the cron caches go stale: a 'crons' or 'cron_history'
+  // refresh (a job starts or ends, a run is cancelled, a job or folder is
+  // edited) at once, a turn-end 'history' frame at most once per
+  // TURN_END_CRON_REFRESH_MS. Keyed on the kind-blind refreshTrigger, every
+  // turn that ended on any session re-read the whole job list.
+  const cronRefreshTrigger = useAppSelector(s => s.dashboard.cronRefreshTrigger)
+  useEffect(() => { if (cronRefreshTrigger > 0) { load(); refreshFolders() } }, [cronRefreshTrigger, load, refreshFolders])
 
   const { running, actionError, setActionError, runNow, openInChat, cancelling, cancelRun } = useCronActions(load)
   // Measured overflow state for the jobs table's scroller — drives the fade cue
@@ -559,8 +596,10 @@ export default function SchedulePage() {
       return ka - kb || compareText(scheduleLabel(a), scheduleLabel(b))
     },
     status: (a: CronJob, b: CronJob) => {
+      // A partly blocked run sorts between a failed one and a clean one, the
+      // same order its badge reads in: worse than OK, better than Error.
       const rank = (j: CronJob) =>
-        j.is_running ? 4 : !j.enabled ? 0 : j.last_status === 'error' ? 1 : j.last_status === 'ok' ? 2 : 3;
+        j.is_running ? 5 : !j.enabled ? 0 : isPartlyBlocked(j) ? 2 : j.last_status === 'error' ? 1 : j.last_status === 'ok' ? 3 : 4;
       return rank(a) - rank(b);
     },
     lastRun: (a: CronJob, b: CronJob) => (a.last_run_ts || 0) - (b.last_run_ts || 0),
@@ -1107,7 +1146,7 @@ export default function SchedulePage() {
                     without it. */}
                 <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
-                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
+                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">
                   <span className="block truncate">{fmtAgo(j.last_run_ts)}</span>
                   {/* Retry telemetry for the LAST run only: a job that needed
@@ -1764,10 +1803,26 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job?.last_error && (
               <>
                 {/* No hand-off: JobForm draft */}
+                {/* A `last_error` is often a multi-frame Python traceback. The
+                    cap is viewport-relative (`min(45vh, 420px)`), not a fixed
+                    200px: a 200px window crushes a traceback to a few lines
+                    that scroll under the fold, so the one line naming the
+                    failure is the half the reader loses. 45vh uses the dialog's
+                    own `max-h-[86vh]` height, the 420px ceiling stops it
+                    dominating a tall screen, and it still scrolls internally
+                    for anything longer.
+
+                    `shrink-0` is load-bearing: this notice is a direct
+                    `overflow-y-auto` flex child of the column-flex DialogBody,
+                    which gives it an automatic `min-height: 0`, so the column
+                    squeezes it to its content's min-content height (~16px, one
+                    line) regardless of `max-height`. Measured in a running
+                    instance: without `shrink-0` the box renders 16px against a
+                    499px traceback; with it, the full height the cap allows. */}
                 <ErrorNotice
                   title={i18nT('pages.schedulePage.last_error')}
                   message={job.last_error}
-                  className="max-h-[200px] overflow-y-auto font-mono"
+                  className="shrink-0 max-h-[min(45vh,420px)] overflow-y-auto font-mono"
                   testId="schedule-job-last-error"
                 />
               </>

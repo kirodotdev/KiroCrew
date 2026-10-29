@@ -158,7 +158,7 @@ def test_all_windows_consumers_keep_output_fallback_and_matrix_names(jobs, resol
 def test_shard_selection_and_checks_stay_intact(jobs):
     job = jobs["backend-test-windows"]
     assert job["strategy"] == {
-        "max-parallel": 4,
+        "max-parallel": "${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && 8 || 4 }}",
         "fail-fast": False,
         "matrix": {"group": list(range(1, 9))},
     }
@@ -187,7 +187,12 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     assert upload["if"] == "${{ always() }}"
     assert upload["with"]["name"] == "windows-pytest-progress-${{ matrix.group }}"
     assert upload["with"]["path"] == "${{ runner.temp }}/pytest-progress/*.jsonl"
-    assert jobs["pod-boot-windows"]["runs-on"] == "windows-latest"
+    # The canary stays off the fleet, whose container cannot create a scheduled
+    # task, and takes the Windows larger-runner group instead: an uncontainerized
+    # VM, so the probe it exists for behaves as it does on the shared pool. The
+    # group is pinned by name because a bare `group:` dispatches to any member,
+    # and a Linux or macOS member would silently take a Windows job.
+    assert jobs["pod-boot-windows"]["runs-on"] == {"group": "kirocrew-runners-windows"}
 
 
 @pytest.mark.parametrize(

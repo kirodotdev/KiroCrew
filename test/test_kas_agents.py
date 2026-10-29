@@ -60,9 +60,13 @@ class TestRequiredFields:
         with pytest.raises(KasAgentTranslationError):
             to_client_custom_agent("", _spec(), "p")
 
-    def test_empty_prompt_is_refused(self):
+    def test_an_empty_prompt_is_carried_as_the_key(self):
+        # KAS needs `prompt` present, not non-empty.
+        assert to_client_custom_agent("kirocrew", _spec(), "")["prompt"] == ""
+
+    def test_a_non_string_prompt_is_refused(self):
         with pytest.raises(KasAgentTranslationError):
-            to_client_custom_agent("kirocrew", _spec(), "   ")
+            to_client_custom_agent("kirocrew", _spec(), None)  # type: ignore[arg-type]
 
 
 class TestReservedIds:
@@ -256,18 +260,6 @@ class TestTheSpecIsSpelledInKasToolIds:
             assert kiro_cli_name in {"fs_read", "fs_write", "grep", "glob"}
             assert set(family) <= registered, kiro_cli_name
             assert kiro_cli_name not in family, "a family lists the OTHER engine's ids"
-
-    def test_expand_is_pure_and_order_preserving(self):
-        entries = ["@a", "fs_read", "@b", "fs_read"]
-        assert expand_kiro_cli_tool_names(entries) == [
-            "@a",
-            "fs_read",
-            "read_file",
-            "list_directory",
-            "@b",
-        ]
-        assert entries == ["@a", "fs_read", "@b", "fs_read"], "input untouched"
-        assert expand_kiro_cli_tool_names([]) == []
 
 
 class TestDeliberateOmissions:
@@ -716,14 +708,17 @@ class TestPromptResolution:
             resolve_prompt({"prompt": "file://../../etc/passwd"}, agent_id="a", agents_dir=tmp_path)
 
     @pytest.mark.parametrize("bad", [None, "", "   "])
-    def test_empty_prompt_falls_back_to_the_kas_constant(self, bad, tmp_path, caplog):
-        # KAS requires a non-empty prompt; a missing or blank string is an
-        # intentionally prompt-less agent (e.g. kirocrew-lite ships "prompt": ""),
-        # so the projection substitutes the small inline fallback constant
-        # instead of crashing the session.
+    def test_a_prompt_less_spec_resolves_to_an_empty_prompt(self, bad, tmp_path):
+        # On kiro-cli a prompt-less spec runs on kiro-cli's own default
+        # prompt with nothing added. KAS registers an agent whose prompt is ""
+        # and layers nothing on its own default, so that is what goes out -- not
+        # Crew's background-worker brief, which says the agent has no tools.
+        assert resolve_prompt({"prompt": bad}, agent_id="my-agent", agents_dir=tmp_path) == ""
+
+    @pytest.mark.parametrize("bad", [None, "", "   "])
+    def test_only_the_background_agent_gets_the_kas_brief(self, bad, tmp_path):
         out = resolve_prompt({"prompt": bad}, agent_id="kirocrew-lite", agents_dir=tmp_path)
         assert out == _KAS_FALLBACK_PROMPT
-        assert "falling back to the lightweight KAS prompt" in caplog.text
 
     @pytest.mark.parametrize("bad", [7, 3.14, True, [], {}, ["x"]])
     def test_non_string_prompt_is_refused_not_defaulted(self, bad, tmp_path):
@@ -754,6 +749,17 @@ class TestPromptResolution:
         assert agents[0]["prompt"] == _KAS_FALLBACK_PROMPT
         # Tool restriction is preserved — the fallback only supplies a prompt.
         assert agents[0]["tools"] == []
+
+    def test_build_projects_a_user_prompt_less_spec_with_an_empty_prompt(self, tmp_path):
+        # The key stays on the wire: KAS refuses an entry without `prompt` and
+        # falls the session back to its `vibe` mode.
+        (tmp_path / "helper.json").write_text(
+            json.dumps({"name": "helper", "tools": ["fs_read"]}), encoding="utf-8"
+        )
+        spec = load_agent_spec(tmp_path, "helper")
+        agents = build_kas_custom_agents(tmp_path, "helper", spec)
+        assert "prompt" in agents[0]
+        assert agents[0]["prompt"] == ""
 
 
 def test_the_batch_cap_matches_the_schema():

@@ -140,6 +140,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "method",
             "(self, channel_type: 'str', client: 'object') -> 'None'",
         ),
+        ("_publish_teams_webhook", "method", "(self, handles: 'dict') -> 'None'"),
         ("_close_channel_locked", "async method", "(self, channel_type: 'str') -> 'None'"),
         ("_on_slack_config_change", "async method", "(self, change: 'ConfigChange') -> 'None'"),
         ("_on_default_agent_config_change", "method", "(self, change: 'ConfigChange') -> 'None'"),
@@ -342,7 +343,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, update_task: \"'asyncio.Task[None] | None'\") -> 'None'",
         ),
         ("_run_update_checks", "async method", "(self) -> 'None'"),
-        ("_retry_pending_update_restart", "async method", "(self) -> 'None'"),
+        ("_retry_pending_update_restart", "async method", "(self) -> 'bool'"),
         ("_check_for_updates", "async method", "(self) -> 'None'"),
         (
             "_auto_update_effect",

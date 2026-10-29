@@ -947,3 +947,49 @@ class TestErrorCodes:
             assert status == 400, payload
             assert isinstance(body.get("code"), str) and body["code"], payload
             assert isinstance(body.get("error"), str) and body["error"], payload
+
+
+# ── The capabilities.computer_use governance row ──
+
+
+class TestPolicyLock:
+    """A policy pinning ``capabilities.computer_use`` off: GET reports it, PUT 409s."""
+
+    @pytest.fixture
+    def pinned_off(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from kiro_crew.platform import context as pc
+        from kiro_crew.platform import governance_profiles
+        from kiro_crew.platform.governance import parse_policy
+
+        doc = {"version": 1, "boot": {}, "capabilities": {"computer_use": {"enabled": False}}}
+        ctx = SimpleNamespace(governance=parse_policy(doc))
+        monkeypatch.setattr(pc, "current_context", lambda: ctx)
+        monkeypatch.setattr(pc, "installed_context", lambda: ctx)
+        monkeypatch.setattr(governance_profiles, "resolve_active_scope", lambda *a, **k: None)
+
+    @pytest.mark.asyncio
+    async def test_get_reports_the_lock(self, state_file: Path, pinned_off):
+        state_file.write_text(json.dumps({STATE_KEY_ENABLED: True}), encoding="utf-8")
+        async with _client() as client:
+            body = await (await client.get("/api/computer-use/config")).json()
+        assert body["locked_by_policy"] is True
+        assert body["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_enable_is_refused_and_writes_nothing(
+        self, state_file: Path, mock_sel, pinned_off
+    ):
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+            body = await resp.json()
+        assert resp.status == 409
+        assert body["code"] == "locked_by_policy"
+        assert not state_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_no_policy_reports_no_lock(self, home):
+        async with _client() as client:
+            body = await (await client.get("/api/computer-use/config")).json()
+        assert body["locked_by_policy"] is False

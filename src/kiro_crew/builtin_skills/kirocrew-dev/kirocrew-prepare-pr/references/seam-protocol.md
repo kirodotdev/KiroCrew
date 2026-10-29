@@ -94,6 +94,33 @@ The count never looks at what a `class:` line says. Grouping fixes by how alike 
 sentences are kept producing new edge cases, so the rule is the plain count of heads.
 A span that really carries unrelated defects is answered by the `resolution:` line.
 
+## PR-level count
+
+The count above reads only dispositions an author wrote, and many PRs have none. When no
+span is a seam, `pr_findings.py --rounds` and `sweep_check.py` also count PUSHES, read
+from the PR timeline with GET calls (`_review_contract.blocked_push_count`). A push counts
+once, when the head it replaced was blocked: a review lane (Opus, GPT, Design, UX or First
+Principles) ended its latest check run on that head as `failure`, or a CHANGES_REQUESTED
+review names that head and its reviewer has not since approved that head or had the review
+dismissed (a comment does not clear it, and another reviewer's request stands). A rebase or a
+red test shard on a green head, a cancelled or timed-out lane, a lane whose newest run on the
+head is green, and a dismissed review count nothing.
+
+- 3 pushes: `SEAM REPEAT (pr-level)`, exit 30. Take the first option of the strategy switch
+  that holds. The class sweep and `resolution:` line work as for a span.
+- 5 pushes: `SEAM LIMIT (pr-level)`, exit 30. Only narrow or defer remain.
+- A plain `resolution:` line in any disposition, with or without a span, restarts the count in
+  `--rounds` from the head that round judged (the last time the PR was on that head). `sweep_check.py` does not read it; a sweep entry's own `resolution:`
+  answers that entry's finding. With no sweep file, or a file that holds no entry (empty,
+  or only headings and notes), it prints the same finding beside any parse findings and
+  still exits 0 while `SWEEP_ENFORCED` is False.
+- The timeline names only the head a force push created. The head the first push replaced is
+  recovered from a review that precedes the push (or a commit event); a first head that has
+  neither stays unseen, so the count can be one low, never one high.
+- A timeline or check read that fails is unknown, never zero pushes: nothing triggers.
+- A marker seam (a span fixed in 2 earlier heads) is reported first; the push count is read
+  only when none exists.
+
 ## Retrospective verdicts
 
 On exit 30 the read-only retrospective rules on every mechanism first

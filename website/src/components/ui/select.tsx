@@ -4,6 +4,7 @@ import * as SelectPrimitive from '@radix-ui/react-select'
 import { Check, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { MountAfterCommit, useCloseWhenCrewHidden, useOverlayRoot } from '../overlayRoot'
+import { quietNextFocus } from '../../lib/quietFocusReturn'
 
 /**
  * shadcn-style wrapper around Radix Select, themed to match ui/dropdown-menu.tsx.
@@ -27,17 +28,31 @@ function Select({ open: openProp, defaultOpen, onOpenChange, ...rest }: React.Co
   }, [isControlled, onOpenChange])
   const close = React.useCallback(() => handleOpenChange(false), [handleOpenChange])
   useCloseWhenCrewHidden(open, close)
-  return <SelectPrimitive.Root open={open} onOpenChange={handleOpenChange} {...rest} />
+  const trigger = React.useRef<HTMLButtonElement | null>(null)
+  return (
+    <SelectTriggerRef.Provider value={trigger}>
+      <SelectPrimitive.Root open={open} onOpenChange={handleOpenChange} {...rest} />
+    </SelectTriggerRef.Provider>
+  )
 }
+/** The list's trigger element, read by the content when it hands focus back. */
+const SelectTriggerRef = React.createContext<React.MutableRefObject<HTMLButtonElement | null> | null>(null)
 const SelectGroup = SelectPrimitive.Group
 const SelectValue = SelectPrimitive.Value
 
 const SelectTrigger = React.forwardRef<
   React.ComponentRef<typeof SelectPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, ...props }, ref) => {
+  const own = React.useContext(SelectTriggerRef)
+  const setRef = React.useCallback((el: HTMLButtonElement | null) => {
+    if (own) own.current = el
+    if (typeof ref === 'function') ref(el)
+    else if (ref) ref.current = el
+  }, [own, ref])
+  return (
   <SelectPrimitive.Trigger
-    ref={ref}
+    ref={setRef}
     className={cn(
       'flex items-center justify-between w-full px-3 py-2 rounded-md text-sm border border-border bg-bg-elevated text-text',
       'hover:border-border-strong transition-all cursor-pointer outline-hidden',
@@ -56,7 +71,8 @@ const SelectTrigger = React.forwardRef<
       <ChevronDown className="ml-2 shrink-0 text-muted" size={14} aria-hidden />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
-))
+  )
+})
 SelectTrigger.displayName = SelectPrimitive.Trigger.displayName
 
 const SelectScrollUpButton = React.forwardRef<
@@ -100,8 +116,9 @@ function SelectPortal(props: React.ComponentProps<typeof SelectPrimitive.Portal>
 const SelectContent = React.forwardRef<
   React.ComponentRef<typeof SelectPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = 'popper', onEscapeKeyDown, ...props }, ref) => {
+>(({ className, children, position = 'popper', onEscapeKeyDown, onCloseAutoFocus, ...props }, ref) => {
   const trustRoot = useGuideTrustRootAttrs()
+  const trigger = React.useContext(SelectTriggerRef)
   return (
   <SelectPortal>
     <SelectPrimitive.Content
@@ -109,6 +126,12 @@ const SelectContent = React.forwardRef<
       {...trustRoot}
       position={position}
       sideOffset={4}
+      // Radix returns focus to the trigger right after this handler; after a
+      // pointer pick that must not paint the keyboard cue (lib/quietFocusReturn).
+      onCloseAutoFocus={e => {
+        quietNextFocus(trigger?.current)
+        onCloseAutoFocus?.(e)
+      }}
       // Escape must dismiss ONLY the select, not the surface hosting it. Radix
       // dismisses from a document-level listener, so without this the same
       // keydown keeps bubbling to window-level Escape handlers (e.g. the

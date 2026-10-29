@@ -50,6 +50,7 @@ from kiro_crew.sandbox_tiers import (
     _floor_mandates_sandbox,
     _governance_sandbox_floor,
     _mode_to_level,
+    enterprise_policy_cache_view,
 )
 from kiro_crew.sandbox_unavailable import (
     UNSANDBOXED_BY_OPERATOR,
@@ -842,6 +843,18 @@ def wrap_argv(
                 )
 
     backend = detect_backend(config_mode=mode)
+
+    # An enterprise build's sandboxed processes resolve the ceiling from the governance
+    # cache, so it is shown to them READ-ONLY (the plan seals a lifted cache). After the
+    # delegation branch on purpose: a delegated sandbox applies none of Kiro Crew's masks,
+    # and adding a path here would cost the delegation.
+    cache_view = tuple(
+        path
+        for path in enterprise_policy_cache_view(mode, extra_hidden_dirs)
+        if path not in extra_visible_dirs
+    )
+    if cache_view:
+        extra_visible_dirs = (*extra_visible_dirs, *cache_view)
 
     if backend == "namespace":
         if (

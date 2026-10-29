@@ -453,8 +453,12 @@ class DiscordDispatcher:
         origin_tag: str = "",
         monitor_completion: MonitorCompletionHook | None = None,
         monitor_session_key: str | None = None,
+        skill_trigger_text: str | None = None,
     ) -> MonitorDispatchResult | None:
         """Drive one authorized inbound message through the channel turn pipeline.
+
+        ``skill_trigger_text`` is what skill triggers match when the text was
+        generated rather than typed (an AutoNudge cycle); ``None`` matches the text.
 
         ``interpret_commands`` says whether *text* may execute as a command
         (model-authored text never may). Resume routing is consulted when
@@ -898,6 +902,7 @@ class DiscordDispatcher:
                     if monitor_completion is not None
                     else None
                 ),
+                skill_trigger_text=skill_trigger_text,
             )
         finally:
             # Identity-checked: a later turn on this key may have published its own.

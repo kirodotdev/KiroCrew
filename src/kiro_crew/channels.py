@@ -41,6 +41,7 @@ from kiro_crew.config.loader import (
     CRED_FEISHU_APP_SECRET,
     CRED_MICROSOFT_APP_ID,
     CRED_MICROSOFT_APP_PASSWORD,
+    CRED_MICROSOFT_APP_TENANT_ID,
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
     CRED_TELEGRAM_BOT_TOKEN,
@@ -104,6 +105,12 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
             start=maybe_start_teams,
             boot_keys=frozenset({"enabled", "app_id", "app_password", "tenant_id"}),
             credentials=(CRED_MICROSOFT_APP_ID, CRED_MICROSOFT_APP_PASSWORD),
+            # The tenant is restart-relevant but NOT required: a live TeamsClient
+            # authenticates against a fixed tenant and cannot adopt a corrected
+            # one, so a tenant-only .env edit (MICROSOFT_APP_TENANT_ID) must
+            # restart the channel -- but leaving it unset is the supported
+            # multi-tenant mode, so it must not read as a missing credential.
+            restart_credentials=(CRED_MICROSOFT_APP_TENANT_ID,),
             # app_password is env-only by design: the loader hardcodes "" so the
             # Azure Bot secret stays out of a file the agent can read. Only the id
             # has a fallback.

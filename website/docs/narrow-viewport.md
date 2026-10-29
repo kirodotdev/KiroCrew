@@ -357,7 +357,7 @@ container already claims its own swipe via `data-owns-swipe`.
 
 The rail carries everything the nav drawer does except Connect-your-phone, which is
 moot on the phone itself: the Main rows and Library on top, the apps, then
-Developer (in developer mode), Terminal (which toggles the docked panel and closes
+Terminal (which toggles the docked panel and closes
 the drawer so the panel is not left behind it), Capabilities and Kiro Account, with
 Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
 that secondary group: it stays pinned above Settings while the Apps list keeps
@@ -562,6 +562,63 @@ A committed close therefore parks the phase at `'closing'`, not `'closed'`: the 
 still on screen and its mount predicate keys on `!== 'closed'`, so writing `'closed'`
 here would cut the slide short. That also matches what a tap-driven close already did,
 which is why the chrome derived from the phase does not change timing.
+
+### The desktop counterpart: a trackpad swipe on the Mates page
+
+Off the phone the Mates page plays a two-finger trackpad swipe as the same side-panel
+DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`): to the left the
+panel follows the fingers in and settles open on its Dashboard tab, to the right it
+follows them out. A trackpad sends `wheel` events, not touches, so the reader cuts the
+stream into runs and reports the fingers' summed `deltaX`; the page drives `sidePanelX`
+from it directly (no touch events are synthesized) and on lift-off applies the phone's
+release rule from `useDrawerSwipe`'s exported constants (`COMMIT_DRAG_SHARE` 20%,
+`COMMIT_VELOCITY` 0.4 px/ms, the speed read over the fingers' last 60ms) and the phone's
+`animateDrawer` settle. An opening swipe while a Profile schedule draft is at stake does
+not drag: it goes to `togglePanel`, whose guard asks before anything is committed. While
+the drag runs the panel is a sheet on the right edge driven by `sidePanelX`, and a spacer in the
+page row as wide as the sheet's visible part (`deskSpacerW`) moves the chat's right edge
+with it, so the chat narrows and widens with the fingers. On desktop the settle runs on
+the main thread (same curve and timing) so the spacer can read every frame; the phone
+keeps its compositor settle. Once it settles, the resting state is published through
+`togglePanel` / the strip's focus (only for a run that revealed the panel) / the strip's
+close, and the placement takes it back with no width transition, since the spacer
+already stands at the column's width. A run's owner is fixed by its first event: a vertical
+start, a pinch (`ctrlKey`), a run over content that can still scroll that way, and a
+direction with nothing to do are all left alone; a new run during a settle grabs the
+panel where it is presenting it and follows from there, as a phone's drag can; anything else is cancelled event by event, with
+`overscroll-behavior-x: contain` on the document root while it runs, so macOS's
+back/forward swipe does not start under it. The drag is released only on a real
+lift-off: a 100ms gap (read from the events' own timestamps, so a slow frame is not a
+lift), or the momentum tail's signature, three steps in a row each smaller than the last
+by a near-constant ratio. A finger that slows down or pauses for 60ms wobbles instead and
+keeps following 1:1, so a slow partial drag holds where it is and, on lift-off, falls
+back. Steps that may be the tail are held back and dropped once it is recognised, so the
+panel stops where the fingers left it; the rest of the run never drags again. A
+horizontal scroller is found through the event's composed path, so one inside a shadow
+root keeps its own scroll.
+Under reduced motion there is no live drag: a clear swipe switches once at the run's
+end. The Dashboard frame on this page relays its unowned horizontal runs (`relayWheel`,
+the wheel sibling of `relayTouches`, opt-in per host so the chat page's preview and the
+Command Center keep their back swipe); the frame relays only while armed, which the host
+does in answer to the frame's hello while its swipe listens and undoes when it stops (a
+phone-width window, a creation surface), so a run nobody acts on is never cancelled; a
+relayed run may only start the close, and only while the Dashboard tab is on screen. A static Dashboard page (sandbox without
+`allow-scripts`) runs no relay, so a swipe that starts over one is the frame's.
+
+In the macOS desktop app the release can be exact. The shell reads Chromium's
+`gestureScrollBegin` / `gestureScrollEnd` off the dashboard's WebContents `input-event`
+(`electron/scroll-touch.js`) and sends each change as `begin` or `end` through the preload's
+`onScrollTouch`; `lib/scrollTouch` subscribes. Once a phase has been heard, `end` releases the
+drag (`onDragEnd('lift', at)`, with `at` the lift-off, so the 60ms speed is the fingers' own),
+and a pause with the fingers still down no longer ends it, up to `FINGER_HOLD_MAX_MS`
+(1s, so a lost `end` cannot hold the panel). The gap and the momentum signature stay armed
+as the fallback, and a page that never hears a phase (a browser, Windows, Linux) behaves
+exactly as above. A remote crew's pane is a cross-origin iframe of InstancesViewport with no
+preload: its own document reads the wheels over it, and it asks its host for the phases
+(`mc-scroll-touch-watch`). The host accepts the request only from that pane's own iframe at
+its tunnel origin, holds one bridge subscription while any pane listens, and forwards each
+phase only to the pane on screen, addressed to its exact origin; the pane accepts a phase
+only from `window.parent` at the origin it asked, for its own watch id.
 
 ## A panel that gains a gesture must be bound LIVE to its offset
 

@@ -418,10 +418,18 @@ def _frozen_prefix_and_foreign_appends(
         # scan runs, so there are no fresh dedup drops to archive.
         return (cache[3], list(cache[4]), [])
     try:
-        existing = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        # Bytes, so a first line that is not UTF-8 (which the save is about to
+        # rewrite as CORRUPT) does not raise here; the rows decode strictly.
+        # Imported here: an owner's module scope may import only what the
+        # chat_persistence facade already does.
+        from kiro_crew.history_projection import _split_transcript_head
+
+        existing, head_undecodable = _split_transcript_head(path.read_bytes())
     except OSError:
         return ("", [], [])
-    if not existing or '"_type"' not in existing[0]:
+    # An undecodable first line is still the metadata line by position, so the
+    # rows after it stay in the frozen prefix rather than being dropped.
+    if not existing or ('"_type"' not in existing[0] and not head_undecodable):
         return ("", [], [])
     body = existing[1:]  # message lines only (metadata excluded)
     prefix_lines = body[:disk_older] if disk_older > 0 else []
@@ -813,7 +821,9 @@ def compose_payload(
     # the caller's replace, so a failed read or archive raises and nothing is
     # written: the slot keeps ``_pending_rewrite`` and the next save retries.
     if rewrite and path.exists():
-        old_lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        from kiro_crew.history_projection import _split_transcript_bytes
+
+        old_lines = _split_transcript_bytes(path.read_bytes())
         new_lines = payload.splitlines(keepends=True)
         _archive_dropped_lines(state, history_key, old_lines, new_lines)
     return payload, frozen_prefix, foreign_lines

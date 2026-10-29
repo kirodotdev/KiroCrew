@@ -195,6 +195,63 @@ describe('Settings selectable models', () => {
     await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledWith({ model_picker_hidden_models_add: ['model-a'] }))
   })
 
+  it('keeps a model hidden under another harness spelling unchecked, and showing it removes that spelling', async () => {
+    // Hidden while the kiro backend listed `claude-opus-4.7`; the Claude Code
+    // backend advertises the same model as `claude-opus-4-7[1m]`.
+    const config = await dashboardConfigMock()
+    let serverConfig = { ...config, model_picker_hidden_models: ['claude-opus-4.7'], model_picker_configured: true }
+    dashboardConfigMock.mockImplementation(async () => serverConfig)
+    updateDashboardConfigMock.mockImplementation(async (patch: Record<string, unknown>) => {
+      serverConfig = applyDashboardConfigPatch(serverConfig, patch)
+      return { ok: true }
+    })
+    modelsMock.mockResolvedValue([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'claude-opus-4-7[1m]', description: 'Opus 4.7' },
+      { model_name: 'model-a', description: 'Model A' },
+    ])
+    mount()
+    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await waitFor(() => expect(trigger).toHaveTextContent('Selected 2 / 3'))
+    fireEvent.click(trigger)
+    const opus = screen.getByRole('checkbox', { name: 'claude-opus-4-7[1m]' })
+    expect(opus).not.toBeChecked()
+    fireEvent.click(opus)
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+      model_picker_hidden_models_remove: ['claude-opus-4-7[1m]', 'claude-opus-4.7'],
+    }))
+    await waitFor(() => expect(serverConfig.model_picker_hidden_models).toEqual([]))
+  })
+
+  it('select all removes a model hidden under another harness spelling', async () => {
+    const config = await dashboardConfigMock()
+    let serverConfig = {
+      ...config,
+      model_picker_hidden_models: ['claude-opus-4.7', 'temporarily-unavailable'],
+      model_picker_configured: true,
+    }
+    dashboardConfigMock.mockImplementation(async () => serverConfig)
+    updateDashboardConfigMock.mockImplementation(async (patch: Record<string, unknown>) => {
+      serverConfig = applyDashboardConfigPatch(serverConfig, patch)
+      return { ok: true }
+    })
+    modelsMock.mockResolvedValue([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'claude-opus-4-7[1m]', description: 'Opus 4.7' },
+      { model_name: 'model-a', description: 'Model A' },
+    ])
+    mount()
+    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await waitFor(() => expect(trigger).toHaveTextContent('Selected 2 / 3'))
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+      model_picker_hidden_models_remove: ['claude-opus-4-7[1m]', 'model-a', 'claude-opus-4.7'],
+    }))
+    await waitFor(() => expect(serverConfig.model_picker_hidden_models).toEqual(['temporarily-unavailable']))
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'claude-opus-4-7[1m]' })).toBeChecked())
+  })
+
   it('omits model visibility and acknowledgement from unrelated dashboard saves', async () => {
     mount('composer')
     const quickSend = await screen.findByRole('switch', { name: 'Quick Send' })
@@ -360,5 +417,43 @@ describe('Settings selectable models', () => {
     second.resolve({ ok: true })
     await waitFor(() => expect(trigger).toHaveTextContent('Selected 1 / 3'))
     expect(trigger).toHaveTextContent('Selected 1 / 3')
+  })
+
+  it('shows the backend native label but toggles by the model id (#21747)', async () => {
+    // An advertised-selection harness (Claude Code) sends a native name for the
+    // bare id `opus`. The row must READ "Opus 5.5" while the hidden-models save
+    // still carries the id `opus` -- the wire value, not the label.
+    modelsMock.mockReset().mockResolvedValue([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'opus', display_name: 'Opus 5.5', description: 'For complex work' },
+    ])
+    mount()
+    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await waitFor(() => expect(trigger).not.toBeDisabled())
+    fireEvent.click(trigger)
+    // The row's accessible name is the native label, not the raw id.
+    const opusRow = await screen.findByRole('checkbox', { name: 'Opus 5.5' })
+    expect(opusRow.closest('label')?.querySelector('[data-multi-select-hint]')?.textContent).toBe('opus')
+    expect(screen.queryByRole('checkbox', { name: 'opus' })).not.toBeInTheDocument()
+    // Toggling it off writes the ID to the hidden set, not the label.
+    fireEvent.click(opusRow.closest('label') as HTMLElement)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+        model_picker_hidden_models_add: ['opus'],
+      }),
+    )
+  })
+
+  it('shows no id hint on a row without a backend name', async () => {
+    modelsMock.mockReset().mockResolvedValue([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'claude-sonnet-5', description: 'x' },
+    ])
+    mount()
+    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await waitFor(() => expect(trigger).not.toBeDisabled())
+    fireEvent.click(trigger)
+    const sonnetRow = await screen.findByRole('checkbox', { name: 'claude-sonnet-5' })
+    expect(sonnetRow.closest('label')?.querySelector('[data-multi-select-hint]')).toBeNull()
   })
 })

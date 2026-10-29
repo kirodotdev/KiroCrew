@@ -29,7 +29,7 @@ MAX_LONG_STRING = 50_000  # task specs, inline content
 # a way to occupy the event loop for as long as the caller likes.
 #
 # The VALUE is tied to ``dashboard.state.MAX_SLOTS_PER_CREATOR`` (50) and must
-# never fall below it. The broadcast's DEFAULT audience is "every live session
+# never fall below it. The broadcast's `all: true` audience is "every live session
 # this caller created" (``broadcast_audience``), and that set is bounded by the
 # per-creator slot cap and by nothing else -- so a cap under it makes the
 # documented default path refuse itself with ``too_many_targets`` as soon as a
@@ -281,7 +281,8 @@ _MODEL_NAME_RE = re.compile(
 #: refusal names the shape and never echoes the rejected value.
 MODEL_NAME_HINT = (
     "expected a model id of letters, digits, '.', '_' and '-' that starts with a "
-    "letter or digit (optionally with one [qualifier]), a provider/model id, or 'auto'"
+    "letter or digit (optionally with one [qualifier]), a provider/model id of at "
+    f"most {_QUALIFIED_MODEL_MAX_CHARS} characters, or 'auto'"
 )
 
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64

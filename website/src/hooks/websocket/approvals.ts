@@ -18,7 +18,7 @@ import { approvalNotificationBody } from '../../lib/approvalNotificationBody'
 import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { isSlotOnScreen } from './attention'
+import { isCrewWorkerSlot, isSlotOnScreen } from './attention'
 import { recordInBoundedLog, resolvedSince } from './retiredIds'
 import type { FrameData } from './frames'
 
@@ -173,6 +173,10 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
           if (slotMessages.some(message =>
             message.role === 'permission' && message.meta?.approval_id === a.id)) continue
           coordinatorApprovalsRef.current.set(a.id, slot)
+          if (isCrewWorkerSlot(slot)) {
+            writeRow(a, slot)
+            continue
+          }
           dispatch(addNotification({
             kind: 'approval',
             title: i18nT('hooks.useWebSocket.tool_approval', { name: a.tool || i18nT('hooks.useWebSocket.unknown') }),
@@ -191,6 +195,9 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
             typeof data.slot === 'string' ? data.slot : '',
           )
         }
+        // A Crew Mode worker's approval is shown on its conductor's approval
+        // card: no note, chime, banner or badge of its own.
+        if (typeof data.slot === 'string' && isCrewWorkerSlot(data.slot)) return data.slot
         // Approval-blocked chime: the agent is stuck until the user acts.
         // Suppressed during reconnect catch-up (same policy as turn-done).
         if (!reconnecting) {

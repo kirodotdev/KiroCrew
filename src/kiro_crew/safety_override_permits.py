@@ -56,19 +56,55 @@ def _duration_member_permitted(member: str) -> bool:
     return bool(getattr(decision, "permitted", False))
 
 
+def yolo_ttl_cap() -> int:
+    """Seconds an auto-approve grant may last under the policy; 0 means no cap.
+
+    The policy's ``yolo_max_seconds`` (RFC crew-enterprise-edition, appendix row
+    "Auto-approval duration"). With none, an enterprise build caps at
+    ``governance_parts.baseline.ENTERPRISE_YOLO_MAX_SECONDS`` and an ``oss`` build
+    does not cap, as before. A memory read of the installed ceiling, so it is safe on the event
+    loop. Unreadable: the enterprise cap there, no cap in ``oss``.
+    """
+    from kiro_crew.edition import is_enterprise
+
+    enterprise = is_enterprise()
+    try:
+        from kiro_crew.platform.context import current_context
+
+        cap = getattr(current_context().governance, "yolo_max_seconds", 0)
+    except Exception:
+        logger.debug("yolo_max_seconds unavailable", exc_info=True)
+        cap = 0
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+        return cap
+    if not enterprise:
+        return 0
+    from kiro_crew.platform.governance_parts.baseline import ENTERPRISE_YOLO_MAX_SECONDS
+
+    return ENTERPRISE_YOLO_MAX_SECONDS
+
+
 def declared_grant_permitted() -> bool:
     """True when policy allows a DECLARED grant to persist without expiry.
 
     ``dangerouslySkipPermissions: true`` is the operator's standing instruction,
     but on a managed fleet an admin must be able to forbid a never-expiring
     grant. Denying the ``permanent`` member of the ``yolo_duration`` scope forces
-    a declared grant back onto the ordinary ad-hoc duration.
+    a declared grant back onto the ordinary ad-hoc duration, and so does a
+    ``yolo_max_seconds`` cap (:func:`yolo_ttl_cap`): no grant may outlast it.
     """
+    if yolo_ttl_cap():
+        return False
     return _duration_member_permitted(_PERMANENT_MEMBER)
 
 
 def until_shutdown_permitted() -> bool:
-    """True when policy allows the ad-hoc ``until_shutdown`` duration."""
+    """True when policy allows the ad-hoc ``until_shutdown`` duration.
+
+    False under a ``yolo_max_seconds`` cap, which no untimed grant can meet.
+    """
+    if yolo_ttl_cap():
+        return False
     return _duration_member_permitted(_UNTIL_SHUTDOWN_MEMBER)
 
 
@@ -118,8 +154,10 @@ def approval_mode_permitted(mode: str) -> bool:
             governance_permits,
         )
     except Exception:
-        logger.debug("governance layer unavailable; permitting mode %s", mode, exc_info=True)
-        return True
+        # Fail closed, like the evaluation below: a deniable mode is the riskier
+        # auto-approve one, and a broken governance layer cannot vouch for it.
+        logger.warning("governance layer unavailable; refusing mode %s", mode, exc_info=True)
+        return False
     decision = governance_permits(
         _APPROVAL_MODES_SCOPE,
         mode,

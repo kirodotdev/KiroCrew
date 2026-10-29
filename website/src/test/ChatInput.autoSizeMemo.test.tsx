@@ -142,6 +142,11 @@ describe('composer auto-size measurement memo', () => {
       disconnect() { instances.delete(this) }
     } as unknown as typeof ResizeObserver
     vi.stubGlobal('ResizeObserver', RO)
+    // The re-measure runs on the frame after the notification, not inside the
+    // callback (a height write there resizes the observed element again in the
+    // same frame), so frames run when `fire` says so.
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { frames.push(cb); return frames.length })
     try {
       renderWithProviders(<Harness initial="wrapped text" />)
       const ta = screen.getByRole('textbox') as HTMLTextAreaElement
@@ -149,10 +154,14 @@ describe('composer auto-size measurement memo', () => {
       expect(mine.length).toBeGreaterThan(0)
       let width = 600
       Object.defineProperty(ta, 'clientWidth', { configurable: true, get: () => width })
+      frames.splice(0)
       const state = countMeasures(ta)
       // Only the observer(s) watching the textarea fire — the shelf and control
       // row observers are not what this case is about.
-      const fire = () => { for (const i of mine) i.cb([], {} as ResizeObserver) }
+      const fire = () => {
+        for (const i of mine) i.cb([], {} as ResizeObserver)
+        for (const frame of frames.splice(0)) frame(0)
+      }
 
       // The observer baselined the width at mount (happy-dom: 0), so the first
       // notification at 600 IS a width change: one measurement, no keystroke.
@@ -170,6 +179,7 @@ describe('composer auto-size measurement memo', () => {
       fire()
       expect(state.measures).toBe(2)
     } finally {
+      raf.mockRestore()
       vi.unstubAllGlobals()
     }
   })

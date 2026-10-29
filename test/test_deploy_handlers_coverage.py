@@ -1704,7 +1704,7 @@ class TestPending:
         handlers._save_config("p", "us-west-2")
         seen: dict = {}
 
-        async def _fake_deploy(params):
+        async def _fake_deploy(params, **_kw):
             seen.update(params)
             return 200, {"url": "https://d1.cloudfront.net/s/"}
 
@@ -1726,7 +1726,7 @@ class TestPending:
 
         handlers._save_config("p", "us-west-2")
 
-        async def _fake_deploy(_params):
+        async def _fake_deploy(_params, **_kw):
             return 502, {"error": "AccessDenied"}
 
         monkeypatch.setattr(handlers, "_do_deploy", _fake_deploy)

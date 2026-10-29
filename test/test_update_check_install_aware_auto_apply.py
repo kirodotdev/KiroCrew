@@ -887,6 +887,7 @@ _DYNAMIC_GATES = {
     "commits_ahead": "measured against the commit this apply just fetched",
     "hidden_worktree_edits": "the working tree's state at apply time",
     "resolve_remote_url": "an input to update_blocked_reason, not a gate itself",
+    "fetch_and_pin_upstream": "performs the isolated fetch, not a precondition the route gates on",
     "git_command_env": "builds the environment, decides nothing",
     "loggable_path": "formats a path for a log line",
     "cdn_bases": "an input to update_blocked_reason, not a gate itself",

@@ -70,6 +70,15 @@ STEER_UNAVAILABLE = "unavailable"
 STEER_STATE_WRITTEN = "written"
 STEER_STATE_CONSUMED = "consumed"
 STEER_STATE_REQUEUED = "requeued"
+# The fourth state, reached only from `written`: the person took the steer back
+# before the turn read it (`dashboard/steer_retract.py`). The row stays, so the
+# transcript keeps its place, and says what became of the text.
+STEER_STATE_RETRACTED = "retracted"
+# Row meta: this `written` steer can be taken back. Stamped only where the take-back
+# works -- the session's own human typed it into the composer, and the running
+# harness can drop a steer its turn has not read -- so the dashboard draws the
+# controls from the row alone.
+STEER_RETRACTABLE_META = "steerRetract"
 
 # Upper bound on a client-minted ``meta.sendId`` accepted into the steer path.
 # Client mints are ~17 chars; the bound exists because the value is raw client
@@ -243,6 +252,22 @@ def _queued_entry_id(slot: Any, delivery_id: str) -> str:
     return ""
 
 
+def is_retracted_steer_row(row: dict[str, Any]) -> bool:
+    """Whether *row* is a steer the person took back before the turn read it.
+
+    The row keeps its place in the transcript with its text cleared, so a walk
+    that takes the nearest ``user`` row as the request has to step past it: the
+    turn never read it, and there is nothing in it to run again.
+    """
+    meta = row.get("meta")
+    return (
+        row.get("role") == "user"
+        and isinstance(meta, dict)
+        and meta.get("steer") is True
+        and meta.get("steerState") == STEER_STATE_RETRACTED
+    )
+
+
 def find_written_steer_row(
     slot: Any, message: str, siblings: list[str] | None = None
 ) -> dict[str, Any] | None:
@@ -336,6 +361,16 @@ def _engine_has_no_prompt(client: Any) -> bool:
     except Exception:  # noqa: BLE001 - an unreadable probe keeps the prior behavior
         logger.debug("has_active_turn probe failed", exc_info=True)
         return False
+
+
+def _steer_target(slot: Any) -> tuple[object, bool, int]:
+    """The turn a steer is aimed at: its task, whether it has finished, and the stop count."""
+    task = getattr(slot, "task", None)
+    return (
+        task,
+        bool(task is not None and task.done()),
+        int(getattr(slot, "_stop_generation", 0) or 0),
+    )
 
 
 async def steer_into_running_turn(
@@ -446,6 +481,18 @@ async def steer_into_running_turn(
     send_id = normalize_send_id(send_id)
     quote = quote_meta(attachments)
     attachments = attachment_meta(attachments)
+    # A take-back's `_session/steer/clear` drops every steer kiro-cli holds when it
+    # runs, so this steer is not written until that clear has been answered.
+    # circular import: steer_retract imports this module at module level.
+    from kiro_crew.dashboard import steer_retract
+
+    # The clear's answer can come from the turn ending or from a Stop, and either
+    # one's teardown finishes before this resumes. A steer written then reaches no
+    # turn, so it goes back to the caller's queue path instead.
+    aimed_turn = _steer_target(slot)
+    await steer_retract.wait_for_clear(slot)
+    if _steer_target(slot) != aimed_turn:
+        return STEER_UNAVAILABLE
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
@@ -715,6 +762,7 @@ async def steer_into_running_turn(
             # above means this is the only matching entry, which is why this is a
             # plain remove and not an index dance over possible duplicates.
             slot._pending_steers.remove(message)
+            slot._steer_possibly_delivered.discard(message)
             responsive_chat.forget_steer(slot, message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
@@ -928,6 +976,19 @@ async def steer_into_running_turn(
         meta.update(attachments)
     if quote:
         meta.update(quote)
+    # Offered only on a steer still waiting for the turn, typed by the session's
+    # own human into the composer, on a harness that can drop it unread. A peer's,
+    # a channel's or an automation's steer is not that person's to take back.
+    _retractable = (
+        _state == STEER_STATE_WRITTEN
+        and user_origin
+        and not channel_origin
+        and nudge_meta is None
+        and not responsive
+        and getattr(client, "supports_steer_retract", False) is True
+    )
+    if _retractable:
+        meta[STEER_RETRACTABLE_META] = True
     # The row survives a page reload via the dirty-flush cycle. The session's own
     # human's steer is stored as typed, like an ordinary send's row; a peer's is
     # stored sanitized, because its text has no human author to be its reader. A
@@ -969,6 +1030,8 @@ async def steer_into_running_turn(
         # requeued; a row already persisted as consumed is terminal.
         "steerState": _state,
     }
+    if _retractable:
+        push_payload[STEER_RETRACTABLE_META] = True
     # The row's own id, so the client stores it and the later state patch -- which
     # is keyed on `mid` -- can find this row. Without it the client row has no
     # `mid`, the mid-keyed patch matches nothing, and the promotion is a silent
@@ -1031,6 +1094,7 @@ def queue_for_next_turn(
     quote: dict[str, Any] | None = None,
     commands_off: bool = False,
     steer_intent: bool = False,
+    admission: dict[str, Any] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1041,6 +1105,10 @@ def queue_for_next_turn(
     this send to act now and the running turn could not take it, so the sub-agent
     hold releases it at the turn's end rather than parking it behind the wave.
     Only the composer's steer fallback passes it.
+
+    *admission* supplies containment captured before an asynchronous queue path
+    began. When absent, containment is captured here at enqueue like every direct
+    caller.
 
     *commands_off* stamps :data:`COMMANDS_OFF_META_KEY` on the entry: the drained
     turn hands the text to the model as content and never runs its first word as a
@@ -1096,7 +1164,9 @@ def queue_for_next_turn(
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
 
-    meta: dict[str, Any] = dict(containment_meta(state, slot))
+    meta: dict[str, Any] = (
+        dict(admission) if admission is not None else dict(containment_meta(state, slot))
+    )
     if channel_recipient:
         meta[CHANNEL_RECIPIENT_META_KEY] = dict(channel_recipient)
     if turn_actor:

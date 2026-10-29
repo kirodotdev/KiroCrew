@@ -393,7 +393,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit",
     "kiro_crew.edition_locks": "local_enable_locked",
-    "kiro_crew.dashboard": "display_verdicts",
+    "kiro_crew.dashboard": "crew_mode_migration display_verdicts",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.enterprise_gate_middleware": (
         "enterprise_gate_middleware_for install_enterprise_gate"
@@ -412,6 +412,7 @@ _LAZY_IMPORTS = {
         "api_monitors_list api_session_monitor_get"
     ),
     "kiro_crew.dashboard.handlers.change_cards": "change_card_middleware",
+    "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
     "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
     "kiro_crew.dashboard.handlers.sandbox_doc": "register_sandbox_doc_routes",
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
@@ -427,6 +428,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
     "kiro_crew.decisions": "impl_jev local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
+    "kiro_crew.memory_startup": "memory_prepared memory_startup_preparing",
+    "kiro_crew.memory_startup_prebuild": "prebuild_startup_reads",
     "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
     "kiro_crew.kiro_prerequisite": "KiroPrerequisiteService register_turn_auth_service",
     "kiro_crew.hooks": "set_builtin_app_agents set_builtin_app_mcp_servers set_builtin_app_names",
@@ -461,7 +464,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 96
+    assert len(expected) == 101
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

@@ -41,6 +41,7 @@ from mcp_gatewayd_coverage_helpers import (  # noqa: F401 -- the autouse fixture
     _FakeWriter,
     _pool_key,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import gatewayd as gw
@@ -577,13 +578,25 @@ _AUDIT_CASES = [
 ]
 
 
+def _stored_sel_rows(root: Path):
+    """A reader for the rows the real SEL bound by ``sel_private_root`` stored."""
+
+    def _rows() -> list[dict[str, Any]]:
+        path = root / "security_events.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines if line]
+
+    return _rows
+
+
 class TestAuditEmitters:
     @pytest.mark.parametrize("fn_name,args,operation", _AUDIT_CASES)
-    def test_emits_the_documented_operation(self, monkeypatch, fn_name, args, operation):
-        sel = MagicMock()
-        monkeypatch.setattr(gw, "SecurityEventLog", MagicMock(return_value=sel))
+    def test_emits_the_documented_operation(self, sel_private_root, fn_name, args, operation):
+        rows = _stored_sel_rows(sel_private_root)
         getattr(gw, fn_name)(*args)
-        assert sel.log_api_access.call_args.kwargs["operation"] == operation
+        assert [r["operation"] for r in rows()] == [operation]
 
     @pytest.mark.parametrize("fn_name,args,operation", _AUDIT_CASES)
     def test_audit_failure_never_breaks_the_caller(
@@ -604,11 +617,10 @@ class TestAuditEmitters:
         assert kwargs["outcome"] == "denied"
         assert kwargs["error"] == "no valid pids"
 
-    def test_empty_caller_is_normalised_to_unknown(self, monkeypatch):
-        sel = MagicMock()
-        monkeypatch.setattr(gw, "SecurityEventLog", MagicMock(return_value=sel))
+    def test_empty_caller_is_normalised_to_unknown(self, sel_private_root):
+        rows = _stored_sel_rows(sel_private_root)
         gw._audit_pool_fallback("", "demo-mcp", "pool full")
-        assert sel.log_api_access.call_args.kwargs["caller"] == "unknown"
+        assert [r["caller_identity"] for r in rows()] == ["unknown"]
 
 
 # --- frame codec -------------------------------------------------------------
@@ -656,13 +668,20 @@ class TestReadFirstFrame:
         assert await gw._read_first_frame(cast(Any, reader)) is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("line", [b"not json\n", b"\xff\xfe\n"])
-    async def test_undecodable_or_invalid_json_returns_none(self, line):
-        assert await gw._read_first_frame(cast(Any, _FakeReader(line=line))) is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("line", [b"[1,2]\n", b'"hello"\n', b"7\n"])
-    async def test_non_object_json_is_refused(self, line):
+    @pytest.mark.parametrize(
+        "line",
+        [
+            *named_cases(
+                "test_undecodable_or_invalid_json_returns_none",
+                "line",
+                [b"not json\n", b"\xff\xfe\n"],
+            ),
+            *named_cases(
+                "test_non_object_json_is_refused", "line", [b"[1,2]\n", b'"hello"\n', b"7\n"]
+            ),
+        ],
+    )
+    async def test_a_bad_first_frame_returns_none(self, line):
         assert await gw._read_first_frame(cast(Any, _FakeReader(line=line))) is None
 
     @pytest.mark.asyncio

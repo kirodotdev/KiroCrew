@@ -131,7 +131,7 @@ _BASE_NAMES = frozenset("""
         append_and_surface asdict atomic_write binary_content_is_flagged
         cgroup_scope_argv coerce_dict_section config_dir config_loader
         dashboard_slot_key data_home drained_to_thread executors extract_blocks
-        extract_pdf_segments extract_slides extract_text file_delivery_consent
+        extract_pdf_segments extract_slides extract_text
         is_direct_local_request is_sensitive_canonical_path is_sensitive_path is_sensitive_resolved_path
         is_tracked_channel is_unc_shape join_slides link_pattern_url_ok logger
         materialize_workspace_dir open_access_control_source part_stream
@@ -236,8 +236,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _validate_dashboard_path
         """.split()),
     "outbox": tuple("""
-        _audit_consented_download _audit_owner_grant_refusal _owner_grant_releases_flagged
-        _read_outbox_file api_outbox_download api_outbox_list api_outbox_notify
+        _caller_is_owner _read_outbox_file api_outbox_download api_outbox_list api_outbox_notify
         """.split()),
     "channel_upload": tuple("""
         _gate_upload_file api_channel_upload_file api_slack_upload_file is_tracked_channel
@@ -262,7 +261,7 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 #: ``editor`` owners, from the base file, where each of their names had the same shape.
 #: Recaptured when ``_run_path_probe`` gained its keyword-only ``stall_path``.
 #: Recaptured when ``api_file_download`` began answering a ``web.StreamResponse``.
-_BASE_SHAPE_DIGEST = "b462dcc17ed8ba47197333e00c15ef7b63c8817837a43d28d4f582a720c3b788"
+_BASE_SHAPE_DIGEST = "3563ee4c4afdebcea85f7b59035a08807a91fafcc5c76832084a182db7e1b205"
 #: Definitions that stay in the facade file: the seams the owners share -- the SEL
 #: accessor, the file-send audit, the sub-agent session mapping and the request-body
 #: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
@@ -377,7 +376,9 @@ def _package_reexports() -> list[str]:
 
 def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     """Every route the gateway registers for a file handler and every name the
-    handlers package re-exports is the facade's object."""
+    handlers package re-exports is the facade's object. A route over this
+    machine's files runs behind the remote-chat guard, which wraps the facade's
+    object itself (``__wrapped__``)."""
     from kiro_crew.dashboard import routes
 
     app = web.Application()
@@ -389,7 +390,19 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         and route.handler.__module__ == _FACADE
     ]
     assert len({id(h) for h in served}) == 34
-    assert [h.__name__ for h in served if getattr(files, h.__name__) is not h] == []
+    inner = [getattr(h, "__wrapped__", h) for h in served]
+    assert [h.__name__ for h in inner if getattr(files, h.__name__) is not h] == []
+    assert sorted({h.__name__ for h in served if hasattr(h, "__wrapped__")}) == [
+        "api_file_diff",
+        "api_file_raw",
+        "api_file_read",
+        "api_file_stream",
+        "api_file_watch",
+        "api_file_write",
+        "api_project_git",
+        "api_project_git_log",
+        "api_project_git_status",
+    ]
     reexports = _package_reexports()
     assert len(reexports) == 36
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
@@ -490,7 +503,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 131
+    assert len(names) == len(set(names)) == 129
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
@@ -499,7 +512,7 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
         for names in _BASE_OWNERS.values()
         for name in names
     )
-    assert len(lines) == 131
+    assert len(lines) == 129
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -552,7 +565,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
     }
     assert defined == set(_FACADE_DEFS)
     moved = {name for names in _BASE_OWNERS.values() for name in names}
-    assert len(defined | moved) == len(defined) + len(moved) == 139
+    assert len(defined | moved) == len(defined) + len(moved) == 137
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1443,7 +1456,8 @@ def test_the_bare_hop_guard_reads_the_file_family(
 def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     """The baseline's per-file rows for the facade and its owners are each one's
     measured count and sum to the one-module file's 82 less the codes added since
-    (the upload 413's ``file_too_large``), and the scan counts a response planted
+    (the upload 413's ``file_too_large``) and the notify content refusal removed
+    with the content scan, and the scan counts a response planted
     in an owner against that owner."""
     import json
 
@@ -1457,7 +1471,7 @@ def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     }
     live = guard.tally(guard.scan())
     assert rows == {path: live[path] for path in rows}
-    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 81
+    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 80
     assert {path for path in live if path.startswith("dashboard/file_api/")} <= set(rows)
     root = _mirror(tmp_path) / "src/kiro_crew"
     owner = root / "dashboard/file_api/search.py"

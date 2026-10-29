@@ -361,6 +361,21 @@ def _acting_unit(
     return unit, None
 
 
+def _conductor_unit(state: DashboardState, conductor_key: str) -> str:
+    """The unit a board's own copy of a worker's report is written into, or ``""``.
+
+    The conductor's live unit when the session registry names one; otherwise the
+    conductor slot's newest unit (``session_ledger.newest_work_unit``), whether or not
+    that session is running now or has recorded anything yet.
+    """
+    unit = unit_for_session_key(getattr(state, "sessions", None), conductor_key)
+    if unit and unit != UNKNOWN:
+        return unit
+    from kiro_crew import session_ledger
+
+    return session_ledger.newest_work_unit(conductor_key)
+
+
 def _crew_store(conductor_slot_key: str) -> str:
     """The crew-log store a conductor's dispatch record belongs to, or ``""``.
 

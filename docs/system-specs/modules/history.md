@@ -167,7 +167,7 @@ binds from them. New work goes to the owner of its responsibility:
 | `history_files.py` | transcript stems and their Slack aliases (`transcript_stem(s)`, `transcript_lock_stems`, `_safe_key`), the sessions and archive directories, the durable archive write (`_archive_lines`) and its retention sweep (`_cleanup_old_archives`), the file stamps (`_safe_mtime`, `_cache_identity`, `_restore_mtime`) |
 | `history_schema.py` | which metadata keys a rebuilding writer owns (`SLOT_OWNED_META_KEYS`, `ROWS_ONLY_*`, `carry_unowned_metadata`), row provenance (`carry_provenance`), `HUMAN_TURN_META_KEY`, `mint_row_mid`, and the spelling and order of transcript timestamps (`transcript_sort_key`, `metadata_now_iso`, `monotonic_transcript_ts`, `latest_transcript_ts`) |
 | `history_offload.py` | the on-loop persistence discipline (`OnLoopPersistError`, `allow_on_loop_persist`, `on_loop_persist_strict`) and the off-loop writers (`append_off_loop`, `append_if_absent_off_loop`, `append_rows_if_absent_off_loop`, `update_metadata_off_loop`) |
-| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
+| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `_try_acquire_named_sidecar`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
 | `history_derivation.py` | the header's privacy contract (`INCOGNITO_MEMORY_MODES`, `memory_mode_from_header_line`, `is_incognito_transcript`, `transcript_privacy_mode`) and the derivation seam (`derivation_hold`, `publication_hold`, `derive_messages*`, `derive_recent`, `TranscriptWithheld`, `TranscriptBusy`) |
 | `history_threads.py` | the reply-thread sidecar: its location, `read_threads`, `append_thread_reply` and `ThreadStoreUnreadable` |
 | `history_summaries.py` | the one-line and intent summary sidecar caches |
@@ -285,7 +285,9 @@ fields. The no-limit route and callers requiring complete history remain on
 the sparse index nor page projection stores a redacted or alternate transcript.
 
 A poller of the newest page reads it incrementally (`dashboard/slot_detail_delta.py`;
-its one caller is the app-sdk `ChatEmbed`). A paged read passing `cursor=1` also
+its one caller is the app-sdk `ChatEmbed`, which issues the read on a poll and,
+when its host passes a push channel, on each change signal for the slot -- see
+app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged). A paged read passing `cursor=1` also
 gets `cursor: {from, since, digest}`: the page's first and last row indices and a
 digest over the rows in `[from, since)`, so the last row (the folded streaming
 row) is never inside it. The digest is built from each row's render-memo identity
@@ -365,7 +367,7 @@ The hook is a facade over composed owners, each holding one responsibility:
 | Owner (`website/src/hooks/virtualizer/`) | Owns |
 |---|---|
 | `useVirtualChat.ts` | option wiring, row identity (display key, stable id, alt id), and the hook-call order the owners depend on |
-| `windowRange.ts` | the mounted window as the reader scrolls: the scroll recompute and its merge, the near/far jump rule behind `mountIndex`, sentinel expansion, the coverage watchdog, the older-history index trigger. A placement that moves the scroller (follow's tail and jump, a prepend rebase, the reading position's entry, visibility and restore) mounts its own window from its owner, through the same window math |
+| `windowRange.ts` | the mounted window as the reader scrolls: the scroll recompute and its merge, the near/far jump rule behind `mountIndex`, sentinel expansion, the coverage watchdog, the older-history index trigger, and the tail-append mount (rows appended under a followed reader join the window in the render that first sees them, so they never commit as estimate-priced spacer). A placement that moves the scroller (follow's tail and jump, a prepend rebase, the reading position's entry, visibility and restore) mounts its own window from its owner, through the same window math |
 | `measurement.ts` | the per-scope `HeightIndex`, the spacer geometry read from it, and every measurement writer (resize observer, row ref seed, measure farm), each gated on the caller's `canMeasure` so a width-transition measurement never lands in the old scope, plus the mounted-row reseed a scope change runs after the reading-position restore. Only the cache WRITE stands down for the gate: the observer classifies every fire (first mount vs resize, the above-fold delta the compensation adds to scrollTop) against the height the DOM last showed for that node, tracked per mounted element apart from any scope, so a re-wrap during the transition is compensated once and a repeated fire adds nothing. The write a fire makes is the RESIDUAL for the reader's row — the row seen highest among those reaching below the fold at the last frame the reader saw — between where it is after layout and where it was last seen (moved by its own credited change: a re-wrapped straddler keeps its bottom, an appending or in-place one its top), never the batch's summed growth: Chromium's native scroll anchoring adjusts scrollTop during the reprice layout, before any observer callback, so the summed growth was paid twice there and a row native pushed under the fold read as straddling. Row positions are re-read at scroll events and seeds (the last painted frame), carried arithmetically by a fire's own write, and never re-read at the end of a fire (a layout is delivered over several callbacks). The record cannot be stale against the reader's own input: a user scroll reaches scrollTop at the start of a rendering update and dispatches its scroll event in that update's scroll steps, before layout and the observer, so the record is refreshed before any rect the fire reads; only a row that is no longer mounted stands the write down (a click or key that scrolls nothing leaves the record valid). The scope reseed announces immediately rather than through the debounce, so the cold owner's estimate spacer is replaced in the swap commit's layout phase |
 | `geometryScheduling.ts` | when a measurement becomes geometry: the debounced sync, its deferral while the reader moves, the streaming row's immediate path, the rail-collapse window |
 | `shiftCompensation.ts` | holding a scrolled-up reader still across prepends, splices, window shifts in either direction (rows mounting above the reader are re-priced from the estimate; rows unmounting above them are replaced by a spacer the tree prices, which is short by every re-wrap the tree has not been allowed to learn during a width transition), appends, height syncs and the width-scope swap, and planning which row measurements a commit retires. The swap: the settled bucket's cold owner re-prices the before-spacer from estimates in the render that constructs it, so a same-session swap over an unchanged list captures the reader's row render-phase into the height-sync slot; the consumer is keyed on the owner's identity as well as its announced version (two owners can report equal versions) and stands down on the swap commit itself, leaving the capture for the reseed's announcement in that commit's layout phase, which is where the committed spacer it must be paid against exists. That stand-down also reads the engine's RANGE CLAMP: the cold document prices every unmounted row at the flat estimate, so it can be shorter than the reader's scrollTop, and the engine then drags scrollTop to its ceiling (`scrollHeight - clientHeight`) with no application write anywhere and leaves it there when the reseed grows the document back (Firefox and Chromium alike at a matched depth; a shallower reader never reaches the ceiling). When the pending capture's scrollTop is above that ceiling and the live scrollTop is exactly the ceiling (within `SELF_SCROLL_EPSILON`), the capture is re-based to the clamped value with its candidates' painted geometry kept, so the reseed pays the whole move; a drop that is not the ceiling (native anchoring's spacer-delta move) is left alone, and any movement after the clamp still differs from the re-based value, so the scrollTop freshness guard still drops the capture. A followed reader keeps the tail pin; a true session switch captures nothing |
@@ -542,8 +544,8 @@ and is suppressed by transcript renderers. Its `ts` also counts as owner
 presence when the next return measures time away. The deterministic opener row and
 the model-written result carry normal mate message roles and classes. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
-`headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, and the
-gateway-counted `progress`; an older row holds `asked`, `now`, `needs_you` and
+`headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
+an optional HTML `widget`, and the gateway-counted `progress`; an older row holds `asked`, `now`, `needs_you` and
 `next`) that the transcript draws as a fixed plain-text card; its
 `content` is the same brief as plain text, for export and any reader without
 the card.
@@ -1485,6 +1487,12 @@ no longer destroy older turns.
   patiently to a bounded deadline. The same discipline applies to every other
   session-JSONL writer: `clear_closed` (resume un-flags `closed` under `_locked`,
   offloaded via `asyncio.to_thread`) and all `ConversationLog` mutators hold `_locked`.
+  On POSIX a taken sidecar `flock` counts only while the sidecar NAME still reaches
+  the locked inode (`_try_acquire_named_sidecar`): the session janitor prunes an
+  unheld `<stem>.jsonl.lock` whose transcript is gone (`session.md`, transcript
+  staging temps), so a writer that opened the sidecar before that unlink re-opens
+  the name and retries, at most `_SIDECAR_REOPEN_LIMIT` (3) times per attempt,
+  instead of holding an inode no other process can reach.
 - **Delete-won guard**: `delete_session` unlinks the session file under the
   same `_locked` and leaves no tombstone, and the patient off-loop acquire
   means a save can legitimately sit waiting while a permanent delete runs to
@@ -2010,11 +2018,13 @@ writer:
   `get_metadata_status` answers `readable=False` for two different facts, and
   the writers tell them apart through `metadata_line_state` (`readable`,
   `transient`, `corrupt`; `METADATA_LINE_*`). A TRANSIENT failure -- the file
-  could not be opened or decoded after the bounded retries -- clears on its
-  own, so the full save raises and `_dirty` stays armed, the empty-window merge
-  and `update_metadata_if` return without writing, and the next attempt
-  re-decides. A CORRUPT first line -- bytes on disk that are not JSON, which
-  every atomic line writer makes permanent rather than a write in flight --
+  could not be opened after the bounded retries -- clears on its own, so the
+  full save raises and `_dirty` stays armed, the empty-window merge and
+  `update_metadata_if` return without writing, and the next attempt re-decides.
+  A CORRUPT first line -- bytes on disk that are not JSON, or not UTF-8 at all,
+  which every atomic line writer makes permanent rather than a write in flight
+  (the first line is read as bytes and decoded on its own, so undecodable bytes
+  are never mistaken for a read in flight) --
   never clears, and a writer that kept deferring on it would never persist a
   row again: `closed` could never land and the tab would resurrect on every
   restart. So the WRITERS rewrite it: the full save and `_update_metadata_locked`
@@ -2030,9 +2040,22 @@ writer:
   line carries no `created_at` when the title or merge writer heals it (the
   identity is unknowable, and a minted one would read to the owning slot's next
   full save as a fresh incarnation after a delete); the full save's own heal
-  stamps the slot's recorded identity. READERS are unchanged: the derivation seam
+  stamps the slot's recorded identity. `_update_metadata_locked` splits the file
+  by bytes, so an undecodable first line reaches this rewrite like one that is
+  not JSON while the rows after it still decode strictly, and it stages the
+  result through `atomic_write`, which writes every byte, so a short write never
+  publishes a prefix of the transcript. The full save's frozen-prefix and
+  rewrite-archive reads split the file the same way, and its frozen prefix takes
+  the rows after an undecodable first line by position, so the rows older than
+  the in-memory window survive the heal. The first `append` likewise creates a
+  transcript through `atomic_write`: it appears with its whole metadata line or
+  not at all. READERS are unchanged: the derivation seam
   and every identity-sensitive reader refuse both states, a corrupt line before
   the heal because it cannot be read and after it because it is restricted.
+  `read_session_execution` names the two refusals apart: a CORRUPT line answers
+  "session record is unreadable (its first line is damaged); start a new chat
+  (memory is intact) or archive this one", because no retry reads it, and a
+  TRANSIENT one keeps the plain "session record is unreadable".
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and
@@ -2280,7 +2303,15 @@ session-end pass may have claimed the transcript meanwhile), then the
 task. The idle sweep schedules a count only for a key past its throttle, not busy
 and outside its retry deadline, so a key in backoff costs one metadata read and no
 count. `_prefs_offset` advances to the counted total only when the prefs pass
-completes without a refusal, raise or cancellation, and the idle throttle is set
+completes without a refusal, raise or cancellation. A prefs pass whose turn came
+back with no reply or an unparseable one, or could not be dispatched, returns
+`_CONSOLIDATION_EMPTY`; a parsed `{}` is a completed pass with nothing to write,
+because the prefs-only prompt asks the model to omit unchanged keys. On
+`_CONSOLIDATION_EMPTY` the offset stays put, the history span's attempt cap is
+not charged, and `_prefs_retry` arms an in-memory retry-at for the key from
+`_CONSOLIDATION_BACKOFF_BASE_SECS`, doubling per consecutive empty pass up to
+`_CONSOLIDATION_BACKOFF_MAX_SECS`. `maybe_consolidate` schedules nothing for a
+key inside that deadline, and a completed prefs pass clears it. The idle throttle is set
 only when the history pass completes without one. A pass that raises has already
 logged it. A count that fails to read logs a warning and skips that check.
 

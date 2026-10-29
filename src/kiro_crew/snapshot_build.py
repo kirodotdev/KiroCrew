@@ -201,10 +201,10 @@ def _build_snapshot(
     arcname = root_name or name
     if selected is None:
         selected = list(COMPONENTS)
-    # Decided BEFORE anything is staged, not per-tree. An earlier revision gated
-    # inside _copytree_safe only, so a data home with core files and no trees staged
-    # them on a platform that cannot pin without ever consulting the opt-in -- the
-    # gate was reachable only through a path that happened to exist. Asking once, up
+    # Decided BEFORE anything is staged, not per-tree. Gating inside _copytree_safe
+    # only would let a data home with core files and no trees stage them on a platform
+    # that cannot pin without ever consulting the opt-in -- the gate would be reachable
+    # only through a path that happens to exist. Asking once, up
     # front, is also what makes the manifest's "staging" value true of the whole
     # archive rather than of whichever component ran last.
     pinned = facade._staging_is_pinned(allow_unpinned=allow_unpinned, what="data home")
@@ -244,16 +244,15 @@ def _build_snapshot(
         # Core files. Copied through the pinned primitive rather than shutil.copy2:
         # copy2 dereferences a hardlink into ordinary-looking regular bytes, and the
         # tar pass's hardlink screen then has no link left to reject, so an alias
-        # planted at a core file's name would have shipped as content. The name-based
-        # islink check is gone with it -- it answered about a name, and the open that
-        # followed could land on a different inode.
+        # planted at a core file's name would ship as content. No name-based islink
+        # check either -- it answers about a name, and the open that follows could land
+        # on a different inode.
         #
         # Both ends are pinned where the platform allows it: the data home is opened
         # once and every core file is opened relative to THAT descriptor, so an
         # ancestor of the data home swapped mid-run cannot redirect the read. Opening
-        # `mc / f` by name was a real gap in the first revision of this PR, caught in
-        # review -- the file's own O_NOFOLLOW says nothing about the directories walked
-        # to reach it.
+        # `mc / f` by name is a real gap -- the file's own O_NOFOLLOW says nothing about
+        # the directories walked to reach it.
         mc_fd = pinned_fs.open_dir_pinned(mc, what="data home") if pinned else None
         try:
             for comp in selected:
@@ -341,12 +340,12 @@ def _build_snapshot(
         # `workspace` names the whole tree -- so the pairs are collected first and a tree
         # already covered by an ANCESTOR in the same selection is dropped.
         #
-        # An earlier revision staged the overlap twice and relied on the second write being
-        # identical to the first. That worked against a `shutil.copytree(dirs_exist_ok=True)`
-        # and does NOT work here: the shared staging primitive refuses a destination name
-        # that already exists in a tree this operation created, because it cannot tell a
-        # directory it made from a link someone planted. Not copying the same bytes twice is
-        # the better answer anyway.
+        # Staging the overlap twice and relying on the second write being identical to the
+        # first works against a `shutil.copytree(dirs_exist_ok=True)` and does NOT work
+        # here: the shared staging primitive refuses a destination name that already exists
+        # in a tree this operation created, because it cannot tell a directory it made from
+        # a link someone planted. Not copying the same bytes twice is the better answer
+        # anyway.
         wanted_trees: list[tuple[str, str]] = []
         for comp in selected:
             for tree in COMPONENTS[comp].trees:

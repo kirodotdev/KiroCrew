@@ -218,20 +218,14 @@ async def _watch_knowledge_config(app: web.Application) -> None:
 
 
 async def _shutdown_knowledge_pools(app: web.Application) -> None:
-    """Shut down each workload pool once, including the legacy alias."""
-    seen: set[int] = set()
-    for key in (
-        "knowledge_extraction_pool",
-        "knowledge_fetch_pool",
-    ):
-        pool = app.get(key)
-        if pool is None or id(pool) in seen:
-            continue
-        seen.add(id(pool))
-        try:
-            await pool.shutdown()
-        except Exception:
-            logger.exception("Knowledge pool shutdown failed: %s", key)
+    """Shut down the extraction pool, the one LLM pool the Knowledge Library holds."""
+    pool = app.get("knowledge_extraction_pool")
+    if pool is None:
+        return
+    try:
+        await pool.shutdown()
+    except Exception:
+        logger.exception("Knowledge pool shutdown failed: knowledge_extraction_pool")
 
 
 def setup_knowledge_routes(app: web.Application) -> None:
@@ -253,7 +247,6 @@ def setup_knowledge_routes(app: web.Application) -> None:
             fallback_effort=DEFAULT_EXTRACTION_EFFORT,
             config_pool_size_key="extraction_pool_size",
         )
-        fetch_pool = LLMPool(pool_size=1)
         embedder = _create_embedder(app)
         pipeline = IngestionPipeline(
             store=store,
@@ -263,7 +256,6 @@ def setup_knowledge_routes(app: web.Application) -> None:
             embedder=embedder,
         )
         app["knowledge_extraction_pool"] = extraction_pool
-        app["knowledge_fetch_pool"] = fetch_pool
         app["knowledge_embedder"] = embedder
         connectors: dict[str, "BaseConnector"] = {}
         # Local folder connector (always available)

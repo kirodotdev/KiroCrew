@@ -30,6 +30,10 @@ export interface TermTab {
   id: string
   /** Working directory the shell spawned in (undefined = server default). */
   cwd?: string
+  /** The chat a command hand-off (a `!` command, Run in terminal) opened this
+   *  shell for. Sent with the socket, so the gateway refuses a local shell once
+   *  that chat runs on a Session Environment, whatever the browser last read. */
+  chatSlot?: string
   /** User label; absent means follow the shell's live title. */
   name?: string
 }
@@ -384,14 +388,14 @@ export function toggleBottomTerminal(cwd?: string): void {
 /** Open a new terminal tab instantly (mints a fresh PTY session). At the cap,
  *  focuses the last tab instead of spawning. Returns the new session id, or
  *  null at the cap. */
-export function addTab(cwd?: string): string | null {
+export function addTab(cwd?: string, chatSlot?: string): string | null {
   if (state.tabs.length >= MAX_TERMINALS) {
     const last = state.tabs[state.tabs.length - 1]
     if (last) set({ ...state, open: true, activeId: last.id })
     return null
   }
   const id = mintId()
-  set({ ...state, open: true, tabs: [...state.tabs, { id, cwd }], activeId: id })
+  set({ ...state, open: true, tabs: [...state.tabs, { id, cwd, ...(chatSlot ? { chatSlot } : {}) }], activeId: id })
   return id
 }
 

@@ -22,16 +22,52 @@ import { WidgetFrame, parseWidgets, hasWidgets } from './WidgetFrame'
 import { api } from '../mochiApi'
 import { MochiCodeBlock } from '../../panel/MochiCodeBlock'
 import { i18nT } from '../../../../i18n/t'
+import ErrorNotice from '../../../../components/ErrorNotice'
 import { useLanguageGeneration } from '../../../../i18n/useLanguageGeneration'
 import { electronPlatform, isElectron } from '../../../../lib/electron'
 
 const LocalImage: React.FC<{ path: string; onClickImage?: (src: string) => void }> = ({ path, onClickImage }) => {
   const [src, setSrc] = React.useState<string | null>(null)
+  const [failed, setFailed] = React.useState(false)
   React.useEffect(() => {
-    api?.readLocalImage?.(path).then((b64: string | null) => {
-      if (b64) setSrc(`data:image/png;base64,${b64}`)
-    })
+    // Each path starts from the loading state, and a read that settles after
+    // the path has moved on is dropped, so one path's bytes never paint over
+    // another's.
+    let cancelled = false
+    setSrc(null)
+    setFailed(false)
+    const read = api?.readLocalImage?.(path)
+    if (!read) { setFailed(true); return }
+    read.then(
+      (b64: string | null) => {
+        if (cancelled) return
+        if (b64) setSrc(`data:image/png;base64,${b64}`)
+        else setFailed(true)
+      },
+      () => { if (!cancelled) setFailed(true) },
+    )
+    return () => { cancelled = true }
   }, [path])
+  // A null read (missing file, refused path, non-2xx) is final: report it with
+  // the path instead of a placeholder that would read as "still loading"
+  // forever. Inline variant inside an inline-styled wrapper, as the panel's
+  // send-error notice does: this panel receives core CSS variables only, so the
+  // notice's Tailwind utilities resolve to nothing and the colour and size come
+  // from the wrapper by inheritance.
+  if (failed) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--danger, #e5484d)', fontSize: 11 }}>
+        {/* No hand-off: this image renders inside the Mochi chat panel, whose
+            composer text and pending attachments live only in ChatPanel's local
+            state, and the hand-off navigates away and would discard that
+            unsent draft. */}
+        <ErrorNotice
+          variant="inline"
+          message={`${i18nT('components.markdownRenderer.image_failed_to_load')}: ${path}`}
+        />
+      </span>
+    )
+  }
   if (!src) return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>...</span>
   // Hands back the PATH, not `src` (the data: URL built from the bytes). Every
   // consumer wants to DO something with the file -- open it in the OS viewer --

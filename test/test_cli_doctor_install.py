@@ -108,6 +108,147 @@ class TestPathLauncherOwnership:
         assert "kirocrew CLI: ✅" in out
 
 
+class TestToolboxPathLauncher:
+    """A Toolbox install's `kirocrew` on PATH resolves to Toolbox's shared
+    `toolbox-exec` dispatcher, never to this install's binary, so the row asks the
+    launcher for its version instead of comparing paths."""
+
+    def _layout(self, monkeypatch, tmp_path, *, toolbox_install=True, probe=None):
+        """PATH launcher = the dispatcher file itself (no link needed: the check reads
+        the realpath's basename), the running install under tools/kirocrew."""
+        dispatcher = tmp_path / ".toolbox" / "tools" / "toolbox" / "1.0" / "toolbox-exec"
+        dispatcher.parent.mkdir(parents=True)
+        dispatcher.write_text("")
+        running = tmp_path / ".toolbox" / "tools" / "kirocrew" / "9.9.9" / "bin" / "kirocrew"
+        running.parent.mkdir(parents=True)
+        running.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(dispatcher))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(running))
+        monkeypatch.setattr("kiro_crew.env.is_toolbox_install", lambda: toolbox_install)
+        # The probe goes through the sandbox chokepoint: record what it was asked to
+        # wrap, and hand back a marked argv and env so the spawn can be checked.
+        calls: list[list[str]] = []
+        self.wrapped: list[list[str]] = []
+        self.spawn_env: list[dict] = []
+        cleanup = tmp_path / "launcher.tmp"
+        cleanup.write_text("")
+        self.cleanup = cleanup
+
+        def fake_wrap(argv, mode="standard", **kwargs):
+            calls.append(list(argv))
+            return ["<sandbox>", *argv], {"SCRUBBED": "1"}, str(cleanup)
+
+        def fake_run_limited(argv, **kwargs):
+            self.wrapped.append(list(argv))
+            self.spawn_env.append(kwargs.get("env"))
+            if isinstance(probe, BaseException):
+                raise probe
+            returncode, stdout = probe
+            return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(cli_doctor.sandbox, "sandboxed_spawn_argv", fake_wrap)
+        monkeypatch.setattr(cli_doctor.sandbox, "run_limited", fake_run_limited)
+        return dispatcher, calls
+
+    def test_same_version_through_the_dispatcher_is_clean(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        from kiro_crew import version_line
+
+        dispatcher, calls = self._layout(monkeypatch, tmp_path, probe=(0, version_line() + "\n"))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert f"kirocrew CLI: ✅ {dispatcher} (Toolbox launcher, same version)" in out
+        assert "different install" not in out
+        # The PATH spelling is run, since the dispatcher picks the tool from argv[0].
+        assert calls == [[str(dispatcher), "--version"]]
+
+    def test_the_probe_runs_inside_the_sandbox(self, monkeypatch, tmp_path, capsys) -> None:
+        """The launcher is whatever PATH found first, which an agent can plant, so it
+        is spawned wrapped, with the scrubbed env, and the wrapper file is removed."""
+        from kiro_crew import version_line
+
+        dispatcher, _ = self._layout(monkeypatch, tmp_path, probe=(0, version_line() + "\n"))
+
+        cli_doctor._doctor_path_launcher()
+
+        assert self.wrapped == [["<sandbox>", str(dispatcher), "--version"]]
+        assert self.spawn_env == [{"SCRUBBED": "1"}]
+        assert not self.cleanup.exists()
+
+    def test_a_sandbox_that_cannot_be_built_keeps_the_warning(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        from kiro_crew import version_line
+
+        self._layout(monkeypatch, tmp_path, probe=(0, version_line() + "\n"))
+
+        def refuse(argv, mode="standard", **kwargs):
+            raise RuntimeError("no sandbox backend")
+
+        monkeypatch.setattr(cli_doctor.sandbox, "sandboxed_spawn_argv", refuse)
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert self.wrapped == []
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            pytest.param((0, "kirocrew 0.0.0-other\n"), id="different-version"),
+            pytest.param((0, "toolbox: no such tool\n"), id="malformed-output"),
+            pytest.param((0, ""), id="empty-output"),
+            pytest.param((1, ""), id="nonzero-exit"),
+            pytest.param(subprocess.TimeoutExpired(["kirocrew"], 5), id="timeout"),
+            pytest.param(OSError("exec failed"), id="cannot-run"),
+        ],
+    )
+    def test_any_other_probe_answer_keeps_the_warning(
+        self, monkeypatch, tmp_path, capsys, probe
+    ) -> None:
+        self._layout(monkeypatch, tmp_path, probe=probe)
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert "kirocrew CLI: ✅" not in out
+
+    def test_a_non_toolbox_install_is_not_probed(self, monkeypatch, tmp_path, capsys) -> None:
+        from kiro_crew import version_line
+
+        _, calls = self._layout(
+            monkeypatch, tmp_path, toolbox_install=False, probe=(0, version_line() + "\n")
+        )
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert calls == []
+
+    def test_a_launcher_that_is_not_the_dispatcher_is_not_probed(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        from kiro_crew import version_line
+
+        _, calls = self._layout(monkeypatch, tmp_path, probe=(0, version_line() + "\n"))
+        wheel = tmp_path / "crew-venv" / "bin" / "kirocrew"
+        wheel.parent.mkdir(parents=True)
+        wheel.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(wheel))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert calls == [] and self.wrapped == []
+
+
 class TestSourceCheckout:
     """`kirocrew doctor` Source Checkout section — stale/off-branch source tree.
 

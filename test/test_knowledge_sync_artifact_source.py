@@ -35,8 +35,8 @@ def store(tmp_path):
 @pytest.fixture()
 def fetch_spy(monkeypatch):
     """The agent URL-fetch path, rigged to fail the test if anything reaches it."""
-    spy = AsyncMock(side_effect=AssertionError("artifact:// must not reach fetch_url_content"))
-    monkeypatch.setattr(kh, "fetch_url_content", spy)
+    spy = AsyncMock(side_effect=AssertionError("artifact:// must not reach fetch_page"))
+    monkeypatch.setattr(kh, "fetch_page", spy)
     return spy
 
 
@@ -48,7 +48,6 @@ def _make_app(store, *, artifact_sync=None):
     app["state"] = state
     app["knowledge_pipeline"] = MagicMock()
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
-    app["knowledge_fetch_pool"] = MagicMock()
     app["_bg_tasks"] = set()
     if artifact_sync is not None:
         app["artifact_knowledge_sync"] = artifact_sync

@@ -476,7 +476,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_refused_pick_rolls_back_the_pick_generation(self, tmp_path):
-        """REGRESSION (review finding): a refused pick changed nothing, so the
+        """A refused pick changed nothing, so the
         explicit-pick generation must roll back with the model. Leaving the
         bump in place would make the model-fallback restore probe read the
         FAILED attempt as an explicit choice and silently abandon restoring
@@ -505,7 +505,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_refused_pick_rollback_spares_a_newer_concurrent_pick(self, tmp_path):
-        """REGRESSION (review finding on eb3cf067): two picks arriving together
+        """Two picks arriving together
         must not roll back each other's state. The pick transaction is
         serialised per slot (_model_pick_lock), so the refused pick unwinds
         cleanly before the next pick's snapshot is taken — the surviving state
@@ -642,7 +642,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_same_value_pick_still_bumps_the_pick_generation(self, tmp_path):
-        """REGRESSION (review finding): picking the model the slot already
+        """Picking the model the slot already
         reports takes the equality early-return, but it is still an EXPLICIT
         affirmation — without the bump, a user who deliberately re-picks the
         very model the session fell back to would have that choice silently
@@ -665,7 +665,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_same_value_pick_during_fallback_takes_the_live_switch_path(self, tmp_path):
-        """REGRESSION (review finding on 1a61ddcf): with a fallback actively
+        """With a fallback actively
         serving the session, a pick of the DISPLAYED primary equals slot.model
         but the wire model is the fallback — the equality early-return would
         record the pick and switch nothing, stranding the session on the

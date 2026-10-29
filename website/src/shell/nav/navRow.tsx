@@ -326,6 +326,10 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
       onBlur={hideTip}
       aria-label={collapsed ? label : undefined}
       aria-pressed={pressed}
+      // `active` is a class, which assistive technology cannot see. A row that
+      // NAVIGATES says it is the current page; a row that toggles a surface says
+      // so through `aria-pressed` instead, and never claims to be a page.
+      aria-current={active && pressed === undefined ? 'page' : undefined}
       // The chord declared to assistive tech, in the ARIA grammar rather than the
       // display glyphs — the same split MoveUndoBar's Undo button already ships.
       // This is what makes the hint reachable without a pointer: the visible

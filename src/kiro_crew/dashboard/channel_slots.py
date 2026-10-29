@@ -1015,6 +1015,85 @@ def _hold_every_channel_key(state: "DashboardState") -> None:
         state.push_slots_update()
 
 
+def linked_channel_slot(state: Any, session_key: str) -> "_ChatSlot | None":
+    """The open tab bound to channel session *session_key*, or ``None``.
+
+    Found by the slot name the reconciler derives from the key and accepted only
+    when the slot is BOUND to that very session: a slot that merely carries the
+    name (unbound, or bound elsewhere) is not this conversation's tab, and
+    projecting into it would show one conversation's turn in another's window.
+    """
+    if not session_key or not is_channel_session_key(session_key):
+        return None
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return None
+    slot = slots.get(channel_slot_name(session_key))
+    if slot is None or getattr(slot, "linked_session_key", "") != session_key:
+        return None
+    return slot
+
+
+async def refresh_linked_channel_slot(state: Any, session_key: str) -> int:
+    """Pull the rows the channel just wrote into *session_key*'s open tab, now.
+
+    The one-session twin of the reconcile pass's refresh step, for a writer that
+    knows exactly which conversation it just appended to (a channel turn writing
+    its live tool steps) and must not pay a scan of every channel session per
+    row. Same rules, same lock: :func:`refresh_channel_window` is the only code
+    that moves a bound tab's window, it runs only on an idle, clean slot
+    (:func:`_window_refresh_is_safe`), and the reconcile lock keeps this from
+    interleaving with a full pass reading the same file. Returns the number of
+    rows appended.
+
+    The window's mtime watermark is deliberately left where it was. It is what
+    tells the full pass that the file has moved on, and a file mtime is coarse: a
+    row this pull reads and a reply appended a few milliseconds later can share
+    one stamp, so a watermark advanced here would make the pass that follows the
+    reply read "nothing newer" and leave the reply off the tab. Left alone, the
+    next full pass re-reads once, appends only what is new, and advances it.
+    """
+    log = getattr(state, "conversation_log", None)
+    if log is None:
+        return 0
+    async with _reconcile_lock(state):
+        slot = linked_channel_slot(state, session_key)
+        if slot is None or not _window_refresh_is_safe(slot):
+            return 0
+        messages = await asyncio.to_thread(log.read_messages, session_key)
+        # Re-checked after the read: the tab may have closed, or a turn started
+        # on it, while the file was being read.
+        if linked_channel_slot(state, session_key) is not slot or not _window_refresh_is_safe(slot):
+            return 0
+        appended = refresh_channel_window(slot, messages, slot._channel_window_mtime)
+        if appended:
+            state.push_slots_update()
+        return appended
+
+
+def channel_tool_result_frame(
+    slot_key: str, tool_call_id: str, tool_output: str, *, final: bool
+) -> dict[str, Any]:
+    """The ``tool_result`` frame a channel turn's tool result shows on its open tab.
+
+    The dashboard's own result frame, built here because a channel turn's output
+    reaching the tab is this module's boundary: the output is redacted and capped
+    by the same helper a dashboard turn uses, with the in-band markers a dashboard
+    turn consumes before it shows the output taken out rather than shown.
+    """
+    from kiro_crew import mcp_apps_render, session_directive
+    from kiro_crew.dashboard.chat_utils import _redact_tool_field
+
+    output = session_directive.strip_marker(tool_output or "")
+    output = mcp_apps_render.strip_marker(output)
+    return {
+        "slot": slot_key,
+        "tool_call_id": _redact_tool_field(tool_call_id),
+        "output": _redact_tool_field(output),
+        "final": final,
+    }
+
+
 async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) -> int:
     """One reconcile pass. Returns the number of slots surfaced.
 

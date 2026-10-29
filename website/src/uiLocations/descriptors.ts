@@ -31,7 +31,7 @@
  * by its generated id. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { LOCATIONS as apps } from './areas/apps'
 import { LOCATIONS as artifacts } from './areas/artifacts'
 import { LOCATIONS as capabilities } from './areas/capabilities'
@@ -88,6 +88,11 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['color theme', 'colour theme', 'colors', 'colours', 'appearance'],
     'zh-CN': ['配色', '颜色主题', '外观'],
   },
+  // What users call the behaviour, whatever their platform names the tray.
+  'setting:display.keep-running-in-the-background-after-closing-the-window': {
+    en: ['close to tray', 'minimize to tray', 'quit on close', 'exit on close', 'run in background', 'system tray', 'close button'],
+    'zh-CN': ['关闭到托盘', '最小化到托盘', '关闭时退出', '后台运行', '系统托盘'],
+  },
   'settings.tab.channels': {
     en: ['messaging', 'messaging apps', 'chat apps', 'channels'],
     'zh-CN': ['消息平台', '聊天渠道', '渠道'],
@@ -103,6 +108,12 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
   'tab.capabilities.skills': {
     en: ['installed skills', 'my skills', 'skill list'],
     'zh-CN': ['已安装的技能', '我的技能', '技能列表'],
+  },
+  // Settings > Developer holds the internals pages (logs, system metrics,
+  // memory graph, MCP pool) and the feature previews.
+  'settings.tab.developer': {
+    en: ['developer page', 'developer tools', 'dev tools', 'debug tools', 'developer settings page'],
+    'zh-CN': ['开发者页面', '开发者工具', '调试工具'],
   },
   'settings.tab.secrets': {
     en: ['api key', 'api keys', 'credentials', 'tokens', 'passwords'],
@@ -146,10 +157,12 @@ export type UiLocationId = keyof typeof UI_LOCATIONS
 export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_ARTIFACT_DEPLOY]: 'developer.artifact-deploy',
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
-  [PREVIEW_CREW]: 'developer.mates',
+  [PREVIEW_SESSION_ENVIRONMENTS]: 'developer.session-environments',
 }
 
-/** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter). */
+/** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter).
+ *  Every setting and sub-page on such a tab carries the same requirement. */
 export const SETTINGS_TAB_PREVIEW: Record<string, string> = {
   webhooks: PREVIEW_WEBHOOKS,
+  'session-environments': PREVIEW_SESSION_ENVIRONMENTS,
 }

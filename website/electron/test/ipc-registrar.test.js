@@ -31,6 +31,8 @@ const SHELL_HANDLES = [
   "browser:set-inactive",
   "browser:set-overlay",
   "browser:track-session",
+  "close-action:get",
+  "close-action:set",
   "crash-reports:get",
   "crash-reports:reveal",
   "dashboard:can-pick-folder",
@@ -182,6 +184,7 @@ function harness({
   wslOwner = { fake: "wsl-owner" },
   wslGatewayLocal = true,
   primaryPortOwner = "kirocrew",
+  isCurrentBundleGateway = true,
   crashScan,
   revealThrows = false,
   openPathResult = "",
@@ -195,6 +198,7 @@ function harness({
   dialogResult = { canceled: true, filePaths: [] },
   externalTerminal = undefined,
   internalSecret = "",
+  getRequiredChannel = undefined,
   detectWsl = async () => ({
     available: true,
     distros: [],
@@ -326,6 +330,13 @@ function harness({
     diagnostics: {
       memorySample: recordWindow("diagnostics.memorySample"),
     },
+    closeAction: {
+      get: recordWindow("closeAction.get", "background"),
+      set: (...args) => {
+        windowCalls.push(["closeAction.set", ...args]);
+        return args[0] === "quit" ? "quit" : "background";
+      },
+    },
   };
   for (const name of [
     "open",
@@ -357,6 +368,10 @@ function harness({
       "probePrimaryPortOwner",
       Promise.resolve(primaryPortOwner),
     ),
+    isCurrentBundleGateway: recordGateway(
+      "isCurrentBundleGateway",
+      Promise.resolve(isCurrentBundleGateway),
+    ),
   };
   const logs = [];
   const runWslDetection = (...args) => {
@@ -378,6 +393,7 @@ function harness({
     },
     glog: (line) => logs.push(line),
     ...(externalTerminal ? { externalTerminal } : {}),
+    ...(getRequiredChannel ? { getRequiredChannel } : {}),
     // Like main.js's readInternalSecret: the secret belongs to one gateway
     // URL, so a read that names no URL gets nothing.
     readInternalSecret: (gatewayUrl) => {
@@ -480,13 +496,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 40);
+  assert.equal(h.handlers.size + h.listeners.size, 42);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 41);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 43);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -1364,7 +1380,10 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
 
   assert.strictEqual(h.registerUpdater(h.registrar), updater);
   assert.deepEqual([...h.handlers.keys()].sort(), UPDATE_HANDLES);
-  assert.equal(h.listeners.size, 0);
+  // One listener: update:notify-policy-governed (ipcMain.on, not ipcMain.handle).
+  assert.equal(h.listeners.size, 1);
+  assert.equal(h.listeners.has("update:notify-policy-governed"), true,
+    "registerUpdater must install the update:notify-policy-governed listener");
   assert.equal(initCalls, 1);
   assert.strictEqual(deps.app, h.electron.app);
   assert.strictEqual(deps.autoUpdater, h.updaterPackage.autoUpdater);
@@ -1385,7 +1404,7 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   ]);
 
   deps.onUpdateState({ phase: "available" });
-  assert.deepEqual(h.sentUpdates, [["update-state", { phase: "available" }]]);
+  assert.deepEqual(h.sentUpdates, [["update-state", { phase: "available", policyGoverned: false }]]);
 
   deps.notifyUpdateFound("3.0.0", { autoDownload: true });
   assert.equal(h.notifications.length, 1);
@@ -1397,11 +1416,101 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
     version: "2.0.0",
     packaged: true,
     disabled: "test-disabled",
+    policyGoverned: false,
   });
   assert.deepEqual(h.handlers.get("update:check")(), { ok: true });
   assert.deepEqual(h.handlers.get("update:download")(), { ok: true });
   assert.deepEqual(await h.handlers.get("update:install")(), { ok: true });
   assert.deepEqual(updater.calls, ["check", "download", "install"]);
+
+  // The policy-governed listener wires isPolicyGoverned in initAutoUpdate.
+  // It must be a function (not a static boolean) so the lane re-checks each call.
+  assert.strictEqual(typeof deps.isPolicyGoverned, "function",
+    "isPolicyGoverned must be a live function, not a captured boolean");
+  assert.equal(deps.isPolicyGoverned(), false, "governance must start false");
+
+  // Build a minimal fake event that satisfies assertLocalDashboard's three gates.
+  // The harness's windows mock already returns true for isGatewayLocalForWindow
+  // and resolves "kirocrew" from probePrimaryPortOwner.
+  let nextId = 1;
+  const makeEvent = (url = "http://localhost:5476/") => {
+    const id = nextId++;
+    const destroyedListeners = [];
+    const sender = {
+      id,
+      getURL: () => url,
+      once: (event, fn) => { if (event === "destroyed") destroyedListeners.push(fn); },
+    };
+    return {
+      sender,
+      senderFrame: { url },
+      _destroy: () => destroyedListeners.forEach(fn => fn()),
+    };
+  };
+
+  // Basic set/clear from the same origin.
+  const ev1 = makeEvent();
+  await h.listeners.get("update:notify-policy-governed")(ev1, true);
+  assert.equal(deps.isPolicyGoverned(), true, "listener must update the closure");
+  await h.listeners.get("update:notify-policy-governed")(ev1, false);
+  assert.equal(deps.isPolicyGoverned(), false);
+
+  // A sender from a different origin must NOT set governance.
+  const evForeign = makeEvent("http://other-host:5476/");
+  await h.listeners.get("update:notify-policy-governed")(evForeign, true);
+  assert.equal(deps.isPolicyGoverned(), false, "foreign origin must not set governance");
+
+  // Destroying the source window must clear governance even without an explicit false.
+  const ev2 = makeEvent();
+  await h.listeners.get("update:notify-policy-governed")(ev2, true);
+  assert.equal(deps.isPolicyGoverned(), true, "governance set before destroy");
+  ev2._destroy();
+  assert.equal(deps.isPolicyGoverned(), false, "destroyed source window must clear governance");
+
+  // Multi-window: closing one window must NOT clear governance while another window
+  // is still governed. This is the bug where `governanceSourceId` was a single id.
+  const evA = makeEvent();
+  const evB = makeEvent();
+  await h.listeners.get("update:notify-policy-governed")(evA, true);
+  await h.listeners.get("update:notify-policy-governed")(evB, true);
+  assert.equal(deps.isPolicyGoverned(), true, "both windows governed");
+  evB._destroy(); // close the second window
+  assert.equal(deps.isPolicyGoverned(), true,
+    "closing one window must not clear governance while another remains governed");
+  evA._destroy(); // close the first window too
+  assert.equal(deps.isPolicyGoverned(), false, "governance clears when all windows close");
+
+  // Remote-gateway gate: a harness that simulates a non-kirocrew port owner
+  // (SSH tunnel holding the primary port) must reject governance via gate 3.
+  {
+    let remoteDeps;
+    const remoteUpdater = updaterHandle();
+    const hRemote = harness({
+      primaryPortOwner: "ssh-tunnel",
+      initAutoUpdate(options) { remoteDeps = options; return remoteUpdater; },
+    });
+    assert.strictEqual(hRemote.registerUpdater(hRemote.registrar), remoteUpdater);
+    const evRemote = makeEvent();
+    await hRemote.listeners.get("update:notify-policy-governed")(evRemote, true);
+    assert.equal(remoteDeps.isPolicyGoverned(), false,
+      "SSH tunnel on primary port must not set governance (gate 3 rejection)");
+  }
+
+  // Different-bundle gate: a harness that simulates a gateway from another
+  // desktop bundle (isCurrentBundleGateway = false) must reject governance.
+  {
+    let otherDeps;
+    const otherUpdater = updaterHandle();
+    const hOther = harness({
+      isCurrentBundleGateway: false,
+      initAutoUpdate(options) { otherDeps = options; return otherUpdater; },
+    });
+    assert.strictEqual(hOther.registerUpdater(hOther.registrar), otherUpdater);
+    const evOther = makeEvent();
+    await hOther.listeners.get("update:notify-policy-governed")(evOther, true);
+    assert.equal(otherDeps.isPolicyGoverned(), false,
+      "gateway from another desktop bundle must not set governance (gate 4 rejection)");
+  }
 
   assert.deepEqual(h.handlers.get("update:set-channel")({}, "nightly"), {
     ok: false,
@@ -1416,6 +1525,42 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   });
   assert.equal(h.handlers.get("update:set-auto-download")({}, false).ok, true);
   assert.equal(h.store.data.autoDownloadUpdates, false);
+});
+
+test("update:set-channel refuses while the policy requires a channel, and hands it to the updater", () => {
+  const updater = updaterHandle();
+  let deps;
+  const h = harness({
+    getRequiredChannel: () => "stable",
+    initAutoUpdate(options) {
+      deps = options;
+      return updater;
+    },
+  });
+  h.registerUpdater(h.registrar);
+  assert.equal(deps.getRequiredChannel(), "stable");
+  const answer = h.handlers.get("update:set-channel")({}, "insider");
+  assert.equal(answer.ok, false);
+  assert.equal(answer.code, "locked_by_policy");
+  assert.equal(h.store.data.updateChannel, undefined, "nothing is stored");
+  assert.deepEqual(updater.calls, [], "no check is started");
+  // Naming the required channel itself is accepted, as the backend accepts it.
+  assert.equal(h.handlers.get("update:set-channel")({}, "stable").ok, true);
+  assert.equal(h.store.data.updateChannel, "stable");
+});
+
+test("an oss build hands the updater no required channel and keeps the switcher", () => {
+  let deps;
+  const h = harness({
+    initAutoUpdate(options) {
+      deps = options;
+      return updaterHandle();
+    },
+  });
+  h.registerUpdater(h.registrar);
+  assert.equal(deps.getRequiredChannel(), "");
+  assert.equal(h.handlers.get("update:set-channel")({}, "insider").ok, true);
+  assert.equal(h.store.data.updateChannel, "insider");
 });
 
 test("updater initialization is fail-open and still installs all IPC", async () => {
@@ -1434,6 +1579,7 @@ test("updater initialization is fail-open and still installs all IPC", async () 
     version: "9.8.7",
     packaged: true,
     disabled: "init-failed",
+    policyGoverned: false,
   });
   assert.deepEqual(h.handlers.get("update:check")(), { ok: true });
   assert.deepEqual(h.handlers.get("update:download")(), { ok: true });
@@ -1504,4 +1650,108 @@ test("pane:clear-http-cache is gated to the local dashboard sender", async () =>
     /restricted to the local dashboard/,
   );
   assert.equal(purges.length, 0);
+});
+
+// ── close-action:get / close-action:set (#12204) ────────────────────────────
+//
+// The setting governs only the MAIN window's close button, so both channels
+// answer only that window's own top frame on its dashboard origin, including a
+// main window on a configured REMOTE gateway. Connection windows never do.
+
+const CLOSE_ACTION_CHANNELS = [
+  ["close-action:get", []],
+  ["close-action:set", ["quit"]],
+];
+const MAIN_WINDOW_ONLY = (channel) => ({
+  message: `${channel} is restricted to the main window's dashboard`,
+});
+
+// A harness whose main window is `main`, with the sender mapped to `owner`.
+function closeActionHarness({ mainBackendUrl = "http://localhost:5476", owner = "main", ...rest } = {}) {
+  const h = harness(rest);
+  const main = { fake: "main-window", _mcBackendUrl: mainBackendUrl };
+  const other = { fake: "connection-window", _mcBackendUrl: "http://localhost:6100" };
+  h.windows.getMainWindow = () => main;
+  h.windows.windowForWebContents = () => (owner === "main" ? main : owner === "other" ? other : null);
+  h.registrar.registerShell();
+  return h;
+}
+
+// A top-frame sender on `url`.
+function mainFrameEvent(url = "http://localhost:5476/settings") {
+  const frame = { url };
+  return { sender: { id: "main-view", mainFrame: frame }, senderFrame: frame };
+}
+
+function assertCloseActionRefused(h, channel) {
+  assert.equal(
+    h.windowCalls.some(([name]) => name.startsWith("closeAction.")),
+    false,
+    `${channel}: a refused sender must not read or write the setting`,
+  );
+}
+
+test("close-action channels answer the main window's dashboard, including on a remote gateway", async () => {
+  for (const [mainBackendUrl, wslGatewayLocal, primaryPortOwner] of [
+    ["http://localhost:5476", true, "kirocrew"],
+    // A main window connected to a configured remote host through a tunnel:
+    // the three-gate check would refuse it, this one must not.
+    ["http://localhost:5476", false, "foreign"],
+  ]) {
+    const h = closeActionHarness({ mainBackendUrl, wslGatewayLocal, primaryPortOwner });
+    const url = `${mainBackendUrl}/settings`;
+    assert.equal(await h.handlers.get("close-action:get")(mainFrameEvent(url)), "background");
+    assert.equal(await h.handlers.get("close-action:set")(mainFrameEvent(url), "quit"), "quit");
+    assert.deepEqual(lastCall(h.windowCalls, "closeAction.set"), ["closeAction.set", "quit"]);
+    // The registrar never writes the store itself: the window facade does.
+    assert.equal(h.store.writes.some(([key]) => key === "closeAction"), false);
+  }
+});
+
+test("close-action channels refuse every sender that is not the main window", async () => {
+  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+    for (const owner of ["other", null]) {
+      const h = closeActionHarness({ owner });
+      await assert.rejects(() => h.handlers.get(channel)(mainFrameEvent(), ...args), MAIN_WINDOW_ONLY(channel));
+      assertCloseActionRefused(h, channel);
+    }
+  }
+});
+
+test("close-action channels refuse a subframe of the main window", async () => {
+  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+    const h = closeActionHarness();
+    const event = mainFrameEvent();
+    event.senderFrame = { url: "http://localhost:5476/embedded" }; // not sender.mainFrame
+    await assert.rejects(() => h.handlers.get(channel)(event, ...args), MAIN_WINDOW_ONLY(channel));
+    assertCloseActionRefused(h, channel);
+  }
+});
+
+test("close-action channels refuse a main window navigated off its dashboard", async () => {
+  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+    for (const url of ["https://remote.example/settings", "http://localhost:6100/settings", "about:blank", ""]) {
+      const h = closeActionHarness();
+      await assert.rejects(() => h.handlers.get(channel)(mainFrameEvent(url), ...args), MAIN_WINDOW_ONLY(channel));
+      assertCloseActionRefused(h, channel);
+    }
+  }
+});
+
+test("close-action channels refuse when there is no main window", async () => {
+  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+    const h = closeActionHarness();
+    h.windows.getMainWindow = () => null;
+    await assert.rejects(() => h.handlers.get(channel)(mainFrameEvent(), ...args), MAIN_WINDOW_ONLY(channel));
+    assertCloseActionRefused(h, channel);
+  }
+});
+
+test("close-action channels never run the port-owner probe", async () => {
+  const h = closeActionHarness();
+  let probes = 0;
+  h.gateway.probePrimaryPortOwner = () => { probes += 1; return Promise.resolve("kirocrew"); };
+  await h.handlers.get("close-action:get")(mainFrameEvent());
+  await h.handlers.get("close-action:set")(mainFrameEvent(), "quit");
+  assert.equal(probes, 0, "the check is synchronous so no write waits on a probe");
 });

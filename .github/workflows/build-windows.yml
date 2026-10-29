@@ -273,6 +273,13 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN }}
           aws-region: us-west-2
+          # The Windows AWS CLI later chains these credentials through the
+          # ArtifactAccessRole profile. A temporary secret containing characters
+          # that this path cannot preserve fails that valid AssumeRole request as
+          # SignatureDoesNotMatch. Ask the action for a CLI-safe secret, but bound
+          # its documented retry loop so a credential outage cannot consume the job.
+          special-characters-workaround: true
+          action-timeout-s: 180
 
       - name: Build desktop app
         # bash (Git Bash): the build script is bash, and `make` is not on the

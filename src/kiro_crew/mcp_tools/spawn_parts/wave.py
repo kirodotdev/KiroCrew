@@ -14,15 +14,17 @@ and stays the import path and the patch seam: a patch through it reaches this mo
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from kiro_crew import mcp_core
-from kiro_crew.constants import NO_TOOL_CALLS_NOTE
+from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why
+from kiro_crew.platform import redact_log_via_context as redact_log
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.subagent_persistence import agent_dir_for_display
 from kiro_crew.validation import (
@@ -37,6 +39,15 @@ from kiro_crew.validation import (
 # carrying its full bounded roster (``_MAX_AVAILABLE_IN_ERROR`` names) and the
 # ``(+N more, call spawn_list)`` pointer, which the model needs to correct itself.
 _SA_ERROR_MAX_CHARS = 800
+
+# Per-attempt timeouts, in seconds, for the mark-collected POST. A second attempt
+# with a longer timeout covers a gateway too loaded to answer in 5 s, and bounds
+# the worst case to 15 s on the dispatch thread, which commits the settled reply.
+_MARK_COLLECTED_TIMEOUTS: tuple[float, ...] = (5, 10)
+
+# The facade's logger, by name: every module of the spawn family must bind
+# ``logger`` to the same object (kiro_crew._facade_mirror checks it).
+logger = logging.getLogger("kiro_crew.mcp_tools.spawn")
 
 
 # Owner recorded on an audit record when the resolver named no session. An empty
@@ -553,6 +564,8 @@ class _SubAgentsStep(DeferredTool):
                 # from disk, a stopped or failed run) attaches nothing.
                 if sa_st.get("made_no_tool_calls") is True:
                     record["unverified"] = f"This agent {NO_TOOL_CALLS_NOTE}"
+                if sa_st.get("leaked_tool_call") is True:
+                    record["leaked_tool_call"] = f"This agent {LEAKED_TOOL_CALL_NOTE}"
                 sa_results.append(json.dumps(record))
         if _unsettled:
             sa_results.append(
@@ -625,11 +638,34 @@ class _SubAgentsStep(DeferredTool):
             )
         settled_ids, self._settled_ids = self._settled_ids, set()
         if settled_ids and self.parent_session:
+            self._mark_collected(sorted(settled_ids))
+
+    def _mark_collected(self, ids: list[str]) -> None:
+        """Tell the gateway these children's results were returned inline.
+
+        A missed mark leaves each child's completion event enabled, so the
+        parent gets the same result a second time as an extra turn. A transport
+        failure (a read timeout on a loaded gateway, a reset connection) leaves
+        the outcome unknown, so it is sent again: the gateway leaves a child it
+        already reported to the parent out of the collected set, so a repeat of
+        a mark that did land changes nothing. A definite refusal is not retried: the same request would be
+        refused again. This runs here and not at the status read in
+        :meth:`_collect` because only the settled commit knows the reply was
+        not cancelled; a mark for a cancelled reply would drop the result.
+        """
+        body = {"ids": ids, "parent_session": self.parent_session}
+        data: dict[str, Any] = {}
+        for timeout in _MARK_COLLECTED_TIMEOUTS:
             try:
-                mcp_core._post(
-                    "/api/spawn/mark-collected",
-                    {"ids": list(settled_ids), "parent_session": self.parent_session},
-                    timeout=5,
-                )
-            except Exception:
-                pass  # best-effort: a missed mark leaves the completion event enabled
+                data = mcp_core._post("/api/spawn/mark-collected", body, timeout=timeout)
+            except Exception as exc:  # noqa: BLE001 - a failed mark must not lose the reply
+                data = {"error": str(exc), "transport_error": True}
+            if not data.get("error") or not data.get("transport_error"):
+                break
+        if data.get("error"):
+            logger.warning(
+                "spawn_sub_agents: could not mark %d sub-agent(s) collected, so their "
+                "completion events will also arrive: %s",
+                len(ids),
+                redact_log(str(data["error"]))[:200],
+            )

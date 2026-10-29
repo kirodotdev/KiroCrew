@@ -82,7 +82,7 @@ from kiro_crew.computer_use.types import (
     PolicyStateError,
 )
 from kiro_crew.config.loader import computer_use_state_path, read_config_text
-from kiro_crew.edition_locks import LOCKED_BY_POLICY, local_enable_locked
+from kiro_crew.edition_locks import LOCKED_BY_POLICY
 from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger(__name__)
@@ -393,7 +393,7 @@ def _snapshot() -> dict[str, Any]:
 
     return {
         "enabled": enable_state.is_enabled(state),
-        "locked_by_policy": local_enable_locked("computer_use"),
+        "locked_by_policy": enable_state.locked_by_policy(),
         "supported": supported,
         "platform": platform_id,
         "reason": reason,
@@ -415,10 +415,9 @@ def _snapshot() -> dict[str, Any]:
         # operator set no restriction — and the panel must be able to tell the two
         # apart rather than presenting a confidently empty allow-list.
         "policy_error": policy_error,
-        # There is deliberately NO ``read_only`` / governance-lock field here, and no
-        # ``409`` on the PUT. Computer use is one operator opt-in on the keystone:
-        # ``SCOPE_CATALOG`` carries no ``computer_use*`` row, so there is no ceiling
-        # to report and nothing for the panel to grey out.
+        # ``locked_by_policy`` above is the only governance field: the one on/off
+        # ``capabilities.computer_use`` row (``enable_state.locked_by_policy``).
+        # Nothing finer is governed, so there is nothing else to grey out.
         # The write boundary that DOES hold is the app-token gate on the PUT (an app
         # token can never write the keystone); see ``api_computer_use_config_save``.
         # Ceilings, so the panel's number inputs bound themselves from the server
@@ -562,11 +561,10 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
     desktop automation. Same guard as ``handlers/kiro_prerequisite.py`` and
     ``messaging_api/agent_push.py``'s notification push.
 
-    **There is no governance ceiling on this route, and therefore no 409.** Computer
-    use is one operator opt-in: ``SCOPE_CATALOG`` carries no ``computer_use*`` row, so
-    there is nothing that can forbid a widening request (there is no ``status=409`` in
-    this module) — see ``docs/system-specs/modules/governance.md`` for why computer
-    use is deliberately ungoverned. Other outcomes: ``400`` for a malformed body or an
+    **The one governance refusal is ``409 locked_by_policy``** for ``enabled: true``
+    while the ``capabilities.computer_use`` row keeps the feature off
+    (``enable_state.locked_by_policy``); nothing finer is governed — see
+    ``docs/system-specs/modules/governance.md``. Other outcomes: ``400`` for a malformed body or an
     out-of-range value, ``403`` for an app token (above), and ``500`` for a corrupt
     keystone or ``config.json``, which is left byte-identical rather than clobbered
     (``StateCorruptError``, the ``ConfigCorruptError`` precedent).
@@ -623,7 +621,9 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
                 {"error": "enabled must be a boolean", "code": "invalid_field_type"},
                 status=400,
             )
-        if body["enabled"] and local_enable_locked("computer_use"):
+        if body["enabled"] and await _off_loop(
+            lambda: enable_state.locked_by_policy(audit_tool="computer_use_enable")
+        ):
             _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources="enabled=locked")
             return web.json_response(
                 {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}, status=409
@@ -688,9 +688,8 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # No governance step here, deliberately: the computer-use governance model
-    # (and the 409 it would have returned) does not exist. The write boundary
-    # that DOES hold is the app-token gate at the top of this handler.
+    # The only governance step is the ``locked_by_policy`` 409 in the validation
+    # above. The write boundary that also holds is the app-token gate at the top.
 
     # ── Write ──
     # Read the CURRENT enable before mutating, so the session reset below fires only

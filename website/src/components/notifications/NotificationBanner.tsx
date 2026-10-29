@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion, type TargetAndTransition } from 'framer-motion'
 import { i18nT } from '../../i18n/t'
@@ -21,6 +21,7 @@ import {
 import type { Notification } from '../../types'
 import { notePriority, safeInternalUrl } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
+import SwipeToDismiss from './SwipeToDismiss'
 import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 
 /** Where a leaving card travels: the vector from its own top-right corner to
@@ -77,12 +78,14 @@ type ExitDeltas = Record<string, ExitDelta | undefined>
  * The host (the bell button) lends its `bellRef` for the exit vector and its
  * open-on-note mechanics; the banner owns no selection state of its own.
  */
-export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }: {
+export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, after }: {
   bellRef: RefObject<HTMLButtonElement | null>
   /** The bell popover is on screen (open or animating shut). */
   popoverOpen: boolean
   /** Open the bell popover with this note selected (the host acks it). */
   onOpenNote: (ts: string) => void
+  /** Host content stacked in flow under the cards, sharing this corner instead of overlapping it. */
+  after?: ReactNode
 }) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
@@ -301,8 +304,10 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
       if (e.key !== 'Escape' || e.defaultPrevented) return
       removeNotes([pending[0].ts])
     }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    // Window bubble: it runs after every target and document handler, so a
+    // press any of them (or an Escape-stack layer) claimed arrives spent.
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [pending, removeNotes])
 
   // ---- actions ----------------------------------------------------------------
@@ -468,35 +473,41 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
                     onClick={() => setExpanded(true)}
                   />
                 ) : (
-                  <NotificationCard
-                    n={n}
-                    onOpen={() => openNote(n)}
-                    openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: n.title })}
-                    onDismiss={() => removeNotes([n.ts])}
-                    dismissLabel={i18nT('components.notifications.notificationBanner.dismiss_notification')}
-                    dismissTestId="notification-banner-dismiss"
-                    dismissVisible={isMobile}
-                    actions={actions}
-                    actionsAlign="end"
-                    footer={ackFailed[n.ts] || n.ts === rosterReportTs ? (
-                      <>
-                        {ackFailed[n.ts] && (
-                          /* No hand-off: this card floats over whatever page the
-                             user is on, which may hold an unsaved draft (a chat
-                             composer, a settings form) that the hand-off's
-                             navigation to the chat would destroy. The action
-                             button on the card is the retry. */
-                          <ErrorNotice
-                            variant="inline"
-                            testId="notification-banner-ack-failed"
-                            message={i18nT('components.notifications.notificationBanner.mark_read_failed')}
-                            onDismiss={() => setAckFailed(prev => { const { [n.ts]: _drop, ...rest } = prev; void _drop; return rest })}
-                          />
-                        )}
-                        {n.ts === rosterReportTs && <CrewmateRosterError />}
-                      </>
-                    ) : null}
-                  />
+                  // On a phone the card also goes with a horizontal swipe,
+                  // through the SAME removal the X performs, so a swiped note
+                  // waits in the bell exactly as a closed one does. The X stays
+                  // visible there for keyboard and screen-reader users.
+                  <SwipeToDismiss enabled={isMobile} reduced={reduced} onDismiss={() => removeNotes([n.ts])}>
+                    <NotificationCard
+                      n={n}
+                      onOpen={() => openNote(n)}
+                      openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: n.title })}
+                      onDismiss={() => removeNotes([n.ts])}
+                      dismissLabel={i18nT('components.notifications.notificationBanner.dismiss_notification')}
+                      dismissTestId="notification-banner-dismiss"
+                      dismissVisible={isMobile}
+                      actions={actions}
+                      actionsAlign="end"
+                      footer={ackFailed[n.ts] || n.ts === rosterReportTs ? (
+                        <>
+                          {ackFailed[n.ts] && (
+                            /* No hand-off: this card floats over whatever page the
+                               user is on, which may hold an unsaved draft (a chat
+                               composer, a settings form) that the hand-off's
+                               navigation to the chat would destroy. The action
+                               button on the card is the retry. */
+                            <ErrorNotice
+                              variant="inline"
+                              testId="notification-banner-ack-failed"
+                              message={i18nT('components.notifications.notificationBanner.mark_read_failed')}
+                              onDismiss={() => setAckFailed(prev => { const { [n.ts]: _drop, ...rest } = prev; void _drop; return rest })}
+                            />
+                          )}
+                          {n.ts === rosterReportTs && <CrewmateRosterError />}
+                        </>
+                      ) : null}
+                    />
+                  </SwipeToDismiss>
                 )}
               </motion.div>
             )
@@ -525,6 +536,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
           >{i18nT('components.notifications.notificationBanner.more_count', { count: deckHidden })}</Clickable>
         )}
       </div>
+      {after}
     </div>
   )
 }

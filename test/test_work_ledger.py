@@ -52,7 +52,7 @@ def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
     assert wl.WORKER_STATUSES == {"progress", "done", "blocked", "question"}
 
 
-def test_event_kinds_are_exactly_six():
+def test_event_kinds_are_exactly_seven():
     assert wl.EVENT_KINDS == {
         "create",
         "bind",
@@ -60,6 +60,7 @@ def test_event_kinds_are_exactly_six():
         "decision",
         "verdict",
         "close",
+        "steer",
     }
 
 
@@ -756,6 +757,12 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
         {"kind": "file", "path": "/nowhere-at-all", "exists": False},
         {"kind": "human_approval"},
         {"kind": "cmd", "argv": ["git", "status"]},
+        {"kind": "pr_merged", "pr": "TBD", "repo": "owner/name"},
+        {"kind": "pr_merged", "pr": 0, "repo": "owner/name"},
+        {"kind": "pr_merged", "pr": True, "repo": "owner/name"},
+        {"kind": "pr_merged", "pr": 7},
+        {"kind": "pr_merged", "pr": 7, "repo": "TBD"},
+        {"kind": "pr_merged", "pr": 7, "repo": "-owner/name"},
     ]
     batch = {"items": [{"id": f"it_{n:08d}", "accept": spec} for n, spec in enumerate(specs)]}
     proc = subprocess.run(
@@ -773,6 +780,9 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
         concrete = wl.is_acceptance_concrete(spec)
         assert concrete is (verdict != "error"), (spec, verdict, concrete)
     assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 7, "repo": "owner/name"}) is True
+    # ``pr_merged`` shells out too, so its valid form is asserted concrete and
+    # evaluated nowhere, as for ``pr_checks`` above.
+    assert wl.is_acceptance_concrete({"kind": "pr_merged", "pr": 7, "repo": "owner/name"}) is True
 
 
 def test_accept_batch_carries_status_and_does_not_filter_on_it():
@@ -1432,6 +1442,17 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         "dashboard/handlers/work_ledger_recording.py",
         "dashboard/handlers/work_ledger_refusals.py",
         "dashboard/handlers/work_ledger_worker.py",
+        # The crew-log relay reads ONE thing, the binding of the session whose closer
+        # just landed, to know which board's log to copy the charge into. The worker
+        # named there is the unit's own header slot, never a caller-supplied value,
+        # and the relay writes nothing to the store.
+        "crew_log/work_relay.py",
+        # The Crew panel's steer route reads ONE thing, the binding of the crew
+        # member the person typed into, to land the ``steer`` event on that member's
+        # item. Same principal argument as the Crew page below: the caller is the
+        # dashboard OWNER (cookie, owner-gated), the member is a live session of the
+        # root's own tree the route resolved itself, and no key reaches a payload.
+        "dashboard/handlers/crew_workers.py",
         # The operator-run cleanup sweep behind ``kirocrew ledger-sweep``.
         # It is a seam deliberately, and it does not weaken the rule the
         # allowlist exists for: it resolves NO caller identity — there is no

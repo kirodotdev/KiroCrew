@@ -30,7 +30,7 @@ export function check(label, ok, detail = '') {
   console.log('ok  ', label)
 }
 
-/** Prime the pod: preview flag on (Crew Members is preview-gated), theme, and a
+/** Prime the pod: theme, and a
  *  crew to edit. The crew is created through the REAL endpoint so the roster,
  *  the editor and the members page all read the same record. The chip's
  *  dismissal flag is cleared so each run starts from a first-visit state. */
@@ -46,7 +46,6 @@ export async function primeCrewPod(page, authed, crew, theme) {
     await skip.waitFor({ state: 'hidden', timeout: 10000 })
   }
   await page.evaluate(async ([name, th]) => {
-    localStorage.setItem('mc-preview-crew', '1')
     localStorage.removeItem('mc-avatar-edit-hint-dismissed')
     // The server is the source of truth for the theme mode (useTheme re-reads
     // /api/theme/boot on every load), so a localStorage write alone would be
@@ -84,7 +83,6 @@ export async function openMembersDm(page, authed, BASE, member, { theme = 'dark'
     await skip.waitFor({ state: 'hidden', timeout: 10000 })
   }
   await page.evaluate(async ([th, lg]) => {
-    localStorage.setItem('mc-preview-crew', '1')
     localStorage.setItem('mc-lang', lg)
     localStorage.setItem('mc-theme', th)
     await fetch('/api/config/theme', {

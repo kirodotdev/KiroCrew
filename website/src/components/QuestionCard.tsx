@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, memo, type RefObject } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, memo, type RefObject } from 'react'
 import { flushSync } from 'react-dom'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
@@ -75,6 +75,11 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
   const [selections, setSelections] = useState<Record<number, Set<string>>>(initialDraft.current.selections)
   const [customInputs, setCustomInputs] = useState<Record<number, string>>(initialDraft.current.customInputs)
   const reduceMotion = useReducedMotion()
+  /* Ids for the option group's name (the question text) and its description (the
+     selection rule), so assistive technology hears which rule the options follow. */
+  const groupIdBase = useId()
+  const questionTextId = `${groupIdBase}-question`
+  const selectionRuleId = `${groupIdBase}-rule`
   /* Which question is on screen. ONE index replaces the three mechanisms a
      stacked card needed to stay usable — a fold-all-but-the-first on mount, an
      auto-fold that opened the next unanswered question on every answer, and a
@@ -351,7 +356,7 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
               never wider than the row. */}
           <div className="flex flex-wrap gap-2 items-start">
             {q.header && <span className="text-[11px] font-semibold uppercase tracking-wider text-accent bg-accent-subtle px-2 py-0.5 rounded mt-px">{q.header}</span>}
-            <span className="flex-1 min-w-0 text-[13px] font-medium text-text">{q.question}</span>
+            <span id={questionTextId} className="flex-1 min-w-0 text-[13px] font-medium text-text">{q.question}</span>
             {/* Top-right pager. Only when there is more than one question: on a
                 single question it would be a permanently disabled pair of arrows
                 next to "1/1", which says nothing and takes the header's width. */}
@@ -407,7 +412,22 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
               exit="exit"
               transition={{ duration: reduceMotion ? 0.1 : 0.16 }}
             >
-              <div className="pt-2.5 flex flex-col gap-1.5">
+              {/* The options' group, named by the question and described by its
+                  selection rule. aria-pressed tells each option's state; only the
+                  group can say whether one or several may be chosen, and the
+                  single-select sentence also says a second press clears the pick,
+                  which is why this is a plain group and not a radiogroup. */}
+              <div
+                role="group"
+                aria-labelledby={questionTextId}
+                aria-describedby={selectionRuleId}
+                className="pt-2.5 flex flex-col gap-1.5"
+              >
+                <span id={selectionRuleId} className="sr-only">
+                  {q.multiSelect
+                    ? i18nT('components.questionCard.select_many_rule')
+                    : i18nT('components.questionCard.select_one_rule')}
+                </span>
                 {q.options.map(opt => {
                   const isSelected = !!selections[page]?.has(opt.label)
                   return (

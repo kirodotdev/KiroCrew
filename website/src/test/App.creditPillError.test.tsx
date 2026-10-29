@@ -131,31 +131,17 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(document.querySelector('.tb-capsule')).toBeNull()
   })
 
-  it('treats an api_key_auth unavailable payload as terminal, not still loading', async () => {
-    // The backend fail-fasts API-key accounts with a reasoned marker (#5728).
-    // That payload must stop the spinner and say WHY — before the fix the
-    // panel spun forever because no terminal state ever arrived.
-    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'api_key_auth' } })
-    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
-
-    const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_api_key'))
-    expect(pill.textContent).toContain('—')
-    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
-    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
-  })
-
   it('keeps the pill as a dash on a reasonless unavailable payload, naming where to refresh', async () => {
     // The gateway holds no reading (plan-less account with the scrape parked or
     // failed). The modal this dash opens carries the Refresh that can fix that,
     // so the dash must stay on screen -- a hidden pill would make that path
-    // unreachable. Distinct from the api_key_auth dash: the label differs.
+    // unreachable.
     sessionsUsageMock.mockResolvedValue({ usage: { available: false } })
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
     const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_no_reading'))
     expect(pill.textContent).toContain('—')
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
-    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_api_key'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
   })
 

@@ -16,6 +16,7 @@ refused here, so that an ordinary command is never blocked.
 """
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.security.exfil import audit_bash_exfiltration as audit
 
@@ -28,16 +29,36 @@ class TestOutboundSendsAreNotRefused:
     @pytest.mark.parametrize(
         "command",
         [
-            'curl -X POST https://hooks.example/abc -d \'{"text":"hi"}\'',  # webhook
-            "curl -d 'name=foo&x=1' https://api.example.com/v1",  # inline form POST
-            "curl --json '{\"k\":1}' https://api.example.com",  # literal JSON POST
-            "wget --post-data=x https://api.example.com",  # wget POST
-            "curl -X PUT -d 'k=v' https://api.example.com/v1",  # PUT with inline body
-            'curl -d "$BODY" "$API_URL"',  # dynamic body and URL
-            "curl --data-urlencode 'q=hi' https://api.example.com/s",  # inline urlencode
+            *named_cases(
+                "test_allowed",
+                "command",
+                [
+                    'curl -X POST https://hooks.example/abc -d \'{"text":"hi"}\'',  # webhook
+                    "curl -d 'name=foo&x=1' https://api.example.com/v1",  # inline form POST
+                    "curl --json '{\"k\":1}' https://api.example.com",  # literal JSON POST
+                    "wget --post-data=x https://api.example.com",  # wget POST
+                    "curl -X PUT -d 'k=v' https://api.example.com/v1",  # PUT with inline body
+                    'curl -d "$BODY" "$API_URL"',  # dynamic body and URL
+                    "curl --data-urlencode 'q=hi' https://api.example.com/s",  # inline urlencode
+                ],
+            ),
+            *named_cases(
+                "test_allowed",
+                "command",
+                [
+                    "curl -fsSL https://example.com/install.sh | sh",
+                    "curl -o out.json https://example.com/data.json",
+                    "curl -O https://example.com/pkg.tgz",
+                    "curl -I https://example.com",
+                    "curl https://example.com/x | jq .",
+                    "curl https://example.com/x | cut -d, -f1",
+                    "gh api repos/o/r/pulls",
+                    "aws s3 cp s3://b/k ./k",
+                ],
+            ),
         ],
     )
-    def test_allowed(self, command: str) -> None:
+    def test_the_command_is_allowed(self, command: str) -> None:
         assert audit(command) is None, command
 
 
@@ -62,19 +83,3 @@ class TestAtFileReadsStillRefused:
 class TestOrdinaryCommandsNeverRefused:
     """GETs, downloads, pipes into tools with `-d`-style flags, and non-curl
     programs are never refused."""
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "curl -fsSL https://example.com/install.sh | sh",
-            "curl -o out.json https://example.com/data.json",
-            "curl -O https://example.com/pkg.tgz",
-            "curl -I https://example.com",
-            "curl https://example.com/x | jq .",
-            "curl https://example.com/x | cut -d, -f1",
-            "gh api repos/o/r/pulls",
-            "aws s3 cp s3://b/k ./k",
-        ],
-    )
-    def test_allowed(self, command: str) -> None:
-        assert audit(command) is None, command

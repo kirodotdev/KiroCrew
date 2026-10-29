@@ -173,9 +173,9 @@ def kas_bundle_route() -> bool:
 
     try:
         agent = KiroCrewConfig.load().agent
+        return agent.acp_backend == ACP_BACKEND_KAS and bool(agent.kas_bundle)
     except Exception:
         return False
-    return agent.acp_backend == ACP_BACKEND_KAS and bool(agent.kas_bundle)
 
 
 def installed_engine_label() -> str | None:

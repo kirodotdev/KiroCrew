@@ -114,6 +114,22 @@ class TestSpawnSDK:
         with pytest.raises(SpawnError, match="denied by policy"):
             asyncio.run(ctx.spawn.run("x", "probe-bg"))
 
+    def test_a_spawn_stopped_before_it_started_raises(self, tmp_path):
+        """Stopped while it waited, the record has an id but no run behind it:
+        returning the id would leave the app polling a run that never exists."""
+        stopped = types.SimpleNamespace(
+            id="sub-7", queued=True, done=True, user_stopped=True, error=""
+        )
+        ctx = build_app_context(
+            "probe",
+            tmp_path,
+            permissions={"spawn": True},
+            spawn_impl=build_spawn_impl(_FakeManager(result=stopped)),
+        )
+        with pytest.raises(SpawnError, match="stopped before it started") as ei:
+            asyncio.run(ctx.spawn.run("x", "probe-bg"))
+        assert ei.value.declined is False
+
     def test_empty_task_is_refused_before_reaching_the_host(self, tmp_path):
         mgr = _FakeManager()
         sdk = SpawnSDK("probe", build_spawn_impl(mgr))

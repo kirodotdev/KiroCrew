@@ -436,6 +436,36 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     expect(rowLabel('Kiro CLI').textContent).not.toContain('In use')
   })
 
+  it('calls a harness on an unverified release "Wrong version", with the fix on the row', async () => {
+    // UX BLOCK on #22403: the probe once looked only for the binary, so a Copilot
+    // CLI on any release but the verified one read "Installed" here and then
+    // refused every chat. The gateway now reports that release as missing the
+    // verified one; this row must say so in its own word and carry the command.
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'copilot']))
+    const command = 'npm i -g @github/copilot@1.0.100'
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('kiro', card()),
+        probeRow('copilot', {
+          installed: 'missing',
+          missing_components: ['copilot 1.0.100'],
+          install_command: command,
+          found_version: '1.0.103',
+          ...card(),
+        }),
+      ],
+    })
+    wrap()
+    const name = acpBackendName({ id: 'copilot', policy_id: 'copilot' })
+    await waitFor(() => expect(rowLabel(name).textContent).toContain('Wrong version'))
+    expect(rowLabel(name).textContent).not.toContain('Not installed')
+    expect(rowLabel(name).textContent).not.toContain('Installed')
+    highlight(name)
+    await waitFor(() => expect(detail().textContent).toContain(`This host has ${name} 1.0.103`))
+    expect(detail().textContent).toContain(command)
+    expect(useButton(name)).toBeDisabled()
+  })
+
   it('says "In use" visibly on the row, not only to a screen reader', async () => {
     // The configured harness has no Use button, so the row is the one place a
     // sighted reader learns which agent is running. The word is on the row itself,

@@ -240,6 +240,53 @@ TYPES: tuple[EntryType, ...] = (
                         ),
                         note="The history category's own split.",
                     ),
+                    Field(
+                        "percent",
+                        JSON_OBJECT,
+                        note="Category name to the engine's own share of the total, in tenths of a percent.",
+                    ),
+                    Field(
+                        "counts",
+                        JSON_OBJECT,
+                        note="Entries in the agents, skills and powers lists, by category name.",
+                    ),
+                    Field(
+                        "parts",
+                        JSON_OBJECT,
+                        note=(
+                            "Sub-fields that split a category, as category.part to characters: "
+                            "toolIO input/output, workspace and memory splits."
+                        ),
+                    ),
+                    Field(
+                        "window",
+                        JSON_OBJECT,
+                        fields=(
+                            Field(
+                                "size_tokens", JSON_INT, note="The model's input window, in tokens."
+                            ),
+                            Field(
+                                "usage_milli",
+                                JSON_INT,
+                                note="The backend's usage of that window, in thousandths of a percent.",
+                            ),
+                        ),
+                        note="The model's window and how full the backend said it was.",
+                    ),
+                    Field(
+                        "media",
+                        JSON_OBJECT,
+                        fields=tuple(
+                            Field(name, JSON_INT, note=note)
+                            for name, note in (
+                                ("images", "Images the request carried."),
+                                ("image_bytes", "Their decoded size."),
+                                ("documents", "Documents the request carried."),
+                                ("document_bytes", "Their decoded size."),
+                            )
+                        ),
+                        note="Images and documents, counted outside total_chars.",
+                    ),
                 ),
                 note="Absent when the engine sent no breakdown for the turn.",
             ),

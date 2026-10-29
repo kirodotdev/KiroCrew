@@ -429,10 +429,20 @@ class TestInstallIdentity:
         # two installs the first time a second account is connected.
         assert backup.read_state()[backup.INSTALL_KEY]["id"] == first["id"]
 
-    def test_the_id_is_not_the_telemetry_install_id(self):
+    def test_the_id_is_not_the_telemetry_install_id(self, tmp_path, monkeypatch):
         # Reusing `beacon.install_id()` would materialise a TELEMETRY identity on
         # a host that opted out of telemetry, because that function creates the
         # file it reads. The technique is worth copying; the value is not.
+        from kiro_crew import beacon
+        from kiro_crew.config.loader import config_dir
+
+        # Unpatched, minting the backup id leaves no telemetry id file behind.
+        identity = backup.install_identity()
+        assert backup._INSTALL_ID_RE.match(identity["id"])
+        assert not (config_dir() / beacon.INSTALL_ID_FILE).exists()
+        # A second fresh mint, with the telemetry reader patched to catch any call.
+        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "second.json")
+        backup._fallback_identity.clear()
         with mock.patch("kiro_crew.beacon.install_id") as beacon_id:
             backup.install_identity()
         beacon_id.assert_not_called()

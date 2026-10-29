@@ -93,10 +93,28 @@ async def setup_tunnel(
     _tunnel_url: str = ""
 
     async def _on_tunnel_connect(url: str) -> None:
-        """Add tunnel URL to CORS origins when connected."""
+        """Add tunnel URL to CORS origins when connected and governance permits it."""
         nonlocal _tunnel_url
-        _tunnel_url = url
-        allowed_origins.add(url)
+        from kiro_crew.dashboard.urls import origin_permitted, stored_origin
+
+        # The tunnel origin is one more dashboard origin: in an enterprise build none
+        # is trusted unless a policy names it (``dashboard_origins``, RFC D3).
+        if not origin_permitted(url, audit_tool="tunnel_origin"):
+            log_api_access(
+                caller="tunnel_manager",
+                operation="tunnel.connected",
+                outcome="denied",
+                resources=f"dashboard_origins:{url}",
+            )
+            logger.warning(
+                "Tunnel connected, but %s is not permitted by governance "
+                "(dashboard_origins); it is not trusted as an origin",
+                url,
+            )
+            return
+        # Kept in the spelling ``check_origin`` compares (``urls.stored_origin``).
+        _tunnel_url = stored_origin(url)
+        allowed_origins.add(_tunnel_url)
         set_tunnel_url(url)
         log_api_access(
             caller="tunnel_manager",

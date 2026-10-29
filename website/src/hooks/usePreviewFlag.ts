@@ -14,7 +14,7 @@ import type { PreviewFlagChange } from '../utils/previewFlags'
  * and a user who just enabled a surface would conclude the toggle is broken.
  *
  * Updates on the same-tab `mc-preview-flag-changed` event and on cross-tab
- * `storage` events, mirroring `useDevMode`.
+ * `storage` events.
  */
 export function usePreviewFlag(flag: string): boolean {
   const [on, setOn] = useState(() => readPreviewFlag(flag))

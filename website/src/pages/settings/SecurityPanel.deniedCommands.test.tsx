@@ -47,11 +47,6 @@ vi.mock('../../api/client', () => ({
     // crash on an undefined queryFn; the section's behaviour is covered in
     // SecurityPanel.tailnet.test.tsx.
     tailnetStatus: vi.fn(),
-    // Read by the rail on every mount to summarise the flagged-file-delivery
-    // section, for the same reason as `tailnetStatus` above. The section's own
-    // behaviour is covered in SecurityPanel.fileDelivery.test.tsx.
-    fileDeliveryConsent: vi.fn(),
-    revokeFileDeliveryConsent: vi.fn(),
     listTrustedApps: vi.fn(),
     trustApp: vi.fn(),
     untrustApp: vi.fn(),
@@ -73,7 +68,6 @@ import {
   NOTED_PATTERN,
   USER_NOTE,
   TAILNET_OFF,
-  CONSENT_NONE,
   snapshot,
   posture,
   govNoPolicy,
@@ -114,7 +108,6 @@ describe('SecurityPanel — denied commands', () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   it('toggling a built-in OFF opens the confirm modal and only mutates after ack', async () => {
@@ -414,7 +407,6 @@ describe('SecurityPanel — rule search', () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   const SEARCH = 'Search rules, patterns, categories…'

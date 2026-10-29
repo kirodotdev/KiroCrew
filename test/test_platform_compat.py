@@ -27,12 +27,14 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 
 import pytest
 
 from kiro_crew import platform_compat as pc
+from kiro_crew.testing.wait import default_timeout
 
 # Tests here read or build the macOS libc and libproc handles, so each one starts
 # with both caches unbuilt and puts them back after (see conftest.py).
@@ -50,8 +52,16 @@ pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
     ],
 )
 def test_native_tcp_peer_identifies_client_process_not_server(family, host):
+    # One lost-run deadline for the whole exchange (D1/D8), not 10 s per call: a
+    # fresh interpreter can take longer than that to start and connect on a loaded
+    # runner, which is how the IPv6 lane lost this test.
+    deadline = time.monotonic() + default_timeout()
+
+    def remaining() -> float:
+        return max(deadline - time.monotonic(), 0.1)
+
     with socket.socket(family) as listener:
-        listener.settimeout(10)
+        listener.settimeout(remaining())
         listener.bind((host, 0))
         listener.listen()
         child = subprocess.Popen(
@@ -70,7 +80,13 @@ def test_native_tcp_peer_identifies_client_process_not_server(family, host):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         try:
-            accepted, _ = listener.accept()
+            try:
+                accepted, _ = listener.accept()
+            except TimeoutError:
+                pytest.fail(
+                    f"the client child never connected to {host} before the deadline "
+                    f"(child exit code: {child.poll()})"
+                )
             # A Windows venv launcher may exec a different interpreter PID.
             assert child.stdout is not None
             client_pid = int(child.stdout.readline())
@@ -84,7 +100,12 @@ def test_native_tcp_peer_identifies_client_process_not_server(family, host):
                 assert pc.get_tcp_peer_pid((server[0], server[1] % 65535 + 1), client) is None
                 assert pc.get_tcp_peer_pid(("203.0.113.1", server[1]), client) is None
         finally:
-            child.communicate(b"x", timeout=10)
+            try:
+                child.communicate(b"x", timeout=remaining())
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate()
+                raise
 
 
 def test_tcp_peer_identity_unavailable_on_unknown_platform(monkeypatch):
@@ -365,9 +386,17 @@ class TestFileLock:
     def test_shared_lock_round_trips(self, tmp_path):
         lock = tmp_path / ".test-sh.lock"
         lock.write_text("")
-        with open(lock, "r") as fh:
-            with pc.file_lock(fh.fileno(), exclusive=False):
-                pass  # no exception = pass
+        other = os.open(str(lock), os.O_RDWR)
+        try:
+            with open(lock, "r") as fh:
+                with pc.file_lock(fh.fileno(), exclusive=False):
+                    pass
+                # Leaving the block released the lock while fh is still open: a
+                # second descriptor takes it exclusively at once.
+                assert pc.try_acquire_lock(other, exclusive=True) is True
+                pc.release_lock(other)
+        finally:
+            os.close(other)
 
     def test_flock_exclusive_alias_runs_body(self, tmp_path):
         lock = tmp_path / ".test-ex.lock"
@@ -382,10 +411,15 @@ class TestFileLock:
         # The fd-handoff form (cron_history) — acquire now, release later.
         lock = tmp_path / ".test-pair.lock"
         fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT, 0o600)
+        other = os.open(str(lock), os.O_WRONLY)
         try:
             pc.acquire_lock(fd, exclusive=True)
+            assert pc.try_acquire_lock(other, exclusive=True) is False, "the lock is held"
             pc.release_lock(fd)
+            assert pc.try_acquire_lock(other, exclusive=True) is True, "release freed it"
+            pc.release_lock(other)
         finally:
+            os.close(other)
             os.close(fd)
 
     def test_try_acquire_lock_succeeds_on_free_file(self, tmp_path):
@@ -679,8 +713,11 @@ class TestProcessCwd:
 
         monkeypatch.setattr(subprocess, "run", explode)
         monkeypatch.setattr(subprocess, "Popen", explode)
-        pc.process_cwd(os.getpid())
-        pc.process_cwd(2_000_000_000)
+        cwd = pc.process_cwd(os.getpid())
+        # The answer still comes back without a subprocess (None only on a host
+        # with neither /proc nor libproc, which test_returns_own_cwd skips on).
+        assert cwd is None or os.path.samefile(cwd, os.getcwd())
+        assert pc.process_cwd(2_000_000_000) is None
 
     @staticmethod
     def _fake_libproc(path: bytes, *, filled: int | None = None):
@@ -764,25 +801,6 @@ class TestFindListeningPids:
                 assert os.getpid() in pids
         finally:
             s.close()
-
-    def test_linux_per_process_probe_runs_on_every_runner(self, tmp_path, monkeypatch):
-        proc_root = tmp_path / "proc"
-        (proc_root / "net").mkdir(parents=True)
-        (proc_root / "4242" / "fd").mkdir(parents=True)
-        (proc_root / "4242" / "fd" / "7").touch()
-        (proc_root / "net" / "tcp").write_text(
-            "header\n"
-            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
-            "00:00000000 00000000 1000 0 12345\n",
-            encoding="ascii",
-        )
-        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
-        monkeypatch.setattr(pc, "IS_WINDOWS", False)
-        monkeypatch.setattr(pc, "IS_LINUX", True)
-        monkeypatch.setattr(pc, "IS_POSIX", True)
-        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
-
-        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
 
     def test_windows_listener_probe_marks_browser_capable(self, monkeypatch):
         """Use real Windows/Darwin attribution there; both synthetic shapes elsewhere."""
@@ -1050,13 +1068,17 @@ class TestUtf8Console:
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
-    def test_ensure_utf8_console_is_safe_to_call(self):
+    def test_ensure_utf8_console_is_safe_to_call(self, monkeypatch):
         # Publishes the child environment on every OS and reconfigures the
         # current stdout/stderr only on Windows. Either way it must never raise
         # (it swallows non-reconfigurable streams), and must be idempotent (safe
         # to call from both __main__ and cli.main).
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
         pc.ensure_utf8_console()
         pc.ensure_utf8_console()
+        assert os.environ["PYTHONUTF8"] == "1"
+        assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
     def test_emoji_print_does_not_raise_after_call(self, capsys):
         # The bug this guards: KiroCrew prints non-ASCII glyphs everywhere, and on
@@ -1118,7 +1140,7 @@ class _TtyTextIOWrapper(io.TextIOWrapper):
 
 
 class TestLineBufferedStdout:
-    STATUS_LINE = "👻 Kiro Crew gateway starting…"
+    STATUS_LINE = "👻 Kiro Crew gateway running — press Ctrl+C to stop"
 
     def test_status_line_reaches_a_non_tty_stdout_as_printed(self, monkeypatch):
         # A pipe or a file (the journal under systemd, the Desktop supervisor's

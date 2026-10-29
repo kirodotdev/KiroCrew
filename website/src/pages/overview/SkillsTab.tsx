@@ -18,7 +18,8 @@ import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
-import { SKILL_SORTS, sortSkills, type SkillSort } from './skillSort'
+import { SKILL_SORTS, pendingCreatedAt, sortByCreated, sortSkills, type SkillSort } from './skillSort'
+import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
 
 import { Trans } from 'react-i18next'
@@ -356,13 +357,21 @@ export default function SkillsTab() {
   // selectedSkill is derived from the *unfiltered* skills array, so the
   // editor stays mounted even if the skill is filtered out of the list —
   // auto-reselecting here would silently discard unsaved form changes.
+  // A row the user clicked stays open while the filter still shows it. A row
+  // this effect opened by itself is only a default, so a new filter moves it
+  // to the best match for what was typed.
+  const userPickedRef = useRef(false)
   useEffect(() => {
     if (detailEditing) return
     if (allFiltered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !allFiltered.some(s => s.key === selectedKey)) {
-      setSelectedKey(allFiltered[0].key)
+    const visible = !!selectedKey && allFiltered.some(s => s.key === selectedKey)
+    if (visible && (userPickedRef.current || !skillFilter.trim())) return
+    const best = bestFilterMatch(allFiltered, skillFilter, s => [s.name, s.key, displayName(s)])
+    if (best && best.key !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(best.key)
     }
-  }, [allFiltered, selectedKey, detailEditing])
+  }, [allFiltered, selectedKey, detailEditing, skillFilter])
 
   // Moving on to another skill also retires a delete failure — but only one
   // the user could have SEEN: the test is the banner's own render gate
@@ -388,6 +397,7 @@ export default function SkillsTab() {
     if (detailEditing && !showDetail && selectedSkill) { openDetail(); return }
     if (!(detailEditing && showDetail)) setDeleteError(null)
     setEditReadError('')
+    userPickedRef.current = true
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
   }
 
@@ -467,7 +477,7 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
-    <PendingSkillsPanel />
+    <PendingSkillsPanel sort={skillSort} />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
@@ -518,6 +528,7 @@ export default function SkillsTab() {
               i18nT('pages.overview.skillsTab.sort_default'),
               i18nT('pages.overview.skillsTab.sort_most_used'),
               i18nT('pages.overview.skillsTab.sort_recently_used'),
+              i18nT('pages.overview.skillsTab.sort_newest_first'),
             ]}
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
@@ -1147,7 +1158,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   )
 }
 
-function PendingSkillsPanel() {
+function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1209,6 +1220,12 @@ function PendingSkillsPanel() {
   // Stable identity per fetch: the prune effect below depends on this, and a
   // fresh array every render would re-run it continuously.
   const pending: PendingSkill[] = useMemo(() => data?.pending ?? [], [data])
+  // Display order only: candidates carry no usage, so only Newest first
+  // reorders them; every lookup by slug keeps reading `pending`.
+  const shownPending = useMemo(
+    () => (sort === 'created' ? sortByCreated(pending, pendingCreatedAt) : pending),
+    [pending, sort],
+  )
   // Why the last Approve click was refused, per slug. Server prose stays out of
   // the UI: the coded body picks a catalog message, and the findings report
   // renders next to the card so the user learns WHAT was flagged.
@@ -1610,7 +1627,7 @@ function PendingSkillsPanel() {
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
-            {pending.map(p => (
+            {shownPending.map(p => (
               <PendingCandidateRow
                 key={p.slug}
                 p={p}

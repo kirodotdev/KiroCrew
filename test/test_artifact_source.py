@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 
 from conftest import cap_project_root_walk, requires_symlinks
 from kiro_crew import artifact_source
@@ -197,7 +198,14 @@ class TestNonGitProjectsLink:
         (pkg / "package.json").write_text("{}", encoding="utf-8")
         assert classify_source(_file(pkg / "src" / "doc.md")) == (LINK, str(pkg))
 
-    def test_unmarked_directory_still_copies(
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_unmarked_directory_still_copies"),
+            *named_cases("test_no_repo_no_project_is_copy"),
+        ],
+    )
+    def test_an_unmarked_directory_is_copied(
         self, narrow_tempdir, tmp_path: Path
     ) -> None:
         # No marker anywhere above it -> a snapshot, not a pointer.
@@ -331,9 +339,6 @@ class TestClassifySourceProjectWalk:
         (wt / ".git").write_text("gitdir: /workplace/user/KiroCrew/.git/worktrees/feature\n")
         target = _file(wt / "src" / "mod.md")
         assert classify_source(target) == (LINK, str(wt))
-
-    def test_no_repo_no_project_is_copy(self, narrow_tempdir, tmp_path: Path) -> None:
-        assert classify_source(_file(tmp_path / "loose" / "doc.md")) == (COPY, "")
 
     def test_walk_is_bounded(self, narrow_tempdir, tmp_path: Path, monkeypatch) -> None:
         # With a 1-level cap, a repo root two levels up must NOT be found —

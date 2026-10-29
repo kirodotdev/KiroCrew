@@ -47,6 +47,11 @@ Examples:
   kirocrew chat                      # Interactive mode
   kirocrew chat -m 'check my CRs'    # Single message
   kirocrew chat --model claude-opus  # Use specific model
+
+Tool permission prompt (same keys as kiro-cli chat):
+  y  allow this call once
+  n  deny (default; anything else also denies)
+  o  deny and type a reply to the agent instead
 """,
         formatter_class=_fmt,
         parents=[_jail_opts],
@@ -128,7 +133,9 @@ Examples:
         dest="agent",
         default="",
         help="Agent name for this job (e.g. 'customer360-code-agent'). "
-        "Empty or omitted uses the default kirocrew agent.",
+        "Empty or omitted uses agent.default_agent, or the kirocrew agent "
+        "when that is unset or not eligible (e.g. a default that restricts "
+        "subagents).",
     )
     cron_add_kind.add_argument(
         "--script",
@@ -258,7 +265,8 @@ Examples:
         "--agent",
         dest="agent",
         default=None,
-        help="New agent name (empty string resets to default kirocrew agent)",
+        help="New agent name (empty string resets to agent.default_agent, "
+        "or the kirocrew agent when that is unset or not eligible)",
     )
     cron_update.add_argument(
         "--approval-mode",

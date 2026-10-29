@@ -70,7 +70,12 @@ shape, and hands the witness to :func:`prefix_admit`.
 
   ``prefix_sha`` is a digest of the consumed prefix's raw record bytes, recomputed on
   resume from ``prefix_records``. It is what a log with no cut counter is settled by,
-  and it charges a walk of the whole consumed prefix to each write and each resume.
+  and it charges a walk of the whole consumed prefix to each write and each resume --
+  unless the witness also carries ``prefix_extent`` (:mod:`~kiro_crew.crew_log.prefix_extent`)
+  and that still holds, which settles it in a few stats and one bounded read.
+
+  Either spelling may also carry ``resume``, the byte position of the record at its
+  seq, which the tail read after a resume seeks to. Both keys are additive.
 * the log is SHORTER than the savepoint -- most of its causes are caught above,
   but it is checked on its own because a fold resumed past the end of a file is
   the one state no later read recovers from. Witness, against the live ``last_seq``.
@@ -90,12 +95,21 @@ import logging
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, NamedTuple, TypeVar
 
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.crew_log.lease import acquire as acquire_lease
 from kiro_crew.crew_log.lease import release as release_lease
+from kiro_crew.crew_log.prefix_extent import (
+    PrefixExtent,
+    extent_at,
+    extent_from,
+    extent_holds,
+    extent_mapping,
+    resume_mapping,
+    resume_point_from,
+)
 from kiro_crew.crew_log.projection import (
     Checkpoint,
     SessionProjections,
@@ -103,8 +117,10 @@ from kiro_crew.crew_log.projection import (
     log_origin,
     require_name,
 )
+from kiro_crew.crew_log.projection_session_log import _log_identity
 from kiro_crew.crew_log.store import (
     CrewLog,
+    ResumePoint,
     crew_log_dir,
     log_exception_text,
     segment_first_seqs,
@@ -278,6 +294,7 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
     boundary and hashing it once per fold would walk the same bytes five times.
     """
     digests: dict[int, tuple[str, int]] = {}
+    extents: "dict[PrefixExtent, bool]" = {}
 
     def admit(identity: Mapping[str, Any], witness: Mapping[str, Any]) -> bool:
         seq = witness.get("seq")
@@ -298,8 +315,17 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
                 handle.last_seq,
             )
             return False
+        extent = extent_from(witness.get("prefix_extent"))
+        if extent is not None and extent not in extents:
+            # Growth is allowed only beside the cut count, which vouches for the store's
+            # own rewrites; on its own an extent proves the files UNTOUCHED, nothing less.
+            extents[extent] = extent_holds(handle, extent, grown_ok=cuts is not None)
         if sha is None and records is None and cuts is not None:
-            return _cuts_admit(handle, cuts)
+            # The count covers the store's own rewrites; the extent, when the writer
+            # stored one, covers the files being replaced or rewritten in place by
+            # anything else. A payload from before the extent is judged by the count
+            # alone, as it always was.
+            return _cuts_admit(handle, cuts) and (extent is None or extents[extent])
         if (
             not isinstance(sha, str)
             or len(sha) != 64
@@ -315,6 +341,11 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
             or records < max(0, seq - first_seq + 1)
         ):
             return False
+        if extent is not None and extents[extent] and handle.cuts() is None:
+            # Settled without the walk: same file, prefix still in place, its end bytes
+            # unchanged, and no cut counter has appeared (one would mean a cut ran, and
+            # then only the digest can say what it touched).
+            return True
         prefix = digests.get(records)
         if prefix is None:
             prefix = handle.raw_prefix_digest(records)
@@ -364,8 +395,18 @@ def witness_mapping(prefix: "PrefixWitness | CutWitness") -> dict[str, Any]:
     it on every resume.
     """
     if isinstance(prefix, CutWitness):
-        return {"seq": prefix.seq, "prefix_cuts": prefix.cuts}
-    return {"seq": prefix.seq, "prefix_sha": prefix.sha, "prefix_records": prefix.records}
+        mapping: dict[str, Any] = {"seq": prefix.seq, "prefix_cuts": prefix.cuts}
+    else:
+        mapping = {"seq": prefix.seq, "prefix_sha": prefix.sha, "prefix_records": prefix.records}
+    if prefix.extent is not None:
+        mapping["prefix_extent"] = extent_mapping(prefix.extent)
+    # ADDITIVE keys only. A build that predates them reads the same evidence it always
+    # read and ignores the rest, and a payload written before them lacks them and costs
+    # its resume the walk it always cost -- so neither direction needs a migration.
+    resume = prefix.resume
+    if resume is not None and resume.seq == prefix.seq:
+        mapping["resume"] = resume_mapping(resume)
+    return mapping
 
 
 def load(handle: CrewLog, names: Iterable[str]) -> SessionProjections | None:
@@ -382,12 +423,24 @@ def load(handle: CrewLog, names: Iterable[str]) -> SessionProjections | None:
     persisted through, so a caller can tell whether a write is owed without
     reading these files again; it is 0 whenever a requested name had no file.
     """
+    return _load(handle, names)[0]
+
+
+def _load(
+    handle: CrewLog, names: Iterable[str]
+) -> "tuple[SessionProjections | None, dict[str, Mapping[str, Any]]]":
+    """:func:`load`, plus the stored witness each resumed fold was admitted on.
+
+    The second element is what :func:`load_resumable` needs: which files still make
+    every resume hash the consumed prefix (worth rewriting once), and the byte position
+    each one stored for the tail read.
+    """
     wanted = tuple(require_name(name) for name in names)
     if not wanted:
-        return None
+        return None, {}
     identity = _identity(handle)
     if identity is None:
-        return None
+        return None, {}
     origin, first_seq = identity
     try:
         store = _UnitStore(checkpoint_dir(handle.kind, handle.id))
@@ -395,28 +448,164 @@ def load(handle: CrewLog, names: Iterable[str]) -> SessionProjections | None:
         log_exception_text(
             logger, logging.DEBUG, "crew log savepoint path refused for %s", handle.id
         )
-        return None
+        return None, {}
     block = _identity_block(handle, origin, first_seq)
     admit = prefix_admit(handle, first_seq)
     resumed: dict[str, Checkpoint] = {}
+    witnesses: dict[str, Mapping[str, Any]] = {}
     for name in wanted:
         loaded = _resume_one(store, handle, name, block, admit)
         if loaded is not None:
-            resumed[name] = loaded
+            resumed[name], witnesses[name] = loaded
     if not resumed:
-        return None
+        return None, {}
     reached = max(cp.last_seq for cp in resumed.values())
     # The floor, not the ceiling: a name with no file is persisted through nothing,
     # so the bundle is only as saved as its least-saved fold and the next write is
     # owed for the whole set.
     saved = min(cp.last_seq for cp in resumed.values()) if len(resumed) == len(wanted) else 0
-    return SessionProjections(
+    bundle = SessionProjections(
         session_id=handle.id,
         last_seq=reached,
         checkpoints=resumed,
         origin=origin,
         saved_seq=saved,
     )
+    return bundle, witnesses
+
+
+class DiskResume(NamedTuple):
+    """What :func:`load_resumable` read: the bundle, and how its tail read may start.
+
+    ``points`` maps a checkpoint seq to the byte position its savepoint stored for the
+    record at that seq, for the tail read to seek to. ``owes_point`` is true when some
+    resumed file stored none, so the next pass should write one even though it has not
+    advanced far enough to earn a write on entry count alone -- without that, a session
+    resumed from a file written before positions existed decodes its whole log on every
+    restart until it grows by :data:`MIN_ADVANCE_ENTRIES`.
+    """
+
+    bundle: "SessionProjections | None"
+    points: "dict[int, ResumePoint]"
+    owes_point: bool
+
+
+def load_resumable(handle: CrewLog, names: Iterable[str]) -> DiskResume:
+    """:func:`load`, the stored tail positions, and a once-only upgrade of old witnesses.
+
+    THE UPGRADE. A savepoint admitted by a full prefix DIGEST makes every later resume
+    hash that prefix again, and a quiet session never advances far enough to earn the
+    rewrite that would fix it. So such a file is rewritten here, once, with cheaper
+    evidence for the same state and seq:
+
+    * a CUT COUNT where the unit states one. Sound for the reason :func:`cut_witness`
+      is: the count is read BEFORE the load and again after it, and the counter rises
+      before every cut, so two equal settled readings bracket a window in which no
+      committed record changed -- and the digest the load just matched was computed
+      inside it, so the state was folded from exactly the bytes that count stands for.
+    * a :class:`PrefixExtent` where it does not, read at the file's stored position. The
+      digest the load just matched covers the same bytes because the segment-set
+      fingerprint is the same before the load and after the extent is read; a file that
+      moved in between is not upgraded.
+
+    Never raises, and the bundle is :func:`load`'s answer whatever the rewrite does: the
+    files are an optimisation, and a failed write leaves the old witness in place.
+    """
+    before = handle.cuts()
+    files_before = _log_identity(handle)[1:]
+    bundle, witnesses = _load(handle, names)
+    if bundle is None:
+        return DiskResume(None, {}, False)
+    points: dict[int, ResumePoint] = {}
+    owes_point = False
+    upgrades: dict[str, PrefixWitness | CutWitness] = {}
+    settled = before is not None and handle.cuts() == before
+    for name, witness in witnesses.items():
+        checkpoint = bundle.checkpoints[name]
+        point = resume_point_from(witness.get("resume"))
+        if point is not None and point.seq == checkpoint.last_seq:
+            points.setdefault(point.seq, point)
+        else:
+            point = None
+            owes_point = True
+        sha = witness.get("prefix_sha")
+        records = witness.get("prefix_records")
+        if not isinstance(sha, str) or not isinstance(records, int):
+            # Already a cut witness: nothing to upgrade here. A missing position is owed
+            # by the next pass that walks (``owes_point``).
+            continue
+        if settled and before is not None:
+            upgrades[name] = with_extent(
+                handle, CutWitness(seq=checkpoint.last_seq, cuts=before, resume=point)
+            )
+        elif (
+            before is None
+            and point is not None
+            and not extent_holds(handle, extent_from(witness.get("prefix_extent")))
+        ):
+            # No extent, or one the files have moved past (an append): the digest just
+            # admitted these bytes, so the extent is re-taken once here and the next
+            # resume of an unchanged log is O(1) again.
+            extended = with_extent(
+                handle,
+                PrefixWitness(seq=checkpoint.last_seq, records=records, sha=sha, resume=point),
+            )
+            if extended.extent is not None:
+                upgrades[name] = extended
+    # The upgrade is written only if the files did not move from before the load (whose
+    # digest or count admitted these files) to after every extent above was read, so an
+    # extent always describes the bytes the admitting check saw.
+    if upgrades and None not in files_before and _log_identity(handle)[1:] == files_before:
+        _rewitness(handle, bundle, upgrades, cuts=before)
+    return DiskResume(bundle, points, owes_point)
+
+
+def _rewitness(
+    handle: CrewLog,
+    bundle: SessionProjections,
+    upgrades: "Mapping[str, PrefixWitness | CutWitness]",
+    *,
+    cuts: "int | None",
+) -> None:
+    """Rewrite the named savepoints with the given witnesses, through the unit's lease.
+
+    The state, the seq and the identity block are the ones the load just admitted; only
+    the witness changes. The identity and the cut count are re-read here, so a unit
+    recreated or cut between the load and this write writes nothing.
+    """
+    identity = _identity(handle)
+    if identity is None or identity[0] != bundle.origin:
+        return
+    origin, first_seq = identity
+    lease = _hold(handle)
+    if lease is None:
+        return
+    try:
+        directory = _ensure_dir(handle)
+        if directory is None:
+            return
+        if handle.cuts() != cuts:
+            return
+        store = _UnitStore(directory)
+        block = _identity_block(handle, origin, first_seq)
+        for name, witness in upgrades.items():
+            checkpoint = bundle.checkpoints.get(name)
+            if checkpoint is None or checkpoint.last_seq != witness.seq:
+                continue
+            _save_one(
+                store,
+                checkpoint,
+                unit=handle.id,
+                identity=block,
+                witness=witness_mapping(witness),
+            )
+        _discard_if_unit_gone(handle, directory)
+    except Exception:  # pragma: no cover - the kernel store swallows its own errors
+        log_exception_text(
+            logger, logging.DEBUG, "crew log savepoint for %s not re-witnessed", handle.id
+        )
+    finally:
+        release_lease(lease)
 
 
 def discard(handle: CrewLog, names: Iterable[str]) -> None:
@@ -480,6 +669,13 @@ class PrefixWitness(NamedTuple):
     seq: int
     records: int
     sha: str
+    #: Where the digested prefix ENDS on disk, so a resume can settle it without
+    #: hashing it again (``prefix_extent.extent_holds``). ``None`` costs that resume the digest.
+    extent: "PrefixExtent | None" = None
+    #: As :attr:`CutWitness.resume`. On a log with no cut counter the store does not
+    #: seek to it today (it has no evidence for the bytes below it); it is stored so a
+    #: build that can vouch for that prefix another way has the position to hand.
+    resume: "ResumePoint | None" = None
 
 
 class CutWitness(NamedTuple):
@@ -497,6 +693,15 @@ class CutWitness(NamedTuple):
 
     seq: int
     cuts: int
+    #: The byte position of the record numbered *seq*, from the pass that folded it, so
+    #: the tail read after a resume opens the file there instead of decoding every
+    #: record below it. Checked by the store before use (``CrewLog.iter_from``), so a
+    #: stale or forged one costs a full walk and never a wrong answer.
+    resume: "ResumePoint | None" = None
+    #: As :attr:`PrefixWitness.extent`: what a resume checks besides the count, so a
+    #: segment replaced or rewritten in place by something other than the store is
+    #: refused rather than resumed over.
+    extent: "PrefixExtent | None" = None
 
 
 def cut_witness(handle: CrewLog, seq: int) -> "CutWitness | None":
@@ -537,6 +742,9 @@ def write_is_earned(last_seq: int, saved_seq: int) -> bool:
     return last_seq - saved_seq >= MIN_ADVANCE_ENTRIES
 
 
+_W = TypeVar("_W", bound="PrefixWitness | CutWitness")
+
+
 def prefix_witness(handle: CrewLog, seq: int) -> PrefixWitness | None:
     """The digest of *handle*'s raw records through *seq*, or ``None``.
 
@@ -557,7 +765,23 @@ def prefix_witness(handle: CrewLog, seq: int) -> PrefixWitness | None:
     sha, hashed = handle.raw_prefix_digest(records)
     if hashed != records:
         return None
-    return PrefixWitness(seq=seq, records=records, sha=sha)
+    return with_extent(handle, PrefixWitness(seq=seq, records=records, sha=sha))
+
+
+def with_extent(handle: CrewLog, witness: "_W") -> "_W":
+    """*witness* with a :class:`PrefixExtent` attached, or unchanged if none can be had.
+
+    Taken from the byte position the witness carries (``resume``), in a few stats and one
+    bounded read -- no walk of the prefix. A witness with no position gets no extent, which
+    costs its later resumes the check they had before: the cut count alone, or the digest.
+    """
+    if witness.extent is not None or witness.resume is None or witness.resume.seq != witness.seq:
+        return witness
+    extent = extent_at(handle, witness.resume)
+    if extent is None:
+        return witness
+    # ``_replace`` keeps the witness's own type, which a NamedTuple union cannot say.
+    return witness._replace(extent=extent)  # type: ignore[return-value]
 
 
 def prefix_unchanged(handle: CrewLog, witness: PrefixWitness) -> bool:
@@ -570,8 +794,38 @@ def prefix_unchanged(handle: CrewLog, witness: PrefixWitness) -> bool:
     return hashed == witness.records and sha == witness.sha
 
 
+def fold_witness(handle: CrewLog, seq: int) -> "CutWitness | PrefixWitness | None":
+    """The cheapest evidence *handle*'s log can give for a fold that reaches *seq*.
+
+    The cut count where the unit states one (:func:`cut_witness`), the digest otherwise
+    (:func:`prefix_witness`). Read BEFORE the pass, and asked again after it with
+    :func:`witness_unchanged`.
+
+    The count is a few bytes to read and to check again on resume. The digest decodes
+    every record up to *seq* to find its boundary, hashes them, and makes every later
+    resume hash them again -- so a session savepoint written with one costs each read
+    after a restart a walk of the whole consumed prefix, which is what the count exists
+    to remove.
+    """
+    held = cut_witness(handle, seq)
+    if held is not None:
+        return held
+    return prefix_witness(handle, seq)
+
+
+def witness_unchanged(handle: CrewLog, witness: "CutWitness | PrefixWitness") -> bool:
+    """Whether *witness*, read before a pass, still describes *handle*'s log after it."""
+    if isinstance(witness, CutWitness):
+        return cuts_unchanged(handle, witness)
+    return prefix_unchanged(handle, witness)
+
+
 def save(
-    handle: CrewLog, bundle: SessionProjections, *, prefix: PrefixWitness | None
+    handle: CrewLog,
+    bundle: SessionProjections,
+    *,
+    prefix: "PrefixWitness | CutWitness | None",
+    owes_point: bool = False,
 ) -> SessionProjections:
     """*bundle*, with its savepoints on disk brought forward when a write is owed.
 
@@ -604,8 +858,30 @@ def save(
     """
     if not bundle.checkpoints:
         return bundle
-    if bundle.last_seq - bundle.saved_seq < MIN_ADVANCE_ENTRIES:
+    # ``owes_point`` (:class:`DiskResume`): the files on disk store no tail position, and
+    # this pass has one to give them. Owed only with a position in hand, so a pass that
+    # read nothing cannot rewrite five files for no gain.
+    owed = owes_point and prefix is not None and prefix.resume is not None
+    if bundle.last_seq - bundle.saved_seq < MIN_ADVANCE_ENTRIES and not owed:
         return bundle
+    if prefix is not None and bundle.size is not None:
+        # The files must be exactly as they were BEFORE the pass (the bundle's segment
+        # set fingerprint), or the extent taken below would describe bytes the pass never
+        # read: a record rewritten between the pass and this write would be pinned as if
+        # it were the one folded. A file that moved at all -- even by an append -- costs
+        # this write, and the next pass writes instead.
+        _origin, live_size, live_mtime = _log_identity(handle)
+        if (live_size, live_mtime) != (bundle.size, bundle.mtime_ns):
+            return bundle
+    if prefix is not None:
+        # The position the pass reached lets this witness carry an extent, so the next
+        # resume is checked in a few stats rather than by the count alone or a digest.
+        prefix = with_extent(handle, prefix)
+        if prefix.extent is not None and bundle.size is not None:
+            # Asked again AFTER the extent was read, so a write landing between the
+            # check above and that read cannot be pinned beside the earlier digest.
+            if _log_identity(handle)[1:] != (bundle.size, bundle.mtime_ns):
+                return bundle
     if prefix is None:
         # Either the caller never read a witness, or the prefix moved while it was
         # folding. Both mean nothing here can say which bytes produced this state,
@@ -769,6 +1045,13 @@ class SlotSavepoint(NamedTuple):
     #: never read, which costs a wrong value on the next continuation and a savepoint
     #: :func:`prefix_admit` refuses on the next restart.
     reached: int
+    #: The byte position of the newest unit's record at :attr:`reached`, as the writer's
+    #: pass found it, for the tail read to seek to. ``None`` for a file that stored none.
+    resume: "ResumePoint | None" = None
+    #: Whether the file's witness can be checked again without a full prefix walk -- a
+    #: cut count, or a digest carrying a :class:`PrefixExtent`. A caller resuming from a
+    #: file where this or :attr:`resume` is missing rewrites it once with what it has.
+    cheap: bool = False
 
 
 def slot_identity(
@@ -887,7 +1170,16 @@ def load_slot(
             name,
         )
         return None
-    return SlotSavepoint(name=name, state=state, watermark=savepoint.watermark, reached=reached)
+    point = resume_point_from(savepoint.witness.get("resume"))
+    return SlotSavepoint(
+        name=name,
+        state=state,
+        watermark=savepoint.watermark,
+        reached=reached,
+        resume=point if point is not None and point.seq == reached else None,
+        cheap=("prefix_cuts" in savepoint.witness and "prefix_sha" not in savepoint.witness)
+        or extent_from(savepoint.witness.get("prefix_extent")) is not None,
+    )
 
 
 def _decoded_slot_state(payload: Any, name: str) -> "dict[str, Any] | None":
@@ -959,6 +1251,7 @@ def save_slot(
     watermark: int,
     prefix: "PrefixWitness | CutWitness",
     expect_origin: str,
+    expect_files: "tuple[int | None, int | None] | None" = None,
 ) -> bool:
     """Write one slot fold's savepoint. ``True`` when it reached the file.
 
@@ -1017,6 +1310,23 @@ def save_slot(
             prefix.seq,
         )
         return False
+    # So the next resume is settled by a few stats and one bounded read: for a unit with
+    # no cut counter instead of a walk of every record, and for one with a counter as a
+    # check on the files themselves (``prefix_extent.extent_holds``).
+    #
+    # Only when the segment-set fingerprint after the extent read is still
+    # *expect_files*, the one the caller sampled BEFORE the pass that the witness vouches
+    # for. Otherwise the files moved somewhere between the witness and this read, the
+    # extent could pin bytes the witness never covered, and the payload is written
+    # without one (its next resume pays the check it always paid).
+    extended = with_extent(handle, prefix)
+    if (
+        extended.extent is not None
+        and expect_files is not None
+        and None not in expect_files
+        and _log_identity(handle)[1:] == expect_files
+    ):
+        prefix = extended
     block = slot_identity(
         slot=slot,
         units=units,
@@ -1144,8 +1454,8 @@ def _resume_one(
     name: str,
     block: Mapping[str, Any],
     admit: Admit,
-) -> Checkpoint | None:
-    """One fold's savepoint, or ``None`` for every reason not to resume from it.
+) -> "tuple[Checkpoint, Mapping[str, Any]] | None":
+    """One fold's savepoint and the witness it was admitted on, or ``None`` to fold cold.
 
     The kernel decides the envelope, the fold name, the state shape's version and the
     identity; :func:`prefix_admit` decides the live-log conditions. What is left here is
@@ -1184,9 +1494,10 @@ def _resume_one(
         logger.debug("crew log savepoint for %s disagrees about its own seq", name)
         return None
     try:
-        return Checkpoint.from_dict(
+        checkpoint = Checkpoint.from_dict(
             {"name": name, "last_seq": savepoint.watermark, "state": savepoint.state}
         )
+        return checkpoint, savepoint.witness
     except Exception:
         # The fold surface's own validation refused the payload. Same answer as
         # every other unusable file.

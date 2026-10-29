@@ -213,6 +213,38 @@ class TestIndexUnit:
         assert index.body_hits(["k"], ["alpha"]) == {}
         assert index.body_hits(["k"], ["bravo"]) == {"k": 1}
 
+    def test_wal_shrinks_back_after_a_checkpoint_on_a_long_lived_handle(
+        self, tmp_path, monkeypatch, opened
+    ):
+        # In WAL mode SQLite reuses the log after a checkpoint rather than
+        # shrinking it, so one long-lived connection kept the -wal at its largest
+        # transaction for the whole uptime. A small cap reaches the same branch
+        # as the shipped 4 MiB one without writing megabytes per test.
+        limit = 64 * 1024
+        monkeypatch.setattr(skill_search_index_module, "_WAL_SIZE_LIMIT_BYTES", limit)
+        db_path = tmp_path / "index.sqlite3"
+        wal_path = Path(str(db_path) + "-wal")
+        index = opened(SkillSearchIndex(db_path))
+        rows = [(f"k{i}", "/p/" + "x" * 256 + str(i), "") for i in range(4000)]
+        assert index.store_catalog("scope", rows, epoch=index.catalog_epoch()) == "stored"
+        assert wal_path.stat().st_size > limit, "the large write did not grow the log"
+
+        conn = index._db()
+        assert conn is not None
+        assert conn.execute("PRAGMA journal_size_limit").fetchone()[0] == limit
+        # A full passive checkpoint is what SQLite's own auto-checkpoint does.
+        busy, _log, _done = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        assert busy == 0
+        # The next write restarts the log; that is where the cap applies. It goes
+        # to another scope: rewriting "scope" would delete the 4,000 rows and put
+        # every one of those pages into the restarted log.
+        small = [("k", "/p/small", "")]
+        assert index.store_catalog("other", small, epoch=index.catalog_epoch()) == "stored"
+
+        assert wal_path.stat().st_size <= limit
+        snapshot = index.catalog_snapshot("other")
+        assert snapshot is not None and snapshot.rows == small
+
     def test_fingerprint_of_missing_path_is_none(self, tmp_path):
         assert body_fingerprint(tmp_path / "absent" / "SKILL.md") is None
 

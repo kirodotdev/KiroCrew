@@ -147,8 +147,16 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
 _UNREADABLE_STORE = "<the whole cron store was unreadable>"
 
 
-def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
+def _sanitize_imported_crons(
+    crons_path: Path, *, drop_malformed: bool = True
+) -> tuple[list[str], list[str]]:
     """Make an imported cron store safe to load and safe to run.
+
+    ``drop_malformed=False`` is for a caller with its own shape handling (the CLI
+    restore, whose merge skips an unusable store and whose replace validates it):
+    an unreadable or misshapen store, and a job that is not an object, are left
+    exactly as they are for that caller to judge, and only rules 2 and 3 below are
+    applied to the jobs that are objects.
 
     Returns ``(dropped, paused)`` — two lists, because they are two different
     outcomes and a caller that conflates them tells the user the wrong thing. A
@@ -210,7 +218,7 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
         except IsADirectoryError:
             # Not a file at all: left alone exactly as the by-name `is_file()` did.
             return [], []
-        return _sanitize_cron_text(text, crons_path, dir_fd)
+        return _sanitize_cron_text(text, crons_path, dir_fd, drop_malformed=drop_malformed)
     finally:
         if dir_fd is not None:
             os.close(dir_fd)
@@ -267,14 +275,16 @@ def _publish_staged_cron_store(crons_path: Path, dir_fd: int | None, data: objec
 
 
 def _sanitize_cron_text(
-    text: str | None, crons_path: Path, dir_fd: int | None
+    text: str | None, crons_path: Path, dir_fd: int | None, *, drop_malformed: bool = True
 ) -> tuple[list[str], list[str]]:
     """Apply the three rules of :func:`_sanitize_imported_crons` to the bytes read once."""
     try:
         if text is None:
             raise ValueError("the staged cron store is not one regular file")
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):  # a deeply nested document cannot be parsed either
+        if not drop_malformed:
+            return [], []
         # Unparseable bytes are not installable as a cron store either, but they
         # are also not something this function can reason about — an empty store
         # is the only safe thing to hand the loader.
@@ -286,6 +296,8 @@ def _sanitize_cron_text(
     # user is TOLD the store was unreadable at import time, instead of the
     # gateway silently starting with an empty schedule later.
     if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+        if not drop_malformed:
+            return [], []
         _publish_staged_cron_store(crons_path, dir_fd, {"jobs": []})
         return [_UNREADABLE_STORE], []
     jobs = data["jobs"]
@@ -307,7 +319,10 @@ def _sanitize_cron_text(
         # write drops it for good, so importing anything questionable only
         # manufactures dead weight with an invisible deadline. Dropping it here,
         # reported in the import summary, tells the user it happened.
-        if (
+        if not drop_malformed and not isinstance(job, dict):
+            kept.append(job)
+            continue
+        if drop_malformed and (
             not isinstance(job, dict)
             or not all(isinstance(job.get(f), str) for f in ("id", "name", "message"))
             or not isinstance(job.get("schedule"), dict)
@@ -354,6 +369,63 @@ def _sanitize_cron_text(
         data["jobs"] = kept
         _publish_staged_cron_store(crons_path, dir_fd, data)
     return dropped, paused
+
+
+def _disable_imported_script_hooks(hooks_path: Path) -> list[str]:
+    """Switch off every hook in an imported ``hooks.json`` that runs a command.
+
+    Returns the names of the hooks it switched off. The same reasoning as rule 3 of
+    :func:`_sanitize_imported_crons`: a script hook runs a shell command on its own the
+    next time its event fires, and the bundle's author, not this user, chose it. So it
+    arrives disabled and the first run is the user's decision. Hooks that only inject
+    skills run nothing and are left as they are, as is every other top-level key in the
+    file (webhook resume contexts live there).
+
+    The file is read once through the same pinned, single-resolution path as the cron
+    store and replaced atomically. A missing file, a directory, or content the hook
+    store would not load anyway (unparseable, wrong shape) is left alone: the store
+    keeps such a file inert, so nothing in it can run.
+    """
+    dir_fd: int | None = None
+    try:
+        if pinned_fs.supports_pinned_walk():
+            dir_fd = pinned_fs.pin_parent(
+                os.path.realpath(hooks_path.parent), what="imported hook store", refusal=OSError
+            )
+        try:
+            text = _read_staged_cron_store(hooks_path, dir_fd)
+        except (FileNotFoundError, IsADirectoryError):
+            return []
+        if text is None:
+            return []
+        try:
+            data = json.loads(text)
+        except (ValueError, RecursionError):
+            return []
+        if not isinstance(data, dict) or not isinstance(data.get("hooks"), list):
+            return []
+        disabled: list[str] = []
+        changed_any = False
+        for hook in data["hooks"]:
+            if not isinstance(hook, dict) or not hook.get("command"):
+                continue
+            # Written as a real False whatever was there: the store keeps the raw
+            # value, so a truthy non-bool ("false", 1) must not survive. Reported
+            # only when it was switched on, since an off hook needs nothing from the user.
+            was_on = bool(hook.get("enabled", True))
+            if hook.get("enabled", True) is False:
+                continue
+            hook["enabled"] = False
+            changed_any = True
+            if was_on:
+                name = hook.get("name") or hook.get("id")
+                disabled.append(str(name) if name else "<unnamed>")
+        if changed_any:
+            _publish_staged_cron_store(hooks_path, dir_fd, data)
+        return disabled
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _strip_host_local_store_state(snap: Path) -> None:

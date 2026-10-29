@@ -31,7 +31,9 @@
         "kas_bundle": false,
         "kas_persist_mcp_sign_in": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
+        "native_skill_projection": true,
         "default_agent": "",
+        "crew_mode_agent": "kirocrew-conductor",
         "deepseek_env": {},
         "sweep_agents_backups": false,
         "sandbox": "auto",
@@ -411,6 +413,21 @@
       "defaultValue": "https://kas.crew.kiro.dev"
     },
     {
+      "path": "agent.native_skill_projection",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Native skill views for kiro-cli",
+      "help": "When true (the default), the 'kiro' backend launches each agent under a Kiro Crew managed view (kirocrew-skill-view-*.json in the kiro agents directory) that serves skills through Kiro Crew's skill search, and overlays the workspace's .kiro/settings/cli.json while it runs. When false, agents launch under their authored names, no view is written, the workspace overlay is rolled back, and kiro-cli loads skill metadata natively again. Same effect as KIROCREW_NATIVE_SKILL_PROJECTION=0, which still disables projection whatever this says.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true,
+      "requiresRestart": true
+    },
+    {
       "path": "agent.default_agent",
       "kind": "core",
       "type": "string",
@@ -423,6 +440,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.crew_mode_agent",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Crew Mode conductor",
+      "help": "The conductor template a chat runs when Crew Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "kirocrew-conductor"
     },
     {
       "path": "agent.deepseek_env",
@@ -915,7 +946,11 @@
       "label": "Task Store Journal Mode",
       "help": "SQLite journal mode for tasks.db: 'auto' picks WAL only on a volume DETECTED local, and DELETE both on a detected network filesystem and when detection cannot tell -- WAL needs local shared memory, which SMB/NFS does not provide, so an undecidable volume takes the slower correct mode rather than risking the store. 'wal' or 'delete' force one and skip the detection, so a local disk whose mount table is unreadable keeps WAL by declaring it. Unknown values read as 'auto'.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "auto",
+        "wal",
+        "delete"
+      ],
       "defaultValue": "auto",
       "requiresRestart": true
     },
@@ -2051,7 +2086,10 @@
       "label": "DM Session Scope",
       "help": "How direct-message conversations map to sessions. 'per-channel-peer' (default) keeps one session per (channel, user), so the same person on Telegram vs WeCom stays isolated. 'unified' collapses all DMs into one shared session per agent for cross-surface continuity. Takes effect at the next restart: each conversation's generation counter is seeded from the namespace in force at boot, so switching namespaces live could resume a stale session persisted under the other one.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "per-channel-peer",
+        "unified"
+      ],
       "defaultValue": "per-channel-peer",
       "requiresRestart": true
     },
@@ -2094,7 +2132,10 @@
       "label": "DM Queue Mode",
       "help": "How a DM that arrives while a turn is running is handled. 'steer' (default) folds it into the running reply; 'queue' holds it and runs it after the current turn finishes.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "steer",
+        "queue"
+      ],
       "defaultValue": "steer"
     },
     {
@@ -2211,6 +2252,7 @@
         "persistence_enabled": true,
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
+        "kind_routing": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -2259,7 +2301,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Embedding Threads",
-      "help": "CPU threads for an explicit memory query or user-started re-embedding. Defaults to 4, capped one core below the CPUs this process may run on -- never below one thread, so a single-core host still embeds -- to leave the event loop a core wherever there is one to spare; 4 means that default, so pinning threads where the process may use 4 or fewer CPUs takes another number. Any other setting is honoured up to that count, which a CPU-set restriction (--cpuset-cpus, taskset) narrows; a CFS quota (--cpus, cpu.max) sets no mask and is not seen, while a limit a scheduler turns into an exclusive cpuset is. All memory stores share one model and inference worker. V2 message context does not run an embedding search; V1 retains its session-start retrieval.",
+      "help": "CPU threads for an explicit memory query or user-started re-embedding. Defaults to 4, capped one core below the CPUs this process may run on -- never below one thread, so a single-core host still embeds -- to leave the event loop a core wherever there is one to spare, and 6 where the process may use 12 or more CPUs; 4 means that default, so 4 cannot be pinned where the process may use 4 or fewer, or 12 or more CPUs (there a 4 runs 6; set 3 or 5 to stay low). Any other setting is honoured up to that count, which a CPU-set restriction (--cpuset-cpus, taskset) narrows; a CFS quota (--cpus, cpu.max) sets no mask and is not seen, while a limit a scheduler turns into an exclusive cpuset is. All memory stores share one model and inference worker. V2 message context does not run an embedding search; V1 retains its session-start retrieval.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4
@@ -2645,6 +2687,24 @@
       "defaultValue": true
     },
     {
+      "path": "memory.kind_routing",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Consolidation Kind Routing",
+      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (a PR, CI or branch status that GitHub, git or the work ledger already holds) and writes facts and events as before. Stored facts are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
       "path": "memory.inject_memory",
       "kind": "core",
       "type": "boolean",
@@ -2918,7 +2978,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Doc-Ingest Host Allowlist",
-      "help": "Exact hostnames whose links may be fetched by KIROCREW ITSELF and ingested, for an edition that wires a server-side doc-link scanner. Empty = fetch nothing (SSRF-safe deny-by-default). This governs only that server-fetch path -- it does NOT gate 'Auto-Add Documents' above, where the agent has already fetched the content under its own approval and Kiro Crew fetches nothing. Applying it there would make the feature ingest nothing on a default config while its toggle reads on.",
+      "help": "Exact hostnames whose pages Kiro Crew ITSELF may fetch and ingest: a web-page source added under Knowledge -> Add Source. https only, port 443, no subdomain matching; the host must resolve to public addresses and a redirect may not leave it. Empty = fetch nothing (SSRF-safe deny-by-default). This governs only that server-fetch path -- it does NOT gate 'Auto-Add Documents' above, where the agent has already fetched the content under its own approval and Kiro Crew fetches nothing. Applying it there would make the feature ingest nothing on a default config while its toggle reads on.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -3403,6 +3463,7 @@
       "defaultValue": {
         "coder_url": "",
         "profiles": [],
+        "default_profile": "",
         "stop_on_shutdown": true
       }
     },
@@ -3517,6 +3578,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session_environments.default_profile",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default Environment",
+      "help": "Profile id new dashboard chats start on; empty runs them on this machine. Applied once, when a chat is created, and changeable in its composer until the first message. Scheduled jobs, channels and subagents are unaffected (a subagent follows its parent).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "session_environments.stop_on_shutdown",
@@ -4864,7 +4939,10 @@
       "label": "Default delivery",
       "help": "Where a heartbeat completion with no inline <!-- deliver:... --> tag is routed: 'slack' (Slack DM + dashboard bell, the default) or 'dashboard' (dashboard slot + bell only, no Slack). Per-task deliver tags always override this.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "slack",
+        "dashboard"
+      ],
       "defaultValue": "slack"
     },
     {
@@ -5306,6 +5384,40 @@
       "defaultValue": 2
     },
     {
+      "path": "power",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Power",
+      "help": "What Knowledge Library sweeps do while on battery.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "on_battery": "normal"
+      }
+    },
+    {
+      "path": "power.on_battery",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "On battery",
+      "help": "What Knowledge Library background sweeps do while this machine runs on battery; nothing else reads it yet. 'normal' (the default) ignores the power source. 'reduced' cuts each sweep's chunk budget to a quarter, at least 10 chunks and never more than the configured budget. 'paused' skips the sweeps until the machine is back on mains. A document you add yourself always ingests; a folder you add ingests its first paced batch at once, and the rest of a large folder arrives with the sweeps, so under 'paused' it waits for mains. A host that cannot report its power source counts as plugged in.",
+      "hasChildren": false,
+      "enumValues": [
+        "normal",
+        "reduced",
+        "paused"
+      ],
+      "defaultValue": "normal"
+    },
+    {
       "path": "resource_limits",
       "kind": "core",
       "type": "object",
@@ -5327,6 +5439,7 @@
         "max_total_memory_mb": null,
         "max_total_processes": null,
         "scope_memory_high_pct": null,
+        "slice_reclaim_trigger_pct": null,
         "xdist_auto_cap": null
       }
     },
@@ -5460,6 +5573,21 @@
       "tags": [],
       "label": "Scope memory soft ceiling (%)",
       "help": "cgroup MemoryHigh for EACH agent runtime scope, as a percent of that scope's own MemoryMax. A runtime that grows past it reclaims its own page cache and is throttled alone, before the shared slice ceiling slows every runtime. Unset or out of range (1-100) uses the default (90); 0 emits no MemoryHigh at all. Linux only.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.slice_reclaim_trigger_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Slice page-cache reclaim trigger (%)",
+      "help": "The gateway writes the agents SLICE's memory.reclaim once memory.current reaches this percent of the slice memory.high and clean page cache is at least half of it, so cached files alone do not hold the slice at its ceiling and throttle every agent. Unset uses 95, 0 turns it off for this gateway only (the slice is shared by every gateway of the user), 50-99 is accepted and anything else uses 95. Never runs inside a pod. Linux with cgroup v2 only.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -5702,7 +5830,7 @@
         "slack"
       ],
       "label": "Reactions",
-      "help": "Override phase reaction emojis. Valid keys: queued, thinking, coding, browsing, tool, done, error. Set a value to null to suppress that phase entirely.",
+      "help": "Override the status reaction emojis. Valid keys: queued (the ack shown while a turn runs where Slack shows no native thread status; removed when the reply lands) and error (a failed turn). Set a value to null to suppress it. Keys of the retired per-phase trail (thinking, coding, browsing, tool, done) are accepted and ignored.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -5733,7 +5861,7 @@
         "slack"
       ],
       "label": "Reactions Enabled",
-      "help": "Show phase-aware emoji reactions on Slack messages during processing.",
+      "help": "Ack a Slack message with a reaction while it is being answered (where Slack shows no native thread status) and mark a failed turn with the error reaction.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -7814,6 +7942,16 @@
           "bind_refresh_chains": true,
           "keep_awake": true
         },
+        "shared_crew": {
+          "admission_enabled": false,
+          "principal_concurrency": 4,
+          "crew_concurrency": 0,
+          "containment_enabled": true,
+          "hard_limits": false,
+          "tailnet_direct": false,
+          "local_authorization": false,
+          "typing_idle_seconds": 10
+        },
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "crewmate_threads": false,
@@ -7867,6 +8005,7 @@
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "update_nudge": {},
+        "translucent_panels": "",
         "onboarded": false,
         "import_onboarded": false,
         "privacy_acked": false,
@@ -8031,6 +8170,144 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.shared_crew",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Shared Crew",
+      "help": "Fair admission and per-person limits for a shared Crew. Not active in this build yet: nothing reads these settings, so changing one does nothing.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "admission_enabled": false,
+        "principal_concurrency": 4,
+        "crew_concurrency": 0,
+        "containment_enabled": true,
+        "hard_limits": false,
+        "tailnet_direct": false,
+        "local_authorization": false,
+        "typing_idle_seconds": 10
+      },
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.admission_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Fair Admission",
+      "help": "Not active in this build yet. Charge every turn, subagent, task, workflow and cron run to the person who started it, and admit work through per-person and Crew-wide limits with a fair queue. Off by default: a single-operator Crew keeps its current behaviour and reports queueing as unavailable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.shared_crew.principal_concurrency",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Active Work Per Person",
+      "help": "Not active in this build yet. Root executions (turns, tasks, workflows, cron runs) one person may run at once, across all tabs, devices and sessions.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 4
+    },
+    {
+      "path": "dashboard.shared_crew.crew_concurrency",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Active Work Crew-Wide",
+      "help": "Not active in this build yet. Root executions the whole Crew runs at once. 0 uses the session start gate's automatic width for this host.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "dashboard.shared_crew.containment_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Per-Person Slices",
+      "help": "Not active in this build yet. While fair admission is on, start each person's agent runtimes in that person's own systemd slice so their CPU, memory and process counts are bounded together. Linux with cgroup v2 delegation only.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "dashboard.shared_crew.hard_limits",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Require Enforced Limits",
+      "help": "Not active in this build yet. Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable user bus, or memory and pids delegation is missing, instead of running without per-person limits. Needs fair admission on: with fair admission off, no agent runtime starts. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.shared_crew.tailnet_direct",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Direct Tailnet Link",
+      "help": "Not active in this build yet. Off by default. On: while Tailscale runs, also listen on this machine's own Tailscale addresses (100.x and fd7a:) on the dashboard port, and let in the people Tailscale names (all of them, or only those Crew admits when local_authorization is on), without a dashboard token. Never binds any other address. Off keeps the loopback-only listener. A value that is not true or false reads as off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.local_authorization",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Approve People In Crew",
+      "help": "Not active in this build yet. Off: Tailscale decides who gets in. Every person Tailscale lets reach this machine is admitted on the direct tailnet link and through tailscale serve, and is still named by Tailscale. On: only you, people who accepted a Crew invite and people you approved on People get in, and People shows Approve, Remove and the waiting list. Tagged nodes are refused unless carried over in both modes. A value that is not true or false reads as on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.typing_idle_seconds",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Typing Lock Idle Window",
+      "help": "Not active in this build yet. Seconds a collaborator may pause typing before the other collaborators' composers unlock. While someone types in a shared session, everyone else's composer is read-only until that person sends, clears the draft, or stays idle this long. 3 to 60.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10
     },
     {
       "path": "dashboard.restore_sessions",
@@ -8480,7 +8757,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Prevent Sleep While Running",
-      "help": "Keep this computer awake while the agent is running a task, so a long task is not interrupted by the machine going to sleep. Off by default. Uses caffeinate on macOS, systemd-inhibit on Linux, and SetThreadExecutionState on Windows; on a host with no keep-awake backend it is a no-op.",
+      "help": "Keep this computer awake while the agent is running a task, so a long task is not interrupted by the machine going to sleep. Off by default. Uses caffeinate on macOS, systemd-inhibit on Linux, and SetThreadExecutionState on Windows; on a host with no keep-awake backend it is a no-op. On some Windows laptops (Modern Standby), locking the screen can still let it sleep, so keep the screen on for long tasks.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8664,10 +8941,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Max terminal sessions",
-      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. Each chat's activity bar caps its own terminals below this; a session beyond the ceiling is refused.",
+      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. Each chat's activity bar caps its own terminals below this. At the ceiling, opening a terminal ends the shell that has had no browser attached the longest (at least a minute) and posts a notice; with none, the open is refused.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 12
+    },
+    {
+      "path": "dashboard.terminal.orphan_timeout_s",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Detached terminal timeout (seconds)",
+      "help": "How long a terminal's shell keeps running with no browser attached, for example while your laptop sleeps, before it and everything running in it are ended. Default 43200 (12 hours); values below 60 count as 60. Run jobs that must outlive this inside tmux.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 43200
     },
     {
       "path": "dashboard.terminal.cwd",
@@ -8932,6 +9223,24 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
+    },
+    {
+      "path": "dashboard.translucent_panels",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Translucent Panels",
+      "help": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them (the Liquid Glass primitive): 'on', or 'off' for solid cards. Empty = never chosen on this workspace (the browser's own stored choice holds, as before the setting was server-backed). Stored here like the theme mode, not only in the browser, so the choice follows the user across ports, browsers and the desktop app; the browser keeps a copy only so the first paint already matches.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "on",
+        "off"
+      ],
+      "defaultValue": ""
     },
     {
       "path": "dashboard.onboarded",

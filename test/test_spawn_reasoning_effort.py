@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from named_cases_helpers import named_cases
 from test_subagent_continuable import continuation_runtime as _continuation_runtime
 
 from kiro_crew.effort import EFFORT_LEVELS
@@ -118,13 +119,16 @@ class TestSchema:
         cleaned = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
         assert cleaned.get("reasoning_effort") is None
 
-    @pytest.mark.parametrize("bad", ["ultra", "LOW", "maximum", "0", "hi gh"])
-    def test_unknown_level_is_rejected(self, bad):
-        with pytest.raises(ValidationError):
-            validate_tool_args({"task": "x", "reasoning_effort": bad}, SPAWN_RUN_SCHEMA)
-
-    @pytest.mark.parametrize("bad", [1, 2.5, True, [], {}])
-    def test_non_string_is_rejected(self, bad):
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            *named_cases(
+                "test_unknown_level_is_rejected", "bad", ["ultra", "LOW", "maximum", "0", "hi gh"]
+            ),
+            *named_cases("test_non_string_is_rejected", "bad", [1, 2.5, True, [], {}]),
+        ],
+    )
+    def test_a_bad_level_is_rejected(self, bad):
         with pytest.raises(ValidationError):
             validate_tool_args({"task": "x", "reasoning_effort": bad}, SPAWN_RUN_SCHEMA)
 

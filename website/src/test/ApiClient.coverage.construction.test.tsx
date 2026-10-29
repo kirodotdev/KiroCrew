@@ -258,13 +258,15 @@ describe('query-string builders', () => {
     expect(call(1).url).toBe('/api/artifacts/session-docs?session=chat-1')
   })
 
-  it('vectorContextPreview and telemetryContextTrace encode their query', async () => {
+  it('vectorContextPreview, telemetryContextTrace and telemetryContextTurn encode their query', async () => {
     await api.vectorContextPreview()
     expect(call().url).toBe('/api/memory/context-preview')
     await api.vectorContextPreview('a b')
     expect(call(1).url).toBe('/api/memory/context-preview?q=a%20b')
     await api.telemetryContextTrace('chat 1')
     expect(call(2).url).toBe('/api/telemetry/context-trace?slot=chat%201')
+    await api.telemetryContextTurn('chat 1', 12)
+    expect(call(3).url).toBe('/api/telemetry/context-trace?slot=chat%201&turn=12')
   })
 
   it('deleteArtifactFolder states the cascade explicitly in the query', async () => {

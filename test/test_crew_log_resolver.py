@@ -869,6 +869,68 @@ def test_the_closer_is_handed_over_before_its_child_s_origin_pin_is_released():
     assert [d["agent_id"] for d in _of("subagent/completed")] == ["ab12"]
 
 
+def test_a_turn_still_pending_at_the_terminal_is_billed_in_the_closer():
+    """The closer carries the settled cost, the same figure the tombstone gets.
+
+    A terminal reached while the last turn's usage is still pending (a cancel
+    landing in the event consumer, a path that skips the run loop) settles it in
+    the report. Settled after the closer, ``subagent/completed`` under-reports the
+    child while the tombstone and the WS frame, built later from the same record,
+    carry the full figure.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.acp.types import AcpPromptStats
+    from kiro_crew.subagent import SubagentInfo, _RunCreditAccounting
+    from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+    _open_session()
+    emit.remember_child_origin("ab12", SESSION, 3)
+    assert emit.open_child_origin("ab12") == (SESSION, 3)
+
+    info = SubagentInfo(id="ab12", task="bill the last turn", credits=1.0)
+    runner = MagicMock(spec=[])
+    runner.last_prompt_stats = AcpPromptStats()
+    provider = MagicMock(spec=[])
+    provider._handle = runner
+    accounting = _RunCreditAccounting(info)
+    accounting.begin(provider)
+    runner.last_prompt_stats = AcpPromptStats(credits=0.5)
+    info._credit_accounting = accounting
+    info.elapsed = 0.5
+
+    async def _guarded(_info, **_kw):
+        return True
+
+    coordinator = SimpleNamespace(
+        _record_terminal_metric=lambda _info: None,
+        _manager=SimpleNamespace(
+            arm_report_in_flight=lambda _info: None,
+            consume_report_hold=lambda _batch, _id: None,
+        ),
+        _report_terminal_guarded_impl=_guarded,
+    )
+    coordinator._record_crew_log_terminal = lambda i: TerminalCoordinator._record_crew_log_terminal(
+        coordinator, i
+    )
+
+    asyncio.run(
+        TerminalCoordinator._report_terminal_impl(
+            coordinator,
+            info,
+            source="test",
+            injection_timeout_reason="",
+            mark_delivered_on_success=False,
+        )
+    )
+    assert info.credits == pytest.approx(1.5)
+    assert emit.flush()
+    (data,) = _of("subagent/completed")
+    assert data["credits"] == pytest.approx(
+        1.5
+    ), "the closer was written before the last turn settled"
+
+
 def test_a_plan_the_line_cannot_hold_records_a_prefix_not_a_subsequence():
     """``items`` is read as the FRONT of the plan, so a gap in it is a lie.
 

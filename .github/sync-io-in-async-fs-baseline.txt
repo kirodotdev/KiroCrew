@@ -22,13 +22,11 @@
 1 src/kiro_crew/apps/lifecycle_scripts.py
 7 src/kiro_crew/apps/registry.py
 9 src/kiro_crew/apps/registry_pipeline/checkout.py
-4 src/kiro_crew/apps/registry_pipeline/indexes.py
 1 src/kiro_crew/apps/registry_pipeline/install_clone.py
 1 src/kiro_crew/apps/registry_pipeline/recovery.py
 1 src/kiro_crew/autonudge_service/firing.py
 3 src/kiro_crew/cli_server.py
 2 src/kiro_crew/dashboard/chat_api/session_relaunch.py
-2 src/kiro_crew/dashboard/chat_api/slot_create.py
 2 src/kiro_crew/dashboard/file_api/uploads.py
 15 src/kiro_crew/dashboard/file_api/workspaces.py
 2 src/kiro_crew/dashboard/file_index.py

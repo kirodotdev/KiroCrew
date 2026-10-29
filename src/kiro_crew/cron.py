@@ -666,6 +666,12 @@ class CronService:
         self._sessions: SessionManager | None = None
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
+        # Creates a missing Schedule-page folder by name and returns
+        # ``(folder_id, error)``. Set by the dashboard once its socket is bound
+        # (``wire_app_cron_folder_creator``), so the app cron bridge can file a
+        # job in the folder its manifest names on install. None during gateway
+        # startup and in processes that do not own ``cron_folders.json``.
+        self.folder_creator: Callable[[str], Awaitable[tuple[str, str | None]]] | None = None
         # The gateway's failure alert for a run its deadline ended (set_timeout_alert),
         # and the alerts in flight: the loop keeps only weak references to tasks.
         self._timeout_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None

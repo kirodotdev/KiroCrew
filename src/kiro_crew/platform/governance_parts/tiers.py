@@ -22,7 +22,16 @@ from typing import Callable, Dict, Mapping, Optional, Tuple
 from kiro_crew import edition
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform.context import PlatformCompositionError
-from kiro_crew.platform.governance_parts.archetypes import _compose_controls
+from kiro_crew.platform.governance_parts.archetypes import (
+    ScopedMap,
+    ScopedRuleset,
+    _compose_controls,
+)
+from kiro_crew.platform.governance_parts.baseline import (
+    ENTERPRISE_SLACK_CHANNELS,
+    ENTERPRISE_UPDATE_CHANNEL,
+    ENTERPRISE_YOLO_MAX_SECONDS,
+)
 from kiro_crew.platform.governance_parts.carriers import (
     _POLICY_DISTRIBUTION_URL_ENV,
     BootControls,
@@ -37,6 +46,7 @@ from kiro_crew.platform.governance_parts.parsing import (
     _read_json_file,
     baseline_controls,
     parse_policy,
+    with_inner_baseline,
 )
 from kiro_crew.platform.governance_parts.signature import _verify_policy_signature
 from kiro_crew.sel import sel
@@ -201,7 +211,9 @@ def _intersect_ceilings(
     failure, a lower tier's restriction is silently voided:
 
     * **A restriction that folds** -- ``updates.source`` (an allowlist; empty permits
-      any remote) and ``updates.min_version`` (a floor; empty is none).  A subordinate
+      any remote), ``updates.min_version`` (a floor; empty is none),
+      ``updates.channel`` (the authority's, else the subordinate's) and
+      ``yolo_max_seconds`` (the lower cap).  A subordinate
       supplying one where the authority left it empty NARROWS the ceiling, so it is
       kept; where both set one, the authority's source stands and the higher floor
       wins.  Keeping "the authority's" here would discard a pure tightening and let
@@ -252,7 +264,14 @@ def _intersect_ceilings(
         boot=boot,
         controls=merged,
         updates=_intersect_update_pins(authority.updates, subordinate.updates),
+        yolo_max_seconds=_lower_cap(authority.yolo_max_seconds, subordinate.yolo_max_seconds),
     )
+
+
+def _lower_cap(authority: int, subordinate: int) -> int:
+    """Two ``yolo_max_seconds`` caps fold to the lower; 0 (no cap) yields to either."""
+    caps = [cap for cap in (authority, subordinate) if cap > 0]
+    return min(caps) if caps else 0
 
 
 def _intersect_update_pins(authority: UpdatePins, subordinate: UpdatePins) -> UpdatePins:
@@ -266,6 +285,9 @@ def _intersect_update_pins(authority: UpdatePins, subordinate: UpdatePins) -> Up
     none (:meth:`UpdatePins.meets_min_version`), so it yields to a parseable one.
     """
     source = authority.source or subordinate.source
+    # A channel is a value, not an allowlist: the authority's stands, and a
+    # subordinate's applies only where the authority chose none.
+    channel = authority.channel or subordinate.channel
     min_version = authority.min_version
     if not authority.min_version:
         min_version = subordinate.min_version
@@ -278,7 +300,7 @@ def _intersect_update_pins(authority: UpdatePins, subordinate: UpdatePins) -> Up
             width = max(len(upper), len(lower))
             if lower + (0,) * (width - len(lower)) > upper + (0,) * (width - len(upper)):
                 min_version = subordinate.min_version
-    return replace(authority, source=source, min_version=min_version)
+    return replace(authority, source=source, min_version=min_version, channel=channel)
 
 
 def _audit_policy_tier(operation: str, authority_tier: str, lower_tier: str) -> None:
@@ -454,6 +476,11 @@ def _with_enterprise_baseline(authority: GovernanceCeiling) -> GovernanceCeiling
     """
     if not edition.is_enterprise():
         return authority
+    return _with_enterprise_value_floors(_with_baseline_controls(authority))
+
+
+def _with_baseline_controls(authority: GovernanceCeiling) -> GovernanceCeiling:
+    """The ``controls`` half of :func:`_with_enterprise_baseline`."""
     baseline = baseline_controls()
     if authority.tier != TIER_CENTRAL:
         # No central document above it: the authority is itself a LOCAL tier, so
@@ -463,12 +490,57 @@ def _with_enterprise_baseline(authority: GovernanceCeiling) -> GovernanceCeiling
             named = merged.get(scope)
             merged[scope] = control if named is None else _compose_controls(control, named)
         return replace(authority, controls=merged)
-    missing = {
-        scope: control for scope, control in baseline.items() if scope not in authority.controls
-    }
-    if not missing:
+    # A named scope keeps the baseline of any inner list it leaves out
+    # (``BASELINE_INNER_LISTS``), so a local tier cannot supply that list either.
+    named = {scope: with_inner_baseline(scope, c) for scope, c in authority.controls.items()}
+    missing = {scope: control for scope, control in baseline.items() if scope not in named}
+    if not missing and all(named[s] is authority.controls[s] for s in named):
         return authority
-    return replace(authority, controls={**authority.controls, **missing})
+    return replace(authority, controls={**named, **missing})
+
+
+def _with_enterprise_value_floors(authority: GovernanceCeiling) -> GovernanceCeiling:
+    """*authority* with the enterprise minimal values outside ``controls`` filled in.
+
+    The same reason as the baseline controls: :func:`_intersect_ceilings` lets a lower
+    tier supply ``updates.channel``, ``yolo_max_seconds`` and the Slack
+    ``allowed_channel_ids`` posture leaf when the authority left them out, which in an
+    enterprise build would replace the minimal value instead of narrowing it. A
+    central authority's own values stand; a local authority's may only narrow.
+    """
+    central = authority.tier == TIER_CENTRAL
+    channel = authority.updates.channel if central else ""
+    channel = channel or ENTERPRISE_UPDATE_CHANNEL
+    cap = authority.yolo_max_seconds
+    if not central or cap <= 0:
+        cap = min(cap, ENTERPRISE_YOLO_MAX_SECONDS) if cap > 0 else ENTERPRISE_YOLO_MAX_SECONDS
+    controls = authority.controls
+    chan_map = controls.get("channels")
+    if (
+        isinstance(chan_map, ScopedMap)
+        and chan_map.members.permits("slack").permitted
+        and _SLACK_CHANNEL_LEAF not in chan_map.posture.get("slack", {})
+    ):
+        empty = ScopedRuleset.from_dict(dict(ENTERPRISE_SLACK_CHANNELS), matcher="identifier")
+        slack = {**chan_map.posture.get("slack", {}), _SLACK_CHANNEL_LEAF: empty}
+        posture = {**chan_map.posture, "slack": slack}
+        controls = {**controls, "channels": replace(chan_map, posture=posture)}
+    if (
+        channel == authority.updates.channel
+        and cap == authority.yolo_max_seconds
+        and controls is authority.controls
+    ):
+        return authority
+    return replace(
+        authority,
+        updates=replace(authority.updates, channel=channel),
+        yolo_max_seconds=cap,
+        controls=controls,
+    )
+
+
+#: The ``slack`` posture leaf naming the channels (``slack.channel_policy.LEAF``).
+_SLACK_CHANNEL_LEAF = "allowed_channel_ids"
 
 
 def _subordinate_ceiling(

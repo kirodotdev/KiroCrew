@@ -52,6 +52,8 @@ import sys as _sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.edition_install_fence import install_root_write as _install_root_write
+
 from .diagnostics import annotate_refusal, refusal_diagnostic
 
 logger = logging.getLogger(__name__)
@@ -388,6 +390,7 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
             path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir, strict=True
         ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
         matched = matched or _native_store_write(path_str, base_dir)
+        matched = matched or _install_root_write(path_str, base_dir)
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
     return f"Blocked: write to protected path: {path_str}" if matched else None
@@ -558,7 +561,7 @@ def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[st
     # interpreter, since no bounded-call deadline is armed (``_outside_bounded_call``),
     # so it neither holds a resolver child nor queues ahead of the loop; the spawn
     # side bounds that wait (``_run_preflight_bounded``, 60 s) and refuses the
-    # adapter on expiry rather than starting it unmasked (found in review).
+    # adapter on expiry rather than starting it unmasked.
     resolved = _resolve_root_anchors(str(Path.home()))
     # BOTH home spellings, reusing the two anchors the read gate already keys on.
     # On a host whose home is itself a symlink (``/home/u`` -> ``/local/home/u``) the

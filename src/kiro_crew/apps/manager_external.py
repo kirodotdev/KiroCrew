@@ -71,8 +71,13 @@ def register_external_app(
     lifecycle: str = "app",
     source_repository: str = "",
     start_disabled: bool = False,
+    version_checked: bool = False,
 ) -> AppResult:
     """Register a self-managed app with Kiro Crew's app system.
+
+    ``version_checked=True`` says the caller already asked the governance
+    ``app_versions`` list off the loop (``admission.app_version_refusal``), so
+    admission skips that blocking read here.
 
     Self-managed apps (``resources="app"``) handle their own agent/skill/MCP
     registration.  Kiro Crew only tracks metadata so the dashboard can display them.
@@ -140,7 +145,13 @@ def register_external_app(
     admission_manifest = None
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
-    denied = app_admission_denied(name, manifest=admission_manifest, action="register_external")
+    denied = app_admission_denied(
+        name,
+        manifest=admission_manifest,
+        action="register_external",
+        check_version=not version_checked,
+        version=version,
+    )
     if denied:
         sel().log_api_access(
             caller="app_register_external",

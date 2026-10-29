@@ -276,14 +276,18 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_enterprise_profile_pin,
+    _forget_sandbox_launch_mark,
     _fresh_reexec_environment,
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
     _isolate_advertised_model_cache,
     _isolate_display_verdicts,
     _isolate_kiro_window_cache,
+    _no_boot_heap_freeze,
     _no_boot_sandbox_sweep,
     _no_carried_auto_update_effect,
+    _no_inherited_git_proxy_env,
     _no_live_catalog_network,
     _no_live_kernel_memory_pressure,
     _no_managed_venv_override,
@@ -294,13 +298,17 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_channel_turn_ceiling,
     _reset_cjk_segmenter,
     _reset_create_rate_limit_buckets,
+    _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
+    _reset_env_boot_record_and_ownership,
     _reset_live_execution_records,
+    _reset_materialized_agents_snapshot,
     _reset_runtime_ownership_tables,
     _reset_safety_override_between_tests,
     _reset_session_switch_locks,
     _restore_autonudge_singleton,
     _restore_default_child_watcher,
+    _session_memory_scope_sample_unshared,
     _shut_down_shared_pools_in_session,
     _small_default_host,
 )
@@ -536,6 +544,23 @@ def _krb5_keyring_check_done(_floor_monkeypatch):
     from kiro_crew import env
 
     _floor_monkeypatch.setattr(env, "_KRB5_KEYRING_CHECKED", True)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_host_unservable_backends(_floor_monkeypatch):
+    """Give every test its own copy of the host's KAS-floor verdicts.
+
+    The gateway's KAS floor records what it learned about this host's kiro-cli as
+    process state: ``mark_backend_unservable`` drops KAS, and
+    ``confirm_kiro_cli_offers_kas`` moves a Kiro CLI pick onto KAS. A test that
+    drives the floor would otherwise leave either verdict to every later test in
+    the worker. Rebound per test, so a verdict made in one test is gone in the next.
+    """
+    from kiro_crew.agent_sdk import backends
+
+    _floor_monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+    _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
 
 
 @pytest.fixture

@@ -34,9 +34,34 @@ if TYPE_CHECKING:
         parent_template_allowlists,
         parent_work_supported,
         spawn_parent_claim,
+        stopped_before_start,
         validate_tool_args,
         warm_project_agents_for_spawn,
     )
+
+
+#: ``code`` for a start that was stopped while it waited, so it never ran (see
+#: :func:`kiro_crew.subagent_wait_reasons.stopped_before_start`). A route that
+#: tested only ``done and error`` would read that record as a started run.
+STOPPED_BEFORE_START_CODE = "stopped_before_start"
+
+
+def _stopped_before_start(info: Any, *, counted: bool = False) -> web.Response | None:
+    """409 ``stopped_before_start`` when *info* is a start stopped while it waited.
+
+    None for every other answer, so the caller goes on to its success body. A
+    start that ended in an error is the caller's typed rejection, not this.
+    ``counted`` adds ``counted: true`` for ``POST /api/spawn``, whose wave
+    reconcile reads it.
+    """
+    if not stopped_before_start(info):
+        return None
+    error = "the run was stopped before it started; nothing ran"
+    if counted:
+        return web.json_response(
+            {"error": error, "code": STOPPED_BEFORE_START_CODE, "counted": True}, status=409
+        )
+    return web.json_response({"error": error, "code": STOPPED_BEFORE_START_CODE}, status=409)
 
 
 async def _spawn_request_memory_mode(
@@ -420,6 +445,11 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Accepted (and counted) by mgr.spawn, then stopped before its claim: no run
+    # and no card will follow, so "spawned" would leave the caller waiting.
+    stopped = _stopped_before_start(info, counted=True)
+    if stopped is not None:
+        return stopped
     resp: dict[str, object] = {
         "id": info.id,
         "task": task,
@@ -647,4 +677,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         if info.error.startswith("conversation_gone"):
             return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
         return web.json_response({"error": info.error, "code": _SPAWN_REJECTED_CODE}, status=400)
+    stopped = _stopped_before_start(info)
+    if stopped is not None:
+        return stopped
     return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})

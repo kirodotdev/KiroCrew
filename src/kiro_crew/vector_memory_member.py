@@ -34,6 +34,7 @@ from kiro_crew.lesson_validation import (
     extracted_lesson_applies,
     utf8_encodable,
 )
+from kiro_crew.memory_kind_routing import KindRouting, record_kind_routing_in_transaction
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
 from kiro_crew.validation import normalize_lesson_category
@@ -428,11 +429,16 @@ def apply_consolidation(
     snapshot: dict,
     messages: list[dict],
     facets: memory_schema.MemoryFacets | None = None,
+    kind_routing: KindRouting | None = None,
 ) -> dict:
     """Publish one extracted span, its provenance and retry receipt atomically.
 
     Embeddings remain NULL until the writer's maintenance sweep. No provider,
     transcript or filesystem operation takes place inside this transaction.
+
+    *kind_routing* is the consolidator's ``_route_by_kind`` answer for this
+    *result*; its bounded log is written inside the same transaction, so a
+    replayed span (which returns the stored receipt) logs nothing twice.
     """
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
@@ -678,6 +684,8 @@ def apply_consolidation(
                 receipt["metadata_fields_dropped"] = fields_dropped
             if metadata_rejected:
                 receipt["metadata_rejected"] = metadata_rejected
+            if kind_routing is not None:
+                record_kind_routing_in_transaction(self, kind_routing, source)
             self.db.execute(
                 "INSERT INTO memory_consolidations VALUES (?,?,?,?,?,?)",
                 (

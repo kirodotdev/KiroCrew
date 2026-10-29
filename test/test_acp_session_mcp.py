@@ -1409,4 +1409,8 @@ class TestLocalSettingsSeed:
         """
         client = self._client(tmp_path)
         del client._claude_settings_authored
+        client._claude_settings_claim_unrevoked = True
         client._reset_state()  # must not raise
+        # The reset ran past the read, and absent stayed "authored nothing".
+        assert client._claude_settings_claim_unrevoked is False
+        assert not hasattr(client, "_claude_settings_authored")

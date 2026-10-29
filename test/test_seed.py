@@ -20,7 +20,7 @@ from kiro_crew import seed as seed_mod
 
 
 def test_seed_empty_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``kirocrew seed --fixture empty`` writes fixture.yaml into $KIROCREW_HOME."""
+    """``kirocrew gateway --seed empty`` writes fixture.yaml into $KIROCREW_HOME."""
     # copytree refuses an existing dst, so don't pre-create it.
     target = tmp_path / "home"
     monkeypatch.setenv("KIROCREW_HOME", str(target))

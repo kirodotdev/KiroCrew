@@ -76,7 +76,10 @@ async def api_project_create(request):
 async def api_project_update(request):
     tr = _runner(request)
     pid = request.match_info["id"]
-    data = await request.json()
+    try:
+        data = await request.json()
+    except (LookupError, RecursionError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     run = tr._runs.get(pid) if tr else None
     if not run or _is_hidden(run):
         raise web.HTTPNotFound(text=f"Project {pid} not found")

@@ -1,8 +1,10 @@
 """OPTIONS controls and agent action buttons: a click becomes the user's answer to the agent.
 
-``_handle_options`` takes one OPTIONS choice and ``_handle_options_submit`` a multi-select
-submission: each refuses a superseded control (``_refuse_stale_options``), posts the
-styled selection and sends it to the agent session. An ``action::`` button reaches
+``_handle_options`` takes a one-click OPTIONS choice, ``_open_options_several`` opens the
+"Choose several..." modal and ``_handle_options_several_submission`` takes its answer.
+Both answers go through ``_answer_options``: it refuses a superseded or already answered
+control (``_refuse_stale_options``, an "Already answered" ephemeral), edits the card in
+place to "<who> chose <choice>" and sends the choice to the agent session. An ``action::`` button reaches
 the session through ``_route_action_to_session``. ``_import_thread_to_slot`` fetches a
 Slack thread, redacts it and imports it into a new dashboard slot.
 
@@ -17,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from kiro_crew.dashboard.chat_utils import (
@@ -25,26 +28,35 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_keys_snapshot,
     slack_options_slot,
 )
+from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.format import (
     OPTIONS_ACTION_PREFIX,
-    OPTIONS_CHECKBOXES_ACTION,
-    build_options_selected_blocks,
+    OPTIONS_SEVERAL_BLOCK,
+    OPTIONS_SEVERAL_CALLBACK,
+    OPTIONS_SEVERAL_INPUT,
+    build_options_answered_blocks,
+    build_options_several_modal,
     escape_mrkdwn,
     replace_options_blocks,
 )
 from kiro_crew.slack.handler import APPROVAL_INTERACTIVE, handle_message, is_allowed_user
-from kiro_crew.slack.interactions_context import _orch
+from kiro_crew.slack.interactions_context import _orch, register_view_handler
 from kiro_crew.slack.outbound import (
+    OptionsSeveralRequest,
     PostedOptions,
     claim_options_answer,
     decode_options_token,
     expire_options,
     mark_options_terminal,
+    options_answered,
     options_edit_lock,
     release_options_answer,
+    remember_options_several,
     settle_options_answer,
+    take_options_several,
 )
 from kiro_crew.start_priority import StartPriority
 
@@ -86,7 +98,10 @@ _ACTION_PREFIX = "action::"
 
 
 def _forget_options_control(
-    thread_ts: str, ts: str | None = None, keys: tuple[str, ...] | None = None
+    thread_ts: str,
+    ts: str | None = None,
+    keys: tuple[str, ...] | None = None,
+    channel: str | None = None,
 ) -> None:
     """Drop the recorded OPTIONS control for *thread_ts*'s conversation.
 
@@ -100,12 +115,19 @@ def _forget_options_control(
     edit moves the thread to another session, so resolving the keys afterwards
     names the NEW owner and leaves the previous owner's record behind — whose next
     turn then edits over the selection.
+
+    *channel* with *ts* also drops the record of that one message under whatever
+    key holds it. A card posted top-level (a code channel's own replies) carries
+    no ``thread_ts``, so the thread a click falls back to is the card itself and
+    the keys resolved from it name no session at all.
     """
     if not _orch or not thread_ts:
         return
     try:
 
-        forget_slack_options_for_thread(_orch.dashboard_state, thread_ts, ts, keys=keys)
+        forget_slack_options_for_thread(
+            _orch.dashboard_state, thread_ts, ts, keys=keys, channel=channel
+        )
     except Exception:
         logger.debug("Failed to clear recorded OPTIONS control", exc_info=True)
 
@@ -249,9 +271,9 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
 def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
     """The ``block_id`` Slack echoed back for the clicked OPTIONS control.
 
-    Checked in three places because the two click paths deliver it differently: a
-    button click carries it on the action, and the multi-select block also keys
-    ``state.values``, which is recoverable even from a click that omitted it.
+    A click carries it on the action (and on the payload's ``actions`` list). On a
+    card of several rows it carries the row's id -- the token plus a ``~<row>``
+    suffix, which :func:`kiro_crew.slack.outbound.decode_options_token` reads past.
     """
     if action:
         bid = action.get("block_id")
@@ -261,14 +283,6 @@ def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
         bid = entry.get("block_id") if isinstance(entry, dict) else None
         if isinstance(bid, str) and bid:
             return bid
-    values = (payload.get("state") or {}).get("values") or {}
-    for block_id, vals in values.items():
-        if (
-            isinstance(vals, dict)
-            and OPTIONS_CHECKBOXES_ACTION in vals
-            and isinstance(block_id, str)
-        ):
-            return block_id
     return None
 
 
@@ -286,12 +300,6 @@ def _options_choices_from_payload(blocks: list) -> list[str]:
             if not isinstance(el, dict):
                 continue
             action_id = el.get("action_id", "")
-            if action_id == OPTIONS_CHECKBOXES_ACTION:
-                return [
-                    (o.get("text") or {}).get("text") or o.get("value") or ""
-                    for o in el.get("options") or []
-                    if isinstance(o, dict)
-                ]
             if action_id.startswith(OPTIONS_ACTION_PREFIX):
                 return [
                     e.get("value") or ""
@@ -325,9 +333,12 @@ async def _refuse_stale_options(channel: str, msg_ts: str, payload: dict) -> Non
             # An accepted click already holds the claim and has rendered its
             # selection. Leave the message exactly as that click left it.
             return
-        mark_options_terminal(channel, msg_ts)
+        # The claim, held unsettled, already refuses every later click. It is
+        # marked terminal (settled) only once the strike-through lands: a failed
+        # strike leaves the buttons on screen, so a later turn's expiry must still
+        # find the control unsettled and strike it.
         try:
-            await expire_options(
+            struck = await expire_options(
                 _orch.slack,
                 PostedOptions(
                     channel=channel,
@@ -337,32 +348,74 @@ async def _refuse_stale_options(channel: str, msg_ts: str, payload: dict) -> Non
                 ),
             )
         except Exception:
+            struck = False
             logger.debug(
                 "could not strike through the stale OPTIONS control %s/%s",
                 channel,
                 msg_ts,
                 exc_info=True,
             )
+        if struck:
+            mark_options_terminal(channel, msg_ts)
 
 
-async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> None:
-    """User clicked Send on multi-select OPTIONS checkboxes."""
+_ALREADY_ANSWERED = "Already answered."
+_NOT_AUTHORIZED = "⛔ You are not authorized to use these buttons."
+
+
+async def _tell_user(channel: str, user_id: str, thread_ts: str, text: str) -> None:
+    """A private note to *user_id* about their click. Best-effort."""
+    if not (_orch and _orch.slack and channel and user_id):
+        return
+    try:
+        await _orch.slack.post_ephemeral(channel, user_id, text, thread_ts=thread_ts)
+    except Exception:
+        logger.debug("Failed to send OPTIONS ephemeral", exc_info=True)
+
+
+async def _answer_options(
+    *,
+    channel: str,
+    msg_ts: str,
+    thread_ts: str,
+    user_id: str,
+    team_id: str,
+    block_id: str | None,
+    blocks: list[dict],
+    selected_indices: list[int],
+    tool_name: str,
+) -> None:
+    """Answer the OPTIONS card posted as *msg_ts* with the choices at *selected_indices*.
+
+    The one answer path for a one-click button and for the "Choose several..." modal,
+    so both send exactly the same text down the same path: the chosen button values,
+    joined with ", ", as the user's message, with an ``[OPTIONS multi-select: ...]``
+    context entry. The choices are read back off the card's own buttons -- the full
+    text, not the possibly cut label.
+
+    Answers once. A superseded control (the conversation moved on) or one already
+    answered is refused with a private "Already answered" and sends nothing; the
+    claim is taken under the message's edit lock, so two quick clicks cannot both
+    send. On success the card is edited in place: its buttons give way to a
+    ``✅ <who> chose <choice> · <time>`` line.
+    """
     if not (_orch and _orch.slack):
         return
-
-    thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
-    user_id = payload.get("user", {}).get("id", "")
-    team_id = (payload.get("team") or {}).get("id", "")
-
-    if not is_allowed_user(user_id):
+    all_choices = _options_choices_from_payload(blocks)
+    picked: list[int] = []
+    for i in selected_indices:
+        if 0 <= i < len(all_choices) and i not in picked:
+            picked.append(i)
+    picked.sort()
+    if not picked:
         sel().log_tool_invocation(
             session_key=thread_ts,
             agent="kirocrew",
             source="slack",
-            tool_name="options_submit",
+            tool_name=tool_name,
             tool_kind="interaction",
-            outcome="denied",
-            metadata={"user_id": user_id, "reason": "not_allowed_user"},
+            outcome="skipped",
+            metadata={"reason": "empty_selection"},
         )
         return
 
@@ -372,64 +425,23 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
     # is the ONLY thing standing between a superseded button and a dispatched
     # answer, since nothing retires controls ahead of time any more.
     if await options_control_is_stale(
-        _orch.dashboard_state if _orch else None, _options_block_id(payload), thread_ts
+        _orch.dashboard_state if _orch else None, block_id, thread_ts
     ):
         sel().log_tool_invocation(
             session_key=thread_ts,
             agent="kirocrew",
             source="slack",
-            tool_name="options_submit",
+            tool_name=tool_name,
             tool_kind="interaction",
             outcome="denied",
             metadata={"reason": "superseded_control", "channel": channel},
         )
-        await _refuse_stale_options(channel, msg_ts, payload)
+        await _refuse_stale_options(channel, msg_ts, {"message": {"blocks": blocks}})
+        await _tell_user(channel, user_id, thread_ts, _ALREADY_ANSWERED)
         return
 
-    state_values = payload.get("state", {}).get("values", {})
-    selected: list[str] = []
-    for block_vals in state_values.values():
-        cb_state = block_vals.get(OPTIONS_CHECKBOXES_ACTION)
-        if cb_state:
-            selected = [o["value"] for o in cb_state.get("selected_options", [])]
-            break
-
-    if not selected:
-        sel().log_tool_invocation(
-            session_key=thread_ts,
-            agent="kirocrew",
-            source="slack",
-            tool_name="options_submit",
-            tool_kind="interaction",
-            outcome="skipped",
-            metadata={"reason": "empty_selection"},
-        )
-        return  # nothing checked, ignore
-
-    # Extract all choices for the styled summary
-    blocks = payload.get("message", {}).get("blocks", [])
-    all_choices: list[str] = []
-    for b in blocks:
-        if b.get("type") != "actions":
-            continue
-        for el in b.get("elements", []):
-            if el.get("action_id") == OPTIONS_CHECKBOXES_ACTION:
-                all_choices = [o["value"] for o in el.get("options", [])]
-                break
-
-    # Compute indices BEFORE redaction — deduplicate to handle identical choices
-    selected_set = set(selected)
-    selected_indices: list[int] = []
-    seen: set[str] = set()
-    for i, c in enumerate(all_choices):
-        if c in selected_set and c not in seen:
-            selected_indices.append(i)
-            seen.add(c)
-
-    # Redact
-    selected = [redact_credentials(redact_exfiltration_urls(s)[0])[0] for s in selected]
-    all_choices = [redact_credentials(redact_exfiltration_urls(c)[0])[0] for c in all_choices]
-
+    # Redact LLM-generated content before any external use.
+    selected = [redact_credentials(redact_exfiltration_urls(all_choices[i])[0])[0] for i in picked]
     combined = ", ".join(selected)
     # The Slack-facing FALLBACK TEXT, escaped. Slack parses entities in a
     # message's top-level `text` too, not just in mrkdwn blocks -- and `text` is
@@ -438,46 +450,50 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
     #
     # A SEPARATE variable on purpose: `combined` itself must stay raw, because it
     # is also the answer echoed back into the session below. Escaping in place
-    # would change what the user actually picked -- the same trap that keeps the
-    # escape out of `_redact_choices`.
+    # would change what the user actually picked.
     combined_fallback = escape_mrkdwn(combined)
 
-    # Edit-in-place: replace only the OPTIONS actions block(s) with the
-    # styled selection, preserving every other surrounding block. Falls back
-    # to post-and-delete if update_message raises (resilience).
-    selected_blocks = build_options_selected_blocks(all_choices, selected_indices)
-    parent_blocks = payload.get("message", {}).get("blocks", [])
-    new_blocks = replace_options_blocks(parent_blocks, selected_blocks)
+    # Edit-in-place: replace only the OPTIONS rows with the answered line,
+    # preserving every other surrounding block. Falls back to post-and-delete if
+    # update_message raises (resilience).
+    answered_blocks = build_options_answered_blocks(user_id, selected, time.time())
+    new_blocks = replace_options_blocks(blocks, answered_blocks)
     new_ts = msg_ts
     edited = False
     # Set when the original message survives our attempt to remove it: the
     # control is then STILL on screen and still clickable, so its record has to
-    # outlive this submit for a later turn to expire it.
+    # outlive this answer for a later turn to expire it.
     original_still_live = False
     # Serialize against a concurrent expiry of this SAME message. The expiry
     # re-reads the record inside this lock and skips its edit once the forget
-    # below has dropped it, so the user's selection cannot be overwritten by an
+    # below has dropped it, so the user's answer cannot be overwritten by an
     # expiry that started first. Held across the edit AND the forget: releasing
     # between them would let an expiry observe a still-tracked record and edit
-    # over the selection we just wrote.
+    # over the answer we just wrote.
     async with options_edit_lock(channel, msg_ts):
-        # One answer per control. A second Send click on this message would
-        # otherwise render the selection again and dispatch a second turn -- a
-        # duplicate, or once the first turn has moved on, a superseded one.
-        # Claimed under the lock so the check and the claim cannot interleave,
-        # and BEFORE the edit so a loser touches nothing at all.
+        # One answer per control. A second click on this message would otherwise
+        # render the answer again and dispatch a second turn -- a duplicate, or
+        # once the first turn has moved on, a superseded one. Claimed under the
+        # lock so the check and the claim cannot interleave, and BEFORE the edit
+        # so a loser touches nothing at all.
         if not claim_options_answer(channel, msg_ts):
             logger.debug(
-                "options_submit: control %s/%s was already answered; dropping the "
-                "duplicate click",
+                "%s: control %s/%s was already answered; dropping the duplicate click",
+                tool_name,
                 channel,
                 msg_ts,
             )
+            sel().log_tool_invocation(
+                session_key=thread_ts,
+                agent="kirocrew",
+                source="slack",
+                tool_name=tool_name,
+                tool_kind="interaction",
+                outcome="denied",
+                metadata={"reason": "already_answered", "channel": channel},
+            )
+            await _tell_user(channel, user_id, thread_ts, _ALREADY_ANSWERED)
             return
-        # Whose record this control is, captured BEFORE the edit. A relink landing
-        # during the edit would move the thread to another session, so resolving
-        # after the fact names the NEW owner and leaves the previous owner's record
-        # in place -- and that session's next turn would edit over this selection.
         # Pin the conversation that ASKED, read from the control's own token --
         # NOT whoever owns the thread now. The two diverge in exactly the case
         # the pin exists to survive: after a handover, resolving from the thread
@@ -487,9 +503,9 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         # A pinned None is meaningful: it says the asker holds no slot (a native
         # Slack or cron conversation), so a thread linked after acceptance cannot
         # capture the answer either. An untokened control -- one posted before
-        # this shipped -- pins nothing and keeps today's resolution, matching the
+        # tokens shipped -- pins nothing and keeps today's resolution, matching the
         # rest of the rule, which honours what it cannot judge.
-        _asker = decode_options_token(_options_block_id(payload))
+        _asker = decode_options_token(block_id)
         _asker_key = _asker[0] if _asker else None
         _pinned_slot = (
             slack_options_slot(_orch.dashboard_state, _asker_key)
@@ -498,6 +514,10 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         )
         _pinned_slot_name = getattr(_pinned_slot, "key", None)
         _route_pinned = _asker_key is not None
+        # Whose record this control is, captured BEFORE the edit. A relink landing
+        # during the edit would move the thread to another session, so resolving
+        # after the fact names the NEW owner and leaves the previous owner's record
+        # in place -- and that session's next turn would edit over this answer.
         _owner_keys = slack_options_owner_keys_snapshot(
             _orch.dashboard_state if _orch else None, thread_ts
         )
@@ -509,13 +529,14 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
                 edited = True
             except Exception:
                 logger.debug(
-                    "update_message failed for options_submit, falling back to post+delete",
+                    "update_message failed for %s, falling back to post+delete",
+                    tool_name,
                     exc_info=True,
                 )
 
             if not edited:
                 posted_ts = await _orch.slack.post_blocks(
-                    channel, selected_blocks, combined_fallback, thread_ts
+                    channel, answered_blocks, combined_fallback, thread_ts
                 )
                 if not posted_ts:
                     logger.warning("Failed to post options choice — aborting")
@@ -523,7 +544,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
                         session_key=thread_ts,
                         agent="kirocrew",
                         source="slack",
-                        tool_name="options_submit",
+                        tool_name=tool_name,
                         tool_kind="interaction",
                         outcome="failure",
                         metadata={"reason": "post_blocks_failed"},
@@ -537,14 +558,14 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
                     logger.warning(
                         "Failed to delete original OPTIONS message after fallback "
                         "post_blocks succeeded; user may see both the original "
-                        "and the new selection message",
+                        "and the new answer message",
                         exc_info=True,
                     )
         finally:
-            # Give the claim back only when the selection never reached Slack at
-            # all -- neither the in-place edit nor the replacement post. Holding it
+            # Give the claim back only when the answer never reached Slack at all
+            # -- neither the in-place edit nor the replacement post. Holding it
             # then would refuse every retry forever, leaving a control permanently
-            # visible and permanently unanswerable. Once the selection IS on screen
+            # visible and permanently unanswerable. Once the answer IS on screen
             # the claim stays, even if a later step stumbles: the answer is
             # rendered and the turn is on its way.
             if not edited and new_ts == msg_ts:
@@ -552,18 +573,16 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
 
         # The control is spent only once the original is actually gone — either
         # rewritten in place, or posted-and-deleted. When the delete failed those
-        # buttons are still sitting in the channel, so the record has to stay:
-        # dropping it is exactly what leaves a permanently clickable control.
-        #
+        # buttons are still sitting in the channel, so the record has to stay.
         # Inside the lock with the edit above: an expiry that observed a
         # still-tracked record between the two would edit straight over the
-        # selection we just wrote.
+        # answer we just wrote.
         if not original_still_live:
             # The buttons are provably off screen, so the claim on this control no
             # longer has to be pinned against a late click and may be evicted if
             # the map fills. While the original IS still live the claim stays put.
             settle_options_answer(channel, msg_ts)
-            _forget_options_control(thread_ts, msg_ts, keys=_owner_keys)
+            _forget_options_control(thread_ts, msg_ts, keys=_owner_keys, channel=channel)
 
     action_context = (
         "--- CONTEXT ENTRY BEGIN ---\n"
@@ -601,11 +620,119 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         session_key=thread_ts,
         agent="kirocrew",
         source="slack",
-        tool_name="options_submit",
+        tool_name=tool_name,
         tool_kind="interaction",
         outcome="success",
         metadata={"selected": combined, "channel": channel},
     )
+
+
+# ---------------------------------------------------------------------------
+# "Choose several..." -- the overflow menu's modal
+# ---------------------------------------------------------------------------
+
+
+async def _open_options_several(payload: dict, action: dict, channel: str, msg_ts: str) -> None:
+    """The ⋯ menu's "Choose several..." item: open the multi-select modal.
+
+    Refuses an already answered card at once with a private "Already answered"
+    instead of opening a form that could only lose. Staleness is judged when the
+    modal is SUBMITTED, by the same check a click gets, since that is when an
+    answer would be sent -- and because Slack's trigger expires in seconds.
+    """
+    if not (_orch and _orch.slack):
+        return
+    message = payload.get("message") or {}
+    thread_ts = message.get("thread_ts") or msg_ts
+    user_id = (payload.get("user") or {}).get("id", "")
+    blocks = message.get("blocks") or []
+    if options_answered(channel, msg_ts):
+        await _tell_user(channel, user_id, thread_ts, _ALREADY_ANSWERED)
+        return
+    choices = _options_choices_from_payload(blocks)
+    trigger_id = payload.get("trigger_id", "")
+    if len(choices) < 2 or not trigger_id:
+        return
+    nonce = remember_options_several(
+        OptionsSeveralRequest(
+            channel=channel,
+            msg_ts=msg_ts,
+            thread_ts=thread_ts,
+            team_id=(payload.get("team") or {}).get("id", ""),
+            user_id=user_id,
+            block_id=_options_block_id(payload, action),
+            blocks=tuple(blocks),
+            opened=time.monotonic(),
+        )
+    )
+    try:
+        await _orch.slack.views_open(trigger_id, build_options_several_modal(choices, nonce))
+    except Exception:
+        take_options_several(nonce)
+        logger.warning("Failed to open the OPTIONS multi-select modal", exc_info=True)
+
+
+async def _handle_options_several_submission(payload: dict) -> None:
+    """The "Choose several..." modal was submitted: answer the card with every pick."""
+    if not (_orch and _orch.slack):
+        return
+    view = payload.get("view") or {}
+    user_id = (payload.get("user") or {}).get("id", "")
+    request = take_options_several(view.get("private_metadata", ""))
+    if request is None:
+        logger.info("OPTIONS multi-select submitted for an unknown or expired card")
+        return
+    # The same gate every OPTIONS click passes in ``dispatch``: an allowed user,
+    # then the channels governance policy -- both before anything is edited or sent.
+    if user_id != request.user_id or not is_allowed_user(user_id):
+        sel().log_tool_invocation(
+            session_key=request.thread_ts,
+            agent="kirocrew",
+            source="slack",
+            tool_name="options_several",
+            tool_kind="interaction",
+            outcome="denied",
+            metadata={"user_id": user_id, "reason": "not_allowed_user"},
+        )
+        await _tell_user(request.channel, user_id, request.thread_ts, _NOT_AUTHORIZED)
+        return
+    channel = request.channel
+    if not (
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+    ):
+        logger.info("slack OPTIONS choice dropped: denied by channels governance policy")
+        return
+    values = (view.get("state") or {}).get("values") or {}
+    picked = ((values.get(OPTIONS_SEVERAL_BLOCK) or {}).get(OPTIONS_SEVERAL_INPUT) or {}).get(
+        "selected_options"
+    ) or []
+    indices: list[int] = []
+    for option in picked:
+        try:
+            indices.append(int((option or {}).get("value", "")))
+        except (TypeError, ValueError):
+            continue
+    await _answer_options(
+        channel=request.channel,
+        msg_ts=request.msg_ts,
+        thread_ts=request.thread_ts,
+        user_id=user_id,
+        team_id=request.team_id,
+        block_id=request.block_id,
+        blocks=list(request.blocks),
+        selected_indices=indices,
+        tool_name="options_several",
+    )
+
+
+async def _handle_options_several_closed(payload: dict) -> None:
+    """The "Choose several..." modal was cancelled: drop the card it was holding."""
+    take_options_several((payload.get("view") or {}).get("private_metadata", ""))
+
+
+register_view_handler(OPTIONS_SEVERAL_CALLBACK, _handle_options_several_submission)
+register_view_handler(OPTIONS_SEVERAL_CALLBACK + "_closed", _handle_options_several_closed)
 
 
 async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str) -> None:
@@ -622,6 +749,27 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     user_id = payload.get("user", {}).get("id", "")
     team_id = (payload.get("team") or {}).get("id", "")
     blocks = payload.get("message", {}).get("blocks", [])
+
+    # ── Standard OPTIONS choice: one click answers with that button's choice ──
+    # Checked FIRST, whatever the value says: a numbered button is a choice on an
+    # OPTIONS card, and its click sends that choice once, through the guarded
+    # answer path. Reading an ``action::`` value off it would let a choice the
+    # model wrote that way skip the staleness check, the once-only claim and the
+    # asker pin.
+    _suffix = action_id[len(OPTIONS_ACTION_PREFIX) :]
+    if action_id.startswith(OPTIONS_ACTION_PREFIX) and _suffix.isascii() and _suffix.isdigit():
+        await _answer_options(
+            channel=channel,
+            msg_ts=msg_ts,
+            thread_ts=thread_ts,
+            user_id=user_id,
+            team_id=team_id,
+            block_id=_options_block_id(payload, action),
+            blocks=blocks,
+            selected_indices=[int(_suffix)],
+            tool_name="options",
+        )
+        return
 
     # ── Action button: route payload to existing session as context ──
     if choice.startswith(_ACTION_PREFIX):
@@ -680,171 +828,3 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             blocks,
         )
         return
-
-    # ── Standard OPTIONS choice: delete message, post value, new session ──
-
-    # Determine which button was clicked
-    try:
-        selected_index = int(action_id.replace(OPTIONS_ACTION_PREFIX, ""))
-    except (ValueError, TypeError):
-        selected_index = 0
-
-    # Extract all choices from the original message
-    blocks = payload.get("message", {}).get("blocks", [])
-    all_choices = [
-        el.get("value", "")
-        for b in blocks
-        if b.get("type") == "actions"
-        for el in b.get("elements", [])
-        if el.get("action_id", "").startswith(OPTIONS_ACTION_PREFIX)
-    ]
-
-    # The same rule the multi-select path applies, on the same token. A control
-    # posted before this build carries no token and is honoured, so an upgrade
-    # does not strand buttons that are still legitimately answerable.
-    if await options_control_is_stale(
-        _orch.dashboard_state if _orch else None, _options_block_id(payload, action), thread_ts
-    ):
-        await _refuse_stale_options(channel, msg_ts, payload)
-        return
-
-    # Redact LLM-generated content before any external use
-    choice, _ = redact_exfiltration_urls(choice)
-    choice, _ = redact_credentials(choice)
-    all_choices = [redact_credentials(redact_exfiltration_urls(c)[0])[0] for c in all_choices]
-
-    # Edit-in-place: replace only the OPTIONS actions block with the styled
-    # selection, preserving every other surrounding block. Falls back to
-    # post-and-delete if update_message raises.
-    # Every guarantee the multi-select submit path has, this path needs too: it
-    # renders a selection into the SAME message and dispatches a turn, so two
-    # rapid clicks on a legacy single-click control would otherwise produce two
-    # dispatches and two turns. The lock serialises against the turn-start
-    # expiry's edit; the claim makes the answer once-only.
-    async with options_edit_lock(channel, msg_ts):
-        if not claim_options_answer(channel, msg_ts):
-            logger.debug(
-                "options click: control %s/%s was already answered; dropping the " "duplicate",
-                channel,
-                msg_ts,
-            )
-            return
-        # Owner keys BEFORE the edit -- a relink landing during it would move the
-        # thread, and forgetting against the new owner orphans the old record.
-        # Pin the conversation that ASKED, read from the control's own token --
-        # NOT whoever owns the thread now. The two diverge in exactly the case
-        # the pin exists to survive: after a handover, resolving from the thread
-        # names the new owner and would deliver this answer to a conversation
-        # that never asked the question.
-        #
-        # A pinned None is meaningful: it says the asker holds no slot (a native
-        # Slack or cron conversation), so a thread linked after acceptance cannot
-        # capture the answer either. An untokened control -- one posted before
-        # this shipped -- pins nothing and keeps today's resolution, matching the
-        # rest of the rule, which honours what it cannot judge.
-        _asker = decode_options_token(_options_block_id(payload, action))
-        _asker_key = _asker[0] if _asker else None
-        _pinned_slot = (
-            slack_options_slot(_orch.dashboard_state, _asker_key)
-            if (_asker_key and _orch and _orch.dashboard_state)
-            else None
-        )
-        _pinned_slot_name = getattr(_pinned_slot, "key", None)
-        _route_pinned = _asker_key is not None
-        _owner_keys = slack_options_owner_keys_snapshot(
-            _orch.dashboard_state if _orch else None, thread_ts
-        )
-        edited = False
-        new_ts = msg_ts
-        try:
-            selected_blocks = build_options_selected_blocks(all_choices, selected_index)
-            new_blocks = replace_options_blocks(blocks, selected_blocks)
-            new_ts = msg_ts
-            edited = False
-            # See the multi-select submit path: set when the original message outlives
-            # our attempt to remove it, so its still-clickable control keeps a record.
-            original_still_live = False
-            # Escaped for the FALLBACK text only. Slack parses entities in a
-            # message's top-level `text` -- which is what notifications render --
-            # so a legacy choice containing `<!channel>` would ping the whole
-            # channel from a click. The blocks are already escaped by
-            # `build_options_selected_blocks`; `choice` itself stays RAW below,
-            # because that is the answer echoed into the session.
-            _choice_fallback = escape_mrkdwn(choice)
-            try:
-                await _orch.slack.update_message(
-                    channel, msg_ts, text=_choice_fallback, blocks=new_blocks
-                )
-                edited = True
-            except Exception:
-                logger.debug(
-                    "update_message failed for options choice, falling back to post+delete",
-                    exc_info=True,
-                )
-
-            if not edited:
-                posted_ts = await _orch.slack.post_blocks(
-                    channel, selected_blocks, _choice_fallback, thread_ts
-                )
-                if not posted_ts:
-                    logger.warning("Failed to post options choice — aborting")
-                    sel().log_tool_invocation(
-                        session_key=thread_ts,
-                        agent="kirocrew",
-                        source="slack",
-                        tool_name="options",
-                        tool_kind="interaction",
-                        outcome="failure",
-                        metadata={"reason": "post_blocks_failed"},
-                    )
-                    return
-                new_ts = posted_ts
-                try:
-                    await _orch.slack.delete_message(channel, msg_ts)
-                except Exception:
-                    original_still_live = True
-                    logger.warning(
-                        "Failed to delete original OPTIONS message after fallback "
-                        "post_blocks succeeded; user may see both the original "
-                        "and the new selection message",
-                        exc_info=True,
-                    )
-
-            # Same rule as the multi-select submit path: only forget the control once
-            # the original message is genuinely gone. A failed delete leaves the buttons
-            # live, and a forgotten record can never be expired.
-            if not original_still_live:
-                # Buttons provably gone: the claim may be reclaimed under pressure.
-                settle_options_answer(channel, msg_ts)
-                _forget_options_control(thread_ts, msg_ts, keys=_owner_keys)
-        finally:
-            # Only when the selection never reached Slack at all. Once it is on
-            # screen the claim stays, or a duplicate click is re-admitted.
-            if not edited and new_ts == msg_ts:
-                release_options_answer(channel, msg_ts)
-
-    t = asyncio.create_task(
-        handle_message(
-            _orch.slack,
-            _orch.sessions,  # type: ignore[arg-type]
-            channel,
-            choice,
-            thread_ts,
-            new_ts,
-            user_id,
-            team_id=team_id,
-            approval_mode=APPROVAL_INTERACTIVE,
-            context_builder=_orch.ctx_builder,
-            cron_service=_orch.cron_svc,
-            conversation_log=_orch.conv_log,
-            consolidator=_orch.consolidator,
-            subagent_manager=_orch.subagent_mgr,
-            task_runner=_orch.task_runner,
-            target_slot_name=_pinned_slot_name,
-            route_pinned=_route_pinned,
-            asker_key=_asker_key,
-            start_priority=StartPriority.FOREGROUND,
-        )
-    )
-    _orch._handler_tasks.add(t)
-    t.add_done_callback(_orch._handler_tasks.discard)

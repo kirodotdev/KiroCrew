@@ -83,6 +83,57 @@ class TeardownResult:
         return not self.failures
 
 
+async def stop_backend_and_observe(
+    name: str,
+    *,
+    recorded: Callable[[str], int | None] | None = None,
+    stop: Callable[[str], Any] | None = None,
+    probe: Callable[..., int | None] | None = None,
+) -> tuple[int | None, bool]:
+    """Stop *name*'s backend and report what the port probe could establish.
+
+    The one spelling of the hint / stop / probe sequence. Disable and trust
+    withdrawal reach it through :func:`teardown_app_runtime`; uninstall calls it
+    directly, because the uninstall handler runs the other teardown steps itself.
+
+    ``recorded``, ``stop`` and ``probe`` default to this module's
+    ``recorded_backend_port``, ``stop_app_backend`` and ``unstopped_backend_port``,
+    read at call time. The uninstall handler passes its own module's bindings of
+    the same three functions, so each caller keeps the patch seams its tests use.
+
+    Returns the port the backend is STILL listening on, if any, and whether the
+    probe had gateway-owned evidence of which port to look at. Both halves are
+    needed, because ``None`` from the probe means "nothing observed", NOT
+    "definitely stopped": with no recorded port the probe falls back to the
+    declared one in ``app.json``, which sits inside the app directory and is
+    writable by any app trusted to run code. An app's own lifecycle code can
+    relabel that port, or drop its ``entryPoint``, so the fallback can probe the
+    wrong port and answer ``None``.
+
+    ``stop_app_backend``'s own return value is not trusted. It is ``False`` both
+    for "there was nothing to stop" (never started, already dead) and for
+    "something is running that I did not stop" (a fixed-port backend never
+    adopted at boot, an adoption with no usable PIDs), and ``True`` only says the
+    process it was TRACKING is gone, which is silent about a detached worker the
+    app spawned for itself. Those need opposite handling, so the port is
+    OBSERVED after every attempt, success included.
+
+    The hint is captured BEFORE the stop because the stop drops both the live
+    tracking entry and the pidfile record, and those are the only gateway-owned
+    evidence of which port this backend actually used.
+    """
+    read_hint = recorded or recorded_backend_port
+    stop_backend = stop or stop_app_backend
+    observe = probe or unstopped_backend_port
+    loop = asyncio.get_running_loop()
+    port_hint = await loop.run_in_executor(subprocess_executor(), read_hint, name)
+    await loop.run_in_executor(subprocess_executor(), stop_backend, name)
+    live_port = await loop.run_in_executor(
+        subprocess_executor(), lambda: observe(name, port_hint=port_hint)
+    )
+    return live_port, port_hint is not None
+
+
 async def teardown_app_runtime(
     name: str, record: dict[str, Any], *, withdrawing_trust: bool = False
 ) -> TeardownResult:
@@ -213,7 +264,7 @@ async def teardown_app_runtime(
     # metadata claims otherwise.
     #
     # `withdrawing_trust` overrides EVERYTHING here, and that resolves a genuine
-    # tension between two opposite review findings about this exact line:
+    # tension between two opposite risks on this exact line:
     #
     #   (a) "revoking a disabled app LAUNCHES its code" — the security operation
     #       becoming a way to execute the app.
@@ -311,33 +362,13 @@ async def teardown_app_runtime(
     # The backend process is stopped for EVERY app, self-managed included: it is the
     # thing actually executing third-party code.
     #
-    # The RETURN VALUE is not sufficient on its own, and neither is its absence.
-    # `stop_app_backend` answers `False` for two opposite situations — nothing to
-    # stop (never started, already dead), and something running it did not stop (a
-    # fixed-port backend the gateway never adopted at boot, or an adoption with no
-    # usable PIDs). Only the second is a failure, and the flag cannot tell them
-    # apart, so the port is OBSERVED instead. That asymmetry is deliberate:
-    # reporting a failure whenever the flag is false would make trust UNREVOKABLE
-    # for any enabled app whose backend had merely crashed, and refusing to
-    # withdraw a permission is worse than the window it would close.
-    #
-    # The probe runs after EVERY attempt, success included. A `True` return only
-    # says "the process I was tracking is gone" — it says nothing about a detached
-    # worker the app spawned itself, which keeps the declared fixed port and keeps
-    # executing. Gating the observation on the flag was the same mistake in
-    # miniature that this comment argues against one paragraph up: it trusted a
-    # claim about the runtime instead of looking at it.
+    # Only an observed live port is a failure; `stop_backend_and_observe` explains
+    # why the stop's own flag is not trusted. Reporting a failure whenever the flag
+    # is false would make trust UNREVOKABLE for any enabled app whose backend had
+    # merely crashed, and refusing to withdraw a permission is worse than the
+    # window it would close.
     try:
-        # Captured BEFORE the stop: `stop_app_backend` drops both the live tracking
-        # entry and the pidfile record, and those are the only gateway-owned
-        # evidence of which port this backend actually used.
-        port_hint = await loop.run_in_executor(
-            subprocess_executor(), recorded_backend_port, name
-        )
-        await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
-        live_port = await loop.run_in_executor(
-            subprocess_executor(), lambda: unstopped_backend_port(name, port_hint=port_hint)
-        )
+        live_port, _ = await stop_backend_and_observe(name)
         if live_port is not None:
             logger.warning(
                 "backend for app %r is still listening on port %s after stop",

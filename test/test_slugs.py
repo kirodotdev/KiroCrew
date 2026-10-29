@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.slugs import SLUG_CHARS, refused_slug_char, slug_hash_fallback
 
@@ -54,39 +55,68 @@ class TestRefusedSlugChar:
     @pytest.mark.parametrize(
         ("typed", "expected"),
         [
-            ("\u8bba\u6587", "\u8bba"),  # Han: the first letter is the refusal
-            ("\ubd84\uae30", "\ubd84"),  # Hangul
-            ("\u062a\u0642\u0631\u064a\u0631", "\u062a"),  # Arabic
-            ("my-\u8bba\u6587", "\u8bba"),  # the first refused character, not the first character
-            ("a/b", "/"),
-            ("a\\b", "\\"),
+            *named_cases(
+                "test_names_the_first_character_the_slug_cannot_hold",
+                ("typed", "expected"),
+                [
+                    ("\u8bba\u6587", "\u8bba"),  # Han: the first letter is the refusal
+                    ("\ubd84\uae30", "\ubd84"),  # Hangul
+                    ("\u062a\u0642\u0631\u064a\u0631", "\u062a"),  # Arabic
+                    (
+                        "my-\u8bba\u6587",
+                        "\u8bba",
+                    ),  # the first refused character, not the first character
+                    ("a/b", "/"),
+                    ("a\\b", "\\"),
+                ],
+            ),
+            *named_cases(
+                "test_reports_the_character_as_typed_before_lowercasing",
+                ("typed", "expected"),
+                [
+                    # The capital Cyrillic letter the user typed, never its lowercase form,
+                    # which renders like the Latin "o" the rule allows.
+                    ("\u041e\u0442\u0447\u0435\u0442", "\u041e"),
+                    # Dotted capital I lowercases to "i" + U+0307: the report is still the
+                    # letter typed, not the combining dot lowercasing produced.
+                    ("\u0130stanbul", "\u0130"),
+                    ("M\u00dcNCHEN", "\u00dc"),
+                    ("\u0391\u03b8\u03ae\u03bd\u03b1", "\u0391"),  # Greek capital Alpha
+                ],
+            ),
+            *named_cases(
+                "test_a_character_that_cannot_stand_alone_is_reported_as_its_code_point",
+                ("typed", "expected"),
+                [
+                    ("a\u202eb", "U+202E"),  # bidi override: would reorder the message naming it
+                    ("a\u200bb", "U+200B"),  # zero-width space: would be invisible inside quotes
+                    ("x\u0301", "U+0301"),  # a combining mark NFC cannot compose onto its base
+                    ("a\x00b", "U+0000"),
+                    ("a\x07b", "U+0007"),
+                    ("a\ud800", "U+D800"),  # a lone surrogate is reportable, not a crash
+                ],
+            ),
         ],
     )
-    def test_names_the_first_character_the_slug_cannot_hold(
-        self, typed: str, expected: str
-    ) -> None:
+    def test_reports_the_refused_character(self, typed: str, expected: str) -> None:
         assert refused_slug_char(typed) == expected
 
     @pytest.mark.parametrize(
-        ("typed", "expected"),
+        "typed",
         [
-            # The capital Cyrillic letter the user typed, never its lowercase form,
-            # which renders like the Latin "o" the rule allows.
-            ("\u041e\u0442\u0447\u0435\u0442", "\u041e"),
-            # Dotted capital I lowercases to "i" + U+0307: the report is still the
-            # letter typed, not the combining dot lowercasing produced.
-            ("\u0130stanbul", "\u0130"),
-            ("M\u00dcNCHEN", "\u00dc"),
-            ("\u0391\u03b8\u03ae\u03bd\u03b1", "\u0391"),  # Greek capital Alpha
+            *named_cases(
+                "test_what_the_normalizer_turns_into_slug_characters_is_not_blamed",
+                "typed",
+                ["My Paper", "Team-A", "  Draft  2  ", "a\tb", "\u212a"],
+            ),
+            *named_cases(
+                "test_empty_when_every_character_is_a_slug_character",
+                "typed",
+                ["", "paper", ".hidden", "-rf", "x" * 200],
+            ),
         ],
     )
-    def test_reports_the_character_as_typed_before_lowercasing(
-        self, typed: str, expected: str
-    ) -> None:
-        assert refused_slug_char(typed) == expected
-
-    @pytest.mark.parametrize("typed", ["My Paper", "Team-A", "  Draft  2  ", "a\tb", "\u212a"])
-    def test_what_the_normalizer_turns_into_slug_characters_is_not_blamed(self, typed: str) -> None:
+    def test_no_character_is_blamed(self, typed: str) -> None:
         # Spaces become "-" and ASCII capitals become lowercase, so neither is the
         # refused character; the Kelvin sign lowercases to an ASCII "k".
         assert refused_slug_char(typed) == ""
@@ -95,28 +125,6 @@ class TestRefusedSlugChar:
         # NFD "Mu" + U+0308: the user typed "u-umlaut", not a bare combining mark.
         assert refused_slug_char("Mu\u0308nchen") == "\u00fc"
         assert refused_slug_char("M\u00fcnchen") == "\u00fc"
-
-    @pytest.mark.parametrize(
-        ("typed", "expected"),
-        [
-            ("a\u202eb", "U+202E"),  # bidi override: would reorder the message naming it
-            ("a\u200bb", "U+200B"),  # zero-width space: would be invisible inside quotes
-            ("x\u0301", "U+0301"),  # a combining mark NFC cannot compose onto its base
-            ("a\x00b", "U+0000"),
-            ("a\x07b", "U+0007"),
-            ("a\ud800", "U+D800"),  # a lone surrogate is reportable, not a crash
-        ],
-    )
-    def test_a_character_that_cannot_stand_alone_is_reported_as_its_code_point(
-        self, typed: str, expected: str
-    ) -> None:
-        assert refused_slug_char(typed) == expected
-
-    @pytest.mark.parametrize("typed", ["", "paper", ".hidden", "-rf", "x" * 200])
-    def test_empty_when_every_character_is_a_slug_character(self, typed: str) -> None:
-        # These fail on length or on a character's position, which the caller's own
-        # rule explains; no single character is to blame.
-        assert refused_slug_char(typed) == ""
 
     def test_the_slug_alphabet_is_lowercase_ascii_digits_and_three_marks(self) -> None:
         assert SLUG_CHARS == frozenset("abcdefghijklmnopqrstuvwxyz0123456789._-")

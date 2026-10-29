@@ -35,6 +35,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.terminal_shell",
     "kiro_crew.dashboard.handlers.terminal_transport",
     "kiro_crew.dashboard.handlers.terminal_lifecycle",
+    "kiro_crew.dashboard.handlers.terminal_placement",
     "kiro_crew.dashboard.handlers.terminal_complete",
     "kiro_crew.dashboard.handlers.terminal_routes",
 )

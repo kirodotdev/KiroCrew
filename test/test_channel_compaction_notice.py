@@ -21,6 +21,7 @@ All against fakes — no real transport, session manager, or network.
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -33,6 +34,8 @@ from kiro_crew.dashboard.chat_compaction_notice import (
     notice_text,
 )
 from kiro_crew.messaging.link import ChannelLink
+
+_NOTICE_LOGGER = "kiro_crew.dashboard.chat_compaction_notice"
 
 
 class _SlackClient:
@@ -250,14 +253,17 @@ class TestSlackDelivery:
 
         assert client.posted == []
 
-    async def test_swallows_post_failure(self) -> None:
+    async def test_swallows_post_failure(self, caplog: pytest.LogCaptureFixture) -> None:
         state = _state(
             slack_client=_SlackClient(fail=True),
             sessions=_Sessions(slack_link=("ts-1", "C123")),
         )
         # A failed notice must not propagate into the compaction task.
-        with _permit_governance():
+        with caplog.at_level(logging.DEBUG, logger=_NOTICE_LOGGER), _permit_governance():
             await deliver_channel_compaction_notice(state, "slack:ts-1", 90.0, success=True)
+
+        logged = [r.getMessage() for r in caplog.records if r.name == _NOTICE_LOGGER]
+        assert logged == ["compact notice: slack delivery failed for slack:ts-1"]
 
     async def test_swallows_map_failure(self) -> None:
         client = _SlackClient()
@@ -392,17 +398,21 @@ class TestTransportDelivery:
 
         assert transport.sent == []
 
-    async def test_swallows_send_failure(self) -> None:
+    async def test_swallows_send_failure(self, caplog: pytest.LogCaptureFixture) -> None:
         transport = _Transport(fail=True)
         state = _state(
             transport=transport,
             sessions=_Sessions(origin=ChannelLink("discord", channel_id="chan-9")),
         )
 
-        with _permit_governance():
+        with caplog.at_level(logging.DEBUG, logger=_NOTICE_LOGGER), _permit_governance():
             await deliver_channel_compaction_notice(
                 state, "discord:kirocrew:direct:u1", 90.0, success=True
             )
+
+        logged = [r.getMessage() for r in caplog.records if r.name == _NOTICE_LOGGER]
+        assert logged == ["compact notice: discord delivery failed for discord:kirocrew:direct:u1"]
+        assert transport.sent == []
 
 
 @pytest.mark.asyncio

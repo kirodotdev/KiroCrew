@@ -12,6 +12,7 @@ import gc
 import json
 import os
 import time
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -86,6 +87,40 @@ def _no_eager_prune(_floor_monkeypatch):
     _floor_monkeypatch.setattr(
         projection, "_eager_prune", lambda directory, crew_home_id, *, force=False: None
     )
+
+
+def _active_projections_now() -> dict[int, weakref.ref]:
+    """The projections registered right now, by identity, held only weakly."""
+    with projection._ACTIVE_PROJECTIONS_LOCK:
+        return {key: weakref.ref(each) for key, each in projection._ACTIVE_PROJECTIONS.items()}
+
+
+def _end_projections_started_since(before: dict[int, weakref.ref]) -> None:
+    """Release every projection registered since *before*, inline, off the loop.
+
+    A projection left to its finalizer ends whenever the collector frees it, on
+    the reaper or a prune thread, and that end's prune recreates the agents
+    directory and the side directory it was given. After pytest has removed a
+    passing test's ``tmp_path`` and handed the same name to the next test, that
+    recreates them under the next test's setup. Releasing here runs each end now,
+    while ``tmp_path`` and every monkeypatch the projection reads still stand.
+    """
+    with projection._ACTIVE_PROJECTIONS_LOCK:
+        live = list(projection._ACTIVE_PROJECTIONS.items())
+    for key, each in live:
+        earlier = before.get(key)
+        if earlier is None or earlier() is not each:
+            each.release()
+
+
+@pytest.fixture(autouse=True)
+# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- patches nothing; it requests monkeypatch only so the test's patches are undone after this teardown
+def _end_projections_before_tmp_path_goes(tmp_path, monkeypatch):
+    """Requesting ``tmp_path`` and ``monkeypatch`` sets both up first, so this
+    tears down before either: the release still writes into the test's tree."""
+    before = _active_projections_now()
+    yield
+    _end_projections_started_since(before)
 
 
 @pytest.fixture

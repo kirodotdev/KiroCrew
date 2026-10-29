@@ -421,7 +421,9 @@ return the id for the frame that announces the row.
 `settle_consumed_steers(pending, snapshot)` — pure, and shared with the main chat
 (`chat_runner._settle_consumed_steers` delegates to it). Matches by EQUALITY and
 is count-aware: containment would false-positive a short steer against a longer
-one, and a falsely-settled steer is never requeued, so the question is lost.
+one, and a falsely-settled steer is never requeued, so the question is lost. Each
+steer is wrapped by `wrap_user_message`, which escapes tags inside the text, so the
+echo splits one way and settling compares the escaped text.
 
 ### `dashboard/side_prompts.py`
 

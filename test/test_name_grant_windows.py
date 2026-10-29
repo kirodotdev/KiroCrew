@@ -1049,6 +1049,24 @@ class TestAbsolutePathsNative:
         assert all(os.path.splitdrive(p)[0] for p in paths)
 
 
+class TestAgentWritableRootContainment:
+    """``_within`` on the host's own path flavour, so it runs on every platform."""
+
+    def test_a_drive_root_contains_every_path_below_it(self, tmp_path):
+        # A project dir at a drive root (`H:\`, or `/`) keeps its trailing separator;
+        # `root + os.sep` would then prefix nothing, and a program planted anywhere
+        # below it would be honoured on its name alone.
+        inside = os.path.normcase(str(tmp_path / "repo" / "bin" / "tool"))
+        drive_root = os.path.normcase(os.path.splitdrive(str(tmp_path))[0] + os.sep)
+        assert name_grant._within(inside, (drive_root,)) is True
+
+    def test_a_sibling_of_a_root_is_not_inside_it(self, tmp_path):
+        root = os.path.normcase(str(tmp_path / "workspace"))
+        assert name_grant._within(root + "-other" + os.sep + "tool", (root,)) is False
+        assert name_grant._within(root + os.sep + "tool", (root,)) is True
+        assert name_grant._within(root, (root,)) is True
+
+
 class TestOffLoop:
     """Windows does filesystem work, so it takes the worker thread like every platform."""
 

@@ -36,13 +36,13 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 export function createFolderBlocks(shell: SidebarScope & LaneRows) {
   const { activeDrag, armHold, boardLaneActive, connected, createChatInFolder, deleteFolderWithConfirm,
     disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
-    folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderNameMatchIds,
+    folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
     folderReorderable, folderSortMode, folderSubtrees, folders, foldersWithActiveSubtree, heldLane,
     hiddenByContainer, hideEmptyFolderBody, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
-    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestoreRef,
+    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestore,
     toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation } = shell
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
@@ -287,7 +287,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
             // down selects a session nothing can load, so the click would close
             // the menu onto an empty pane with no way back to the row.
             if (!connected) return
-            dispatch(switchSlot({ key: conductor.key, announceOnMissing: true }))
+            dispatch(switchSlot({ key: conductor.key, announceOnMissing: true, gesture: true }))
             onSelectSlot?.(conductor.key)
           }}>
             <CornerUpRight size={14} className="text-accent mt-[3px] shrink-0" />
@@ -297,7 +297,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
             </span>
           </Item>
         )}
-        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
+        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestore(); setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
         <Item data-testid={tid('new-subfolder')} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
         {/* The two private modes are listed flat, each naming its own action
          *  and what it does with memory. A grouping caption read as a button
@@ -367,6 +367,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // `button` when the row toggles something, a plain `span` when it does not.
     const HeaderShell = (emptyRow ? 'span' : 'button') as 'button'
     const hasUnread = folderTreeHasUnread(folder.id)
+    const focusListFolderRow = () => {
+      document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`)?.focus({ preventScroll: true })
+    }
     const draggable = !!dragHandleProps && editingId !== folder.id
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
@@ -398,6 +401,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         // copy sorts first in the DOM — the same ambiguity the session reveal
         // avoids by targeting `data-session-row` instead of `data-slot-key`.
         data-folder-row={folder.id}
+        tabIndex={-1}
         // Non-interactive container (role="group"): the row holds a collapse
         // toggle button + action buttons, so it must NOT itself be a button —
         // an interactive element can't legally contain other interactive
@@ -466,11 +470,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         // (`.folder-row-sticky`); `sticky` also serves as the containing block
         // the old `relative` provided for the absolutely-positioned children.
         style={{ top: `calc(var(--folder-row-sticky-h) * ${depth} - var(--folder-row-sticky-inset))`, zIndex: FOLDER_ROW_STICKY_Z - depth }}
-        className={`folder-row folder-row-sticky group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
+        className={`folder-row folder-row-sticky focus-ring-accent-inset group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusListFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
         ) : (
@@ -663,7 +667,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
                 // every session click has: switching to a session nothing can
                 // load would leave an empty pane with no way back to the row.
                 if (!connected) return
-                dispatch(switchSlot({ key: folderRowConductor.key, announceOnMissing: true }))
+                dispatch(switchSlot({ key: folderRowConductor.key, announceOnMissing: true, gesture: true }))
                 onSelectSlot?.(folderRowConductor.key)
               }}>
               <CornerUpRight size={12} className="shrink-0" />

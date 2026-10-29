@@ -4,6 +4,7 @@ import { Layers, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, Badge, EmptyState } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 import SimpleSelect from '../../components/SimpleSelect'
 import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
@@ -163,7 +164,7 @@ export default function MemoryCarveCard({ store }: { store: string }) {
                         <div className="mb-2 flex min-w-0 items-start gap-2">
                           <Badge variant="muted">{KIND_LABELS[row.kind] ? i18nT(KIND_LABELS[row.kind]) : row.kind}</Badge>
                         </div>
-                        <p className="min-w-0 break-words">{(row.text ?? row.key ?? '').slice(0, TEXT_PREVIEW_CHARS)}</p>
+                        <p className="min-w-0 break-words">{sliceCodePoints(row.text ?? row.key ?? '', 0, TEXT_PREVIEW_CHARS)}</p>
                         <dl className="mt-2 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-2 text-[12px]">
                           <dt className="text-muted">{i18nT('memoryV2.group_crew')}</dt>
                           <dd className="min-w-0 break-words text-right"><AxisValue value={row.crew ?? ''} /></dd>
@@ -188,7 +189,7 @@ export default function MemoryCarveCard({ store }: { store: string }) {
                           <tr key={row.id} className="hover:bg-bg-hover transition-colors">
                             <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="muted">{KIND_LABELS[row.kind] ? i18nT(KIND_LABELS[row.kind]) : row.kind}</Badge></td>
                             <td className="px-2.5 py-2 border-b border-border text-sm">
-                              {(row.text ?? row.key ?? '').slice(0, TEXT_PREVIEW_CHARS)}
+                              {sliceCodePoints(row.text ?? row.key ?? '', 0, TEXT_PREVIEW_CHARS)}
                             </td>
                             <td className="px-2.5 py-2 border-b border-border text-sm"><AxisValue value={row.crew ?? ''} /></td>
                             <td className="px-2.5 py-2 border-b border-border text-sm"><AxisValue value={row.surface ?? ''} /></td>

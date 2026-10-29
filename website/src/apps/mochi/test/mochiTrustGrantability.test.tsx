@@ -116,4 +116,33 @@ describe('Mochi pending-card trust proof', () => {
     const label = row!.querySelector('span')
     expect(label?.style.whiteSpace).toBe('pre-wrap')
   })
+
+  // A command ending in a straight quote must appear ONCE with no catalog
+  // delimiter doubling it (issue #12371).
+  it('renders a command ending in a quote with no catalog-quote doubling', () => {
+    const cmd = 'grep -r "two  spaces" /path --include="*.tsx"'
+    render(
+      <Bubble
+        animate={false}
+        message={approvalMessage({
+          id: 'quoted-1',
+          tool: 'Run grep',
+          fullCommand: cmd,
+          baseCommand: 'grep',
+          trustGrantable: true,
+        })}
+        onApproval={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trust' }))
+    const row = screen.getAllByRole('button').find(b => b.textContent?.includes(cmd))
+    expect(row).toBeDefined()
+    const text = row!.textContent ?? ''
+    // The command appears verbatim exactly once.
+    expect(text.split(cmd).length - 1).toBe(1)
+    // The text ends with the command verbatim — no catalog delimiter was
+    // appended after the command's own closing quote.
+    expect(text.endsWith(cmd)).toBe(true)
+  })
 })

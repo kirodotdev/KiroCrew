@@ -24,12 +24,9 @@ if TYPE_CHECKING:
         _STREAM_TEXT_PROBE_BYTES,
         FILE_READ_SCHEMA,
         ValidationError,
-        _audit_consented_download,
-        _audit_owner_grant_refusal,
         _open_checked_file,
         _open_refusal,
         _OpenDenied,
-        _owner_grant_releases_flagged,
         _PathProbeBusy,
         _probe_busy_response,
         _probe_request_path,
@@ -43,7 +40,6 @@ if TYPE_CHECKING:
         redact,
         require_owner_dashboard_request,
         validate_tool_args,
-        wide_content_is_flagged,
     )
 
 
@@ -190,18 +186,13 @@ async def api_file_download(request: web.Request) -> web.StreamResponse:
 
     Security: same path-validation as file-read (validate_tool_args,
     _validate_dashboard_path, sensitive-path filter). Symlinks rejected
-    via O_NOFOLLOW. A file up to _DOWNLOAD_SCAN_MAX_BYTES is read whole and
-    scanned for sensitive material (credentials and exfiltration URLs); a
-    positive hit aborts the download unless the owner holds the
-    ``owner_dashboard`` file-delivery grant, the same grant and owner-identity
-    test ``GET /api/outbox/{filename}`` applies. Binary files are served
-    as-is without a MIME allowlist, since attachment disposition + nosniff
+    via O_NOFOLLOW. The route is owner-only, so the content is NOT scanned:
+    the owner downloads their own file as-is. Binary files are served
+    without a MIME allowlist, since attachment disposition + nosniff
     prevents inline rendering on the dashboard origin.
 
-    A larger file is NOT scanned, by the maintainer's decision: the scan holds
-    the whole file in memory, and this route is owner-only. It answers 409
-    ``large_file_unscanned`` (with ``size`` and ``limit``) until the request
-    carries ``confirm_unscanned=1``, then streams in bounded chunks; see
+    A file up to _DOWNLOAD_SCAN_MAX_BYTES is read whole. A larger file
+    streams in bounded chunks so it is never held in memory whole; see
     :func:`_stream_unscanned_download`. Small or large is decided by the fstat
     of the ONE descriptor every byte is read from, so no other file can be
     swapped in between the size check and the send.
@@ -335,69 +326,6 @@ async def api_file_download(request: web.Request) -> web.StreamResponse:
             status=409,
         )
 
-    # Defense in depth: scan content for credentials / exfil URLs via the
-    # context-aware redact() shim, which runs BOTH the exfil-URL and credential
-    # passes (exfil URLs first so embedded credentials in URL fragments are
-    # caught) and additionally applies a loaded companion's extra regexes before
-    # content reaches an external surface.
-    #
-    # Mostly-binary files can still hide credential patterns in their
-    # decodable runs (e.g. an ASCII-art `AKIA...` with one stray non-UTF-8
-    # byte). Non-UTF-8 bytes take the shared binary scan, which reads every
-    # byte and knows a JPEG's standard Huffman table is not a bot token.
-    try:
-        text: str | None = data.decode("utf-8")
-    except UnicodeDecodeError:
-        text = None
-    # Route through the context-aware redact() so a loaded companion's extra
-    # credential regexes also abort the download; the scrubbed != text diff is
-    # the gate (no count needed).
-    #
-    # The wide pass reads the raw bytes, because a credential at UTF-16/UTF-32
-    # spacing is NUL-interleaved ASCII that no contiguous-ASCII detector in
-    # redact() matches. Short-circuited, so a file the text pass already flags
-    # pays no second scan. It is CPU work over up to the read cap, so it runs on
-    # the bounded transfer pool, never the shared default executor.
-    consent_note: dict[str, str] = {}
-    if text is not None:
-        refusal = "content_redacted" if redact(text) != text else ""
-    else:
-        try:
-            flagged = await _run_path_probe(binary_content_is_flagged, data, transfer=True)
-        except _PathProbeBusy:
-            return _probe_busy_response(resource=path, tool_name="file_download")
-        refusal = "content_redacted" if flagged else ""
-    if not refusal:
-        try:
-            wide = await _run_path_probe(wide_content_is_flagged, data, transfer=True)
-        except _PathProbeBusy:
-            return _probe_busy_response(resource=path, tool_name="file_download")
-        if wide:
-            refusal = "wide_credential_detected"
-    if refusal:
-        # A flagged file of the owner's own is released by the owner's
-        # file-delivery grant, the same gate the outbox download applies.
-        if not await _owner_grant_releases_flagged(request):
-            _sel().log_tool_invocation(
-                session_key="dashboard",
-                tool_name="file_download",
-                outcome="denied",
-                resources=path,
-                error=refusal,
-            )
-            _audit_owner_grant_refusal(request, name=os.path.basename(path), what="flagged content")
-            # One client-facing code for both passes: the dashboard keys its
-            # credential-refusal copy on it.
-            return web.json_response(
-                {
-                    "error": "file content was redacted; download aborted",
-                    "code": "content_redacted",
-                },
-                status=400,
-            )
-        consent_note["error"] = "sensitive_content_delivered_with_consent"
-        _audit_consented_download(os.path.basename(path))
-
     safe_name = urllib.parse.quote(os.path.basename(path), safe="")
     content_type, _ = mimetypes.guess_type(path)
     if not content_type:
@@ -408,7 +336,6 @@ async def api_file_download(request: web.Request) -> web.StreamResponse:
         tool_name="file_download",
         outcome="success",
         resources=path,
-        **consent_note,
     )
     return web.Response(
         body=data,
@@ -428,35 +355,15 @@ def _download_read_chunk(f: BinaryIO, size: int) -> bytes:
 async def _stream_unscanned_download(
     request: web.Request, f: BinaryIO, path: str, size: int, read_in_flight: list[bool]
 ) -> web.StreamResponse:
-    """Serve a download over the scan threshold: confirm first, then stream unscanned.
+    """Serve a download over the in-memory threshold by streaming it.
 
-    Without ``confirm_unscanned=1`` the answer is 409 ``large_file_unscanned``
-    with the file's ``size`` and the ``limit``, and no byte is sent, so the
-    dashboard can tell the owner the file will not be checked and ask first.
-    With it, the file streams from *f* -- the descriptor whose fstat gave
+    The file streams from *f* -- the descriptor whose fstat gave
     *size* -- in chunks of ``_STREAM_CHUNK_BYTES``, and never past *size*: a
     file that grows while it streams is cut at what the fstat said. A file that
     shrinks ends the response short and drops the connection, so the client
     sees a failed download rather than a short file it takes for whole.
     """
     name = os.path.basename(path)
-    if request.query.get("confirm_unscanned") != "1":
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="file_download",
-            outcome="denied",
-            resources=path,
-            error="large_file_unconfirmed",
-        )
-        return web.json_response(
-            {
-                "error": "file is over the scan limit; confirm to download it unscanned",
-                "code": "large_file_unscanned",
-                "size": size,
-                "limit": _DOWNLOAD_SCAN_MAX_BYTES,
-            },
-            status=409,
-        )
     content_type, _ = mimetypes.guess_type(path)
     resp = web.StreamResponse(
         headers={
@@ -466,8 +373,7 @@ async def _stream_unscanned_download(
         },
     )
     resp.content_length = size
-    # SEL: the ALLOW decision is recorded before any byte moves, tagged so the
-    # audit shows this file was delivered without the content scan.
+    # SEL: the ALLOW decision is recorded before any byte moves.
     _sel().log_tool_invocation(
         session_key="dashboard",
         tool_name="file_download",

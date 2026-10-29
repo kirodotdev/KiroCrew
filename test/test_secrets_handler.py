@@ -21,6 +21,21 @@ from kiro_crew.dashboard.handlers.secrets import (
 from kiro_crew.secrets import SecretVault
 
 
+def _channels_settings_path() -> str:
+    """The click path to the channel settings tab, as the English dashboard labels it.
+
+    Read from the UI index the dashboard build generates, so a rename of the tab
+    fails here instead of leaving the refusal pointing at a tab that is gone.
+    """
+    from kiro_crew.ui_index import load_index
+
+    idx = load_index()
+    english = idx.labels["en"]
+    page = english[idx.by_id["page.settings"]["label_key"]]
+    tab = english[idx.by_id["settings.tab.channels"]["label_key"]]
+    return f"{page} → {tab}"
+
+
 class _FakeState:
     """No owner configured: only the signed local bootstrap subjects pass."""
 
@@ -1014,7 +1029,7 @@ class TestApiSecretsChannelCredentialRemote:
 
         assert status == 409
         assert data["code"] == "managed_by_channels"
-        assert "Channels" in data["error"]
+        assert _channels_settings_path() in data["error"]
         assert SecretVault(tmp_path).get("SLACK_BOT_TOKEN").reveal() == "xoxb-original"
 
     @pytest.mark.asyncio

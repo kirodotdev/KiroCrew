@@ -156,6 +156,22 @@ def save(service, member="A", *, enroll=False, prompt=None):
     return service.put(member, {**request, "preview_token": preview["preview_token"]})
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _drain_gc_cycles_before_module():
+    """Collect cycles left by earlier modules before this module's first test.
+
+    An earlier module on the same worker can leave asyncio transport or
+    PosixPath reference cycles behind.  If CPython collects them during a test
+    here, pytest's unraisablehook blames that test for the leak.  Two passes
+    cover chains of two-level cycles.
+    """
+    import gc
+
+    gc.collect()
+    gc.collect()
+    yield
+
+
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     home, specs, project = tmp_path / "home", tmp_path / "agents", tmp_path / "project"

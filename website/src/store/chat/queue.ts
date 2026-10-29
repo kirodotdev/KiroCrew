@@ -5,7 +5,15 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
-import { isUnsafeKey, queueEntryAttachments, queueEntryQuote, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { isUnsafeKey, queueEntryAttachments, queueEntryPastes, queueEntryQuote, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import type { PasteBlock } from '../../utils/pasteTokens'
+
+/** A queued row's paste blocks (`queueEntryPastes` put them there): what the
+ *  user row the entry drains into receives. */
+function queuedRowPastes(meta: Record<string, unknown> | undefined): { pastes?: PasteBlock[] } {
+  const pastes = meta?.pastes
+  return Array.isArray(pastes) && pastes.length ? { pastes: pastes as PasteBlock[] } : {}
+}
 
 /** Replace only this send's provisional row; a queue acceptance is not execution.
  *
@@ -71,8 +79,10 @@ export function hydrateQueuedBubbles(
     if (liveIds.has(queueId)) continue
     // The lists ride the row's meta under the same keys a user row carries
     // them, so a cancel on THIS tab restores a spaced path exactly even
-    // though the send happened on another tab or before a reload.
-    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(quote ? { quote } : {}), ...attachments } })
+    // though the send happened on another tab or before a reload. The paste
+    // blocks ride the same way, so the card draws the `[ Paste #N ]` token
+    // the sent bubble draws, not the expanded wire text.
+    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content) } })
   }
   for (const row of live) appendCorrelatedQueue(base, row)
   return base
@@ -142,7 +152,10 @@ export const queueReducers = {
           msgs.splice(ei, 1)
         }
       }
-      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) }
+      // The queued row's paste blocks go with the text: the user row renders
+      // them as the chip at once (`recollapsePastes` on render) instead of
+      // showing the expanded paste until the next reconcile finds the blocks.
+      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queuedRowPastes(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) }
       if (queue_id && sendId) rowMeta.queueId = queue_id
       if (at >= 0 && clientTs) rowMeta.clientTs = clientTs
       delete rowMeta.optimistic
@@ -180,14 +193,27 @@ export const queueReducers = {
    *  nothing from them. An empty object clears the lists (the frame carries
    *  no `meta` once every marker is gone). Omitted by the optimistic local
    *  edit, which cannot know how the server pruned them. */
-  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments }>) {
-    const { slot, queue_id, content, attachments } = action.payload
+  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments; pastes?: PasteBlock[] }>) {
+    const { slot, queue_id, content, attachments, pastes } = action.payload
     if (isUnsafeKey(slot)) return
     const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
     if (!msgs) return
     const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
     if (idx < 0) return
     msgs[idx].content = content
+    // The card's commit names the blocks whose tokens the edit kept, in token
+    // order (`pastes`); the row takes exactly that set. Named, not inferred
+    // from the text: a deleted body that is a prefix of a kept sibling's still
+    // occurs inside it, and a text test would keep the deleted block. The
+    // echo frame and another tab's edit carry no set and leave the row's
+    // blocks as they are: a renumbered attachment marker in the echo leaves
+    // the pastes in it unchanged, and a token another tab removed leaves a
+    // block whose body the card's fold no longer finds, so that card shows
+    // the text as sent rather than a wrong token.
+    if (pastes) {
+      const { pastes: _p, ...rest } = msgs[idx].meta ?? {}
+      msgs[idx].meta = { ...rest, ...(pastes.length ? { pastes } : {}) }
+    }
     if (attachments) {
       const { files: _f, dirs: _d, ...rest } = msgs[idx].meta ?? {}
       msgs[idx].meta = { ...rest, ...attachments }
@@ -231,8 +257,9 @@ export const queueReducers = {
       // can land before a delayed `queue_push` for the same entry. Appending
       // blindly would duplicate the row; keep the existing one.
       // Same row shape as `hydrateQueuedBubbles`: the frame's attachment
-      // lists ride the row so a cancel restores from them.
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) } })
+      // lists ride the row so a cancel restores from them, and the paste
+      // blocks so the card shows the token.
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta), ...queueEntryPastes(content) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

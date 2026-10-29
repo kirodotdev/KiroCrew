@@ -31,6 +31,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import {
   AgentDetailActions,
@@ -1469,8 +1470,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
   // Set once the app has rendered from a resolved status. An enterprise relock
-  // then keeps the app on screen: the gateway refuses its requests while the
-  // gate is closed, and the relock screen itself is a follow-up.
+  // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
   const statusQuery = useQuery({
     queryKey: QUERY_KEY,
@@ -1618,9 +1618,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     if (statusQuery.data) appShown.current = true
     return <>{children}{extra}</>
   }
-  // A relock of an app already in use keeps that app mounted and visible.
-  const relocked = enterpriseLocked && appShown.current
-  const unlessRelocked = (screen: ReactNode) => (relocked ? <>{children}</> : <>{screen}</>)
   if (statusQuery.isPending) {
     return app()
   }
@@ -1629,6 +1626,21 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     forceProbe.current = true
     void statusQuery.refetch()
   }
+  // A relock of an app already in use keeps that app mounted and visible, and
+  // tells the user to sign in again beside it.
+  const relockStatus = enterpriseLocked && appShown.current ? statusQuery.data : undefined
+  const unlessRelocked = (screen: ReactNode) => (relockStatus
+    ? (
+      <>
+        {children}
+        <RelockNotice
+          owner={relockStatus.setup_allowed !== false}
+          exactCommandElsewhere={relockStatus.bundled_cli === true
+            || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
+        />
+      </>
+    )
+    : <>{screen}</>)
   const prerequisite = statusQuery.data
 
   // An older gateway has no prerequisite API and must retain its existing

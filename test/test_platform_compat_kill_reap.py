@@ -689,6 +689,35 @@ class TestKillPidPinned:
         assert killed == [(4321, pc.SIGTERM)]
 
 
+class _RecordingProc:
+    """An asyncio child stand-in that appends each cleanup step to *events*."""
+
+    def __init__(self, events: list, *, pid=4242, returncode=None) -> None:
+        self.pid = pid
+        self.returncode = returncode
+        self._events = events
+
+    def kill(self) -> None:
+        self._events.append("kill")
+
+    async def communicate(self):
+        self._events.append("communicate")
+        return b"", b""
+
+    async def wait(self):
+        self._events.append("wait")
+
+
+def _recording_tree_kill(events: list):
+    """A ``kill_process_tree_async`` stand-in that appends ``("tree", pid, sig)``."""
+
+    async def _tree(pid, sig=pc.SIGTERM):
+        events.append(("tree", pid, sig))
+        return True
+
+    return _tree
+
+
 class TestKillAndReap:
     """The shared kill-the-tree + bounded-pipe-draining-reap helper."""
 
@@ -713,12 +742,11 @@ class TestKillAndReap:
         signalled; the pid-scoped kill backs up a group signal that missed."""
         from unittest import mock
 
-        proc = self._proc(pid=4242)
-        with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()) as tree:
+        events: list = []
+        proc = _RecordingProc(events, pid=4242)
+        with mock.patch.object(pc, "kill_process_tree_async", _recording_tree_kill(events)):
             await pc.kill_and_reap(proc)
-        tree.assert_awaited_once()
-        assert tree.await_args.args == (4242, pc.SIGKILL)
-        proc.kill.assert_called_once()
+        assert events == [("tree", 4242, pc.SIGKILL), "kill", "communicate"]
 
     @pytest.mark.asyncio
     async def test_skips_the_group_kill_for_a_same_group_child(self) -> None:
@@ -731,15 +759,14 @@ class TestKillAndReap:
         """
         from unittest import mock
 
-        proc = self._proc()
+        events: list = []
+        proc = _RecordingProc(events)
         with (
             mock.patch.object(pc, "_shares_own_process_group", lambda _pid: True),
-            mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()) as tree,
+            mock.patch.object(pc, "kill_process_tree_async", _recording_tree_kill(events)),
         ):
             await pc.kill_and_reap(proc)
-        tree.assert_not_awaited()
-        proc.kill.assert_called_once()
-        proc.communicate.assert_awaited_once()
+        assert events == ["kill", "communicate"]
 
     @pytest.mark.skipif(not pc.IS_POSIX, reason="POSIX only")
     def test_group_probe_reports_our_own_group(self) -> None:
@@ -784,11 +811,12 @@ class TestKillAndReap:
         a full pipe makes a bare ``wait()`` hang the calling task forever."""
         from unittest import mock
 
-        proc = self._proc()
-        with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()):
+        events: list = []
+        proc = _RecordingProc(events)
+        with mock.patch.object(pc, "kill_process_tree_async", _recording_tree_kill(events)):
             await pc.kill_and_reap(proc)
-        proc.communicate.assert_awaited_once()
-        proc.wait.assert_not_awaited()
+        assert "wait" not in events
+        assert events[-1] == "communicate", "the reap must be the last step, after the kill"
 
     @pytest.mark.asyncio
     async def test_bounds_the_reap(self) -> None:
@@ -818,10 +846,20 @@ class TestKillAndReap:
         timeout or cancellation handling."""
         from unittest import mock
 
-        proc = mock.MagicMock()  # pid is a MagicMock -> tree kill refuses it
-        proc.kill = mock.MagicMock(side_effect=ProcessLookupError())
-        proc.communicate = mock.AsyncMock(side_effect=RuntimeError("already reaped"))
+        class _DeadProc(_RecordingProc):
+            def kill(self) -> None:
+                super().kill()
+                raise ProcessLookupError()
+
+            async def communicate(self):
+                await super().communicate()
+                raise RuntimeError("already reaped")
+
+        events: list = []
+        # pid is a MagicMock -> tree kill refuses it
+        proc = _DeadProc(events, pid=mock.MagicMock())
         await pc.kill_and_reap(proc)
+        assert events == ["kill", "communicate"], "a failed kill must not skip the reap"
 
     @pytest.mark.asyncio
     async def test_repeat_cancellation_does_not_abandon_cleanup(self) -> None:
@@ -883,16 +921,15 @@ class TestKillAndReap:
         guard alone gates the branch."""
         from unittest import mock
 
-        proc = self._proc(pid=4242)
-        proc.returncode = 0  # asyncio has already reaped this child
+        events: list = []
+        # asyncio has already reaped this child
+        proc = _RecordingProc(events, pid=4242, returncode=0)
         with (
             mock.patch.object(pc, "_shares_own_process_group", lambda _pid: False),
-            mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()) as tree,
+            mock.patch.object(pc, "kill_process_tree_async", _recording_tree_kill(events)),
         ):
             await pc.kill_and_reap(proc)
-        tree.assert_not_awaited()
-        proc.kill.assert_called_once()
-        proc.communicate.assert_awaited_once()
+        assert events == ["kill", "communicate"]
 
     @pytest.mark.asyncio
     async def test_fires_the_tree_kill_for_a_live_child(self) -> None:
@@ -925,16 +962,32 @@ class TestTerminateAndReapSyncReapedChild:
         check alone decides."""
         from unittest import mock
 
-        proc = mock.MagicMock()
-        proc.pid = 99_999_999_999  # above every pid_max: never a live process
-        proc.poll.return_value = None if live else 0
+        events: list = []
+
+        class _Popen:
+            pid = 99_999_999_999  # above every pid_max: never a live process
+
+            def poll(self):
+                return None if live else 0
+
+            def kill(self) -> None:
+                events.append("kill")
+
+            def wait(self, timeout=None):
+                events.append("wait")
+                return 0
+
+        def _tree(pid, sig):
+            events.append(("tree", pid, sig))
+            return True
+
         with (
             mock.patch.object(pc, "_isolated_group_of_live_child", lambda *a, **k: None),
             mock.patch.object(pc, "_shares_own_process_group", lambda _pid: False),
-            mock.patch.object(pc, "kill_process_tree") as tree,
+            mock.patch.object(pc, "kill_process_tree", _tree),
         ):
-            pc.terminate_and_reap_sync(proc, grace=0.1, reap_timeout=0.1)
+            pc.terminate_and_reap_sync(_Popen(), grace=0.1, reap_timeout=0.1)
         if live:
-            tree.assert_called_once_with(99_999_999_999, pc.SIGKILL)
+            assert events == [("tree", 99_999_999_999, pc.SIGKILL), "kill", "wait"]
         else:
-            tree.assert_not_called()
+            assert events == ["wait"], "a reaped child gets no pid-addressed signal at all"

@@ -430,8 +430,7 @@ def _copy_database_consistently(
             raise DatabaseCopyFailed(src, e) from e
         if require_database:
             # A DECLARED component file, so this is a hard failure. The asymmetry with the
-            # tree pass below is deliberate, and an earlier revision of this change got it
-            # backwards by "unifying" the two -- review caught the consequence:
+            # tree pass below is deliberate; "unifying" the two has this consequence:
             #
             # A corrupt `memory.db` staged as bytes makes the snapshot SUCCEED. `--keep N`
             # then counts that archive as the newest backup and prunes a real one, while
@@ -751,8 +750,7 @@ def _restage_databases(
         # copy of a PRODUCT database in the bundle without its checkpointed rows, and
         # restore's strict integrity check passes such a copy: rows present only in the
         # write-ahead log are then silently gone. A recorded note does not prevent that.
-        # Failing closed is both the safe direction and what this call did before the
-        # tolerance elsewhere in this change existed. Nothing is published on the way
+        # Failing closed is the safe direction. Nothing is published on the way
         # out, so no retention pass can prune a bundle that does restore.
         try:
             src_st = src.lstat()
@@ -1016,12 +1014,12 @@ def _copytree_safe(
         # rather than on the failure to write it, in a bundle reporting success.
         pinned_fs.copy_file_pinned(source, target, on_skip=report, skip_unreadable=skip_unreadable)
 
-    # `dirs_exist_ok` has to follow `must_create`, not be hardcoded. Review found the gap:
-    # `must_create` reached the pinned walk and stopped there, so on a platform that cannot
-    # pin -- Windows, the dashboard's replace -- a root recreated after the rmtree was still
-    # merged into and stale files survived a successful replace. That is the same mistake as
-    # the earlier Windows import refusal in this PR: a guard added to the pinned path and not
-    # carried to the by-name one. Every mutating path gets the gate or the gate is decorative.
+    # `dirs_exist_ok` has to follow `must_create`, not be hardcoded. If `must_create`
+    # reached only the pinned walk, then on a platform that cannot pin -- Windows, the
+    # dashboard's replace -- a root recreated after the rmtree would still be merged into
+    # and stale files would survive a successful replace: a guard added to the pinned path
+    # and not carried to the by-name one. Every mutating path gets the gate or the gate is
+    # decorative.
     # The tree's OWN directory, which `_ignore_unsafe` never sees: `copytree` lists the
     # root before consulting it. Asked HERE rather than by wrapping the call, because a
     # wrapper cannot tell the root's own refusal from a failure to CREATE the
@@ -1290,12 +1288,8 @@ def _print_manifest(snap: Path) -> None:
         m = json.loads(mf.read_text(encoding="utf-8"))
         print("📋 Snapshot info:")
         # Every string below comes out of an archive the caller supplied, so all of them
-        # go through _terminal_safe. Review named the omission list this change added;
-        # created_at, user and hostname are the same class and pre-date this diff. They
-        # are fixed here rather than left as a matching hole three lines away, because
-        # the renderer makes each one a one-word change and shipping a function that
-        # sanitizes two of five attacker-controlled fields would be worse than either
-        # extreme. Named as a drive-by rather than smuggled in.
+        # go through _terminal_safe: a function that sanitizes two of five
+        # attacker-controlled fields would be worse than either extreme.
         print(f"  Created: {_terminal_safe(m.get('created_at', 'unknown'))}")
         print(
             f"  From: {_terminal_safe(m.get('user', 'unknown'))}"

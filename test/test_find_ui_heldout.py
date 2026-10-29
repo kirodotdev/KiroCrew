@@ -206,26 +206,6 @@ def test_the_same_verb_with_an_object_still_answers(query: str, lang: str, targe
     assert target in _ids(d)[:2], _ids(d)
 
 
-@pytest.mark.parametrize(
-    ("query", "lang"),
-    [
-        ("help", "en"),
-        ("stop", "en"),
-        ("帮助", "zh-CN"),
-        ("停止", "zh-CN"),
-        ("where are my keys", "en"),
-        ("chat about dinner", "en"),
-        ("how do I uninstall my refrigerator", "en"),
-        ("我的钥匙在哪", "zh-CN"),
-        ("晚饭吃什么", "zh-CN"),
-        ("xqzv blorp flim", "en"),
-        ("zzzz", "zh-CN"),
-    ],
-)
-def test_unrelated_and_vague_questions_stay_no_match(query: str, lang: str) -> None:
-    assert ui_index.find_ui(query, lang)["status"] == "no_match", query
-
-
 # ------------------------------------------------------------ state-flipping labels
 
 

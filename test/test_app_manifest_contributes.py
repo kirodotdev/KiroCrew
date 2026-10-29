@@ -29,11 +29,9 @@ class TestSignatureFrozenVocabulary:
     or a new kind does not, because emission is conditional and absent keys were never
     in the bytes.
 
-    Three reviewers asked a human to confirm this vocabulary before the first signed use
-    on the grounds that it cannot be changed afterwards. That is true, and it was being
-    protected only by their having said so. These tests turn it into a gate: a rename
-    fails HERE, with this docstring attached, instead of failing in a user's install
-    months later.
+    So this vocabulary cannot change after the first signed use. These tests turn that
+    into a gate: a rename fails HERE, with this docstring attached, instead of failing
+    in a user's install months later.
 
     Deliberately NOT pinned: the caps. A cap is a validation threshold and appears
     nowhere in the payload, so raising or lowering one cannot invalidate a signature.

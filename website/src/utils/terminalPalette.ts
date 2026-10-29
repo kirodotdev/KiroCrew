@@ -15,6 +15,8 @@
  * monokai-dark and everforest, which would render two ANSI colours identically.
  */
 
+import { parseCssColor } from '../lib/iconContrast'
+
 /** Reads one CSS custom property; returns '' when the theme does not define it. */
 export type VarReader = (name: string) => string
 
@@ -62,6 +64,29 @@ export function brighten(value: string, towardsWhite: boolean): string {
   if (!rgb) return value
   const target = towardsWhite ? 255 : 0
   return toHex(rgb.map((c) => c + (target - c) * BRIGHT_MIX) as [number, number, number])
+}
+
+/**
+ * Normalises any CSS colour the value sanitizer accepts (hex, `rgb()`/`rgba()`,
+ * `color()`) to a 6-digit hex string, so the hex-only luminance and bright-ramp
+ * maths above see a colour they can parse. A value that cannot be parsed is
+ * returned unchanged — the palette then degrades exactly as it did before,
+ * rather than worse. Used for the terminal's own background and foreground,
+ * which a theme pack may legitimately give as `rgb()`: left unparsed, the
+ * luminance check would default to dark polarity and collapse ANSI black onto a
+ * light terminal background.
+ */
+export function toHexColor(value: string): string {
+  const v = value.trim()
+  if (!v) return v
+  if (parseHex(v)) return v
+  const rgba = parseCssColor(v)
+  if (!rgba) return v
+  // CSS clamps an out-of-range rgb() channel (e.g. rgb(256, 256, 0)) to 0..255;
+  // match that before toHex, or a channel of 256 renders as the three hex
+  // digits "100" and overflows the 6-digit string into a corrupt colour.
+  const clamp = (c: number) => Math.min(255, Math.max(0, c))
+  return toHex([clamp(rgba.r), clamp(rgba.g), clamp(rgba.b)])
 }
 
 /** The 16 ANSI entries of xterm's ITheme. */

@@ -1,8 +1,7 @@
-"""Regression tests for the review findings on the pipeline fold and its routes.
+"""Regression tests for the pipeline fold and its routes.
 
-Each test here exists because a reviewer found the defect in shipped code, so each
-one is written to FAIL against the version that had it rather than merely to
-describe the fixed behaviour.
+Each test is written to FAIL against the defective shape rather than merely to
+describe the correct behaviour.
 """
 
 from __future__ import annotations

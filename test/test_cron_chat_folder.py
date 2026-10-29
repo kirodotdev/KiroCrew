@@ -1218,15 +1218,16 @@ class TestRestCreate:
             assert resp.status == 200
         assert add.await_args.kwargs["chat_folder_id"] == ""
 
-    async def test_the_schedule_folder_is_unaffected(self) -> None:
-        add = AsyncMock(return_value=_job())
-        app = _app(api_crons_create, "/api/crons", add_job_async=add)
+    async def test_the_schedule_folder_is_unaffected(self, tmp_path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        app = _app(api_crons_create, "/api/crons", add_job_async=svc.add_job_async)
         async with TestClient(TestServer(app)) as client:
-            await client.post(
+            resp = await client.post(
                 "/api/crons", json={**_BODY, "chat_folder_id": FOLDER, "folder_id": "sched9"}
             )
-        assert add.await_args.kwargs["folder_id"] == "sched9"
-        assert add.await_args.kwargs["chat_folder_id"] == FOLDER
+            assert resp.status == 200
+        (stored,) = CronService(base_dir=tmp_path).list_jobs()
+        assert (stored.folder_id, stored.chat_folder_id) == ("sched9", FOLDER)
 
 
 @pytest.mark.asyncio
@@ -1421,13 +1422,22 @@ class TestRestUpdate:
             await client.patch("/api/crons/job42", json={"name": "renamed"})
         assert calls == []
 
-    async def test_an_untouched_field_is_not_sent_to_the_store(self) -> None:
+    async def test_an_untouched_field_is_not_sent_to_the_store(self, tmp_path) -> None:
         """Editing any other setting must not rewrite the placement."""
-        update = AsyncMock(return_value=_job(chat_folder_id=FOLDER))
-        app = _app(api_cron_update, "/api/crons/{job_id}", update_job_async=update)
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(name="brief", message="Write it.", every_secs=3600)
+        await svc.update_job_async(job.id, chat_folder_id=FOLDER)
+        app = _app(
+            api_cron_update,
+            "/api/crons/{job_id}",
+            update_job_async=svc.update_job_async,
+            get_job_async=svc.get_job_async,
+        )
         async with TestClient(TestServer(app)) as client:
-            await client.patch("/api/crons/job42", json={"silent": True})
-        assert "chat_folder_id" not in update.await_args.kwargs
+            resp = await client.patch(f"/api/crons/{job.id}", json={"silent": True})
+            assert resp.status == 200
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert (stored.silent, stored.chat_folder_id) == (True, FOLDER)
 
 
 @pytest.mark.asyncio

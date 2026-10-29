@@ -215,7 +215,16 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+#: ``owner/repo`` for the ``gh`` calls below, bounded at GitHub's own widths: a
+#: login is 1-39 characters, a repository name at most 100 (the same numbers
+#: ``kiro_crew.github_runner`` publishes; this script runs as a bare file without
+#: ``kiro_crew`` on the import path, and a test pins the two spellings together).
+#: ``\Z``, not ``$``: ``$`` also matches before a final newline.
+_GITHUB_MAX_OWNER_CHARS = 39
+_GITHUB_MAX_REPO_CHARS = 100
+_REPO_RE = re.compile(
+    rf"^[A-Za-z0-9._-]{{1,{_GITHUB_MAX_OWNER_CHARS}}}/[A-Za-z0-9._-]{{1,{_GITHUB_MAX_REPO_CHARS}}}\Z"
+)
 
 #: What a closure request has to be ABOUT. Measured: `\bplease\s+close\b` alone
 #: fired on "Please close the file after reading it" and "Remember to please

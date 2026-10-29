@@ -59,7 +59,7 @@ function createFeedLane({
   feedBase,
   uiDriven,
   log,
-  reporter: { currentChannel, emit, getInfo, recordLaneVersion },
+  reporter: { currentChannel, emit, getInfo, policyRefusal = () => "", recordLaneVersion },
   buildFeedBase,
   classifyError,
   shouldAutoOffer,
@@ -67,6 +67,12 @@ function createFeedLane({
   channelForVersion,
   launchCheckDelayMs,
   checkIntervalMs,
+  // Called before every discovery. When true the gateway's security policy
+  // owns updates on this install and the Electron feed lane stands down: no
+  // check, no download, no notification. The renderer notifies the main
+  // process via update:notify-policy-governed (ipc-registrar.js) when the
+  // gateway status reports a policy provider governs a bundled install.
+  isPolicyGoverned = () => false,
 }) {
   let updateReady = false;
   let downloading = false;
@@ -168,6 +174,10 @@ function createFeedLane({
   }
 
   function configureFeed() {
+    // The policy now requires a channel this build cannot follow: no feed at all,
+    // rather than the display fallback currentChannel() would point it at.
+    const refusal = policyRefusal();
+    if (refusal) throw new Error(refusal);
     const channel = currentChannel();
     // Record the channel this check's feed is configured for, so the
     // update-available handler compares the candidate against THIS lane rather
@@ -201,6 +211,27 @@ function createFeedLane({
       // handler's phase derivation, a feed failure would fire the host's
       // gateway recovery in the middle of the bundle swap.
       log.info("[update] check requested during install activity — skipping");
+      return;
+    }
+    // A security policy provider owns updates on this install. Checked after
+    // the installing/quitHandled guard so a governance signal arriving mid-
+    // handoff cannot emit not-available over an in-progress install or quit.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy provider governs this install — feed lane stands down");
+      // Disarm any staged build. Without this a build already downloaded
+      // before governance was detected installs on quit while the provider
+      // also applies — violating the exclusive-owner goal. Mirrors the
+      // cleanup the update-not-available handler performs.
+      downloading = false;
+      foundVersion = null;
+      if (updateReady) {
+        log.info(`[update] policy stand-down: discarding staged ${stagedVersion}`);
+      }
+      updateReady = false;
+      stagedVersion = null;
+      stagedNotes = "";
+      app.removeListener("before-quit", deferredInstallOnQuit);
+      emit("not-available", {});
       return;
     }
     if (downloading) {
@@ -426,6 +457,15 @@ function createFeedLane({
       }
     }
     log.info(`[update] downloading ${foundVersion}`);
+    // Re-check governance after the async freshness wait: the IPC-triggered
+    // safeCheck() exits early when gate.checking is set, so governance arriving
+    // during the wait does not clear foundVersion. Block the download here instead
+    // of wasting bandwidth then discarding the stage at the install guard.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy governed (pre-download): suppressing download");
+      emit("not-available");
+      return;
+    }
     downloading = true;
     downloadWasAutomatic = automatic;
     emit("downloading", { version: pendingVersion() });
@@ -571,6 +611,16 @@ function createFeedLane({
         log.info("[update] install refused: the stage is no longer the newest build — pursuing the newest instead");
         return;
       }
+      // Re-check governance after the async freshness verify: policy may have
+      // arrived while the check was in flight (the IPC handler called updater.check()
+      // but safeCheck() returned early because a check was already running, so the
+      // new governance signal did not abort the verify). Abort here rather than
+      // calling quitAndInstall() on a governed install.
+      if (isPolicyGoverned()) {
+        log.info("[update] policy governed (post-verify): aborting manual install dispatch");
+        emit("not-available");
+        return;
+      }
       installing = true;
       // Tell the renderer the install is UNDERWAY before anything goes silent:
       // the gateway is about to be stopped on purpose, and without this state
@@ -669,6 +719,16 @@ function createFeedLane({
         return;
       }
       app.removeListener("before-quit", deferredInstallOnQuit);
+      // Re-check governance after the gateway stopped: policy may have arrived
+      // during the shutdown await (the IPC-triggered check exits because
+      // `installing` is set, so the latch is active with no further guard).
+      if (isPolicyGoverned()) {
+        log.info("[update] policy governed (post-gateway-stop): canceling manual install");
+        installing = false;
+        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+        emit("not-available");
+        return;
+      }
       log.info("[update] gateway down — quitAndInstall");
       quitAndInstall();
       dispatched = true;
@@ -715,6 +775,12 @@ function createFeedLane({
       return;
     }
     if (quitHandled || !updateReady) return;
+    // Belt-and-suspenders: if policy governance arrived just before quit,
+    // skip the install. The provider will handle it.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy stand-down: skipping deferred install on quit");
+      return;
+    }
     // `installing` and `verifyingStage` stand for "the manual path already owns this
     // install". Standing down for them would land a SECOND quitAndInstall() against
     // the same install directory plus a second forceExitFailsafe -- but returning
@@ -805,6 +871,14 @@ function createFeedLane({
         app.quit();
         return;
       }
+      // Re-check governance after the async freshness verify (same race as the
+      // manual path): policy may have arrived during the gate's network round trip.
+      if (isPolicyGoverned()) {
+        log.info("[update] policy governed (post-verify on quit): quitting without installing");
+        notifyInstallCanceled();
+        app.quit();
+        return;
+      }
       // No onInstallDispatched here: this handler only runs from before-quit,
       // where main.js has already set isQuitting -- the watchdog is covered. Nor
       // is it needed for the failure path's sake: that path quits rather than
@@ -886,6 +960,13 @@ function createFeedLane({
       // gate above still awaits the feed with the flag clear (`installing`
       // outranks `checking`, so an early claim would misattribute that check's
       // own failure), and so neither quit-time refusal leaves it latched.
+      // Re-check governance after the gateway stopped (same race as manual path).
+      if (isPolicyGoverned()) {
+        log.info("[update] policy governed (post-gateway-stop on quit): quitting without installing");
+        notifyInstallCanceled();
+        app.quit();
+        return;
+      }
       installing = true;
       deferredInstalling = true;
       quitAndInstall();
@@ -1185,6 +1266,15 @@ function createFeedLane({
   // follows is OUR decision, made here from the preference, so the automatic
   // and the consent paths share one guarded entry point (startDownload).
   autoUpdater.on("update-available", (info) => {
+    // If policy governance is active while a check was in flight, discard the
+    // available build. The provider owns updates; the feed lane must not surface
+    // or auto-download. Governance arriving mid-check is the race this covers.
+    // Emit not-available so the renderer exits the "checking" state cleanly.
+    if (isPolicyGoverned()) {
+      log.info("[update] policy governed: ignoring update-available from in-flight check");
+      emit("not-available");
+      return;
+    }
     if (gate.abandonedCheck) {
       // Same reason as the error handler: an install is already running on the
       // fail-open promise this check's wait made. Dropping the stage for the
@@ -1317,6 +1407,11 @@ function createFeedLane({
     }
   });
   autoUpdater.on("download-progress", (p) => {
+    // If policy governance became active while this download is in progress,
+    // suppress the progress events: emitting "downloading" here while
+    // update-downloaded will discard the stage would leave the badge stuck
+    // on "downloading" until the next scheduled check clears it.
+    if (isPolicyGoverned()) return;
     // New capability vs. the hand-rolled updater: real progress, so the card
     // can show a percentage instead of an indeterminate "downloading".
     emit("downloading", {
@@ -1326,6 +1421,18 @@ function createFeedLane({
     });
   });
   autoUpdater.on("update-downloaded", (info) => {
+    // If policy governance arrived while this download was in flight, discard
+    // the build. The policy provider owns updates on this install; installing
+    // from the feed lane would violate the exclusive-owner goal.
+    if (isPolicyGoverned()) {
+      log.info(`[update] policy stand-down mid-download: discarding ${info && info.version}`);
+      downloading = false;
+      // Explicitly clear any stale "downloading" badge: the progress handler
+      // may have been suppressed partway through, leaving the renderer on an
+      // intermediate state that never self-clears until the next check poll.
+      emit("not-available");
+      return;
+    }
     updateReady = true;
     downloading = false;
     stagedVersion = (info && info.version) || null;

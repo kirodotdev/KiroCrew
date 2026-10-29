@@ -641,6 +641,11 @@ class TestUpdateDispatch:
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
         )
+        # The fake `subprocess.run` cannot answer the repo-config probe; that refusal
+        # is covered against a real repo in test_host_git_repo_exec_neutralization.
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
+        )
 
         # The function will call git rev-parse, then git fetch, then git diff.
         # After git diff returns 0 (no new commits), it prints "Already up to date!"
@@ -690,6 +695,9 @@ class TestUpdateDivergenceGuard:
         )
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
         )
 
         import kiro_crew.cli_server as cs

@@ -98,6 +98,7 @@ from kiro_crew.crew_log.entry_types_ledgers import (  # noqa: F401
     RADAR_SKIP_SCOPES,
     RADAR_TERMINAL_PHASES,
     RADAR_TTL_ACTIVE_PHASES,
+    WORK_CHARGE_ENTRY_TYPE,
     WORK_ENTRY_TYPE,
 )
 from kiro_crew.crew_log.entry_types_lifecycle import ACTOR_VALUES  # noqa: F401
@@ -107,6 +108,13 @@ from kiro_crew.crew_log.entry_types_surfaces import (  # noqa: F401
     CREWMATE_ROW_LIMIT,
     CREWMATE_TEXT_LIMIT,
     CREWMATE_WAITING_LIMIT,
+    CUSTOM_ENTRY_TYPE,
+    CUSTOM_FOLD_NAME,
+    CUSTOM_RECORD_BYTES,
+    CUSTOM_RECORD_DEPTH,
+    CUSTOM_TYPE_LIMIT,
+    CUSTOM_TYPE_NAME_LIMIT,
+    CUSTOM_WRITER_LIMIT,
     DASHBOARD_AGENTIC_ENTRY_TYPE,
     DASHBOARD_CODE_LIMIT,
     DASHBOARD_FIELD_LIMIT,

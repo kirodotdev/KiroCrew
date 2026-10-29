@@ -172,7 +172,7 @@ class _Host:
         mp.setattr(cli_doctor, "_mc_version", "9.9.9")
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
-        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg: dict(self.creds))
+        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
         mp.setattr(cli_doctor.shutil, "which", lambda name, **_kw: self.which.get(name))
         mp.setattr(cli_doctor.gateway_lock, "lock_holder", self._lock_holder)
@@ -462,7 +462,7 @@ Vector Memory (in-process embeddings)
   embeddings:  ✅ always-on
 
 Speech-to-Text
-  status:      ⏹ disabled (enable from dashboard → Settings → Speech-to-Text)
+  status:      ⏹ disabled (enable from dashboard → Settings → Voice → Speech-to-Text)
   ffmpeg:      ✅ available
 
 Slack Integration
@@ -628,6 +628,7 @@ MCP Tools
 
 Runtime
   python:      ✅ <TMP>/pkg/.venv/bin/python3 (Python 3.12.1)
+  kiro_crew:   ✅ 9.9.9
   deps:        ❌ missing modules (websockets/slack_sdk/aiohttp)
   <<_doctor_import_path>>
   sqlite fts5: ❌ missing (memory/knowledge search will fail)
@@ -654,7 +655,7 @@ Speech-to-Text
   engine:      ❌ install the voice extra
   model:       ⏹ base.en not downloaded yet (148 MB, fetched on first use)
   ffmpeg:      ❌ not found
-               Fix: download the audio decoder from the dashboard (Settings → Speech-to-Text), or install ffmpeg into /usr/local/bin
+               Fix: download the audio decoder from the dashboard (Settings → Voice → Speech-to-Text), or install ffmpeg into /usr/local/bin
 
 Slack Integration
   status:      ⏭  not configured (optional)
@@ -680,13 +681,15 @@ Loop-stall Crash Dumps
 Connectivity
   kiro-cli:    ⏭  skipped (not installed)
   gateway:     ✅ running (token auth enabled)
+  running:     ⚠️  8.8.8, on disk 9.9.9 (restart needed)
+               Fix: `kirocrew restart` (the gateway still runs the old code)
 
   💡 Remote access: Run on your LOCAL machine:
      ssh -NL 9999:localhost:9999 devbox
      Then run: kirocrew token
   auth check:  ❌ external access allowed without token!
 
-❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), dashboard auth: no token required on external interface
+❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), gateway restart needed (running version differs from on-disk), dashboard auth: no token required on external interface
 """
 
 
@@ -748,6 +751,8 @@ def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) 
         "http://127.0.0.1:9999/api/status", 401, "unauthorized", None, None
     )
     host.urls["http://0.0.0.0:9999/api/status"] = _Response(200, b"{}")
+    # The gateway still serves the version from before an update.
+    host.urls["http://127.0.0.1:9999/api/health"] = _Response(200, b'{"version": "8.8.8"}')
     host.mp.setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22")
     host.mp.setitem(sys.modules, "slack_sdk", None)
     host.issue_from = {

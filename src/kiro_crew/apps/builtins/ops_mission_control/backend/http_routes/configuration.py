@@ -241,7 +241,7 @@ async def _settings_write_or_refuse(
         # malformed document -- so this helper, which caught only `OSError`, let the bare
         # 500 back in for exactly the store the docstring above said the companion PR would
         # make strict. That companion PR is this one, so the hole opened here the moment the
-        # reader landed. Found in review (First Principles).
+        # reader landed.
         #
         # The response comes from the shared mapper rather than being built here, so this
         # helper and the four route-level sites cannot drift on either status.
@@ -548,7 +548,7 @@ async def _handle_put_settings(request: web.Request, *, _audit: AuditWriter) -> 
     # spell `policy_store` left these three to answer a refused keystone write with a
     # plain 500 — the destination keys are exactly the ones an agent must not be able to
     # redirect, so they are the last place to leave the operator guessing whether their
-    # change landed. Found in review (GPT 5.6).
+    # change landed.
     if slack_enabled is not None:
         refused = await _settings_write_or_refuse(
             slack_out.set_settings,
@@ -645,7 +645,7 @@ async def _handle_put_settings(request: web.Request, *, _audit: AuditWriter) -> 
     # between them — request A's `act` landing with request B's broader rules, authorizing a
     # write neither operator asked for. The two-phase validate-then-write discipline above
     # cannot close that window, because the interleaving comes from another request rather
-    # than from ordering inside this one. Found in review (GPT 5.6).
+    # than from ordering inside this one.
     if mode is not None or rules is not None:
         refused = await _settings_write_or_refuse(
             policy_store.set_ceiling,

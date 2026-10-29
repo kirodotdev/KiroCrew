@@ -40,10 +40,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import _build_frontend  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _policy_apply_tasks  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _PolicyApplyStopped  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _repo_exec_config_refusal  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _resolve_restart_target  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _run_tracked_policy_apply  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _snapshot_memory_or_refuse  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _user_excludes_file  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _venv_pip_install  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_apply  # noqa: F401
@@ -188,10 +190,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_capability import auto_update_effect  # noqa: F401
     from kiro_crew.platform.update_capability import bundled_by_desktop_app  # noqa: F401
     from kiro_crew.platform.update_capability import derive_capability  # noqa: F401
+    from kiro_crew.platform.update_governance import fetch_and_pin_upstream  # noqa: F401
+    from kiro_crew.platform.update_governance import git_command_env  # noqa: F401
     from kiro_crew.platform.update_governance import min_version  # noqa: F401
+    from kiro_crew.platform.update_governance import repo_exec_config_reason  # noqa: F401
     from kiro_crew.platform.update_governance import resolve_remote_url  # noqa: F401
     from kiro_crew.platform.update_governance import update_blocked_reason  # noqa: F401
     from kiro_crew.platform.update_governance import update_required  # noqa: F401
+    from kiro_crew.platform.update_governance import upstream_remote_and_branch  # noqa: F401
     from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases  # noqa: F401
     from kiro_crew.platform.update_layout import detect_install_layout  # noqa: F401
     from kiro_crew.platform.update_layout import set_release_channel  # noqa: F401

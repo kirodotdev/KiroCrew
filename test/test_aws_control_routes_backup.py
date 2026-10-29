@@ -673,10 +673,10 @@ class TestBackupEndpoints:
                     return_value={"id": "a" * 32, "label": "install-aaaa"},
                 ),
                 mock.patch.object(
-                    routes_mod.backup_mod, "list_remote_backups", return_value={}
+                    routes_mod.backup_mod, "list_remote_backups", return_value={"listed": query}
                 ) as listed,
             ):
-                asyncio.run(
+                resp = asyncio.run(
                     handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
                         _request(
                             "GET",
@@ -685,6 +685,8 @@ class TestBackupEndpoints:
                         )
                     )
                 )
+            assert resp.status == 200, query
+            assert _payload(resp)["remote"] == {"listed": query}
             assert listed.call_args.kwargs["include_others"] is expected, query
 
     def _restore(self, body: dict, *, restore=None):

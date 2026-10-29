@@ -43,6 +43,7 @@ import tempfile
 import time
 
 import pytest
+from named_cases_helpers import named_cases
 
 import kiro_crew
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
@@ -322,22 +323,68 @@ class TestBarePathPassIsNarrowerThanTheInliner:
     @pytest.mark.parametrize(
         "text",
         [
-            # Inside a URL query. The grammar's own guard admits this ("=" is
-            # not [\w:/]), and rewriting it breaks the URL.
-            f"see https://host/render?src={_ABS_A} for the chart",
-            f"https://host/a?x=1&src={_ABS_A}&y=2",
-            # Inline code and a fenced block are documentation.
-            f"run `open {_ABS_A}` to view it",
-            f"how to:\n```\nopen {_ABS_A}\n```\nthat is all",
-            # Protocol-relative: a path shape to both grammars ("/" opens the
-            # POSIX one, "//" also spells a UNC share) but REMOTE to
-            # iter_local_refs, so pass one declines it and pass two must too --
-            # otherwise a working remote image URL is destroyed.
-            "see ![chart](//cdn.example.com/x.png) here",
-            "bare protocol-relative: //cdn.example.com/x.png",
+            *named_cases(
+                "test_code_and_url_spans_keep_their_text",
+                "text",
+                [
+                    # Inside a URL query. The grammar's own guard admits this ("=" is
+                    # not [\w:/]), and rewriting it breaks the URL.
+                    f"see https://host/render?src={_ABS_A} for the chart",
+                    f"https://host/a?x=1&src={_ABS_A}&y=2",
+                    # Inline code and a fenced block are documentation.
+                    f"run `open {_ABS_A}` to view it",
+                    f"how to:\n```\nopen {_ABS_A}\n```\nthat is all",
+                    # Protocol-relative: a path shape to both grammars ("/" opens the
+                    # POSIX one, "//" also spells a UNC share) but REMOTE to
+                    # iter_local_refs, so pass one declines it and pass two must too --
+                    # otherwise a working remote image URL is destroyed.
+                    "see ![chart](//cdn.example.com/x.png) here",
+                    "bare protocol-relative: //cdn.example.com/x.png",
+                ],
+            ),
+            *named_cases(
+                "test_prose_keeps_every_word",
+                "text",
+                [
+                    # The reported row, verbatim: POSIX spelling on every host.
+                    "Please check /var/log/app and tell me why logo.png is broken",
+                    f"Please check {_DIR} and tell me why logo.png is broken",
+                    f"check {_DIR}\tthen logo.png",
+                    # A directory the scrubber could not stat even if it wanted to.
+                    "I checked /root/notes and the new logo.png is fine",
+                    # Parentheses and brackets wrap an aside far more often than a path.
+                    f"See the logs ({_DIR} and the new logo.png) first",
+                    f"see [{_SPACED}] here",
+                    # A quote pair is not proof of a single path: a person types
+                    # "/var/log/app has the broken logo.png" as one sentence.
+                    '"/var/log/app has the broken logo.png"',
+                    f'"{_DIR} has the broken logo.png"',
+                    f"'{_DIR} has the broken logo.png'",
+                    f"<{_DIR} has the broken logo.png>",
+                    # ... so a quoted spaced path is residue too, not a covered shape,
+                    # and so is a BARE link destination: this repo's own markdown reader
+                    # ends one at its first space, so the span is not a path to the code
+                    # that consumes it.
+                    f'see "{_SPACED}" here',
+                    f"see [the shot]({_SPACED}) here",
+                    # The documented residue: a spaced path written mid-sentence with no
+                    # shape to vouch for it keeps its text rather than risking the prose.
+                    f"I saved it to {_SPACED} for you.",
+                    # ... and so does one a person typed alone on its line: its name is
+                    # not the channel writer's, so nothing tells it from the prose below.
+                    f"look at this\n{_SPACED}",
+                    # A whole line a person types that opens with a directory and ends
+                    # at an image name: alone on its line, but not an attachment line.
+                    "/var/log/app has the broken logo.png.",
+                    f"{_DIR} has the broken logo.png",
+                    f"1. {_DIR} needs the new favicon.png",
+                    f"- {_DIR} shows the error in logo.png",
+                    f"> {_DIR} has images{os.sep}logo.png",
+                ],
+            ),
         ],
     )
-    def test_code_and_url_spans_keep_their_text(self, text):
+    def test_the_text_is_kept(self, text):
         assert strip_image_refs(text) == text
 
     @pytest.mark.parametrize(
@@ -428,48 +475,6 @@ class TestBarePathPassKeepsProse:
     probes are offloaded (``acp.client`` calls it through ``asyncio.to_thread``).
     """
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            # The reported row, verbatim: POSIX spelling on every host.
-            "Please check /var/log/app and tell me why logo.png is broken",
-            f"Please check {_DIR} and tell me why logo.png is broken",
-            f"check {_DIR}\tthen logo.png",
-            # A directory the scrubber could not stat even if it wanted to.
-            "I checked /root/notes and the new logo.png is fine",
-            # Parentheses and brackets wrap an aside far more often than a path.
-            f"See the logs ({_DIR} and the new logo.png) first",
-            f"see [{_SPACED}] here",
-            # A quote pair is not proof of a single path: a person types
-            # "/var/log/app has the broken logo.png" as one sentence.
-            '"/var/log/app has the broken logo.png"',
-            f'"{_DIR} has the broken logo.png"',
-            f"'{_DIR} has the broken logo.png'",
-            f"<{_DIR} has the broken logo.png>",
-            # ... so a quoted spaced path is residue too, not a covered shape,
-            # and so is a BARE link destination: this repo's own markdown reader
-            # ends one at its first space, so the span is not a path to the code
-            # that consumes it.
-            f'see "{_SPACED}" here',
-            f"see [the shot]({_SPACED}) here",
-            # The documented residue: a spaced path written mid-sentence with no
-            # shape to vouch for it keeps its text rather than risking the prose.
-            f"I saved it to {_SPACED} for you.",
-            # ... and so does one a person typed alone on its line: its name is
-            # not the channel writer's, so nothing tells it from the prose below.
-            f"look at this\n{_SPACED}",
-            # A whole line a person types that opens with a directory and ends
-            # at an image name: alone on its line, but not an attachment line.
-            "/var/log/app has the broken logo.png.",
-            f"{_DIR} has the broken logo.png",
-            f"1. {_DIR} needs the new favicon.png",
-            f"- {_DIR} shows the error in logo.png",
-            f"> {_DIR} has images{os.sep}logo.png",
-        ],
-    )
-    def test_prose_keeps_every_word(self, text):
-        assert strip_image_refs(text) == text
-
     def test_a_code_span_ends_a_candidate(self):
         # The mask blanks code with a sentinel no path class holds, so a
         # candidate cannot run through a code span and swallow the prose
@@ -493,19 +498,49 @@ class TestBarePathPassKeepsProse:
     @pytest.mark.parametrize(
         ("text", "expected"),
         [
-            # The grammar's span runs from the directory to the image, but its
-            # last token is a reference on its own.
-            (f"Check {_DIR} and {_ABS_A}", f"Check {_DIR} and {STRIPPED_IMAGE_MARKER}"),
-            (f"{_DIR} and {_ABS_A}", f"{_DIR} and {STRIPPED_IMAGE_MARKER}"),
-            (
-                f"check {_DIR} and tell me why ({_ABS_A}) is broken",
-                f"check {_DIR} and tell me why ({STRIPPED_IMAGE_MARKER}) is broken",
+            *named_cases(
+                "test_the_reference_inside_prose_is_still_stripped",
+                ("text", "expected"),
+                [
+                    # The grammar's span runs from the directory to the image, but its
+                    # last token is a reference on its own.
+                    (f"Check {_DIR} and {_ABS_A}", f"Check {_DIR} and {STRIPPED_IMAGE_MARKER}"),
+                    (f"{_DIR} and {_ABS_A}", f"{_DIR} and {STRIPPED_IMAGE_MARKER}"),
+                    (
+                        f"check {_DIR} and tell me why ({_ABS_A}) is broken",
+                        f"check {_DIR} and tell me why ({STRIPPED_IMAGE_MARKER}) is broken",
+                    ),
+                    (f"{_ABS_A}--that one", f"{STRIPPED_IMAGE_MARKER}--that one"),
+                    (f"here: {_ABS_A}.", f"here: {STRIPPED_IMAGE_MARKER}."),
+                ],
             ),
-            (f"{_ABS_A}--that one", f"{STRIPPED_IMAGE_MARKER}--that one"),
-            (f"here: {_ABS_A}.", f"here: {STRIPPED_IMAGE_MARKER}."),
+            *named_cases(
+                "test_a_spaced_path_whose_shape_vouches_for_it_is_stripped",
+                ("text", "expected"),
+                [
+                    # The channel append shape, the whole row, and the list and quote
+                    # markers a reply sets a file list in.
+                    (f"look at this\n{_TEMP}", f"look at this\n{STRIPPED_IMAGE_MARKER}"),
+                    (_TEMP, STRIPPED_IMAGE_MARKER),
+                    (f"  {_TEMP}  \nthanks", f"  {STRIPPED_IMAGE_MARKER}  \nthanks"),
+                    (
+                        f"files:\n- {_TEMP}\n- {_ABS_B}",
+                        f"files:\n- {STRIPPED_IMAGE_MARKER}\n- {STRIPPED_IMAGE_MARKER}",
+                    ),
+                    (f"> {_TEMP}", f"> {STRIPPED_IMAGE_MARKER}"),
+                    (f"1. {_TEMP}", f"1. {STRIPPED_IMAGE_MARKER}"),
+                    # A markdown destination in ANGLE form holds nothing but a path --
+                    # the CommonMark spelling for one with a space in it. An ordinary
+                    # link is not an image, so `iter_local_refs` leaves it to this pass.
+                    (
+                        f"see [the shot](<{_SPACED}>) here",
+                        f"see [the shot](<{STRIPPED_IMAGE_MARKER}>) here",
+                    ),
+                ],
+            ),
         ],
     )
-    def test_the_reference_inside_prose_is_still_stripped(self, text, expected):
+    def test_the_reference_is_stripped(self, text, expected):
         assert strip_image_refs(text) == expected
 
     def test_a_token_that_only_tails_a_path_does_not_narrow_the_span(self):
@@ -518,34 +553,6 @@ class TestBarePathPassKeepsProse:
             else "/Users/me/photos (1)/tmpab12cd_4.png"
         )
         assert strip_image_refs(f"look\n{spaced}") == f"look\n{STRIPPED_IMAGE_MARKER}"
-
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            # The channel append shape, the whole row, and the list and quote
-            # markers a reply sets a file list in.
-            (f"look at this\n{_TEMP}", f"look at this\n{STRIPPED_IMAGE_MARKER}"),
-            (_TEMP, STRIPPED_IMAGE_MARKER),
-            (f"  {_TEMP}  \nthanks", f"  {STRIPPED_IMAGE_MARKER}  \nthanks"),
-            (
-                f"files:\n- {_TEMP}\n- {_ABS_B}",
-                f"files:\n- {STRIPPED_IMAGE_MARKER}\n- {STRIPPED_IMAGE_MARKER}",
-            ),
-            (f"> {_TEMP}", f"> {STRIPPED_IMAGE_MARKER}"),
-            (f"1. {_TEMP}", f"1. {STRIPPED_IMAGE_MARKER}"),
-            # A markdown destination in ANGLE form holds nothing but a path --
-            # the CommonMark spelling for one with a space in it. An ordinary
-            # link is not an image, so `iter_local_refs` leaves it to this pass.
-            (
-                f"see [the shot](<{_SPACED}>) here",
-                f"see [the shot](<{STRIPPED_IMAGE_MARKER}>) here",
-            ),
-        ],
-    )
-    def test_a_spaced_path_whose_shape_vouches_for_it_is_stripped(self, text, expected):
-        # These name no file on disk: a swept temp upload is the usual case, and
-        # its dangling path is the reading this scrubber exists to remove.
-        assert strip_image_refs(text) == expected
 
     def test_a_run_on_name_is_a_longer_name_on_both_sides(self):
         # "a.png.bak" is one file whose name merely contains a picture's: the

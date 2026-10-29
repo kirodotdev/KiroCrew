@@ -18,12 +18,17 @@ fixture version AND the pin it was stale against, so a bump invalidates every
 entry at once, and an entry whose fixture now matches the pin is red until it is
 deleted.
 
+kiro-cli and KAS have no lane pin, so their live fixtures are held to a floor
+(``FIXTURE_FLOORS``) instead, with the same shrink-only list (``_BELOW_FLOOR``) for
+the ones below it.
+
 The file carries no marker, so backend-test runs it too: a bump reds there as
 well as in the lane, which is the point.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -38,6 +43,16 @@ from real_adapter_gate import (
     pinned_version,
 )
 
+from kiro_crew.acp.kas_pin import KAS_PIN_VERSION
+from kiro_crew.agent_sdk.backends_launch import COPILOT_VERIFIED_VERSION
+from kiro_crew.kiro_cli import (
+    MANDATORY_MCPS_DROP_MIN_VERSION,
+    SPEC_PERMISSIONS_MIN_VERSION,
+)
+from kiro_crew.mcp_hot_reload import MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION
+
+COPILOT_PACKAGE = "@github/copilot"
+
 ROOT = Path(__file__).resolve().parent.parent
 
 #: Fixture directory -> (npm package pinned in the manifest, ``agentInfo.name``
@@ -49,14 +64,18 @@ PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
     "opencode": (OPENCODE_PACKAGE, "OpenCode"),
     "claude": ("@agentclientprotocol/claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
     "pi": (PI_ACP_PACKAGE, "pi-acp"),
+    "copilot": (COPILOT_PACKAGE, "Copilot"),
 }
 
 #: Adapters held to a measured release written here instead of the lane manifest.
 #: No lane test drives claude-agent-acp yet, so the lane does not install it; the
 #: claude captures are held to the release they were taken on, and the pin moves
 #: into ``test/real_adapters/package.json`` when a lane test needs the install.
+#: Copilot is held to the one release the harness accepts at the handshake, so
+#: raising ``COPILOT_VERIFIED_VERSION`` reds here until the captures are re-taken.
 MEASURED_NOT_INSTALLED: dict[str, str] = {
     "@agentclientprotocol/claude-agent-acp": "0.94.0",
+    COPILOT_PACKAGE: COPILOT_VERIFIED_VERSION,
 }
 
 
@@ -220,10 +239,161 @@ def test_the_gate_runs_in_the_real_adapter_lane() -> None:
     assert runs[0] > contract, "the pin gate must run after the contract tests, not skip them"
 
 
+def _release(version: str) -> tuple[int, ...] | None:
+    parts = version.split(".")
+    return tuple(int(p) for p in parts) if all(p.isdigit() for p in parts) else None
+
+
+#: kiro-cli and KAS have no lane pin, so their live captures are held to a floor
+#: instead: the highest kiro-cli release a Crew version gate branches on (below it
+#: Crew drives a path a current kiro-cli never takes), and for KAS the engine the
+#: bundle pins. ``<dir>`` -> header key -> floor. KAS headers that name the
+#: kiro-cli they ran under are held to the kiro-cli floor too.
+_KIRO_CLI_FLOOR = ".".join(
+    map(
+        str,
+        max(
+            MANDATORY_MCPS_DROP_MIN_VERSION,
+            SPEC_PERMISSIONS_MIN_VERSION,
+            MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION,
+        ),
+    )
+)
+FIXTURE_FLOORS: dict[str, dict[str, str]] = {
+    "kiro": {"agent_version": _KIRO_CLI_FLOOR},
+    "kas": {"agent_version": KAS_PIN_VERSION, "kiro_cli_version": _KIRO_CLI_FLOOR},
+}
+
+#: ``<dir>/<file>:<header key>`` -> (header version, floor it is below). Shrink-only:
+#: a fixture below its floor is re-captured, not added here.
+_BELOW_FLOOR: dict[str, tuple[str, str]] = {
+    "kiro/session.jsonl:agent_version": ("2.21.4", "2.27.0"),
+    "kas/session.jsonl:agent_version": ("0.63.3", "0.66.33"),
+}
+
+#: ``_BELOW_FLOOR`` as it started; every entry it keeps must equal its entry here.
+_BELOW_FLOOR_CEILING: dict[str, tuple[str, str]] = {
+    "kiro/session.jsonl:agent_version": ("2.21.4", "2.27.0"),
+    "kas/session.jsonl:agent_version": ("0.63.3", "0.66.33"),
+}
+
+
+def _floored_live_versions(corpus: Path = CORPUS) -> list[tuple[str, str, str]]:
+    """``(key, header version, floor)`` for every floored header of a live kiro/KAS fixture."""
+    found = []
+    for directory, floors in sorted(FIXTURE_FLOORS.items()):
+        for path in sorted((corpus / directory).glob("*.jsonl")):
+            meta, _frames = read_fixture(path)
+            if meta.get("recorded") != "live":
+                continue
+            for header, floor in floors.items():
+                if header in meta or header == "agent_version":
+                    key = f"{directory}/{path.name}:{header}"
+                    found.append((key, str(meta.get(header)), floor))
+    return found
+
+
+def below_floor(
+    versions: list[tuple[str, str, str]], allowed: dict[str, tuple[str, str]]
+) -> list[str]:
+    """Every way *versions* and the *allowed* below-floor list disagree with the floors."""
+    problems = []
+    seen = set()
+    for key, version, floor in versions:
+        seen.add(key)
+        entry = allowed.get(key)
+        release = _release(version)
+        if release is None:
+            problems.append(f"{key} is {version!r}, not a release to hold to floor {floor}")
+        elif release >= _release(floor):
+            if entry is not None:
+                problems.append(f"{key} is at floor {floor} now: delete its _BELOW_FLOOR entry")
+        elif entry is None:
+            problems.append(f"{key} is {version}, below floor {floor}: re-capture it")
+        elif entry != (version, floor):
+            problems.append(
+                f"{key} is {version} against floor {floor}, but _BELOW_FLOOR accepted "
+                f"{entry[0]} against {entry[1]}: the floor moved, so re-capture it"
+            )
+    problems += [
+        f"_BELOW_FLOOR names {key}, which is not a floored live fixture"
+        for key in allowed.keys() - seen
+    ]
+    return problems
+
+
+def test_every_live_kiro_and_kas_fixture_is_at_its_floor() -> None:
+    problems = below_floor(_floored_live_versions(), _BELOW_FLOOR)
+    assert not problems, "\n".join(problems)
+
+
+def test_the_below_floor_list_only_shrinks() -> None:
+    widened = {k: v for k, v in _BELOW_FLOOR.items() if _BELOW_FLOOR_CEILING.get(k) != v}
+    assert not widened, f"_BELOW_FLOOR entries not in their original form: {widened}"
+
+
+@pytest.mark.parametrize(
+    ("version", "allowed", "expected"),
+    [
+        ("2.27.0", {}, ""),
+        ("2.34.0", {}, ""),
+        ("2.26.9", {}, "re-capture it"),
+        ("2.21.4", {"kiro/a.jsonl:agent_version": ("2.21.4", "2.23.0")}, "the floor moved"),
+        ("2.27.0", {"kiro/a.jsonl:agent_version": ("2.21.4", "2.27.0")}, "delete"),
+        ("unmeasured", {}, "not a release"),
+        ("2.27.0", {"kiro/b.jsonl:agent_version": ("2.21.4", "2.27.0")}, "not a floored"),
+    ],
+    ids=[
+        "at-floor",
+        "above-floor",
+        "below-floor",
+        "entry-outlived-floor",
+        "entry-outlived-fixture",
+        "unparseable",
+        "entry-names-no-fixture",
+    ],
+)
+def test_the_floor_reds_on_each_drift(version, allowed, expected) -> None:
+    problems = below_floor([("kiro/a.jsonl:agent_version", version, "2.27.0")], allowed)
+    assert (expected in problems[0]) if expected else not problems
+
+
+def test_a_kas_capture_under_an_old_kiro_cli_reds(tmp_path) -> None:
+    """A KAS header's ``kiro_cli_version`` is held to the kiro-cli floor, not only the engine."""
+    (tmp_path / "kas").mkdir()
+    meta = {"backend": "kas", "recorded": "live", "agent_version": KAS_PIN_VERSION}
+    (tmp_path / "kas" / "a-live.jsonl").write_text(
+        json.dumps({"_meta": dict(meta, kiro_cli_version="2.20.0")}) + "\n"
+    )
+    problems = below_floor(_floored_live_versions(tmp_path), {})
+    want = f"kas/a-live.jsonl:kiro_cli_version is 2.20.0, below floor {_KIRO_CLI_FLOOR}"
+    assert problems == [f"{want}: re-capture it"]
+
+
+def test_another_adapters_capture_in_copilot_reds(monkeypatch, tmp_path) -> None:
+    """A capture of some other agent under ``copilot/`` is not measured as Copilot."""
+    src = CORPUS / "copilot" / "handshake-live.jsonl"
+    (tmp_path / "copilot").mkdir()
+    text = src.read_text(encoding="utf-8")
+    assert '"agent_name": "Copilot"' in text
+    (tmp_path / "copilot" / src.name).write_text(
+        text.replace('"agent_name": "Copilot"', '"agent_name": "OpenCode"', 1)
+    )
+    monkeypatch.setattr(sys.modules[__name__], "CORPUS", tmp_path)
+    with pytest.raises(AssertionError, match="answers initialize as 'Copilot'"):
+        _pinned_live_fixtures()
+
+
+def test_a_copilot_verified_version_bump_reds(monkeypatch) -> None:
+    at_pin = [key for key, _v, _p in _pinned_live_fixtures() if key.startswith("copilot/")]
+    assert at_pin, "no live copilot fixture is held to COPILOT_VERIFIED_VERSION"
+    monkeypatch.setitem(MEASURED_NOT_INSTALLED, COPILOT_PACKAGE, COPILOT_VERIFIED_VERSION + "-next")
+    problems = stale_against_pin(_pinned_live_fixtures(), _STALE)
+    assert {p.split(" ", 1)[0] for p in problems if "re-capture it" in p} == set(at_pin)
+
+
 def test_a_measured_only_pin_is_not_also_in_the_lane_manifest() -> None:
     """One pin per adapter: an install in the manifest retires the constant."""
-    import json
-
     from real_adapter_gate import MANIFEST
 
     installed = json.loads(MANIFEST.read_text(encoding="utf-8"))["dependencies"]

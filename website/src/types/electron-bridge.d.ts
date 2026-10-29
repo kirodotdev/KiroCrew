@@ -65,6 +65,10 @@ declare global {
     /** A macOS swipe the shell relays as one route-history step (-1 Back,
      *  1 Forward). Optional: absent in a browser and on an older shell. */
     onHistoryStep?: (cb: (delta: unknown) => void) => () => void
+    /** The trackpad's real finger-down (`begin`) and finger-up (`end`), from
+     *  Chromium's gesture-scroll events (macOS only). Optional: absent in a
+     *  browser and on an older shell. See lib/scrollTouch. */
+    onScrollTouch?: (cb: (phase: unknown) => void) => () => void
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
     onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
@@ -80,6 +84,13 @@ declare global {
   interface LocalGatewayAPI {
     get: () => Promise<boolean>
     set: (enabled: boolean) => Promise<boolean>
+  }
+
+  type CloseAction = 'background' | 'quit'
+
+  interface CloseActionAPI {
+    get: () => Promise<CloseAction>
+    set: (action: CloseAction) => Promise<CloseAction>
   }
 
   interface CrashReportsAPI {
@@ -235,6 +246,10 @@ declare global {
     laneVersion?: string
     runningAheadOfLane?: boolean | null
     replayed?: boolean
+    /** The main process's confirmed governance verdict — true only when the
+     *  local bundled gateway's policy provider was accepted via the three-gate
+     *  assertLocalDashboard check. False for remote (SSH-tunneled) gateways. */
+    policyGoverned?: boolean
   }
 
   interface UpdateInfo {
@@ -242,6 +257,10 @@ declare global {
     channel?: string
     stampedChannel?: string | null
     channelSwitchable?: boolean
+    // The organization's policy sets the channel (an enterprise build).
+    channelLockedByPolicy?: boolean
+    // The channel the policy requires, "" when none.
+    requiredChannel?: string
     channelPreference?: string
     autoDownload?: boolean
     platform?: string
@@ -252,6 +271,10 @@ declare global {
     updateCommand?: string
     laneVersion?: string
     runningAheadOfLane?: boolean | null
+    /** The main process's confirmed policy governance verdict — true only when
+     *  the local bundled gateway's policy provider was accepted via the
+     *  three-gate assertLocalDashboard check. */
+    policyGoverned?: boolean
   }
 
   interface UpdateResult {
@@ -268,12 +291,17 @@ declare global {
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>
+    /** Notify the main process that a security policy provider now governs (or
+     *  no longer governs) this install's updates. Fire-and-forget; no return.
+     *  Absent on shells that predate the feature. */
+    notifyPolicyGoverned?: (governed: boolean) => void
   }
 
   interface Window {
     kirocrew?: KiroCrewBridge
     electronAPI?: ElectronAPI
     localGatewayAPI?: LocalGatewayAPI
+    closeActionAPI?: CloseActionAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI

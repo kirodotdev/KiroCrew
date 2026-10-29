@@ -121,6 +121,7 @@ _PROXY_HOP_HEADERS = frozenset(
 # one, and could pass for the gateway's. For ``x-kirocrew-proxy``, stripping the
 # caller's copy first keeps the outgoing request from depending on which spelling
 # of a header the HTTP client lets win when the gateway sets its own value below.
+# Relay identity headers (``x-kiro-relay-*``) are dropped by prefix, ``is_relay_header``.
 _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
     {
         "cookie",
@@ -288,9 +289,12 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     wire_target = target_url.raw_path_qs
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
+    from kiro_crew.dashboard.relay_headers import is_relay_header
+
     headers: dict[str, str] = {}
     for key, value in request.headers.items():
-        if key.lower() not in _PROXY_STRIP_HEADERS and key.lower() != "host":
+        lowered = key.lower()
+        if lowered not in _PROXY_STRIP_HEADERS and lowered != "host" and not is_relay_header(key):
             headers[key] = value
 
     # Read request body first so the HMAC can bind it (integrity: prevents

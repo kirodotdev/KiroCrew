@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from named_cases_helpers import named_cases
 from source_corpus import repo_files_named, repo_root
 from yaml_helpers import load_with
 
@@ -1601,11 +1602,28 @@ class TestWrittenValuesStayLoadableYaml:
     # parses and the author's pattern comes back as something they never wrote.
     @pytest.mark.parametrize(
         "value",
-        ["a\x00b", "a\x01b", "a\x0bb", "a\x0cb", "a\x1bb", "a\x7fb",
-         "a\x85b", "a\x9fb", "a\u2028b", "a\u2029b"],
-        ids=["nul", "soh", "vt", "ff", "esc", "del", "nel", "c1", "ls", "ps"],
+        [
+            *named_cases(
+                "test_a_control_character_is_refused",
+                "value",
+                [
+                    "a\x00b",
+                    "a\x01b",
+                    "a\x0bb",
+                    "a\x0cb",
+                    "a\x1bb",
+                    "a\x7fb",
+                    "a\x85b",
+                    "a\x9fb",
+                    "a\u2028b",
+                    "a\u2029b",
+                ],
+                ids=["nul", "soh", "vt", "ff", "esc", "del", "nel", "c1", "ls", "ps"],
+            ),
+            *named_cases("test_unspellable_values_are_refused_not_mangled", "value", ['a"b', "a\\b"]),
+        ],
     )
-    def test_a_control_character_is_refused(self, value: str) -> None:
+    def test_an_unwritable_value_is_refused(self, value: str) -> None:
         with pytest.raises(ValueError):
             set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)
 
@@ -1635,14 +1653,3 @@ class TestWrittenValuesStayLoadableYaml:
         )
         assert yaml.safe_load(doc.split("---")[1])["fileMatchPattern"] == value
         assert parse_frontmatter(doc, STEERING_LOADER)["fileMatchPattern"] == value
-
-    @pytest.mark.parametrize("value", ['a"b', "a\\b"])
-    def test_unspellable_values_are_refused_not_mangled(self, value: str) -> None:
-        # This writer emits no escape sequences and its reader processes none,
-        # so a value carrying a double quote or a backslash has no spelling both
-        # agree on. Refusing beats writing a document that loads as something
-        # else. (Single-quote-edged values are spellable — see ROUND_TRIP: the
-        # reader removes exactly one wrapping level, so the writer's
-        # double-quoted form survives.)
-        with pytest.raises(ValueError):
-            set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)

@@ -241,3 +241,49 @@ describe('appNavTarget icon resolution', () => {
     }
   })
 })
+
+describe('appNavTarget — inactive icon (ui.pages[].iconInactiveUrl)', () => {
+  function withInactive(value: unknown, name = 'demo'): AppNavRecord {
+    return app({
+      name,
+      manifest: { ui: { pages: [{ route: '/demo', iconInactiveUrl: value as string }] } },
+    })
+  }
+
+  it('is empty when the manifest declares none, so the row keeps one icon', () => {
+    expect(appNavTarget(app())?.inactiveIconUrl).toBe('')
+  })
+
+  it('resolves a relative value against the app UI asset route, as documented', () => {
+    expect(appNavTarget(withInactive('icon-inactive.svg'))?.inactiveIconUrl)
+      .toBe('/apps/demo/ui/icon-inactive.svg')
+    expect(appNavTarget(withInactive('./assets/idle icon.png', 'my app'))?.inactiveIconUrl)
+      .toBe('/apps/my%20app/ui/assets/idle%20icon.png')
+  })
+
+  it('passes a built-in client-art path through unchanged', () => {
+    expect(appNavTarget(withInactive('/app-assets/demo/idle.svg'))?.inactiveIconUrl)
+      .toBe('/app-assets/demo/idle.svg')
+  })
+
+  it('refuses a host, a scheme, a dot segment, an API path or a non-string', () => {
+    // The rail renders for every enabled app on every load, so a value it
+    // honoured would be a request the manifest author chose.
+    for (const bad of [
+      'https://evil.example/i.png', '//evil.example/i.png', '/\t/evil.example/i.png',
+      'javascript:alert(1)', '../../api/tips/next', 'a/%2e%2e/%2e%2e/api/x', '/api/apps',
+      ' icon.svg', 'ic\ton.svg', '', {}, 7,
+      // Valid JSON, but encodeURIComponent throws on it: must not break the rail.
+      'idle-\ud800.svg',
+    ]) {
+      expect(appNavTarget(withInactive(bad))?.inactiveIconUrl, String(bad)).toBe('')
+    }
+  })
+
+  it('reads only the FIRST page, the one the rail row opens', () => {
+    const t = appNavTarget(app({
+      manifest: { ui: { pages: [{ route: '/a' }, { route: '/b', iconInactiveUrl: 'b.svg' }] } },
+    }))
+    expect(t?.inactiveIconUrl).toBe('')
+  })
+})
