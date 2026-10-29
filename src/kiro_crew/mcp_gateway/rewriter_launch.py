@@ -345,18 +345,16 @@ def _repair_control_plane_entry(
             shlex.join([managed_cmd, *managed_args]),
         )
     # Composed from the managed source OUTWARD, never by copying the spec and
-    # swapping two keys. Three rounds of review found spec-controlled fields
-    # riding into our binary through that copy (a launcher-choosing ``env``, a
-    # ``KIROCREW_*`` override, an ``autoApprove`` that kiro-cli honours before
-    # Kiro Crew's PreToolUse gate ever runs), one field per round. The class is
-    # the copy, so this is the disk writer's shape instead
-    # (``agent._enforce_managed_mcp_ownership``): the launch is ours; the
-    # restriction fields kiro-cli reads for the spec's grant carry over
+    # swapping two keys. A copy lets spec-controlled fields ride into our binary
+    # (a launcher-choosing ``env``, a ``KIROCREW_*`` override, an ``autoApprove``
+    # that kiro-cli honours before Kiro Crew's PreToolUse gate ever runs), and
+    # patching one field at a time never ends. The class is the copy, so this is
+    # the disk writer's shape instead (``agent._enforce_managed_mcp_ownership``): the launch
+    # is ours; the restriction fields kiro-cli reads for the spec's grant carry over
     # (``_RESERVED_ENTRY_SPEC_KEYS``); ``env`` is held to the ownership rule;
-    # ``autoApprove`` is dropped and named -- a hand-written grant on a reserved
-    # name would approve our tools inside kiro-cli and skip the governance gate,
-    # and no managed declaration carries one to apply instead; every other key
-    # is dropped and named.
+    # ``autoApprove`` is dropped and named -- a hand-written grant on a reserved name would
+    # approve our tools inside kiro-cli and skip the governance gate, and no managed
+    # declaration carries one to apply instead; every other key is dropped and named.
     repaired: dict[str, Any] = {"command": managed_cmd, "args": managed_args}
     for key in _RESERVED_ENTRY_SPEC_KEYS:
         if key in entry:

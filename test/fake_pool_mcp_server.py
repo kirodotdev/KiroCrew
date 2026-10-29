@@ -92,6 +92,52 @@ def recorded(log: str | os.PathLike[str]) -> list[str]:
     return out
 
 
+def _reply(msg: dict, result: dict) -> None:
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg.get("id"), "result": result}) + "\n")
+    sys.stdout.flush()
+
+
+def _serve_subscription_frame(msg: dict, log: str) -> bool:
+    """Answer one frame of the subscription mode; ``True`` when it was one.
+
+    Turned on by ``FAKE_POOL_SUBSCRIBE_LOG``, which also makes the server
+    advertise ``resources.subscribe`` and ``kirocrew.caller-identity``. It is the
+    server-side half the resource-subscription tests observe from outside:
+
+    * ``resources/subscribe`` and ``resources/unsubscribe`` are accepted and
+      recorded as ``<method> <uri> <caller sessionKey>`` under *log*, so a test
+      reads which grants reached the server and as which caller;
+    * ``ping`` is answered, which is how a holder notices this process died;
+    * a ``tools/call`` of ``emit_update`` with ``{"uri": ...}`` sends one
+      ``notifications/resources/updated`` for that URI before its reply -- the
+      scripted update. The server does not filter by subscription: routing the
+      update only to subscribers is the gateway's job, which is what is tested.
+    """
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method in ("resources/subscribe", "resources/unsubscribe"):
+        block = (params.get("_meta") or {}).get("kirocrew.caller") or {}
+        _record(
+            log, f"{method.split('/')[1]} {params.get('uri', '')} {block.get('sessionKey', '')}\n"
+        )
+        _reply(msg, {})
+        return True
+    if method == "ping":
+        _reply(msg, {})
+        return True
+    if method == "tools/call" and params.get("name") == "emit_update":
+        uri = (params.get("arguments") or {}).get("uri", "")
+        note = {
+            "jsonrpc": "2.0",
+            "method": "notifications/resources/updated",
+            "params": {"uri": uri},
+        }
+        sys.stdout.write(json.dumps(note) + "\n")
+        _reply(msg, {"content": []})
+        return True
+    return False
+
+
 def main() -> int:
     log = sys.argv[1]
     # Optional second argument: a path to record the caller block each tools/call
@@ -118,6 +164,10 @@ def main() -> int:
     # records ``<pid> <launch_epoch> <init_answered_epoch>`` per process, from
     # which a test computes how many windows were ever open at once -- again a
     # closed-box observation, needing nothing from the pool's internals.
+    # Optional subscription mode, for the resource-subscription tests: see
+    # :func:`_serve_subscription_frame`. Off by default so every other test keeps
+    # the exact handshake it asserts against.
+    subscribe_log = os.environ.get("FAKE_POOL_SUBSCRIBE_LOG", "")
     init_delay = float(os.environ.get("FAKE_POOL_INIT_DELAY_SECS", "0") or 0)
     window_log = os.environ.get("FAKE_POOL_WINDOW_LOG", "")
     launched_at = time.time()
@@ -131,6 +181,8 @@ def main() -> int:
         except json.JSONDecodeError:
             continue
         method = msg.get("method")
+        if subscribe_log and _serve_subscription_frame(msg, subscribe_log):
+            continue
         if method == "tools/call" and (caller_log or tenant_log):
             params = msg.get("params") or {}
             meta = params.get("_meta") or {}
@@ -156,8 +208,10 @@ def main() -> int:
             _record(window_log, f"{os.getpid()} {launched_at:.6f} {time.time():.6f}\n")
         params = msg.get("params") or {}
         capabilities: dict = {"tools": {}}
-        if caller_log or tenant_log:
+        if caller_log or tenant_log or subscribe_log:
             capabilities["experimental"] = {"kirocrew.caller-identity": {"schemaVersion": 1}}
+        if subscribe_log:
+            capabilities["resources"] = {"subscribe": True}
         reply = {
             "jsonrpc": "2.0",
             "id": msg.get("id"),
@@ -167,6 +221,11 @@ def main() -> int:
                 "serverInfo": {"name": "fake-pool-mcp", "version": "1.0.0"},
             },
         }
+        # Optional MCP ``instructions``, stamped with this process's pid so a test
+        # can tell which backend produced the result a stub was replayed.
+        instructions = os.environ.get("FAKE_POOL_INSTRUCTIONS", "")
+        if instructions:
+            reply["result"]["instructions"] = f"{instructions} pid={os.getpid()}"
         sys.stdout.write(json.dumps(reply) + "\n")
         sys.stdout.flush()
     return 0

@@ -735,9 +735,37 @@ class TestGitCheckoutStillWorks:
 
     @staticmethod
     def _git_script(monkeypatch, outputs: list[tuple[int, bytes]]):
-        """Feed scripted (returncode, stdout) pairs to successive git calls."""
+        """Adapt a positional git sequence to the isolated-fetch flow.
+
+        Tests pass a six-entry positional sequence (``git fetch``, ``rev-parse
+        HEAD``, ``rev-parse @{u}``, ``rev-list``, ``git show``, ``git diff``).
+        Two of those are not ``create_subprocess_exec`` calls: the fetch runs
+        through the shared isolated helper, and the upstream is resolved from
+        config. So the fetch entry drives the stubbed helper (a non-zero rc is a
+        failed fetch), the ``rev-parse @{u}`` entry supplies the fetched OID the
+        helper returns, and the remaining entries feed the checkout's own read
+        spawns (``rev-parse HEAD``, the divergence ``rev-list``, ``show``,
+        ``diff``) in order.
+        """
+        remaining = list(outputs)
+        fetch_entry = remaining.pop(0)
+        fetch_ok = fetch_entry[0] == 0
+        remote_sha = ""
+        if fetch_ok and len(remaining) >= 2:
+            # The old `rev-parse @{u}` output is the fetched tip the helper pins.
+            remote_sha = remaining.pop(1)[1].decode().strip()
+
         calls: list[tuple[str, ...]] = []
-        queue = list(outputs)
+        monkeypatch.setattr(updates, "repo_exec_config_reason", lambda _proj: "")
+        monkeypatch.setattr(updates, "upstream_remote_and_branch", lambda _proj: ("origin", "main"))
+
+        async def _fetch(*_args, **_kwargs):
+            calls.append(("fetch",))
+            return remote_sha if fetch_ok else None
+
+        monkeypatch.setattr(updates, "fetch_and_pin_upstream", _fetch)
+
+        queue = list(remaining)  # [rev-parse HEAD, rev-list, show, diff]
 
         async def _exec(*args, **kwargs):
             calls.append(tuple(args))

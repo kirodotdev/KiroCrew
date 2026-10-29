@@ -439,6 +439,20 @@ def test_requested_slots_takes_only_bounded_strings():
     )
 
 
+def _recorded_requests(monkeypatch) -> list[list[str]]:
+    """The slot list each ``SubagentReplayQueue.request`` call received, in order."""
+    calls: list[list[str]] = []
+    real = scope.SubagentReplayQueue.request
+
+    def recording(self, slots):
+        slots = list(slots)
+        calls.append(slots)
+        return real(self, slots)
+
+    monkeypatch.setattr(scope.SubagentReplayQueue, "request", recording)
+    return calls
+
+
 def _drawn(sent: list[dict]) -> set[str]:
     """The card ids a socket was sent, single frames and batches alike."""
     ids = {f["data"]["id"] for f in sent if f.get("type") == "subagent_done"}
@@ -504,6 +518,7 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         state._yolo = True
         state._folders = []
         state.folders_generation.return_value = 1
+        state.tags_generation.return_value = 1
         state._slots = {name: MagicMock() for name in slots}
         state.native_subagent_snapshots.return_value = []
         state.subagents = manager
@@ -621,6 +636,41 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         assert ("some-app", "subagent_replay", "persisted_not_visible") in denied
         assert "acp-1-0" not in set(folds.units)
 
+    @pytest.mark.parametrize(
+        ("named", "asked"),
+        [
+            pytest.param(None, ["chat-0", "chat-1"], id="naming-none-asks-for-its-visible-slots"),
+            pytest.param(["chat-1"], ["chat-1"], id="a-named-slot-is-asked-for-alone"),
+            pytest.param([], [], id="an-empty-list-asks-for-no-slot"),
+        ],
+    )
+    def test_an_app_subscribe_asks_for_the_slots_it_named_else_the_ones_it_may_see(
+        self, monkeypatch, named, asked
+    ):
+        """What the subscribe itself asks for. The later frame asks for chat-1 in every
+        case, so every case sends that slot's cards and ends; naming one slot and naming
+        an empty list send the same cards, so only the subscribe's request tells those
+        two apart."""
+        slots = _home(3, 1, {(0, 0), (1, 0), (2, 0)})
+        requests = _recorded_requests(monkeypatch)
+        monkeypatch.setattr(
+            dashboard_ws, "visible_subagent_slot_keys", lambda *a, **k: {slots[0], slots[1]}
+        )
+        monkeypatch.setattr(
+            dashboard_ws,
+            "load_declared_events_for_connect",
+            lambda app: (True, frozenset({"subagent:user"})),
+        )
+        subscribe: dict = {"type": "subscribe_subagents"}
+        if named is not None:
+            subscribe["slots"] = named
+        frames = [subscribe, {"type": "subagent_replay", "slots": [slots[1]]}]
+        _replayed, _peak, fake = self._drive(
+            monkeypatch, frames, slots, expect_units={"acp-1-0"}, app="some-app"
+        )
+        assert requests == [asked, [slots[1]]]
+        assert {f"acp-1-0-child-{n}" for n in range(2)} <= _drawn(fake.sent)
+
     def test_a_run_live_state_holds_is_not_replaced_by_a_folded_frame(self, monkeypatch):
         """The live set is read per batch, so a run that started after subscribe counts."""
         slots = _home(2, 1, {(1, 0)})
@@ -663,6 +713,7 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
             return SimpleNamespace(records=[record], overflow=0, overflow_is_lower_bound=False)
 
         monkeypatch.setattr(dashboard_ws, "read_panel_records", fake_read_panel_records)
+        requests = _recorded_requests(monkeypatch)
         frames = [
             {"type": "subscribe_subagents", "slots": ["chat-0"]},
             {"type": "slot_focused", "slot": "chat-0"},
@@ -670,6 +721,8 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         _replayed, _peak, fake = self._drive(
             monkeypatch, frames, ["chat-0"], expect_units=set(), expect_ids={"folder-1"}
         )
+        # The folder fallback is asked for even though the subscribe named a slot.
+        assert requests == [[dashboard_ws._FOLDER_REPLAY]]
         assert len(calls) == 1
         assert _drawn(fake.sent) == {"folder-1"}
         assert folds.units == []

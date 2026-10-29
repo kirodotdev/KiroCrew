@@ -578,13 +578,25 @@ _AUDIT_CASES = [
 ]
 
 
+def _stored_sel_rows(root: Path):
+    """A reader for the rows the real SEL bound by ``sel_private_root`` stored."""
+
+    def _rows() -> list[dict[str, Any]]:
+        path = root / "security_events.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines if line]
+
+    return _rows
+
+
 class TestAuditEmitters:
     @pytest.mark.parametrize("fn_name,args,operation", _AUDIT_CASES)
-    def test_emits_the_documented_operation(self, monkeypatch, fn_name, args, operation):
-        sel = MagicMock()
-        monkeypatch.setattr(gw, "SecurityEventLog", MagicMock(return_value=sel))
+    def test_emits_the_documented_operation(self, sel_private_root, fn_name, args, operation):
+        rows = _stored_sel_rows(sel_private_root)
         getattr(gw, fn_name)(*args)
-        assert sel.log_api_access.call_args.kwargs["operation"] == operation
+        assert [r["operation"] for r in rows()] == [operation]
 
     @pytest.mark.parametrize("fn_name,args,operation", _AUDIT_CASES)
     def test_audit_failure_never_breaks_the_caller(
@@ -605,11 +617,10 @@ class TestAuditEmitters:
         assert kwargs["outcome"] == "denied"
         assert kwargs["error"] == "no valid pids"
 
-    def test_empty_caller_is_normalised_to_unknown(self, monkeypatch):
-        sel = MagicMock()
-        monkeypatch.setattr(gw, "SecurityEventLog", MagicMock(return_value=sel))
+    def test_empty_caller_is_normalised_to_unknown(self, sel_private_root):
+        rows = _stored_sel_rows(sel_private_root)
         gw._audit_pool_fallback("", "demo-mcp", "pool full")
-        assert sel.log_api_access.call_args.kwargs["caller"] == "unknown"
+        assert [r["caller_identity"] for r in rows()] == ["unknown"]
 
 
 # --- frame codec -------------------------------------------------------------

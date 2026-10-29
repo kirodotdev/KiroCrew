@@ -276,6 +276,8 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_enterprise_profile_pin,
+    _forget_sandbox_launch_mark,
     _fresh_reexec_environment,
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
@@ -285,6 +287,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _no_boot_heap_freeze,
     _no_boot_sandbox_sweep,
     _no_carried_auto_update_effect,
+    _no_inherited_git_proxy_env,
     _no_live_catalog_network,
     _no_live_kernel_memory_pressure,
     _no_managed_venv_override,
@@ -295,13 +298,16 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_channel_turn_ceiling,
     _reset_cjk_segmenter,
     _reset_create_rate_limit_buckets,
+    _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
     _reset_live_execution_records,
+    _reset_materialized_agents_snapshot,
     _reset_runtime_ownership_tables,
     _reset_safety_override_between_tests,
     _reset_session_switch_locks,
     _restore_autonudge_singleton,
     _restore_default_child_watcher,
+    _session_memory_scope_sample_unshared,
     _shut_down_shared_pools_in_session,
     _small_default_host,
 )
@@ -1267,25 +1273,3 @@ def _no_leaked_interleave_hook():
             "earlier test leaked it (this test is the victim, not the cause). "
             "Set it with monkeypatch.setattr so it reverts even on failure."
         )
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _drain_gc_cycles():
-    """Collect GC cycles accumulated during a test module before the next module starts.
-
-    asyncio.run() tests can leave BaseSubprocessTransport / PosixPath reference
-    cycles that CPython defers until the next GC pass.  If that pass fires inside
-    a later module on the same xdist worker, pytest's unraisablehook attributes
-    the ExceptionGroup to an innocent test in that later module.  Collecting once
-    per module boundary (~587 modules) is ~26× cheaper than collecting after every
-    test (~15 000) while still covering the cross-module leak shape.  Two passes
-    cover chains of two-level cycles (transport -> protocol -> path).
-
-    Tests that can also leak cycles within their own module keep a finer-grained
-    local fixture alongside this one.
-    """
-    import gc
-
-    yield
-    gc.collect()
-    gc.collect()

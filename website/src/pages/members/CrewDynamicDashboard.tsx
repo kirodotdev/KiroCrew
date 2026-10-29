@@ -8,7 +8,7 @@ import { Badge, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
-import { useFrameOpenLink } from '../../hooks/useFrameOpenLink'
+import { useFrameLinkBridge } from '../../hooks/useFrameLinkBridge'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { startDashboardLoadTiming, type DashboardLoadTiming } from '../../lib/dashboardTiming'
 import { i18nT } from '../../i18n/t'
@@ -221,8 +221,12 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '' }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
+  /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
+   *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
+   *  browser's back swipe over the frame. The Mates side panel does. */
+  relayWheel?: boolean
   displayName: string
   /** The crew record's `avatar` field, verbatim, for the suggestions page's face. */
   avatar?: unknown
@@ -257,8 +261,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const [refetchPending, setRefetchPending] = useState(false)
   const onActRef = useRef(onAct)
   onActRef.current = onAct
-  // A pull request the page links to: this frame only, GitHub PR URLs only.
-  useFrameOpenLink([frameRef])
+  // A link the page asks for: the agent-page link bridge, from this frame only. A
+  // click it cannot tie to the frame gets the host's "Open <host>" button.
+  const linkChip = useFrameLinkBridge([frameRef])
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -688,10 +693,13 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.
             relayTouches: true,
+            // So does the desktop trackpad swipe that hides the panel, where
+            // the host asks for it.
+            relayWheel,
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the page, see above
-    [shownKey, docRev, isError, themeVars, theme],
+    [shownKey, docRev, isError, themeVars, theme, relayWheel],
   )
   const mint = useSandboxDoc(srcdoc)
   const { pending, retry } = mint
@@ -985,9 +993,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.
             relayTouches: true,
+            // So does the desktop trackpad swipe that hides the panel, where
+            // the host asks for it.
+            relayWheel,
           })
         : null,
-    [probating, candidate, isError, themeVars, theme],
+    [probating, candidate, isError, themeVars, theme, relayWheel],
   )
   const probe = useSandboxDoc(probeSrcdoc)
 
@@ -1329,6 +1340,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           // The SERVER's latest answer, not the promoted document's. A revocation that
           // arrived after this document was promoted has to reach the frame that is
           // mounted, which is what the key above makes happen.
+          // Marks the frame whose document carries the wheel relay: the host arms only these.
+          data-wheel-relay={relayWheel ? '' : undefined}
           sandbox={crewDashboardSandbox(mayRunScript && shown.scripts)}
           className="flex-1 min-h-0 w-full border-none bg-bg"
           style={{ colorScheme: theme }}
@@ -1347,6 +1360,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             key={`frame-${grantKey}-${stageUrl}`}
             ref={stageRef}
             src={stageUrl}
+            // Marks the frame whose document carries the wheel relay: the host arms only these.
+            data-wheel-relay={relayWheel ? '' : undefined}
             sandbox={crewDashboardSandbox(mayRunScript && shown.scripts)}
             aria-hidden
             tabIndex={-1}
@@ -1375,6 +1390,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           // A candidate on probation gets the SAME grants its own response
           // decided, so a page cannot earn promotion while running under looser
           // ones than it will be mounted with.
+          // Marks the frame whose document carries the wheel relay: the host arms only these.
+          data-wheel-relay={relayWheel ? '' : undefined}
           sandbox={crewDashboardSandbox(mayRunScript && (candidate ? candidate.scripts : shown.scripts))}
           aria-hidden
           tabIndex={-1}
@@ -1387,6 +1404,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           data-testid="crew-dashboard-probe"
         />
       )}
+      {linkChip}
     </div>
   )
 }

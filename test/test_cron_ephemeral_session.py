@@ -88,9 +88,14 @@ class TestBuildCronSessionContext:
         key, _prompt = build_cron_session_context(job)
         assert key == "cron:abc123"
 
-    def test_persistent_prompt_prepends_last_result(self):
-        """persistent_session=True → prompt contains the previous run's result."""
+    def test_persistent_job_carries_last_result_beside_the_prompt(self):
+        """persistent_session=True → the previous result is carried, not in the request.
+
+        The prompt is the owner's message alone; the previous run's result travels
+        as ``cron_prior_result_context``, framed as data, for the context region.
+        """
         from kiro_crew.cron import build_cron_session_context
+        from kiro_crew.cron_service.identity import cron_prior_result_context
 
         job = CronJob(
             id="abc123",
@@ -100,8 +105,8 @@ class TestBuildCronSessionContext:
             last_result="PREVIOUS OUTPUT HERE",
         )
         _key, prompt = build_cron_session_context(job)
-        assert "PREVIOUS OUTPUT HERE" in prompt
-        assert "do work" in prompt
+        assert prompt == "do work"
+        assert "PREVIOUS OUTPUT HERE" in cron_prior_result_context(job)
 
     def test_stateless_uses_fresh_key_per_call(self):
         """persistent_session=False → two calls return two different keys."""
@@ -138,9 +143,12 @@ class TestBuildCronSessionContext:
             persistent_session=False,
             last_result="STALE OUTPUT MUST NOT APPEAR",
         )
+        from kiro_crew.cron_service.identity import cron_prior_result_context
+
         _key, prompt = build_cron_session_context(job)
         assert "STALE OUTPUT MUST NOT APPEAR" not in prompt
         assert "do work" in prompt
+        assert cron_prior_result_context(job) == ""
 
     def test_stateless_prompt_equals_bare_message(self):
         """When persistent_session=False and no acks, prompt is exactly job.message."""

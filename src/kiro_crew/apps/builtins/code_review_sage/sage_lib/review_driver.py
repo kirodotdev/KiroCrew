@@ -78,10 +78,9 @@ except ImportError:  # pragma: no cover - standalone fallback
 # proxy-disabled too -- degrading to a bare urlopen would leave the standalone
 # path (`python3 sage_lib/review_driver.py`) carrying the leak this closes.
 #
-# It must ALSO refuse redirects, for the same reason the real helper does. An
-# earlier version of this fallback omitted that on the grounds that "these
-# endpoints never return a redirect" -- wrong for `_probe`, whose entire job is
-# to dial candidate ports that may have something other than our gateway
+# It must ALSO refuse redirects, for the same reason the real helper does.
+# "These endpoints never return a redirect" is wrong for `_probe`, whose entire
+# job is to dial candidate ports that may have something other than our gateway
 # listening. A 302 from one of those would replay the secret to whatever host
 # Location names.
 try:

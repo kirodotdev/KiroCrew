@@ -130,6 +130,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import (
+    LEAKED_TOOL_CALL_NOTE,
     NO_TOOL_CALLS_NOTE,
     SUBAGENT_COMPLETION_META_KEY,
 )
@@ -219,7 +220,11 @@ from kiro_crew.dashboard.state import (
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
-from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
+from kiro_crew.dashboard.turn_dispatch import (
+    bounded_chat_turn,
+    mark_turn_unstarted,
+    spawn_guarded_turn,
+)
 from kiro_crew.embeddings import (
     embedding_model_is_custom,
     get_shared_embedder,
@@ -387,6 +392,7 @@ from kiro_crew.platform.update_capability import (
 )
 from kiro_crew.platform.update_governance import (
     commits_ahead,
+    fetch_and_pin_upstream,
     git_command_env,
     hidden_worktree_edits,
     is_primary_branch,
@@ -761,6 +767,7 @@ class GatewayOrchestrator:
     _pending_update_respawn: Callable[[], str] | None
     _pending_update_mandatory: bool
     _pending_update_mandatory_key: str
+    _pending_update_version: str
     _mandatory_update_deferred_at: float | None
     _mandatory_update_deferred_key: str | None
     _wheel_update_noticed: set[str]

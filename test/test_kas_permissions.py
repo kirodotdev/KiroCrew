@@ -144,7 +144,7 @@ class TestTheShellAndFilesystemFamiliesAreRefused:
         """Distinct from an unmappable entry: this one the spec explicitly asked for."""
         with caplog.at_level("INFO", logger="kiro_crew.acp.kas_permissions"):
             allowed_tools_to_permissions(["execute_bash"], agent_id="kirocrew")
-        assert "not auto-approving execute_bash" in caplog.text
+        assert "projecting no KAS allow rule for execute_bash" in caplog.text
 
     def test_no_withheld_tool_is_also_in_the_capability_table(self):
         """A tool in both places would translate anyway; the two must not overlap."""

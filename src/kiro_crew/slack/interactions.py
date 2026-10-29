@@ -69,8 +69,7 @@ from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     OPTIONS_ACTION_PREFIX,
-    OPTIONS_CHECKBOXES_ACTION,
-    OPTIONS_SUBMIT_ACTION,
+    OPTIONS_SEVERAL_ACTION,
     SESSION_LINK_ACTION,
     build_options_selected_blocks,
     escape_mrkdwn,
@@ -110,6 +109,12 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+#: The action ids of the checkbox + Send OPTIONS card that the one-click card
+#: replaced. Cards posted before the upgrade still carry them.
+_RETIRED_OPTIONS_SEND = frozenset({"options_submit"})
+_RETIRED_OPTIONS_TOGGLE = frozenset({"options_checkboxes"})
+_RETIRED_CARD = "This card has expired. Reply in the thread to answer."
 
 
 def init(orchestrator: GatewayOrchestrator) -> None:
@@ -176,10 +181,6 @@ async def dispatch(payload: dict) -> None:
                 logger.debug("Failed to send ephemeral rejection", exc_info=True)
         return
 
-    # ── OPTIONS checkboxes toggle — no-op, wait for Send ──
-    if action_id == OPTIONS_CHECKBOXES_ACTION:
-        return
-
     # ── "Open session" deep-link button — no-op ──
     # A URL button opens its link in the browser directly; Slack still POSTs a
     # block_actions event for it, so ack it here as a no-op rather than letting it
@@ -188,13 +189,15 @@ async def dispatch(payload: dict) -> None:
     if action_id == SESSION_LINK_ACTION:
         return
 
-    # ── OPTIONS Send / legacy choice buttons ──
-    # Both RESOLVE an [OPTIONS:] choice: they edit/post the selection to the
-    # channel AND re-dispatch it as a fresh turn. So a ``channels`` policy that
-    # denies ``slack`` must stop them BEFORE that side effect — the re-dispatched
-    # handle_message() is gated, but the message edit/post precedes it. Gate here.
-    # (``_done_`` is a spent-marker no-op that posts nothing, so it stays exempt.)
-    _is_options = action_id == OPTIONS_SUBMIT_ACTION or (
+    # ── OPTIONS choice buttons / "Choose several..." menu ──
+    # A choice button RESOLVES an [OPTIONS:] choice: it edits the card to show
+    # the answer AND re-dispatches it as a fresh turn. So a ``channels`` policy
+    # that denies ``slack`` must stop it BEFORE that side effect — the
+    # re-dispatched handle_message() is gated, but the message edit precedes it.
+    # Gate here. The menu only opens a modal, whose submission is gated again
+    # before it answers. (``_done_`` is a spent-marker no-op that posts nothing,
+    # so it stays exempt.)
+    _is_options = action_id == OPTIONS_SEVERAL_ACTION or (
         action_id.startswith(OPTIONS_ACTION_PREFIX) and "_done_" not in action_id
     )
     if _is_options:
@@ -205,12 +208,22 @@ async def dispatch(payload: dict) -> None:
             logger.info("slack OPTIONS choice dropped: denied by channels governance policy")
             return
 
-    # ── OPTIONS Send button ──
-    if action_id == OPTIONS_SUBMIT_ACTION:
-        await _handle_options_submit(payload, channel, msg_ts)
+    # ── A checkbox card posted before the one-click card replaced it ──
+    # Its Send cannot answer; say so rather than dropping the press
+    # silently. (Ticking its checkboxes sends events too: those stay silent.)
+    if action_id in _RETIRED_OPTIONS_SEND:
+        _thread = payload.get("message", {}).get("thread_ts") or msg_ts
+        await _tell_user(channel, user_id, _thread, _RETIRED_CARD)
+        return
+    if action_id in _RETIRED_OPTIONS_TOGGLE:
         return
 
-    # ── Legacy OPTIONS choice buttons ──
+    # ── "Choose several..." in an OPTIONS card's ⋯ menu ──
+    if action_id == OPTIONS_SEVERAL_ACTION:
+        await _open_options_several(payload, action, channel, msg_ts)
+        return
+
+    # ── OPTIONS choice buttons ──
     if action_id.startswith(OPTIONS_ACTION_PREFIX):
         if "_done_" in action_id:
             return
@@ -820,7 +833,8 @@ from kiro_crew.slack.interactions_settings import _handle_channels_select  # noq
 from kiro_crew.slack.interactions_settings import _handle_track_channel  # noqa: E402
 from kiro_crew.slack.interactions_settings import _handle_users_select  # noqa: E402
 from kiro_crew.slack.interactions_options import _handle_options  # noqa: E402
-from kiro_crew.slack.interactions_options import _handle_options_submit  # noqa: E402
+from kiro_crew.slack.interactions_options import _open_options_several  # noqa: E402
+from kiro_crew.slack.interactions_options import _tell_user  # noqa: E402
 from kiro_crew.slack.interactions_options import _import_thread_to_slot  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_inline_stop  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_end  # noqa: E402
@@ -870,8 +884,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_settings import _refresh_channels_modal  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PAYLOAD_CAP  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PREFIX  # noqa: F401
+    from kiro_crew.slack.interactions_options import _ALREADY_ANSWERED  # noqa: F401
+    from kiro_crew.slack.interactions_options import _NOT_AUTHORIZED  # noqa: F401
+    from kiro_crew.slack.interactions_options import _answer_options  # noqa: F401
     from kiro_crew.slack.interactions_options import _extract_selected_value  # noqa: F401
     from kiro_crew.slack.interactions_options import _forget_options_control  # noqa: F401
+    from kiro_crew.slack.interactions_options import _handle_options_several_closed  # noqa: F401
+    from kiro_crew.slack.interactions_options import (  # noqa: F401
+        _handle_options_several_submission,
+    )
     from kiro_crew.slack.interactions_options import _mark_button_clicked  # noqa: F401
     from kiro_crew.slack.interactions_options import _options_block_id  # noqa: F401
     from kiro_crew.slack.interactions_options import _options_choices_from_payload  # noqa: F401
@@ -886,4 +907,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_approvals import _handle_review_revise_submit  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _parse_draft_key  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _post_review_auth_error  # noqa: F401
+    from kiro_crew.slack.format import OPTIONS_SEVERAL_BLOCK  # noqa: F401
+    from kiro_crew.slack.format import OPTIONS_SEVERAL_CALLBACK  # noqa: F401
+    from kiro_crew.slack.format import OPTIONS_SEVERAL_INPUT  # noqa: F401
+    from kiro_crew.slack.format import build_options_answered_blocks  # noqa: F401
+    from kiro_crew.slack.format import build_options_several_modal  # noqa: F401
+    from kiro_crew.slack.outbound import OptionsSeveralRequest  # noqa: F401
+    from kiro_crew.slack.outbound import options_answered  # noqa: F401
+    from kiro_crew.slack.outbound import remember_options_several  # noqa: F401
+    from kiro_crew.slack.outbound import take_options_several  # noqa: F401
 # isort: on

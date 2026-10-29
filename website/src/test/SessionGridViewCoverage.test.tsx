@@ -43,6 +43,7 @@ vi.mock('../components/ChatPane', () => ({
     onRemove,
     onSplitRight,
     onSplitDown,
+    onOpenFull,
     leading,
     onFileOpen,
   }: {
@@ -52,6 +53,7 @@ vi.mock('../components/ChatPane', () => ({
     onRemove?: () => void
     onSplitRight?: () => void
     onSplitDown?: () => void
+    onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
     leading?: { inset?: boolean; control?: React.ReactNode }
     onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   }) => (
@@ -62,6 +64,7 @@ vi.mock('../components/ChatPane', () => ({
       <button type="button" aria-label={`remove ${slotKey}`} onClick={onRemove} />
       <button type="button" aria-label={`right ${slotKey}`} onClick={onSplitRight} />
       <button type="button" aria-label={`down ${slotKey}`} onClick={onSplitDown} />
+      <button type="button" aria-label={`open full ${slotKey}`} onClick={() => onOpenFull?.(slotKey, 'ts-1', 'mid-1')} />
       <button type="button" aria-label={`open file ${slotKey}`} onClick={() => onFileOpen?.('/tmp/report.pdf')} />
     </div>
   ),
@@ -78,6 +81,7 @@ type Slot = {
   messages?: number
   agent?: string
   last_activity_ts?: string
+  crew_root?: string
 }
 
 const leaf = (id: string, slot?: string): GridNode =>
@@ -294,7 +298,17 @@ describe('SessionGridView — collapse rules', () => {
 
     fireEvent.click(within(onlyPicker()).getByLabelText('Close cell'))
 
+    // The grid collapsing itself is not the user opening the chat (#23564):
+    // no anchor and no gesture flag.
     await waitFor(() => expect(onCollapse).toHaveBeenCalledWith('a'))
+  })
+
+  it('a pane\'s open-full click collapses as a gesture, keeping its anchor', async () => {
+    const { onCollapse } = renderGrid('a')
+
+    fireEvent.click(screen.getByLabelText('open full a'))
+
+    expect(onCollapse).toHaveBeenCalledWith('a', 'ts-1', 'mid-1', true)
   })
 
   it('falls back to the loading surface once every pane is closed', async () => {
@@ -895,5 +909,19 @@ describe('SessionGridView — picker controls', () => {
     fireEvent.mouseDown(onlyPicker())
 
     await waitFor(() => expect(screen.getByTestId('pane-a').getAttribute('data-focused')).toBe('no'))
+  })
+})
+
+describe('SessionGridView — Crew Mode workers (edge review R2 F4)', () => {
+  it("never offers a Crew Mode worker in a pane's picker, even one waiting on approval", async () => {
+    seedApi([
+      { key: 'a', title: 'Alpha' },
+      { key: 'root', title: 'Conductor' },
+      { key: 'w', title: 'Worker', crew_root: 'root', pending_approval: true },
+    ])
+    renderGrid('a')
+    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(1))
+    expect(rowsOf(onlyPicker())[0].textContent).toContain('Conductor')
+    expect(within(onlyPicker()).queryByText('Worker')).toBeNull()
   })
 })

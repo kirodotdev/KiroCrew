@@ -1,8 +1,9 @@
 /** Inline rename for session rows and folder headers, and the Radix menu focus
  *  plumbing that keeps a rename opened from a menu from being cancelled by the menu's
  *  own focus restore. */
-import { useState, useRef, useCallback, useEffect, type MutableRefObject } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { measureAutoGrowTextarea, useAutoGrowTextarea } from '../../hooks/useAutoGrowTextarea'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { sseSlotTitle } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { generateSlotTitle } from '../../hooks/slotTitleGeneration'
@@ -62,11 +63,12 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   // scrolls. Only one row renames at a time (renamingSlot), so the single
   // shared ref always points at the one mounted textarea.
   useAutoGrowTextarea(renameInputRef, renameValue, RENAME_MAX_H)
-  // Set by any menu's Rename item (session rows + folder headers) so the closing
-  // menu's onCloseAutoFocus knows to skip Radix's trigger-focus-restore for this
-  // one close (see the menu Content handlers in ChatSidebar). One-shot: read and cleared
-  // on the next close.
-  const suppressMenuRestoreRef = useRef(false)
+  // Armed by any menu's Rename item (session rows + folder headers) so the
+  // closing menu's onCloseAutoFocus skips Radix's trigger-focus-restore for this
+  // one close. One-shot: consumed on the next close (see useMenuOpensDialog).
+  const menuLayer = useMenuOpensDialog()
+  const { armSkipRestore: suppressMenuRestore, disarm: disarmMenuRestore } = menuLayer
+  const consumeMenuRestoreSkip = menuLayer.onCloseAutoFocus
   // ── Rename plumbing handed to the memoized rows ──────────────────────────
   // Stable identities (state setters + refs only), so arming a rename or
   // typing into it never invalidates other rows' props. The commit takes the
@@ -74,11 +76,11 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   // `renameValue` — a closure over it would mint a new handler per keystroke
   // and re-render every row on each key.
   const onRenameStart = useCallback((key: string, scope: string, title: string, fromMenu: boolean) => {
-    if (fromMenu) suppressMenuRestoreRef.current = true
+    if (fromMenu) suppressMenuRestore()
     setRenamingSlot(key)
     setRenameScope(scope)
     setRenameValue(title)
-  }, [])
+  }, [suppressMenuRestore])
   const onRenameChange = useCallback((value: string) => {
     setRenameValue(value.replace(/[\r\n]+/g, ' '))
   }, [])
@@ -220,12 +222,12 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   }, [renamingSlot, renameScope])
   // Shared onCloseAutoFocus for every rename-hosting menu (session row context +
   // ⋯ dropdowns, and both folder-header ⋯ dropdowns). When Rename was the chosen
-  // item it armed suppressMenuRestoreRef, so we preventDefault to stop Radix from
+  // item it armed suppressMenuRestore, so we preventDefault to stop Radix from
   // yanking focus back to the trigger — that restore would otherwise blur the
   // just-mounted rename input and cancel the edit. Every other item keeps the
   // default focus-restore intact.
   const onMenuCloseAutoFocus = useCallback((e: Event) => {
-    if (suppressMenuRestoreRef.current) { suppressMenuRestoreRef.current = false; e.preventDefault(); return }
+    if (consumeMenuRestoreSkip(e)) return
     // Pointer dismissals (outside click / mouse item pick) skip Radix's
     // focus-restore-to-trigger: the trigger lives inside a focus-within-revealed
     // hover group (folder headers AND session rows), so restoring focus pins
@@ -233,11 +235,11 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     // closes (Esc / Enter on an item) keep the restore — focus returning to
     // the trigger is exactly right for keyboard users (a11y).
     if (!lastInputKeyboardRef.current) e.preventDefault()
-  }, [])
+  }, [consumeMenuRestoreSkip])
   return {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
     renameAnnouncement, slotRenameEnterRef,
-    suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
+    suppressMenuRestore, disarmMenuRestore, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
     onMenuCloseAutoFocus,
   }
 }
@@ -264,9 +266,9 @@ export function useSessionAutoTitle({ dispatch, store }: { dispatch: AppDispatch
 }
 
 /** Folder rename state, scoped to the render instance being edited. */
-export function useFolderRename({ renamingSlot, suppressMenuRestoreRef }: {
+export function useFolderRename({ renamingSlot, disarmMenuRestore }: {
   renamingSlot: string | null
-  suppressMenuRestoreRef: MutableRefObject<boolean>
+  disarmMenuRestore: () => void
 }) {
   // Folder rename ref. See the focus effect below for why the rAF re-grab is needed.
   const folderEditInputRef = useRef<HTMLInputElement | null>(null)
@@ -303,15 +305,15 @@ export function useFolderRename({ renamingSlot, suppressMenuRestoreRef }: {
     })
     return () => cancelAnimationFrame(raf)
   }, [editingId, editScope])
-  // Belt-and-suspenders disarm of the one-shot suppress ref. It's normally
+  // Belt-and-suspenders disarm of the one-shot restore-skip flag. It's normally
   // consumed by the very next onCloseAutoFocus, but if a menu is ever dismissed
-  // without firing that (an outside-dismiss race), the ref would stay armed and
+  // without firing that (an outside-dismiss race), the flag would stay armed and
   // wrongly preventDefault the NEXT menu close. Whenever the sidebar is idle (no
   // edit open), force-disarm: no legitimate pending suppression can exist then.
   // Safe against the normal flow — during a live edit an id is non-null, so this
   // hasn't run yet; by the time all ids clear the real close already consumed it.
   useEffect(() => {
-    if (!renamingSlot && !editingId) suppressMenuRestoreRef.current = false
-  }, [renamingSlot, editingId, suppressMenuRestoreRef])
+    if (!renamingSlot && !editingId) disarmMenuRestore()
+  }, [renamingSlot, editingId, disarmMenuRestore])
   return { folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName }
 }

@@ -72,7 +72,8 @@ _fold_gate = threading.Lock()
 _settled = threading.Condition(_lock)
 _state: "dict[tuple[str, str, str], _Prime]" = {}
 _executor: "ThreadPoolExecutor | None" = None
-#: Completed folds per key since the last reset. A test seam and a log figure.
+#: Completed folds per key since the last reset. A test seam and a log figure, bounded
+#: by ``_STATE_LIMIT``: past it the oldest cell's count is forgotten.
 _primes_run: "dict[tuple[str, str, str], int]" = {}
 
 
@@ -157,6 +158,9 @@ def _run(key: "tuple[str, str, str]", slot: str, name: str) -> None:
         if ok:
             with _lock:
                 _primes_run[key] = _primes_run.get(key, 0) + 1
+                # Keyed on the same cells as ``_state``, so the same limit bounds it.
+                while len(_primes_run) > _STATE_LIMIT:
+                    del _primes_run[next(iter(_primes_run))]
             try:
                 eager._publish_fold(slot, name, folded)
             except Exception:  # pragma: no cover - the bus never raises

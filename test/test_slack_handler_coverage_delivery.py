@@ -70,34 +70,27 @@ class TestStatusReactionController:
     @pytest.mark.asyncio
     async def test_disabled_controller_is_inert(self, slack):
         ctrl = h.StatusReactionController(slack, "C1", "m1", enabled=False)
-        ctrl.set_phase("queued")
-        ctrl.on_progress()
-        ctrl.resume_stall_watchdog()
-        ctrl.finalize()
+        ctrl.start(native_status=False)
+        ctrl.finalize(error=True)
         await asyncio.sleep(0)
         assert not slack.actions
 
     @pytest.mark.asyncio
-    async def test_immediate_phase_then_finalize_swaps_emoji(self, slack):
+    async def test_ack_then_finalize_removes_it(self, slack):
         ctrl = h.StatusReactionController(slack, "C1", "m1")
-        try:
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            assert [a for a in slack.actions if a[0] == "react"]
-            slack.actions.clear()
-            ctrl.set_phase("done")  # terminal phase routes to finalize()
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
-            kinds = [a[0] for a in slack.actions]
-            assert "unreact" in kinds and "react" in kinds
-        finally:
-            ctrl.finalize()
+        ctrl.start(native_status=False)
+        await asyncio.sleep(0)
+        assert [a[1]["emoji"] for a in slack.actions if a[0] == "react"] == ["eyes"]
+        slack.actions.clear()
+        ctrl.finalize()
+        await asyncio.sleep(0)
+        assert [a[0] for a in slack.actions] == ["unreact"]
 
     @pytest.mark.asyncio
-    async def test_error_phase_uses_error_emoji(self, slack):
+    async def test_error_uses_error_emoji(self, slack):
         ctrl = h.StatusReactionController(slack, "C1", "m1")
-        ctrl.set_phase("error")
-        await asyncio.sleep(0)
+        ctrl.start(native_status=True)
+        ctrl.finalize(error=True)
         await asyncio.sleep(0)
         emojis = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
         assert emojis == [h._PHASE_EMOJIS["error"]]
@@ -113,38 +106,11 @@ class TestStatusReactionController:
         assert len(slack.actions) == count
 
     @pytest.mark.asyncio
-    async def test_pause_stops_the_watchdog(self, slack):
-        ctrl = h.StatusReactionController(slack, "C1", "m1")
-        try:
-            ctrl.on_progress()
-            ctrl.pause_stall_watchdog()
-            assert ctrl._stall_soft_handle is None
-            ctrl.on_progress()  # paused — must stay disarmed
-            assert ctrl._stall_soft_handle is None
-            ctrl.resume_stall_watchdog()
-            assert ctrl._stall_soft_handle is not None
-        finally:
-            ctrl.finalize()
-
-    @pytest.mark.asyncio
-    async def test_stall_emoji_upgrades_then_clears(self, slack):
-        ctrl = h.StatusReactionController(slack, "C1", "m1")
-        try:
-            await ctrl._add_stall_emoji(h._STALL_EMOJI_SOFT)
-            await ctrl._add_stall_emoji(h._STALL_EMOJI_HARD)
-            assert ctrl._stall_emoji == h._STALL_EMOJI_HARD
-            unreacted = [a[1]["emoji"] for a in slack.actions if a[0] == "unreact"]
-            assert h._STALL_EMOJI_SOFT in unreacted
-        finally:
-            ctrl.finalize()
-
-    @pytest.mark.asyncio
-    async def test_stall_emoji_not_added_after_finalize(self, slack):
+    async def test_start_after_finalize_adds_nothing(self, slack):
         ctrl = h.StatusReactionController(slack, "C1", "m1")
         ctrl.finalize()
+        ctrl.start(native_status=False)
         await asyncio.sleep(0)
-        slack.actions.clear()
-        await ctrl._add_stall_emoji(h._STALL_EMOJI_SOFT)
         assert not slack.actions
 
     @pytest.mark.asyncio
@@ -168,28 +134,6 @@ class TestStatusReactionController:
             assert not slack.actions
         finally:
             ctrl.finalize()
-
-    @pytest.mark.asyncio
-    async def test_debounced_phase_applies_on_fire(self, slack):
-        ctrl = h.StatusReactionController(slack, "C1", "m1")
-        try:
-            ctrl.set_phase("coding")
-            assert ctrl._pending_phase == "coding"
-            await ctrl._apply_pending()
-            assert ctrl._pending_phase is None
-            assert [a for a in slack.actions if a[0] == "react"]
-            # A second apply with nothing pending must not react again.
-            slack.actions.clear()
-            await ctrl._apply_pending()
-            assert not slack.actions
-        finally:
-            ctrl.finalize()
-
-    @pytest.mark.asyncio
-    async def test_add_phase_reaction_honours_suppression(self, slack, monkeypatch):
-        monkeypatch.setitem(h._PHASE_EMOJIS, "done", None)
-        await h._add_phase_reaction(slack, "C1", "m1", "done")
-        assert not slack.actions
 
 
 # ──────────────────────────────────────────────────────────────────────

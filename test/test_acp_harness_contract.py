@@ -452,7 +452,7 @@ async def test_kas_projects_the_agent_spec(kas_projection_stubbed, monkeypatch, 
     monkeypatch.setattr(
         kas_agents_mod,
         "build_kas_custom_agents",
-        lambda d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="": projected,
+        lambda d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="", **_kw: projected,
     )
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
     assert extras.custom_agents == projected
@@ -491,7 +491,9 @@ async def test_kas_projection_refuses_an_untranslatable_spec(
     from kiro_crew.acp.kas_agents import KasAgentTranslationError
     from kiro_crew.acp.session_handle import AcpRuntimeError
 
-    def _boom(d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key=""):
+    def _boom(
+        d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="", **_kw
+    ):
         raise KasAgentTranslationError("unreadable spec")
 
     monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", _boom)
@@ -513,7 +515,9 @@ async def test_kas_projection_survives_an_unreadable_overlay(
     def _boom(overlay, agent):
         raise OSError("overlay unreadable")
 
-    def _build(d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key=""):
+    def _build(
+        d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="", **_kw
+    ):
         seen.append(frozenset(stub_server_names))
         return [{"name": a}]
 
@@ -537,7 +541,9 @@ async def test_kas_member_dispatch_subtracts_the_dashboard_server(
 
     seen: list[frozenset] = []
 
-    def _build(d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key=""):
+    def _build(
+        d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="", **_kw
+    ):
         seen.append(frozenset(stub_server_names))
         return []
 
@@ -546,6 +552,39 @@ async def test_kas_member_dispatch_subtracts_the_dashboard_server(
         "a", work_dir=str(tmp_path), member_dispatch=True
     )
     assert seen == [frozenset({MEMBER_DISPATCH_SERVER})]
+
+
+@pytest.mark.asyncio
+async def test_kas_extras_carry_the_managed_invocations_resolved_off_the_loop(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """the launcher lookup runs in the projection thread, not in the hoist."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    looked_up: list[tuple[str, bool]] = []
+
+    def _build(
+        d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="", **_kw
+    ):
+        return [{"id": a, "mcpServers": {"kirocrew-core": {"command": "kc"}, "tp": {}}}]
+
+    def _managed(name, *, include_opt_in=False):
+        looked_up.append((name, threading.get_ident() != loop_thread))
+        return {"command": "/opt/kc", "args": ["mcp-core"]}
+
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", _build)
+    monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", _managed)
+
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    assert extras.managed_entries == {"kirocrew-core": {"command": "/opt/kc", "args": ["mcp-core"]}}
+    assert looked_up == [("kirocrew-core", True)], "resolved once, off the loop thread"
+
+
+@pytest.mark.asyncio
+async def test_kiro_extras_carry_no_managed_invocations(tmp_path):
+    extras = await harness_for(ACP_BACKEND_KIRO).session_extras("a", work_dir=str(tmp_path))
+    assert extras.managed_entries is None
 
 
 # ── Seam 4: host-answered requests ──

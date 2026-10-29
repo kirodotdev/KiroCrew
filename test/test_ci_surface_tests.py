@@ -172,8 +172,8 @@ def test_setup_cfg_carries_non_ascii_so_its_read_must_pin_utf8() -> None:
     encoding load-bearing DO hold everywhere, and this asserts both -- so the
     guard cannot rot silently on the runners that never feel it.
 
-    Deliberately not a repo-wide "missing encoding=" rule. `cross-platform.yml`
-    documents why it ships none (a line regex breaks on nested and multi-line
+    Deliberately not a repo-wide "missing encoding=" rule. The `Cross-Platform
+    Portability` step of `pr-policy.yml` documents why it ships none (a line regex breaks on nested and multi-line
     calls), and an AST version means editing `.github/workflows/**`. This stays
     the size of the defect.
     """

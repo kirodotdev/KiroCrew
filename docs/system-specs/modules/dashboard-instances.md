@@ -103,6 +103,17 @@ mate's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped
 match by name; an operator's page never does. The read route and the `[DASHBOARD]` turn
 block both resolve through it, and nothing is written. No shipped page may be named
 `default`.
+A ROOT session running the Crew Mode conductor template (`crew_mode.runs_crew_mode`) gets the same
+`[DASHBOARD]` block on every dashboard turn, keyed by its own store key
+(`session_turn_block`), but only once a page is ADOPTED: the default page it is shown
+while `empty` asks nothing of it, so it gets no block. A root session on any other agent
+(not in Crew Mode) or on a mate (`agent_kind == "member"`), a dispatched or adopted
+session, and a mate DM get no session block; the page itself is left as it is.
+Switching a root session to the Crew Mode conductor template (Crew Mode on) adopts `goal-board` through the ordinary
+`adopt` (`adopt_crew_mode_board_on_switch`, called by `switch_slot_agent`), only while the
+page is `empty`, so a page already chosen is kept and switching away changes nothing.
+It applies to a Persistent chat only (an unset memory mode counts as one): an Incognito
+or Temporary chat may not open sessions, so switching it to the conductor adopts nothing.
 With no page in force, the mate's Dashboard tab on `/members` shows the suggestions
 page (`CrewDashboardEmpty`), and the turn block says so and lists no fields and no upkeep
 pointer. A shipped page named for the mate is drawn as before. The decision is made

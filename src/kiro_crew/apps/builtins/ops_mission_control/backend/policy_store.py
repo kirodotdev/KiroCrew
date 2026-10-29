@@ -55,8 +55,7 @@ SCHEDULE_LOGIN_KEY = "schedule-file.github_login"
 SCHEDULE_STRICT_KEY = "schedule-file.strict_gating"
 
 #: This operator's PagerDuty user id — the same authorization input as the GitHub login, one
-#: adapter over. Review found it after the schedule-file fence went in, which is the useful
-#: part: the class is "every input the off-shift refusal depends on", and identity is that
+#: adapter over. The class is "every input the off-shift refusal depends on", and identity is that
 #: input for EVERY rotation source, not just the committed-file one.
 PAGERDUTY_USER_KEY = "pagerduty.user_id"
 
@@ -77,12 +76,12 @@ INCIDENTIO_USER_KEY = "incidentio.user_id"
 #: 409 gate on ``POST /ledger/hygiene`` and prunes and force-pushes a ledger it does not own.
 #: A concurrent prune deletes the team's accumulated incident knowledge, which no later run
 #: recovers. Fencing the identity inputs while leaving the flag they back-stop writable just
-#: moves the same bypass one branch over. Found in review (GPT 5.6).
+#: moves the same bypass one branch over.
 PRIMARY_KEY = "primary_instance"
 
 #: Every OPERATOR-ONLY key, i.e. every value the agent must not be able to set.
 #:
-#: Two kinds live here and the second was found by auditing for the first:
+#: Two kinds live here:
 #:
 #: 1. **The authorization ceiling** — ``mode`` and ``autonomy_rules``. Raising these unlocks a
 #:    provider write.
@@ -112,7 +111,6 @@ PRIMARY_KEY = "primary_instance"
 #: same forgery makes ``is_primary()`` true against a ``leader:`` this instance does not hold,
 #: which bypasses the 409 ``not_primary`` gate on ``POST /ledger/hygiene`` and lets a non-leader
 #: prune the SHARED ledger. Fencing two thirds of an authorization decision is not fencing it.
-#: Found in review.
 #:
 #: ``primary_instance`` closes the last edge of that same bypass: forging identity is only one
 #: way to reach the ledger-prune gate, and the local flag reaches it with no identity at all
@@ -283,9 +281,9 @@ def _write(data: dict[str, Any]) -> None:
     #
     # No cleanup on failure: every failure inside the publish happens
     # BEFORE the final path is touched, so an unprotectable file never exists
-    # at ``policy_path()`` at all. The unlink the old code ran on lockdown
-    # failure existed to remove a NEW file already PUBLISHED at a wide DACL;
-    # that state is unreachable now, and keeping the unlink would instead
+    # at ``policy_path()`` at all. An unlink on lockdown failure would only
+    # serve a NEW file already PUBLISHED at a wide DACL; that state is
+    # unreachable, and an unlink would instead
     # delete the PREVIOUS, healthy governance ceiling on one transient lockdown
     # failure — silently resetting the operator's autonomy policy.
     #
@@ -414,20 +412,19 @@ def put(key: str, value: Any) -> None:
         _write(data)
 
 
-# There is intentionally NO `migrate_from_config_if_needed`. An earlier revision had one:
-# on first read, if no keystone file existed yet, it lifted `mode`/`autonomy_rules` (and the
-# destination keys) out of `config.json` and onto the fenced floor, to spare a "pre-fence
-# install" a shadowed agent-writable copy. That migration WAS the hole it claimed to close.
+# There is intentionally NO `migrate_from_config_if_needed`. Such a migration -- on first
+# read, if no keystone file exists yet, lift `mode`/`autonomy_rules` (and the destination
+# keys) out of `config.json` and onto the fenced floor -- IS the hole it claims to close.
 #
 # `config.json` is on no sensitive-path list, so an auto-approved agent shell can write
 # `{"mode":"act","autonomy_rules":[{"source":"pagerduty","mode":"act","resource_glob":"*"}]}`
 # to it. The next `app_mode()`/`load_rules()` — reached from `authorize_action` on every
-# `POST /incident/action` — ran the migration, which promoted those values to the keystone
-# and made them authoritative: `effective` resolved to `act`, the gate granted a real
+# `POST /incident/action` — would run the migration, promote those values to the keystone
+# and make them authoritative: `effective` resolves to `act`, the gate grants a real
 # resolve/snooze against production paging the operator never authorized, and the same write
-# redirected `ledger_sync_remote`/`slack_channel`. The constrained party could set its own
-# ceiling, which is the one thing the keystone exists to prevent. Found in review (Opus 5).
+# redirects `ledger_sync_remote`/`slack_channel`. The constrained party could set its own
+# ceiling, which is the one thing the keystone exists to prevent.
 #
-# There is also no install to migrate: this app is new in this PR, so no `config.json` ever
-# legitimately held the ceiling. The keystone is written ONLY by the authenticated dashboard
+# There is also no install to migrate: no `config.json` of this app ever legitimately held
+# the ceiling. The keystone is written ONLY by the authenticated dashboard
 # PUT (`set_mode`/`set_rules`/`put`), and read ONLY from itself.

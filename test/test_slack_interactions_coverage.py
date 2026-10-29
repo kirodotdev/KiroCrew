@@ -403,6 +403,17 @@ class TestDispatchRouting:
     """Each recognised action_id must reach exactly its own handler."""
 
     @pytest.mark.asyncio
+    async def test_choose_several_opens_the_modal(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.format import OPTIONS_SEVERAL_ACTION
+
+        spy = AsyncMock()
+        monkeypatch.setattr(ix, "_open_options_several", spy)
+        await ix.dispatch(_action_payload(OPTIONS_SEVERAL_ACTION))
+        spy.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_spent_options_marker_is_a_noop(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -425,18 +436,19 @@ class TestDispatchRouting:
     async def test_options_blocked_by_channels_governance(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, ix_logs: pytest.LogCaptureFixture
     ) -> None:
-        from kiro_crew.slack.format import OPTIONS_SUBMIT_ACTION
+        from kiro_crew.slack.format import OPTIONS_ACTION_PREFIX, OPTIONS_SEVERAL_ACTION
 
         gov = AsyncMock(return_value=False)
         monkeypatch.setattr(ix, "channel_inbound_permitted", gov)
-        spy = AsyncMock()
-        monkeypatch.setattr(ix, "_handle_options_submit", spy)
-        await ix.dispatch(_action_payload(OPTIONS_SUBMIT_ACTION))
-        spy.assert_not_awaited()
-        gov.assert_awaited_once_with("slack")
-        assert "slack OPTIONS choice dropped: denied by channels governance policy" in _ix_messages(
-            ix_logs
-        )
+        click, menu = AsyncMock(), AsyncMock()
+        monkeypatch.setattr(ix, "_handle_options", click)
+        monkeypatch.setattr(ix, "_open_options_several", menu)
+        await ix.dispatch(_action_payload(f"{OPTIONS_ACTION_PREFIX}0", "A"))
+        await ix.dispatch(_action_payload(OPTIONS_SEVERAL_ACTION))
+        assert click.await_count == menu.await_count == 0
+        assert gov.await_args_list == [(("slack",),), (("slack",),)]
+        dropped = "slack OPTIONS choice dropped: denied by channels governance policy"
+        assert _ix_messages(ix_logs).count(dropped) == 2
         orch.slack.update_message.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
 

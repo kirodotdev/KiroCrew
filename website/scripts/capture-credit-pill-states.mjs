@@ -20,10 +20,6 @@
  *   loading  the request never settles, so the query stays pending. Pins that
  *            the failure branch did not swallow the genuine warming state.
  *   ok       a normal plan payload, to show the reading itself is untouched.
- *   api-key  the backend's reasoned fail-fast marker for API-key auth (#5728).
- *            Before the fix an API-key account's cache never warmed, so the
- *            segment spun forever (the `loading` shot, permanently); now the
- *            segment renders a terminal dash whose label and modal say why.
  *
  * Each scenario is shot three ways: the capsule, the whole header, and the
  * account modal the segment opens, because the modal reads the same state and
@@ -33,7 +29,7 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 import { serveDist } from './lib/serve-dist.mjs'
-import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { logPageProblems, stubDashboardApi, json, KIRO_BACKEND_CONFIG_FIXTURE } from './lib/stub-dashboard-api.mjs'
 
 const DIST = resolvePath(process.argv[2] || 'dist')
 const OUT = resolvePath(process.argv[3] || '/tmp/credit-pill-shots')
@@ -68,7 +64,7 @@ const slots = [{
 const { srv, base } = await serveDist(DIST)
 const browser = await chromium.launch()
 
-for (const scenario of ['failed', 'loading', 'ok', 'api-key']) {
+for (const scenario of ['failed', 'loading', 'ok']) {
   const ctx = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 3,
@@ -86,15 +82,16 @@ for (const scenario of ['failed', 'loading', 'ok', 'api-key']) {
         }
         // Leave the route unfulfilled: the request hangs and the query stays pending.
         if (scenario === 'loading') return true
-        if (scenario === 'api-key') {
-          await json(route, { usage: { available: false, reason: 'api_key_auth' } })
-          return true
-        }
         await json(route, USAGE_OK)
         return true
       }
       if (path.startsWith('/api/chat/slots/')) {
         await json(route, { running: false, has_more: false, total: 0, queue: [], messages: [] })
+        return true
+      }
+      // The credit segment and its modal are the Kiro backend's surface.
+      if (path === '/api/config/kirocrew') {
+        await json(route, KIRO_BACKEND_CONFIG_FIXTURE)
         return true
       }
       return false

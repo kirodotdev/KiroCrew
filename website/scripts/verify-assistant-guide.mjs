@@ -49,7 +49,7 @@ try {
           { key: 'chat-default', title: 'default', agent: 'default', messages: 0, running: false },
         ],
         theme: 'light', preserveStorage: true,
-        localStorageEntries: { 'mc-preview-crew': '1', 'mc-members-panel-open': '0', 'mc-lang': 'en' },
+        localStorageEntries: { 'mc-members-panel-open': '0', 'mc-lang': 'en' },
         extra: async (path, route) => {
           const reply = async (v, status = 200) => { await json(route, v, status); return true }
           if (path === '/api/theme/boot') return reply({ mode: 'light', onboarded: true, import_onboarded: true, privacy_acked: true })
@@ -149,7 +149,7 @@ try {
     assert.equal(await card.getByLabel('Name', { exact: true }).inputValue(), 'Scout')
     assert.equal(await card.getByTestId('crewmate-create-advanced-toggle').getAttribute('aria-expanded'), 'true')
     await card.getByTestId('crewmate-create-advanced').waitFor()
-    assert.equal(await card.getByLabel('What it looks after', { exact: true }).inputValue(), 'Prepare a weekly project update for my review.')
+    assert.equal(await card.getByLabel('Goal', { exact: true }).inputValue(), 'Prepare a weekly project update for my review.')
     await page.waitForFunction(() => document.querySelector('[data-testid="guide-step-text"]')?.textContent?.includes('Create'))
     await card.locator('[data-guide-anchor="crewmate.create"]').waitFor()
     assert.equal(saves, 0, 'nothing is created before the human presses Create')

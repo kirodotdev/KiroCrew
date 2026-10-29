@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -306,11 +307,13 @@ class TestRouteGates:
                 AsyncMock(return_value={"accounts": []}),
             ) as listed,
         ):
-            asyncio.run(
+            resp = asyncio.run(
                 handlers[("GET", "/accounts")](  # type: ignore[operator]
                     _request("GET", "/accounts?refresh=1")
                 )
             )
+        assert resp.status == 200
+        assert _payload(resp) == {"accounts": []}
         listed.assert_awaited_once_with(refresh=True)
 
     def test_reconnect_plan_404s_for_an_unregistered_profile(self):
@@ -613,9 +616,10 @@ class TestConsentTargetTracksTheOperation:
         assert gated == [("good", "eu-west-1")]
         assert gated[0] == operation
 
-    def test_the_nightly_loop_skips_when_no_key_is_healthy(self):
+    def test_the_nightly_loop_skips_when_no_key_is_healthy(self, caplog):
         from kiro_crew.apps.builtins.aws_control import hooks
 
+        caplog.set_level(logging.INFO, logger=hooks.logger.name)
         snapshot = _snapshot_of(
             _registry([_entry("broken", account=self.ACCOUNT)], default="broken"),
             {"broken": _identity(False, detail="ExpiredToken")},
@@ -627,6 +631,9 @@ class TestConsentTargetTracksTheOperation:
             mock.patch.object(hooks.backup_mod, "due_for_nightly") as due,
         ):
             asyncio.run(hooks._run_once(sdk))
+        assert [r.getMessage() for r in caplog.records if r.name == hooks.logger.name] == [
+            "aws-control nightly: no healthy registered key; skipping"
+        ]
         # No probe, no due-check, no consent check, no claim: there is no key to
         # run under, so the loop stops before it can name one.
         probe.assert_not_called()
@@ -1106,6 +1113,9 @@ class TestDriveIamTier:
             "arn:*:s3:::kirocrew-drive-*/drive/*",
             "arn:*:s3:::kirocrew-drive-*/artifacts/*",
         ]
+        # No bucket-policy write: with it, this principal could grant itself
+        # backup reads and undo the write-only rule above.
+        assert "s3:PutBucketPolicy" not in json.dumps(doc)
         # No deploy-web statements leak into the drive tier.
         assert not any("kirocrew-web" in json.dumps(s) for s in doc["Statement"])
         assert not any("cloudfront" in json.dumps(s).lower() for s in doc["Statement"])

@@ -73,6 +73,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # companion's), and calls none itself. The rows are written by the SEL,
         # which is the sink.
         "metrics/provider.py",
+        # Pure derivation: `redact_labels` takes the redactor as an argument and
+        # applies it to labels it derived; the module emits nothing. The egress is
+        # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
+        # display battery in.
+        "crew_timeline.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).
@@ -98,6 +103,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Defines the shared external-text redactor used by output boundaries and
         # creation guards. It emits nothing itself.
         "external_text.py",
+        # Gate-side: the KAS agent projection asks whether the redactor WOULD
+        # change a third-party MCP server's literal env value and WITHHOLDS the
+        # value from the wire when it would. Nothing it emits is redacted text.
+        "acp/kas_agents.py",
         # Consumes that redactor as a yes/no predicate, not as a rewrite:
         # `is_dispatchable_member_name` asks whether a stored Crew Member name
         # WOULD need redaction and refuses the pin when it would. Nothing is
@@ -224,13 +233,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # a third party — the surfaces that SHOW a refusal (the dashboard's
         # notice line) are the registered sinks.
         "name_grant.py",
-        # Same shape as name_grant: audit_decision scrubs the caller-supplied
-        # detail (a refusal reason, a delivery description) before the 200-char
-        # clip and before writing the file_delivery_consent SEL row. A gate-side
-        # audit record, not an output bound for a human or a third party; the
-        # consent card and the tool's own error string are the surfaces that
-        # show a refusal, and those are owned by their registered sinks.
-        "file_delivery_consent.py",
         # Detector, not redactor: the decision seam runs redact_credentials
         # AND redact_exfiltration_urls over the state it is about to send to a
         # third-party judge, then DISCARDS both cleaned strings and refuses the
@@ -492,6 +494,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_start.py",
         "acp/client_tool_events.py",
         "acp/client_transport.py",
+        # The two-spelling stderr-tail check behind client_transport's exit error
+        # and runtime_liveness's death summary: it decides whether those strings
+        # may carry the tail, and both of its callers are already listed here.
+        "acp/stderr_tail.py",
         "acp/client_turn.py",
         "acp/client_turn_control.py",
         "acp/client_usage.py",
@@ -669,7 +675,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The row projection and the restore-time title check, composed into that
         # facade: the same internal persisted copy, no output of their own.
         "dashboard/slot_persistence/message_entries.py",
-        "dashboard/slot_persistence/metadata_codec.py",
+        "dashboard/slot_persistence/metadata_values.py",
         "dashboard/chat_regenerate.py",
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",
@@ -762,9 +768,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # feeding the same dashboard HTTP surface the registered sink already covers.
         "dashboard/handlers/members_roster.py",
         "dashboard/handlers/members_drawer.py",
-        # The crewmate recap lines `handlers/members_drawer.py`'s recap route returns:
-        # a helper behind that same dashboard HTTP surface, not a boundary itself.
-        "member_recap.py",
         "dashboard/handlers/artifacts_parts/artifact_comments.py",
         "dashboard/handlers/artifacts_parts/artifact_folders.py",
         "dashboard/handlers/artifacts_parts/create_update.py",
@@ -819,7 +822,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/messaging_api/run_views.py",
         "dashboard/messaging_api/slack_workspace.py",
         "dashboard/messaging_api/spawn.py",
-        "knowledge/agent_fetch.py",
         "knowledge/agent_source.py",
         "knowledge/artifact_ingest.py",
         "knowledge/ingestion.py",

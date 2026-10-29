@@ -1,0 +1,375 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": false,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "delete": {},
+        "list": {}
+      }
+    },
+    "agent_version": "0.0.34",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "anthropic/claude-opus-4-8",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "anthropic/Claude Opus 4.8",
+            "value": "anthropic/claude-opus-4-8"
+          },
+          {
+            "description": null,
+            "name": "anthropic/Claude Sonnet 4.5 (latest)",
+            "value": "anthropic/claude-sonnet-4-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "medium",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          },
+          {
+            "description": null,
+            "name": "Thinking: minimal",
+            "value": "minimal"
+          },
+          {
+            "description": null,
+            "name": "Thinking: low",
+            "value": "low"
+          },
+          {
+            "description": null,
+            "name": "Thinking: medium",
+            "value": "medium"
+          },
+          {
+            "description": null,
+            "name": "Thinking: high",
+            "value": "high"
+          },
+          {
+            "description": null,
+            "name": "Thinking: xhigh",
+            "value": "xhigh"
+          },
+          {
+            "description": null,
+            "name": "Thinking: max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "medium",
+      "ids": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "session_id": "pi-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "pi v1.3.0\n---\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "pi v1.3.0\n---\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "anthropic/claude-opus-4-8",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "anthropic/Claude Opus 4.8",
+            "value": "anthropic/claude-opus-4-8"
+          },
+          {
+            "description": null,
+            "name": "anthropic/Claude Sonnet 4.5 (latest)",
+            "value": "anthropic/claude-sonnet-4-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "max",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          },
+          {
+            "description": null,
+            "name": "Thinking: minimal",
+            "value": "minimal"
+          },
+          {
+            "description": null,
+            "name": "Thinking: low",
+            "value": "low"
+          },
+          {
+            "description": null,
+            "name": "Thinking: medium",
+            "value": "medium"
+          },
+          {
+            "description": null,
+            "name": "Thinking: high",
+            "value": "high"
+          },
+          {
+            "description": null,
+            "name": "Thinking: xhigh",
+            "value": "xhigh"
+          },
+          {
+            "description": null,
+            "name": "Thinking: max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      200000
+    ],
+    "usage_cost": null
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "anthropic/claude-sonnet-4-5",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "anthropic/Claude Opus 4.8",
+            "value": "anthropic/claude-opus-4-8"
+          },
+          {
+            "description": null,
+            "name": "anthropic/Claude Sonnet 4.5 (latest)",
+            "value": "anthropic/claude-sonnet-4-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          },
+          {
+            "description": null,
+            "name": "Thinking: minimal",
+            "value": "minimal"
+          },
+          {
+            "description": null,
+            "name": "Thinking: low",
+            "value": "low"
+          },
+          {
+            "description": null,
+            "name": "Thinking: medium",
+            "value": "medium"
+          },
+          {
+            "description": null,
+            "name": "Thinking: high",
+            "value": "high"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "anthropic/claude-sonnet-4-5",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "anthropic/Claude Opus 4.8",
+            "value": "anthropic/claude-opus-4-8"
+          },
+          {
+            "description": null,
+            "name": "anthropic/Claude Sonnet 4.5 (latest)",
+            "value": "anthropic/claude-sonnet-4-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          },
+          {
+            "description": null,
+            "name": "Thinking: minimal",
+            "value": "minimal"
+          },
+          {
+            "description": null,
+            "name": "Thinking: low",
+            "value": "low"
+          },
+          {
+            "description": null,
+            "name": "Thinking: medium",
+            "value": "medium"
+          },
+          {
+            "description": null,
+            "name": "Thinking: high",
+            "value": "high"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 5
+  }
+]

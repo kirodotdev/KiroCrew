@@ -33,6 +33,7 @@ vi.mock('../../hooks/useIsMobile', () => ({
   useIsMobile: () => narrowViewport,
 }))
 import { i18nT } from '../../i18n/t'
+import { namedCeiling } from '../../test/namedCeiling'
 import { fmtNumber, fmtBytes, fmtCurrency } from '../../i18n/format'
 import type {
   AwsAccountsResponse, AvailableProfilesResponse, DriveStatus, SharesResponse,
@@ -735,6 +736,19 @@ describe('DrivePaneGate', () => {
       expect(screen.getByTestId('rail-shares-count')).toHaveTextContent(fmtNumber(0))
     })
     expect(screen.queryByTestId('rail-meta')).toBeNull()
+  })
+
+  it('the setup card names the region the drive status searched (#24913)', async () => {
+    vi.mocked(awsControlApi.drive).mockResolvedValue({ exists: false, searched_region: 'eu-central-1' })
+    atFiles()
+
+    // Chained: accounts resolve, then the drive query runs, then the setup card mounts.
+    const setup = await screen.findByTestId(
+      'capability-drive-setup', {}, namedCeiling('DRIVE_SETUP_READY', 5000),
+    )
+    expect(within(setup).getByTestId('drive-searched-region')).toHaveTextContent(
+      i18nT('apps.awsControl.console.setup_searched_region', { region: 'eu-central-1' }),
+    )
   })
 
   it('the gate covers every drive pane, not just Files', async () => {

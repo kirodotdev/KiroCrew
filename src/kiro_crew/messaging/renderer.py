@@ -292,7 +292,12 @@ def cap_choices(
     return choices[:n], choices[n:]
 
 
-def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
+def display_safe_for(
+    text: str,
+    capabilities: TransportCapabilities,
+    *,
+    redactor: Callable[[str], str] | None = None,
+) -> str:
     """:func:`display_safe`, with the mention defang applied only where it belongs.
 
     The channel-NEUTRAL proactive sinks (the dashboard's channel-addressed send and
@@ -311,9 +316,13 @@ def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
     Control-tag comments are stripped first, same as :func:`display_safe` —
     the deterministic backstop against a dashboard-authored control tag
     reaching channel users as literal text.
+
+    ``redactor`` defaults to ``_default_redactor``. A caller in a composed host
+    passes ``redact_via_context`` so companion credential patterns apply too, the
+    same reason :func:`chunk_for_transport` takes one.
     """
     text = strip_control_comments(text or "")
-    safe, _ = redact_for_display(text, _default_redactor)
+    safe, _ = redact_for_display(text, redactor or _default_redactor)
     if not capabilities.mention_grammars:
         return safe
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")

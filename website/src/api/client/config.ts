@@ -37,6 +37,14 @@ export interface AcpBackendProbe {
   missing_components: string[]
   install_command: string
   /**
+   * Set only on a `'missing'` row whose binary DOES resolve but runs a release
+   * other than the one the gateway verified (GitHub Copilot CLI's pin): the
+   * release it found. The row then reads "Wrong version" rather than "Not
+   * installed", and `install_command` installs the verified release. OPTIONAL
+   * because a gateway that predates this field sends none.
+   */
+  found_version?: string
+  /**
    * Installed on disk, but the RUNNING gateway already resolved its absence and
    * cached that for the process's life — so a session started now would still
    * fail. Disables the option and says restart, rather than offering a control

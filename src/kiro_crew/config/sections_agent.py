@@ -69,6 +69,12 @@ def coerce_fallback_model(raw: object) -> str:
     return model_registry.to_provider_id(s, "acp") or field_default(AgentConfig, "fallback_model")
 
 
+#: The Crew Mode conductor template's name. Equal to
+#: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
+#: binds no name the sections facade does not.
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
+
+
 @dataclass
 class AgentConfig:
     approval_mode: str = field(
@@ -288,9 +294,35 @@ class AgentConfig:
             "accepted; redirects that leave the host are refused.",
         ),
     )
+    native_skill_projection: bool = field(
+        default=True,
+        metadata=_meta(
+            "Native skill views for kiro-cli",
+            "When true (the default), the 'kiro' backend launches each agent under a "
+            "Kiro Crew managed view (kirocrew-skill-view-*.json in the kiro agents "
+            "directory) that serves skills through Kiro Crew's skill search, and "
+            "overlays the workspace's .kiro/settings/cli.json while it runs. When "
+            "false, agents launch under their authored names, no view is written, "
+            "the workspace overlay is rolled back, and kiro-cli loads skill metadata "
+            "natively again. Same effect as KIROCREW_NATIVE_SKILL_PROJECTION=0, "
+            "which still disables projection whatever this says.",
+            # Latched at spawn: a running native process keeps the mode it was
+            # launched under until it is replaced.
+            restart=True,
+        ),
+    )
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
+    )
+    crew_mode_agent: str = field(
+        default=_CREW_MODE_AGENT_DEFAULT,
+        metadata=_meta(
+            "Crew Mode conductor",
+            "The conductor template a chat runs when Crew Mode is turned on. "
+            "Empty falls back to the default. Takes effect live for new chats; "
+            "no gateway restart.",
+        ),
     )
     deepseek_env: dict[str, str] = field(
         default_factory=dict,
@@ -687,6 +719,8 @@ class AgentConfig:
             "one and skip the detection, so a local disk whose mount table is "
             "unreadable keeps WAL by declaring it. Unknown values read as 'auto'.",
             restart=True,
+            # The loader lower-cases, then reads any other value as 'auto'.
+            enum=["auto", "wal", "delete"],
         ),
     )
     admit_wait_secs: int = field(

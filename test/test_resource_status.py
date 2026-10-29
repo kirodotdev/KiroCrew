@@ -182,6 +182,201 @@ def test_tool_dispatch_returns_report(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Guidance:" in out
 
 
+# ── temp-directory headroom ─────────────────────────────────────────────────────
+
+
+def _headroom(space: float, inode_pct: float, inodes: int, root: str = "/tmp") -> rs.TempHeadroom:
+    return rs.TempHeadroom(root, space, inode_pct, inodes)
+
+
+@pytest.mark.parametrize(
+    "space,inode_pct,inodes,expected",
+    [
+        (80.0, 90.0, 500_000, None),
+        (5.0, 90.0, 500_000, "LOW on space,"),
+        # The observed failure: bytes to spare, inodes gone.
+        (86.0, 2.0, 20_000, "LOW on inodes,"),
+        # A small tmpfs above 10% can still be a few hundred dirs from failure.
+        (86.0, 40.0, 900, "LOW on inodes,"),
+        (1.0, 1.0, 10, "LOW on space and inodes,"),
+    ],
+)
+def test_temp_headroom_text_names_what_is_low(
+    space: float, inode_pct: float, inodes: int, expected: str | None
+) -> None:
+    text = _headroom(space, inode_pct, inodes).text()
+    if expected is None:
+        assert "LOW" not in text
+    else:
+        assert text.startswith(expected)
+    assert f"({inodes} inodes)" in text
+
+
+def test_temp_headroom_reads_statvfs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A plain namespace: ``os.statvfs`` and its result type do not exist on Windows.
+    fake = SimpleNamespace(f_blocks=1000, f_bavail=50, f_files=2000, f_favail=200)
+    monkeypatch.setattr(rs.os, "statvfs", lambda root: fake, raising=False)
+    reading = rs.temp_headroom("/somewhere")
+    assert reading == rs.TempHeadroom("/somewhere", 5.0, 10.0, 200)
+
+
+def test_temp_headroom_without_inode_accounting_is_not_low(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = SimpleNamespace(f_blocks=1000, f_bavail=900, f_files=0, f_favail=0)
+    monkeypatch.setattr(rs.os, "statvfs", lambda root: fake, raising=False)
+    reading = rs.temp_headroom("/btrfs")
+    assert reading is not None and not reading.low
+    # The placeholder count is never shown as a measured figure.
+    assert reading.text() == "90% space free, no inode limit"
+
+
+def test_temp_headroom_unmeasurable_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _gone(root: str) -> None:
+        raise FileNotFoundError(root)
+
+    monkeypatch.setattr(rs.os, "statvfs", _gone, raising=False)
+    assert rs.temp_headroom("/missing") is None
+    monkeypatch.delattr(rs.os, "statvfs", raising=False)
+    assert rs.temp_headroom("/tmp") is None
+
+
+def _fake_devices(monkeypatch: pytest.MonkeyPatch, devices: dict[str, int]) -> None:
+    def _stat(path: str) -> SimpleNamespace:
+        if path not in devices:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(st_dev=devices[path], st_mode=0o040000)
+
+    monkeypatch.setattr(rs.os, "stat", _stat)
+
+
+def test_temp_roots_lists_tmpdir_on_another_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rs.sys, "platform", "linux")
+    monkeypatch.setattr(rs.tempfile, "gettempdir", lambda: "/scratch/run-1")
+    _fake_devices(monkeypatch, {"/tmp": 1, "/scratch/run-1": 2})
+    assert rs.temp_roots() == ["/tmp", "/scratch/run-1"]
+
+
+def test_temp_roots_keeps_configured_dir_when_gettempdir_skips_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    configured = tmp_path / "configured-temp"
+    configured.mkdir()
+    monkeypatch.setattr(rs.sys, "platform", "linux")
+    monkeypatch.setenv("TMPDIR", str(configured))
+    monkeypatch.delenv("TEMP", raising=False)
+    monkeypatch.delenv("TMP", raising=False)
+    monkeypatch.setattr(rs.tempfile, "gettempdir", lambda: "/tmp")
+    _fake_devices(monkeypatch, {"/tmp": 1, str(configured): 2})
+
+    assert rs.temp_roots() == ["/tmp", str(configured)]
+
+
+def test_temp_roots_drops_tmpdir_on_the_same_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rs.sys, "platform", "linux")
+    monkeypatch.setattr(rs.tempfile, "gettempdir", lambda: "/tmp/sub")
+    _fake_devices(monkeypatch, {"/tmp": 1, "/tmp/sub": 1})
+    assert rs.temp_roots() == ["/tmp"]
+
+
+def test_temp_roots_on_windows_is_the_temp_dir_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rs.sys, "platform", "win32")
+    monkeypatch.setattr(rs.tempfile, "gettempdir", lambda: "C:\\Temp")
+    _fake_devices(monkeypatch, {"/tmp": 1, "C:\\Temp": 2})
+    assert rs.temp_roots() == ["C:\\Temp"]
+
+
+def test_temp_roots_survives_no_usable_tempdir(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _none() -> str:
+        raise FileNotFoundError("no usable temporary directory")
+
+    monkeypatch.setattr(rs.sys, "platform", "linux")
+    monkeypatch.setattr(rs.tempfile, "gettempdir", _none)
+    _fake_devices(monkeypatch, {"/tmp": 1})
+    assert rs.temp_roots() == ["/tmp"]
+
+
+def test_temp_headroom_lines_guide_away_from_a_low_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readings = {
+        "/tmp": _headroom(86.0, 2.0, 20_000),
+        "/scratch": _headroom(70.0, 90.0, 10**6, root="/scratch"),
+    }
+    monkeypatch.setattr(rs, "temp_roots", lambda: list(readings))
+    monkeypatch.setattr(rs, "temp_headroom", readings.get)
+    monkeypatch.setenv("KIROCREW_SCRATCH", "/scratch")
+    _fake_devices(monkeypatch, {"/tmp": 1, "/scratch": 2})
+    joined = "\n".join(rs.temp_headroom_lines())
+    assert "  /tmp: LOW on inodes," in joined
+    assert "  /scratch: 70% space free" in joined
+    assert "temp space is low on /tmp." in joined and "use $KIROCREW_SCRATCH instead" in joined
+
+
+@pytest.mark.parametrize(
+    "scratch,devices",
+    [
+        # Scratch on the low device: sending work there would fail the same way.
+        ("/scratch", {"/scratch": 1}),
+        # No scratch dir in this process.
+        ("", {"/scratch": 1}),
+        # Scratch named but gone.
+        ("/gone", {"/scratch": 1}),
+        # Scratch on another device that is itself low.
+        ("/other", {"/scratch": 1, "/other": 2}),
+    ],
+)
+def test_temp_guidance_never_points_at_a_low_device(
+    monkeypatch: pytest.MonkeyPatch, scratch: str, devices: dict[str, int]
+) -> None:
+    low = _headroom(86.0, 2.0, 20_000, root="/scratch")
+    monkeypatch.setattr(rs, "temp_roots", lambda: ["/scratch"])
+    monkeypatch.setattr(rs, "temp_headroom", lambda root: low)
+    monkeypatch.setenv("KIROCREW_SCRATCH", scratch)
+    _fake_devices(monkeypatch, devices)
+    joined = "\n".join(rs.temp_headroom_lines())
+    assert "$KIROCREW_SCRATCH" not in joined
+    assert "free space there or use a filesystem that is not low." in joined
+
+
+def test_temp_headroom_lines_healthy_has_no_guidance(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rs, "temp_roots", lambda: ["/tmp"])
+    monkeypatch.setattr(rs, "temp_headroom", lambda root: _headroom(80.0, 90.0, 10**6))
+    lines = rs.temp_headroom_lines()
+    assert lines[0] == "Temp space (advisory):"
+    assert not any("Guidance" in line for line in lines)
+
+
+def test_temp_headroom_lines_empty_when_nothing_measurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rs, "temp_roots", lambda: ["/tmp"])
+    monkeypatch.setattr(rs, "temp_headroom", lambda root: None)
+    assert rs.temp_headroom_lines() == []
+
+
+def test_tool_dispatch_appends_temp_space_after_memory_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import mcp_core
+
+    fake = rs.ResourceStatus(
+        available_gb=30.0,
+        cpu_count=8,
+        load_per_cpu=0.5,
+        posture=rs.POSTURE_AMPLE,
+        pressure_gb=4.0,
+        critical_gb=2.0,
+    )
+    monkeypatch.setattr(rs, "probe", lambda cfg=None: fake)
+    monkeypatch.setattr(rs, "temp_roots", lambda: ["/tmp"])
+    monkeypatch.setattr(rs, "temp_headroom", lambda root: _headroom(86.0, 2.0, 20_000))
+    monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
+    out = mcp_core._call_tool_inner("resource_status", {})
+    assert out.index("ample headroom") < out.index("Temp space (advisory):")
+    assert "temp space is low on /tmp." in out
+
+
 # ── review-round fixes: off-switch, invariant clamp, schema registration ──────
 
 
@@ -812,3 +1007,74 @@ def test_a_remote_session_line_scopes_the_reading_to_the_gateway(free_gb):
 
 def test_a_clear_gateway_keeps_a_remote_session_silent():
     assert _gateway_status(20.0, rs.POSTURE_AMPLE).context_line(remote=True) == ""
+
+
+_GIB = 1024**3
+
+
+def _status(free_gb):
+    if free_gb <= 1.0:
+        posture = rs.POSTURE_CRITICAL
+    elif free_gb <= 4.0:
+        posture = rs.POSTURE_TIGHT
+    else:
+        posture = rs.POSTURE_AMPLE
+    return _gateway_status(free_gb, posture)
+
+
+def test_a_healthy_workspace_reading_is_reported_beside_a_tight_gateway():
+    line = _status(3.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB))
+    assert "The gateway machine" in line and "~3.0 GB free" in line
+    assert "~12.0 of 16 GB free" in line
+    assert "not limited by the gateway" in line
+    assert "targeted tests" not in line and "does not measure" not in line
+
+
+def test_a_tight_workspace_raises_the_line_even_with_a_healthy_gateway():
+    line = _status(20.0).context_line(remote=True, workspace_memory=(2 * _GIB, 8 * _GIB))
+    assert line.startswith("[RESOURCES] Your remote workspace machine is tight")
+    assert "~2.0 of 8.0 GB free" in line and "targeted tests" in line
+    assert "gateway machine" not in line
+
+
+def test_a_small_workspace_total_keeps_its_decimal():
+    # A 512 MiB container must not read "of 0 GB".
+    line = _status(20.0).context_line(remote=True, workspace_memory=(int(0.1 * _GIB), _GIB // 2))
+    assert "~0.1 of 0.5 GB free" in line
+
+
+def test_a_tight_slice_beside_a_tight_workspace_names_the_gateway_machine():
+    import dataclasses
+
+    status = dataclasses.replace(_status(20.0), slice_tasks=32000, slice_tasks_limit=32768)
+    assert status.slice_tasks_tight
+    line = status.context_line(remote=True, workspace_memory=(2 * _GIB, 8 * _GIB))
+    # The cgroup reading is the gateway's, not the workspace's the line led with.
+    assert "workspace machine is tight" in line
+    assert "On the gateway machine, the agent slice is also near its task ceiling" in line
+    # Gateway tight too: the line still ends on the workspace sentence, so the
+    # slice sentence must still name its machine.
+    pressed = dataclasses.replace(_status(3.0), slice_tasks=32000, slice_tasks_limit=32768)
+    both = pressed.context_line(remote=True, workspace_memory=(2 * _GIB, 8 * _GIB))
+    assert both.endswith(pressed._tasks_clause(name_gateway=True))
+    assert "On the gateway machine, the agent slice is also near its task ceiling" in both
+
+
+def test_an_idle_small_workspace_gets_no_build_advice():
+    # 3 of 4 GB free is below the gateway's 4 GB floor but a quarter of nothing
+    # is used: the workspace is judged on its own size.
+    line = _status(20.0).context_line(remote=True, workspace_memory=(3 * _GIB, 4 * _GIB))
+    assert line == ""
+    tight = _status(20.0).context_line(remote=True, workspace_memory=(int(0.8 * _GIB), 4 * _GIB))
+    assert "workspace machine is tight" in tight and "targeted tests" in tight
+
+
+def test_both_tight_reports_each_machine_with_its_own_advice():
+    line = _status(3.0).context_line(remote=True, workspace_memory=(1 * _GIB, 8 * _GIB))
+    assert "The gateway machine" in line and "sub-agent waves small" in line
+    assert "workspace machine is tight" in line and "targeted tests" in line
+
+
+def test_both_healthy_stays_silent():
+    assert _status(20.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB)) == ""
+    assert _status(20.0).context_line(remote=True) == ""

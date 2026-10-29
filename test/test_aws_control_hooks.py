@@ -12,6 +12,7 @@ the caller from params, the scheduled failure-backoff) is pinned in
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -47,12 +48,19 @@ def _fake_sdk():
     return sdk
 
 
+@pytest.fixture()
+def hook_logs(caplog):
+    """The messages this module's logger emitted, read after the call."""
+    caplog.set_level(logging.INFO, logger=hooks.logger.name)
+    return lambda: [r.getMessage() for r in caplog.records if r.name == hooks.logger.name]
+
+
 class TestRunOnceEarlyReturns:
     """Each guard makes the loop fail CLOSED: a missing precondition is a log
     line and a return, never a claimed run. One test per guard. ``start_async``
     must stay untouched in every one."""
 
-    def test_no_healthy_registered_key_skips(self):
+    def test_no_healthy_registered_key_skips(self, hook_logs):
         # With no working key resolved there is nothing the loop may run under,
         # so it must return before probing identity. The resolution is the one
         # the grant was recorded against, so a key it rejects is a key the
@@ -65,10 +73,11 @@ class TestRunOnceEarlyReturns:
             mock.patch.object(hooks.aws_consent, "probe_identity") as probe,
         ):
             _run(hooks._run_once(sdk))
+        assert hook_logs() == ["aws-control nightly: no healthy registered key; skipping"]
         probe.assert_not_called()
         sdk.start_async.assert_not_called()
 
-    def test_the_nightly_identity_probe_bypasses_the_cache(self):
+    def test_the_nightly_identity_probe_bypasses_the_cache(self, hook_logs):
         """The account this loop keys backups by must not come from memory.
 
         A repoint inside a cached-probe window keys ``due_for_nightly`` and the
@@ -90,8 +99,9 @@ class TestRunOnceEarlyReturns:
         ):
             _run(hooks._run_once(sdk))
         assert probe.await_args.kwargs.get("use_cache") is False
+        assert hook_logs() == ["aws-control nightly: account unresolved; skipping"]
 
-    def test_unresolved_identity_skips(self):
+    def test_unresolved_identity_skips(self, hook_logs):
         # A profile NAME is not an account; if the live probe cannot resolve one
         # the loop cannot key backup state, so it returns before the due-check.
         sdk = _fake_sdk()
@@ -109,10 +119,11 @@ class TestRunOnceEarlyReturns:
             mock.patch.object(hooks.backup_mod, "due_for_nightly") as due,
         ):
             _run(hooks._run_once(sdk))
+        assert hook_logs() == ["aws-control nightly: account unresolved; skipping"]
         due.assert_not_called()
         sdk.start_async.assert_not_called()
 
-    def test_identity_ok_but_no_account_skips(self):
+    def test_identity_ok_but_no_account_skips(self, hook_logs):
         # ok True with an empty account is still unresolved -- the guard checks
         # both, so this distinct branch must also return before due-check.
         sdk = _fake_sdk()
@@ -130,9 +141,10 @@ class TestRunOnceEarlyReturns:
             mock.patch.object(hooks.backup_mod, "due_for_nightly") as due,
         ):
             _run(hooks._run_once(sdk))
+        assert hook_logs() == ["aws-control nightly: account unresolved; skipping"]
         due.assert_not_called()
 
-    def test_not_due_skips_before_consent(self):
+    def test_not_due_skips_before_consent(self, hook_logs):
         # Most wakes are not due. A not-due run must return before touching
         # consent so a nightly-disabled account is never asked to spend money.
         sdk = _fake_sdk()
@@ -153,10 +165,12 @@ class TestRunOnceEarlyReturns:
             mock.patch.object(hooks.aws_consent, "refuse_and_log") as refuse,
         ):
             _run(hooks._run_once(sdk))
+        # Nothing withheld transcripts, so the not-due return is silent.
+        assert hook_logs() == []
         refuse.assert_not_called()
         sdk.start_async.assert_not_called()
 
-    def test_consent_refused_skips_before_claiming(self):
+    def test_consent_refused_skips_before_claiming(self, hook_logs):
         # Consent fails closed: if refuse_and_log returns False the run stops
         # (it already logged + audited), before any run is claimed, so a revoked
         # grant produces no SDK run and no upload.
@@ -175,8 +189,12 @@ class TestRunOnceEarlyReturns:
             mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
             mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
             mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=False)),
+            mock.patch.object(hooks.backup_mod.storage, "find_drive", return_value=""),
         ):
             _run(hooks._run_once(sdk))
+        # A run past the consent gate would reach the drive lookup and log
+        # "no drive yet"; a refusal stops before it, so this module logs nothing.
+        assert hook_logs() == []
         sdk.start_async.assert_not_called()
 
 
@@ -235,7 +253,7 @@ class TestClaimsTheRunThroughTheSdk:
         assert kinds == [hooks.backup_mod.KIND_SNAPSHOT, hooks.backup_mod.KIND_SESSIONS]
         assert all(c.kwargs["dedupe_key"] == ACCOUNT for c in sdk.start_async.await_args_list)
 
-    def test_no_drive_yet_claims_no_run(self):
+    def test_no_drive_yet_claims_no_run(self, hook_logs):
         # The drive is tag-discovered per wake. Until one exists there is nowhere to
         # push, so the loop claims NOTHING -- as it did before this change. Claiming
         # a run anyway would leave a `done` SDK run on the Backup row every wake for
@@ -243,16 +261,24 @@ class TestClaimsTheRunThroughTheSdk:
         # owner's earlier `lastFailed`. A missing drive is "nothing to attempt yet".
         sdk = _fake_sdk()
         self._drive(sdk, snapshot_due=True, sessions_due=True, bucket="")
+        assert hook_logs() == ["aws-control nightly: no drive yet; skipping"]
         sdk.start_async.assert_not_awaited()
 
-    def test_a_refused_start_is_a_log_line_not_a_crash(self):
+    def test_a_refused_start_is_a_log_line_not_a_crash(self, caplog):
         # The runtime can refuse a start (mid-teardown, or no runner registered).
         # Nothing reached AWS, so it is a logged skip and the next wake tries
         # again -- it must not propagate out of the loop body.
+        caplog.set_level(logging.INFO, logger=hooks.logger.name)
         for exc in (JobError("shutting down"), UnknownJobKind("no runner")):
+            caplog.clear()
             sdk = _fake_sdk()
             sdk.start_async = AsyncMock(side_effect=exc)
             self._drive(sdk, snapshot_due=True, sessions_due=False)  # no raise
+            logged = [r for r in caplog.records if r.name == hooks.logger.name]
+            assert [r.getMessage() for r in logged] == [
+                f"aws-control nightly: could not claim {hooks.backup_mod.KIND_SNAPSHOT} run"
+            ]
+            assert logged[0].exc_info[1] is exc
             sdk.start_async.assert_awaited_once()
 
 

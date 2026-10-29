@@ -107,6 +107,7 @@ export function MembersPageThreadHeader({
           members={orderedMembers}
           activeName={active.name}
           signals={signalsOf}
+          automationOf={automationOf}
           onPick={(name) => {
             const m = orderedMembers.find((row) => row.name === name)
             if (m) void openMember(m)
@@ -208,6 +209,9 @@ export function MembersPageThreadHeader({
             slotKey={activeSlot || active.slot_key}
             running={!!isRunning(active)}
             automation={automationOf(active)}
+            // The same reading as the pill's "On watch" word and the roster
+            // row's ring: a monitor on the slot OR the heartbeat on.
+            watch={isLoopOn(active)}
             indicatorTestId="member-pill-loop-indicator"
             // Smaller in the shell bar, which is 42px tall: the pill sits
             // there with no vertical padding, at the height of the 32px

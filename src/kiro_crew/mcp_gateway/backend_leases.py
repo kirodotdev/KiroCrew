@@ -433,10 +433,14 @@ async def _handle_resource_subscription(
         # When another routed stub shares this stub's grant caller,
         # settle locally — drop only this stub — and leave the upstream
         # lease to the last sharer (same guard the detach path applies).
+        # A same-caller subscribe still in flight shares it the same way:
+        # forwarding the release beside it would let the server grant
+        # that subscribe and then drop the caller's one subscription,
+        # leaving the new subscriber routed to nothing. The release is
+        # left to that subscribe's verdict instead (``release_owed``).
         grant_caller = self._grant_callers.get((uri, stub_uuid))
-        if grant_caller is not None and any(
-            other != stub_uuid and self._grant_callers.get((uri, other)) == grant_caller
-            for other in self._resource_subscriptions.get(uri, set())
+        if grant_caller is not None and self._hold_identity_release(
+            uri, grant_caller, leaving=stub_uuid
         ):
             self._grant_callers.pop((uri, stub_uuid), None)
             subscribers = self._resource_subscriptions.get(uri)
@@ -444,6 +448,15 @@ async def _handle_resource_subscription(
                 subscribers.discard(stub_uuid)
                 if not subscribers:
                     del self._resource_subscriptions[uri]
+                    # The caller's subscription is still live upstream
+                    # while the release waits on the in-flight subscribe,
+                    # so an update for the URI routes nowhere. Orphan-mark
+                    # it, as detach does, so that update is not charged to
+                    # the server as a hazard; a grant or a confirmed
+                    # release clears the mark.
+                    while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
+                        self._orphaned_leases.pop()
+                    self._orphaned_leases.add(uri)
             await self._reply_locally(stub_uuid, original_id, result={})
             return True
         # Sole holder (or unknown grant): forward, and mutate routing on
@@ -576,6 +589,39 @@ async def _handle_resource_subscription(
     return False
 
 
+def _hold_identity_release(
+    self: Backend, uri: str, caller: Optional[CallerContext], *, leaving: str = ""
+) -> bool:
+    """Whether the release of ``caller``'s upstream subscription for ``uri``
+    is held back now; False when it is due.
+
+    An identity server holds one subscription per URI and caller and
+    releases by caller, so a release sent while a stub of the caller is
+    routed for the URI, or while a same-caller subscribe is in flight,
+    revokes the subscription that stub holds or is about to be granted.
+    The release is therefore left to whoever still depends on the
+    subscription: a routed stub of the caller releases it on its own
+    departure (``leaving`` names a departing stub, still routed while
+    this is decided, and does not count); otherwise the first same-caller
+    subscribe in flight inherits the obligation (``release_owed``), and
+    its verdict settles it the same way. Only when neither exists is the
+    release due. A release with no caller names no principal and is never
+    held.
+    """
+    if caller is None:
+        return False
+    if any(
+        stub != leaving and self._grant_callers.get((uri, stub)) == caller
+        for stub in self._resource_subscriptions.get(uri, ())
+    ):
+        return True
+    for p in self._pending_requests.values():
+        if p.method == _RESOURCES_SUBSCRIBE_METHOD and p.resource_uri == uri and p.caller == caller:
+            p.release_owed = True
+            return True
+    return False
+
+
 async def _on_resource_subscription_response(
     self: Backend,
     pending: "_PendingRequest",
@@ -603,6 +649,17 @@ async def _on_resource_subscription_response(
                     # Grant-time is the only moment the grant principal
                     # is certain; detach releases with this caller.
                     self._grant_callers[(uri, pending.stub_uuid)] = pending.caller
+                # A release left to this verdict (``release_owed``) is
+                # discharged by the grant: the caller's one subscription
+                # now serves this stub, and its own departure releases it.
+            elif pending.release_owed:
+                # Refused, or unsettled, with a release left to this
+                # verdict: the earlier holder's grant is still held
+                # upstream. It is released now unless a stub of the
+                # caller is routed for the URI or another same-caller
+                # subscribe is in flight (``_hold_identity_release``).
+                if not self._hold_identity_release(uri, pending.caller):
+                    await self._release_upstream_subscriptions([uri], caller=pending.caller)
             elif verdict_unknown or "error" not in msg:
                 # UNSETTLED verdict (neither result nor error, or the
                 # gateway's error for a reply it could not use): the

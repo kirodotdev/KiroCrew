@@ -96,7 +96,11 @@ from kiro_crew.agent import (
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_LAUNCH, launch_for
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKEND_LAUNCH,
+    launch_for,
+)
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.executors import subprocess_executor
@@ -607,6 +611,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
             *(self._goose_session_mcp_servers() if self._is_goose else []),
             *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
+            *(self._copilot_session_mcp_servers() if self._is_copilot else []),
             *(self._pi_session_mcp_servers() if self._is_pi else []),
             *(await asyncio.to_thread(self._pooled_mcp_servers)),
         ],
@@ -685,6 +690,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
             *(self._goose_session_mcp_servers() if self._is_goose else []),
             *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
+            *(self._copilot_session_mcp_servers() if self._is_copilot else []),
             *(self._pi_session_mcp_servers() if self._is_pi else []),
             *(await asyncio.to_thread(self._pooled_mcp_servers)),
         ]
@@ -768,7 +774,15 @@ async def _initialize_session(self: AcpClient) -> None:
     """Handshake: initialize → session/load or session/new → set_mode → set_model."""
     # 1. Initialize
     init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
-    init_resp = await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
+    try:
+        init_resp = await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
+    finally:
+        # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
+        # the file deleted right after the initialize answer, the stdio server it
+        # names still mounted and answered tools/call). It carries a session
+        # credential, so it goes now, on a failed handshake too.
+        if self._is_copilot:
+            await self._discard_copilot_mcp_config()
     logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
 
     # Whether this harness can restore a session at all, asked of whichever
@@ -804,6 +818,10 @@ async def _initialize_session(self: AcpClient) -> None:
     self._steering_advertised = steering_advertised(init_resp)
     self._note_pi_adapter_version()
     self._note_goose_version()
+    # Copilot only: a release other than the verified one is refused here, before
+    # any session exists; the AcpToolGateUnroutable it raises ends the child with no
+    # respawn (see ``ensure_ready``).
+    self._refuse_unverified_copilot_version()
 
     # The subprocess has now read its agent spec, which closes the window the
     # pre-spawn snapshot opened: a write landing before this point is caught here,
@@ -899,6 +917,7 @@ async def _initialize_session(self: AcpClient) -> None:
                         *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                         *(self._goose_session_mcp_servers() if self._is_goose else []),
                         *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
+                        *(self._copilot_session_mcp_servers() if self._is_copilot else []),
                         *(self._pi_session_mcp_servers() if self._is_pi else []),
                         *(await asyncio.to_thread(self._pooled_mcp_servers)),
                     ],
@@ -1035,6 +1054,10 @@ async def _initialize_session(self: AcpClient) -> None:
     # started; the file has no further reader and goes now.
     if self._is_pi:
         await self._discard_pi_mcp_handoff()
+    # Copilot CLI read its launch MCP config when its process started; the file
+    # carries a session credential and nothing reads it again.
+    if self._is_copilot:
+        await self._discard_copilot_mcp_config()
 
     # Seek to end of JSONL so we only read new tool results.
     # claude-agent-acp stores sessions via its own SDK, not ~/.kiro/ — skip.
@@ -1144,8 +1167,15 @@ async def _initialize_session(self: AcpClient) -> None:
     #  persist, rather than as a step of its own down here: see
     #  _reseed_after_capture on why it rides an EXISTING adapter-only branch.)
 
+    # Frames buffered before the routing write answered can name the state a
+    # restored session was left in; the answer supersedes them, so they are not
+    # replayed, and everything the drain reads after it is checked below.
+    if self.backend in ACP_BACKEND_FORBIDDEN_MODES:
+        self._drop_superseded_config_frames()
     # Drain MCP server init notifications
     await self._drain_notifications()
+    if self.backend in ACP_BACKEND_FORBIDDEN_MODES:
+        await self._refuse_session_config_drift()
 
     # The drain usually reads step 4's agent/switched frame; judge the model
     # it named before the first prompt can run on it.

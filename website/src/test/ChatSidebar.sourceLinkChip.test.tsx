@@ -177,7 +177,7 @@ describe('ChatSidebar – PR chip', () => {
     const onOpenSource = took()
     renderSidebar({ onOpenSource })
     expect(clickChip(chip())).toBe(true) // no navigation to github.com
-    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true })
+    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true, gesture: true })
     expect(onOpenSource).toHaveBeenCalledWith('s2', { url: PR_URL, kind: 'change' })
   })
 
@@ -204,7 +204,7 @@ describe('ChatSidebar – PR chip', () => {
     // the negative assertion below is meaningful and not vacuous.
     const row = chip().closest('.session-row') as HTMLElement
     fireEvent.click(row)
-    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true })
+    expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true, gesture: true })
 
     // A chip click switches to s2 exactly once — via the chip, not by bubbling
     // (which would fire the row handler on top of it).

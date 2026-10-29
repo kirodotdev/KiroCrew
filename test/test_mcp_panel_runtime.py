@@ -39,6 +39,21 @@ from kiro_crew.mcp_panel import (
 GOOD_KEY = "dashboard:chat-1-100"
 
 
+def _gateway_serving(key: str, reply: dict[str, Any]) -> Any:
+    """A gateway double that answers only the session it was told about.
+
+    Any other key gets the refusal a real gateway gives an unknown caller, so the
+    tool's reply text shows which key actually reached the gateway.
+    """
+
+    def _serve(_path: str, *_a: Any, session_key: str = "", **_k: Any) -> dict[str, Any]:
+        if session_key != key:
+            return {"error": f"unknown session {session_key!r}"}
+        return reply
+
+    return _serve
+
+
 @pytest.fixture(autouse=True)
 def _verified_caller() -> Any:
     """Resolve the caller strictly, the way a real parent session would.
@@ -95,10 +110,13 @@ class TestTheStrictIdentityGate:
 
     def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
         """Re-resolving downstream would send a different authority than was checked."""
-        with patch("kiro_crew.mcp_panel._post", return_value={"panel": {}}) as mock_post:
-            _call_tool_inner("panel_publish", {"data": {"cycle": 1}})
+        with patch(
+            "kiro_crew.mcp_panel._post", side_effect=_gateway_serving(GOOD_KEY, {"panel": {}})
+        ) as mock_post:
+            out = _call_tool_inner("panel_publish", {"data": {"cycle": 1}})
 
         assert mock_post.call_args.kwargs["session_key"] == GOOD_KEY
+        assert out.startswith("Published using the `default` template")
 
     def test_the_publishing_crew_is_never_taken_from_the_arguments(self) -> None:
         """Ownership comes from the vetted session, never from the caller's payload.
@@ -238,9 +256,10 @@ class TestPanelPublish:
     def test_absent_optional_fields_are_omitted_rather_than_sent_as_null(self) -> None:
         """A null template would override the server's default with nothing."""
         with patch("kiro_crew.mcp_panel._post", return_value={"panel": {}}) as mock_post:
-            _call_tool_inner("panel_publish", {"data": {"a": 1}, "template": None})
+            out = _call_tool_inner("panel_publish", {"data": {"a": 1}, "template": None})
 
         assert "template" not in mock_post.call_args[0][1]
+        assert out.startswith("Published using the `default` template (1 top-level field).")
 
 
 # -------------------------------------------------------------- templates tool
@@ -288,10 +307,13 @@ class TestDashboardFields:
     def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
         """The field list is keyed by crew, so re-resolving downstream would answer
         for a different crewmate than the one the gate vetted."""
-        with patch("kiro_crew.mcp_panel._get", return_value={"template": None}) as mock_get:
-            _call_tool_inner("dashboard_fields", {})
+        with patch(
+            "kiro_crew.mcp_panel._get", side_effect=_gateway_serving(GOOD_KEY, {"template": None})
+        ) as mock_get:
+            out = _call_tool_inner("dashboard_fields", {})
 
         assert mock_get.call_args.kwargs["session_key"] == GOOD_KEY
+        assert out.startswith("You have no dashboard page yet")
 
     def test_the_fields_come_back_as_prose_the_agent_can_act_on(self) -> None:
         """The payload is rendered rather than returned raw.
@@ -391,10 +413,13 @@ class TestDashboardWrite:
         mock_post.assert_not_called()
 
     def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
-        with patch("kiro_crew.mcp_panel._post", return_value={"written": {}}) as mock_post:
-            _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+        with patch(
+            "kiro_crew.mcp_panel._post", side_effect=_gateway_serving(GOOD_KEY, {"written": {}})
+        ) as mock_post:
+            out = _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
 
         assert mock_post.call_args.kwargs["session_key"] == GOOD_KEY
+        assert out == "Wrote `open_items` (value) to your dashboard."
 
     def test_the_target_dashboard_is_never_taken_from_the_arguments(self) -> None:
         """Ownership comes from the vetted session, as it does for a publish."""
@@ -520,8 +545,9 @@ class TestDashboardWriteClear:
             patch("kiro_crew.mcp_panel._get", return_value=self._ARRAY_FIELDS),
             patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post,
         ):
-            _call_tool("dashboard_write", {"field": "for_you", "clear": True, "value": []})
+            out = _call_tool("dashboard_write", {"field": "for_you", "clear": True, "value": []})
 
+        assert out == "Wrote `for_you` (array) to your dashboard.", out
         assert mock_post.call_args[0][1] == {"field": "for_you", "value": []}
 
     def test_clear_posts_an_empty_object_for_an_object_field(self) -> None:
@@ -540,8 +566,9 @@ class TestDashboardWriteClear:
             patch("kiro_crew.mcp_panel._get", return_value=self._OBJECT_FIELDS),
             patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_OBJECT) as mock_post,
         ):
-            _call_tool("dashboard_write", {"field": "asks", "clear": True, "value": {}})
+            out = _call_tool("dashboard_write", {"field": "asks", "clear": True, "value": {}})
 
+        assert out == "Wrote `asks` (object) to your dashboard.", out
         assert mock_post.call_args[0][1] == {"field": "asks", "value": {}}
 
     def test_clear_on_a_scalar_field_falls_through_to_the_gateway(self) -> None:
@@ -571,8 +598,9 @@ class TestDashboardWriteClear:
             patch("kiro_crew.mcp_panel._get", return_value=no_match),
             patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post,
         ):
-            _call_tool("dashboard_write", {"field": "unknown_field", "clear": True})
+            out = _call_tool("dashboard_write", {"field": "unknown_field", "clear": True})
 
+        assert not out.startswith("Error:"), out
         assert mock_post.call_args[0][1] == {"field": "unknown_field", "value": []}
 
     @pytest.mark.parametrize(
@@ -645,8 +673,9 @@ class TestDashboardWriteClear:
 
     def test_clear_false_leaves_an_ordinary_write_alone(self) -> None:
         with patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post:
-            _call_tool("dashboard_write", {"field": "open_items", "clear": False, "value": 3})
+            out = _call_tool("dashboard_write", {"field": "open_items", "clear": False, "value": 3})
 
+        assert not out.startswith("Error:"), out
         assert mock_post.call_args[0][1] == {"field": "open_items", "value": 3}
 
     def test_a_clear_that_is_not_a_boolean_is_refused(self) -> None:
@@ -660,8 +689,9 @@ class TestDashboardWriteClear:
     def test_a_write_with_a_value_posts_it_unchanged(self, value: Any) -> None:
         """A call that passes a value posts that value unchanged."""
         with patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post:
-            _call_tool("dashboard_write", {"field": "open_items", "value": value})
+            out = _call_tool("dashboard_write", {"field": "open_items", "value": value})
 
+        assert not out.startswith("Error:"), out
         assert mock_post.call_args[0][1] == {"field": "open_items", "value": value}
 
     def test_the_tool_advertises_clear_and_requires_only_the_field(self) -> None:

@@ -41,6 +41,10 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 │                            AcpProcessDied with ambiguous_delivery set
 ├── AcpAuthRequired        — kiro-cli not authenticated; non-retryable
 ├── AcpSandboxInitFailed   — an OS sandbox refused to initialize; non-retryable
+├── AcpDelegateLaunchFailed — the kiro-cli-chat delegate failed to launch (a stale
+│                            or version-skewed install); non-retryable, and not an
+│                            AcpProcessDied, so the chat shows the reinstall
+│                            message instead of a respawn loop
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
 ├── PiGateExtensionTampered — a shipped gate extension (Pi or DeepSeek) failed its digest check
@@ -94,6 +98,7 @@ instead of the row simply disappearing.
 | Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
 | Notes git subprocess (`md_notebook/git_ops.py`) | A non-zero exit reports git's last 3 stderr lines PLUS the first transport-caused line when one sits outside that tail. git ends every fetch/push failure with the same access-rights boilerplate and prints an SSH diagnosis first, so a tail alone reports a permission problem the operator does not have (a host reachable only via `~/.ssh/config` never resolved at all). The extra line widens what the message reports; it does not decide whether the command failed. |
+| Auto-Improvement git step (`auto_improvement/backend/clone_setup.py`) | A failed clone, branch list, checkout or fetch reports git's last 2 stderr lines after dropping blank lines and git's access-rights advisory (`Please make sure you have the correct access rights` / `and the repository exists.`), redacted and then bounded. The advisory follows every transport or auth fatal, so keeping it reports a repository problem in place of the `Permission denied (publickey).` line above it. |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 
 ## Code Review Sage consolidation refusal
@@ -343,7 +348,16 @@ re-prompting the same live session past `TRANSIENT_RETRIES` until
 retry, on the same backoff curve capped at `CONNECTION_RETRY_MAX_DELAY` (30 s),
 and shows one standing "Connection unstable — retrying…" notice for the extra
 attempts rather than one per attempt. Stop, a landed turn and an exhausted
-window end it exactly as they end the fixed ladder. Provider answers keep the
+window end it exactly as they end the fixed ladder. The dashboard settles that
+standing notice once the window closes (`resolveTransientNotice` in
+`website/src/pages/chat/transientNotice.ts`): it reads "Connection restored"
+when an answer follows it, and the muted past-tense "Connection interrupted"
+when the give-up row or any other error comes first, so it never stays
+"retrying…" above the red "please try again." row. A new user turn decides
+neither: a message typed during the backoff does not end the replay, so the
+notice stays pending. Another re-queued recovery row (`kind: transient_retry`,
+such as a dead process's "Connection lost — retrying…") is read as recovery
+still running, so the scan continues past it. Provider answers keep the
 fixed count: a provider that answers with errors is not helped by a longer wait.
 
 ### Provider failures a harness writes as text

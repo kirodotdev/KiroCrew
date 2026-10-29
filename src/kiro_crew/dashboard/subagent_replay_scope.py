@@ -4,9 +4,11 @@ The durable half of the ``subscribe_subagents`` replay folds crew-log units. Thr
 rules keep that work proportional to what a socket shows instead of to the size of
 the data home:
 
-1. **Scope.** Only the slots a socket names are replayed: the ``slots`` list a
-   client sends with ``subscribe_subagents`` or ``subagent_replay``, plus each slot
-   it later focuses. Each slot is replayed at most once per subscription.
+1. **Scope.** Only the slots a socket asks for are replayed: the ``slots`` list a
+   client sends with ``subscribe_subagents`` or ``subagent_replay``, each slot an
+   owner socket later focuses, and, for an app socket whose subscribe carries no
+   list, the slots whose subagent cards it may see. Each slot is replayed at most
+   once per subscription.
 2. **Skip units with no subagent entry.** :class:`SubagentUnitIndex` answers "can
    this unit hold a subagent row" from the raw bytes, without a fold. A unit is read
    whole once per process; after that only the bytes appended since are read, so an

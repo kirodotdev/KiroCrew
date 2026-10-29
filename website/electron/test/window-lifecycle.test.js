@@ -1721,3 +1721,80 @@ describe("gateway port prompt", () => {
     }
   });
 });
+
+// ── Close button: background vs quit (#12204) ───────────────────────────────
+
+describe("main window close action", () => {
+  function closeHandlerBody() {
+    const start = SOURCE.indexOf('mainWindow.on("close", createCloseHandler({');
+    assert.notEqual(start, -1, "main window close handler must be built by createCloseHandler");
+    return SOURCE.slice(start, SOURCE.indexOf("\n    }));\n", start));
+  }
+
+  it("wires the close listener to the store, the tray hide, requestQuit and persist", () => {
+    // The sequence itself is exercised behaviourally in close-action.test.js;
+    // this pins that the main window feeds it the real effects.
+    const body = closeHandlerBody();
+    assert.match(body, /getAction: \(\) => getCloseAction\(store\)/);
+    assert.match(body, /cancelPendingTrayHide\(mainWindow\)/);
+    assert.match(body, /^\s*requestQuit,$/m);
+    assert.match(body, /hideToTray\(mainWindow, \{/);
+    assert.match(body, /persist\(\);/);
+  });
+
+  function facadeHarness(stored = {}) {
+    const data = { ...stored };
+    const writes = [];
+    const store = {
+      get: (key) => data[key],
+      set: (key, value) => { writes.push([key, value]); data[key] = value; },
+    };
+    const lifecycle = createWindowLifecycle(validOptions({ store }));
+    return { lifecycle, data, writes };
+  }
+
+  it("the facade reads and writes the stored choice, canonicalized", () => {
+    const h = facadeHarness();
+    assert.equal(h.lifecycle.closeAction.get(), "background", "an untouched install keeps running");
+    assert.equal(h.lifecycle.closeAction.set("quit"), "quit");
+    assert.equal(h.data.closeAction, "quit");
+    assert.equal(h.lifecycle.closeAction.get(), "quit");
+    assert.equal(h.lifecycle.closeAction.set("nonsense"), "background");
+    assert.equal(h.data.closeAction, "background");
+  });
+
+  it("the facade skips a write that changes nothing", () => {
+    const h = facadeHarness({ closeAction: "quit" });
+    h.lifecycle.closeAction.set("quit");
+    assert.deepEqual(h.writes, []);
+    h.lifecycle.closeAction.set("background");
+    assert.deepEqual(h.writes, [["closeAction", "background"]]);
+  });
+
+  it("the tray menu is unchanged: the setting lives only in Settings", () => {
+    const menus = [];
+    const lifecycle = createWindowLifecycle(validOptions({
+      electron: {
+        app: { name: "Kiro Crew", getVersion: () => "0.8.0", getPath: () => "/virtual/logs" },
+        Tray: class {
+          setToolTip() {}
+          setContextMenu() {}
+          on() {}
+        },
+        Menu: { buildFromTemplate: (template) => { menus.push(template); return { template }; } },
+        nativeImage: {
+          createFromPath: () => ({ resize: () => ({ fake: "icon" }), setTemplateImage() {} }),
+        },
+        shell: {},
+      },
+      store: { path: "/virtual/config.json", get: () => undefined, set() {} },
+      platform: "linux",
+      env: {},
+    }));
+    lifecycle.createTray();
+    assert.deepEqual(
+      menus[0].map((item) => item.label || item.type),
+      ["Show Kiro Crew", "separator", "New Connection Window…", "separator", "Open Config File", "separator", "Quit"],
+    );
+  });
+});

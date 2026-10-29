@@ -1142,7 +1142,7 @@ def test_an_unknown_tool_refusal_is_audited(keystone: Path):
 
 
 def test_sel_records_the_resolved_identity_not_the_agents_claim(
-    keystone: Path, fake_backend: FakeComputerUseBackend
+    keystone: Path, fake_backend: FakeComputerUseBackend, sel_private_root: Path
 ):
     """The audited target is the identity the driver RESOLVED.
 
@@ -1151,12 +1151,12 @@ def test_sel_records_the_resolved_identity_not_the_agents_claim(
     the gate is fed the resolved identity.
     """
     _enable(keystone)
-    with patch("kiro_crew.computer_use.tools.sel") as sel_factory:
-        recorder = MagicMock()
-        sel_factory.return_value = recorder
-        # Query by a loose fragment; the audit must carry the resolved label.
-        _dispatch(TOOL_GET_STATE, app="fake files")
-    assert recorder.log_tool_invocation.call_args.kwargs["resources"] == FAKE_FILES_APP.label
+    # Query by a loose fragment; the stored audit row must carry the resolved label.
+    _dispatch(TOOL_GET_STATE, app="fake files")
+    log = sel_private_root / "security_events.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["resources"] == FAKE_FILES_APP.label
+    assert not [r for r in rows if "fake files" in r["resources"]], rows
 
 
 def test_denial_text_does_not_disclose_the_ceiling(

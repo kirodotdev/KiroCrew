@@ -158,11 +158,11 @@ def test_a_credential_setting_never_carries_a_guide() -> None:
     assert "guide_ref" not in hit
 
 
-def test_crewmates_page_names_its_preview_switch() -> None:
+def test_mates_page_has_no_preview_prerequisite() -> None:
     d = ui_index.find_ui("mates", "en")
     page = next(r for r in d["results"] if r["id"] == "page.members")
     requires = page["placements"][0]["requires"]
-    assert any(r["kind"] == "preview_flag" for r in requires)
+    assert not any(r["kind"] == "preview_flag" for r in requires)
 
 
 def test_channel_settings_hang_under_their_channel_without_a_label_suffix() -> None:
@@ -1118,16 +1118,16 @@ def test_find_setting_rows_carry_the_dashboard_label() -> None:
     from kiro_crew.dashboard.change_cards import localize_setting_rows
 
     rows = [
-        {"setting_id": "developer.developer-mode", "label": "Developer Mode"},
+        {"setting_id": "developer.webhooks", "label": "Webhooks"},
         {"setting_id": "not.a-setting", "label": "Kept"},
     ]
-    shown = ui_index.setting_labels(["developer.developer-mode"], "zh-CN")
+    shown = ui_index.setting_labels(["developer.webhooks"], "zh-CN")
     out = localize_setting_rows(rows, "zh-CN")
-    assert out[0]["label"] == shown["developer.developer-mode"]["label"] != "Developer Mode"
-    assert out[0]["path"] == shown["developer.developer-mode"]["path"]
+    assert out[0]["label"] == shown["developer.webhooks"]["label"] != "Webhooks"
+    assert out[0]["path"] == shown["developer.webhooks"]["path"]
     assert out[0]["label_locale"] == "zh-CN"
     assert out[1] == rows[1]
-    assert localize_setting_rows(rows, "")[0]["label"] == "Developer Mode"
+    assert localize_setting_rows(rows, "")[0]["label"] == "Webhooks"
 
 
 # ── where-is questions whose first answer must carry a guide ──

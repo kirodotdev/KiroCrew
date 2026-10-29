@@ -681,10 +681,10 @@ class TestAgentsSliceLimits:
         finally:
             self._reset()
 
-    def _fake_slice(self, tmp_path, *, oom_kill=0, local_max=0, current=100, mem_max="1000"):
+    def _fake_slice(self, tmp_path, *, oom_kill=0, oom=0, local_max=0, current=100, mem_max="1000"):
         d = tmp_path / "kirocrew-agents.slice"
         d.mkdir(exist_ok=True)
-        (d / "memory.events").write_text(f"low 0\nhigh 0\nmax 0\noom 0\noom_kill {oom_kill}\n")
+        (d / "memory.events").write_text(f"low 0\nhigh 0\nmax 0\noom {oom}\noom_kill {oom_kill}\n")
         (d / "memory.events.local").write_text(
             f"low 0\nhigh 0\nmax {local_max}\noom 0\noom_kill 0\n"
         )
@@ -721,7 +721,37 @@ class TestAgentsSliceLimits:
             self._reset()
 
     def test_slice_pressure_scope_local_breach_is_distinguished(self, tmp_path):
-        """A kill without a slice-level max event reads as a per-scope breach."""
+        """A kill with a cgroup ``oom`` event below the slice, and no
+        slice-level max event, reads as a per-scope breach and names the
+        per-scope ceiling."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            d = self._fake_slice(tmp_path)
+            with (
+                patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d),
+                patch(
+                    "kiro_crew.sandbox._cgroup_limits_from_config",
+                    return_value=(8192, 20480, 50, 0),
+                ),
+            ):
+                assert sb.check_agents_slice_pressure() is None
+                self._fake_slice(tmp_path, oom_kill=1, oom=1, local_max=0)
+                msg = sb.check_agents_slice_pressure()
+                assert msg is not None
+                assert "at least one scope hit its own per-tree limit" in msg
+                assert "configured per-scope MemoryMax=20480M" in msg
+                assert "no cgroup limit inside this slice" not in msg
+        finally:
+            self._reset()
+
+    def test_slice_pressure_kill_without_an_oom_event_is_not_blamed_on_a_scope(self, tmp_path):
+        """The kernel counts ``oom_kill`` for ANY OOM killer, but raises the
+        ``oom`` event only on the cgroup whose limit was hit and its
+        ancestors. A kill with no ``oom`` event under the slice came from the
+        host-wide OOM killer or a limit above the slice, so the message must
+        not claim a per-tree limit fired."""
         import kiro_crew.sandbox as sb
 
         self._reset()
@@ -729,10 +759,29 @@ class TestAgentsSliceLimits:
             d = self._fake_slice(tmp_path)
             with patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d):
                 assert sb.check_agents_slice_pressure() is None
-                self._fake_slice(tmp_path, oom_kill=1, local_max=0)
+                self._fake_slice(tmp_path, oom_kill=1, oom=0, local_max=0)
                 msg = sb.check_agents_slice_pressure()
                 assert msg is not None
-                assert "a scope hit its own per-tree limit" in msg
+                assert "per-tree limit" not in msg
+                assert "no cgroup limit inside this slice was reached" in msg
+        finally:
+            self._reset()
+
+    def test_slice_pressure_reaped_victim_points_at_the_kernel_log(self, tmp_path):
+        """A victim scope that is gone by the time the sampler looks cannot be
+        named from cgroupfs; the message says where the name still is."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            d = self._fake_slice(tmp_path)
+            with patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d):
+                assert sb.check_agents_slice_pressure() is None
+                self._fake_slice(tmp_path, oom_kill=1, oom=1)
+                msg = sb.check_agents_slice_pressure()
+                assert msg is not None
+                assert "already reaped" in msg
+                assert "kernel log" in msg
         finally:
             self._reset()
 

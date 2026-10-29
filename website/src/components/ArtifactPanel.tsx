@@ -25,6 +25,7 @@ import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { isEditableTarget } from '../utils/editableTarget'
 import { useLocalCrewHidden } from './overlayRoot'
+import { overlayCaptionClearancePx } from '../lib/electron'
 interface Props {
   slug: string
   /** Kind captured at open time; the live query overrides it once loaded. */
@@ -94,6 +95,8 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // instead of yanking focus and aborting the composition
   // (`useDialogFocusTrap` is the reference consumer of the same seam).
   const fsImeLatch = useDocumentImeLatch(fullscreen)
+  // Read at render time: `.embedded-win-inset` toggles at runtime.
+  const captionTop = overlayCaptionClearancePx()
 
   // Live artifact — authoritative for kind/name/content once loaded. Seeded
   // with what handleArtifactOpen captured so the panel renders immediately.
@@ -461,8 +464,10 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           e.preventDefault()
           ;(wrapsBackward ? last : first).focus()
         }}>
-        {/* Header — pl-20 clears macOS traffic-light buttons */}
-        <div className="flex items-center justify-between pl-20 pr-6 h-12 shrink-0 border-b border-border">
+        {/* Header — pl-20 clears macOS traffic-light buttons; the marginTop drops
+            it below the Windows/Linux caption band (#24784). */}
+        <div data-testid="artifact-panel-fullscreen-header" className="flex items-center justify-between pl-20 pr-6 h-12 shrink-0 border-b border-border"
+          style={captionTop > 0 ? { marginTop: `${captionTop}px` } : undefined}>
           <span className="flex items-center gap-2 min-w-0">
             <Component size={14} className="text-accent shrink-0" />
             <span className="text-base font-semibold text-text-strong truncate">{name}</span>

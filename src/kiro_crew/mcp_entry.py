@@ -122,6 +122,9 @@ def slim_server(argv: list[str]) -> Callable[[], None] | None:
     drop_inherited_lib_path()
     # cli.main, in its order, for an ``mcp-*`` command.
     platform_compat.ensure_utf8_console()
+    from kiro_crew import sandbox_launch_mark
+
+    sandbox_launch_mark.note()  # the governance tier reads it after the pop below
     os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
     os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
     if not os.environ.get("KIROCREW_PROJECT_DIR"):

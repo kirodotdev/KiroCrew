@@ -100,7 +100,6 @@ src/kiro_crew/apps/builtins/meetings/backend/routes/tasks.py
 src/kiro_crew/apps/builtins/mochi/backend/routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/backend/ledger_sync.py
 src/kiro_crew/apps/builtins/ops_mission_control/backend/notify_out.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_index.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_notify_out.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers_datadog_cov80.py
@@ -121,7 +120,6 @@ src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/manifest.py
 src/kiro_crew/apps/module_loader.py
-src/kiro_crew/apps/permissions.py
 src/kiro_crew/apps/route_registry.py
 src/kiro_crew/apps/scaffold.py
 src/kiro_crew/apps/teardown.py
@@ -142,7 +140,6 @@ src/kiro_crew/dashboard/chat_folder_suggest.py
 src/kiro_crew/dashboard/chat_nav.py
 src/kiro_crew/dashboard/chat_title.py
 src/kiro_crew/dashboard/file_index.py
-src/kiro_crew/dashboard/handlers/ask_question.py
 src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py
 src/kiro_crew/dashboard/handlers/sso_login.py
@@ -184,7 +181,6 @@ src/kiro_crew/eval/runner.py
 src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
 src/kiro_crew/imaging.py
-src/kiro_crew/knowledge/agent_fetch.py
 src/kiro_crew/knowledge/agent_source.py
 src/kiro_crew/knowledge/artifact_ingest.py
 src/kiro_crew/knowledge/chunker.py
@@ -276,7 +272,6 @@ test/test_app_e2e.py
 test/test_app_execution.py
 test/test_app_manager.py
 test/test_app_mcp_scoping.py
-test/test_app_permissions.py
 test/test_app_proxy_auth.py
 test/test_app_routes.py
 test/test_app_scaffold.py
@@ -298,7 +293,6 @@ test/test_artifact_sharing_handlers.py
 test/test_artifact_source.py
 test/test_artifacts.py
 test/test_artifacts_handlers_coverage.py
-test/test_ask_question_roundtrip.py
 test/test_ask_user_question_validation.py
 test/test_auto_approve.py
 test/test_auto_research.py
@@ -345,7 +339,6 @@ test/test_capability_mcp_registry.py
 test/test_catalog_inventory.py
 test/test_cc_agent_resolution.py
 test/test_changelog_handler.py
-test/test_channel_activation.py
 test/test_channel_connect_row.py
 test/test_channel_fixtures.py
 test/test_channel_model_inheritance.py
@@ -359,7 +352,6 @@ test/test_chat_nav.py
 test/test_chat_slot_create_folder.py
 test/test_chat_slot_end_wait.py
 test/test_chat_slot_interrupt.py
-test/test_chat_slot_reasoning_effort.py
 test/test_chat_title.py
 test/test_cli_desktop.py
 test/test_cli_lazy_imports.py
@@ -549,7 +541,6 @@ test/test_learn.py
 test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py
-test/test_link_dashboard.py
 test/test_local_gate.py
 test/test_manifest_hooks.py
 test/test_mark_permission_resolved.py
@@ -557,8 +548,6 @@ test/test_mcp_api_port_resolution.py
 test/test_mcp_app_panel_config.py
 test/test_mcp_apps_e2e.py
 test/test_mcp_artifact_folders.py
-test/test_mcp_artifacts.py
-test/test_mcp_core.py
 test/test_mcp_core_arg_crash.py
 test/test_mcp_core_set_project.py
 test/test_mcp_core_spawn_sub_agents.py
@@ -580,14 +569,12 @@ test/test_mcp_gateway_stub_poolable_ack.py
 test/test_mcp_gateway_stub_recaller.py
 test/test_mcp_internal_caller.py
 test/test_mcp_knowledge_add_document.py
-test/test_mcp_oauth_banner.py
 test/test_mcp_preflight.py
 test/test_mcp_preflight_real_server.py
 test/test_mcp_probe_treadmill.py
 test/test_mcp_probe_warn_once.py
 test/test_mcp_seed.py
 test/test_mcp_shareability.py
-test/test_mcp_shared_cache.py
 test/test_mcp_shared_cancelled_bound.py
 test/test_mcp_skill_registry.py
 test/test_mcp_stub_freeze_ratchet.py
@@ -605,7 +592,6 @@ test/test_mochi_activity.py
 test/test_mochi_agent_policy.py
 test/test_mochi_mcp_server.py
 test/test_mochi_routes.py
-test/test_model_registry.py
 test/test_model_registry_parity.py
 test/test_module_loader.py
 test/test_native_subagent_spawn.py
@@ -622,8 +608,6 @@ test/test_omc_ledger_sync_coverage.py
 test/test_onboarding_import.py
 test/test_one_conversation_one_session.py
 test/test_open_dm_retry.py
-test/test_options_click_validation.py
-test/test_options_submit.py
 test/test_override_expiry_notice.py
 test/test_papyrus_gitops.py
 test/test_papyrus_latex.py
@@ -649,7 +633,6 @@ test/test_pptx_maker_library.py
 test/test_pptx_maker_paths.py
 test/test_pptx_maker_routes.py
 test/test_prepare_pr_local_review.py
-test/test_prepare_pr_profiles.py
 test/test_prepare_pr_status.py
 test/test_process_tree_kill.py
 test/test_project_alias.py
@@ -694,7 +677,6 @@ test/test_sel_prune_streaming.py
 test/test_service.py
 test/test_serving_loop_unified.py
 test/test_session_grid.py
-test/test_session_map_locking.py
 test/test_session_map_migration.py
 test/test_session_mtime_ordering.py
 test/test_session_spend_identity.py
@@ -719,11 +701,9 @@ test/test_skill_update_flow.py
 test/test_skill_versioning.py
 test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
-test/test_slack_handler_coverage_branches.py
 test/test_slack_home_tab.py
 test/test_slack_linked_approval.py
 test/test_slack_mirror_unlink.py
-test/test_slack_options_lifecycle.py
 test/test_slack_pins_reactions.py
 test/test_slack_render_pipeline.py
 test/test_slack_scope_probe.py

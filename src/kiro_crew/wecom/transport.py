@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 import ntpath
 import posixpath
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -67,6 +68,26 @@ from kiro_crew.wecom.client import (
 from kiro_crew.wecom.media_upload import MAX_BYTES_BY_TYPE
 
 logger = logging.getLogger(__name__)
+
+
+# Upper bound on the number of LEARNED (non-roster) warm peers kept in
+# ``WeComTransport._warm_chats``. Warmth is only an availability HINT in
+# ``configured_targets``; it gates no send (``_may_push`` authorizes on the
+# roster alone), so evicting a learned peer loses nothing — it is re-learned the
+# moment it writes again. Without this bound an ``allow_all`` bot would
+# accumulate one entry per distinct org DMer for the life of the gateway. Roster
+# members (owner / allow-list) are exempt from this cap, so it bounds only the
+# learned subset.
+WECOM_WARM_CHATS_MAX = 512
+
+# Upper bound on the LENGTH of a learned userid retained as a ``_warm_chats`` key.
+# ``_dispatch_callback`` reads ``userid`` straight off the WS frame with no length
+# check, so under ``allow_all`` a peer could present a megabyte-long id; a count
+# cap alone would then still let 512 such keys hold arbitrary memory. A non-roster
+# userid longer than this is NOT stored as warm (the message is still served) — so
+# the bound holds on both the entry COUNT and each entry's SIZE. Roster identities
+# (owner / allow-list) are config-authored and bounded, so they are exempt.
+WECOM_MAX_RETAINED_USERID_LEN = 256
 
 
 class WeComSendError(RuntimeError):
@@ -214,9 +235,28 @@ class WeComTransport(MessagingTransport):
         # WeCom's precondition for ``aibot_send_msg``. Learned from authorized
         # inbound only, so an unauthorized sender cannot make itself a target.
         # Same "warm first" shape Teams uses for its service URL and Weixin for
-        # its learned peers. A set, not a map: only 1:1 chats can be warm, because
-        # group traffic is refused inbound and so never becomes addressable.
-        self._warm_chats: set[str] = set()
+        # its learned peers. Only 1:1 chats can be warm, because group traffic is
+        # refused inbound and so never becomes addressable.
+        #
+        # A bounded ordered set (``OrderedDict`` used as an ordered set, values
+        # unused): under ``allow_all`` the key space is every org DMer ever, so an
+        # unbounded container would grow for the life of the gateway. The number
+        # of LEARNED (non-roster) peers is capped at ``WECOM_WARM_CHATS_MAX``,
+        # keeping only the most recent; roster members (owner / allow-list) are
+        # never evicted and do not count toward that cap (see ``note_warm_chat``).
+        # Keeping only recent learned peers costs nothing — warmth is a hint, not
+        # a gate (see ``_may_push``), and an evicted peer is re-learned the instant
+        # it writes again. The ``in`` membership tests and ``sorted(...)``
+        # iterations below read dict keys unchanged.
+        self._warm_chats: OrderedDict[str, None] = OrderedDict()
+        # Count of drop EVENTS on the warm-peer bound: learned peers evicted by the
+        # count cap, plus inbound frames whose over-length userid was not retained.
+        # Consumed by ``configured_targets``, which discloses the truncation on
+        # every snapshot while it is nonzero, so a truncated tail never reads as a
+        # population that never named those peers (rule
+        # a-bound-bounds-every-field-it-retains). It counts events, not distinct
+        # peers, so nothing operator-facing states it as a peer count.
+        self._warm_dropped = 0
 
     @property
     def client(self) -> WeComClient:
@@ -255,6 +295,14 @@ class WeComTransport(MessagingTransport):
                 removed = len(self._allowed - new_allowed)
                 self._allowed = new_allowed
                 logger.info("wecom: allow-list reloaded (+%d/-%d userid(s))", added, removed)
+                # Removing userids demotes those peers' retained warm entries from
+                # roster (exempt) to learned (capped). No trim is forced here: the
+                # next inbound's ``_prune_learned_peers_to_cap`` drops every excess
+                # entry in one pass (it is not one-at-a-time), so the learned set
+                # converges on the next DM. Until then it may sit transiently over
+                # the cap — harmless, since warmth is only an availability hint and
+                # is never a send gate. Keeping the trim here would be a second
+                # eviction site fixing nothing the inbound prune does not.
                 sel().log_api_access(
                     caller="config",
                     operation="wecom_transport.reconfigure",
@@ -485,6 +533,22 @@ class WeComTransport(MessagingTransport):
                 if any(x.target_id == f"user:{chat_id}" for x in targets):
                     continue
                 targets.append(ConfiguredChannelTarget(f"user:{chat_id}", f"WeCom DM · {chat_id}"))
+        if self._warm_dropped:
+            # Say the overflow out loud in EVERY snapshot while it holds: the
+            # warm-peer bound has shed learned peers, so this list is a truncated
+            # tail, not every peer ever seen. Without the marker a reader cannot
+            # tell a capped list from one those peers never joined. Mirrors the
+            # weixin ``known_users_truncated`` sentinel. It is unavailable, so it
+            # is never a send target, and its label states truncation rather than
+            # a peer count (the tally counts drop events, not distinct peers).
+            targets.append(
+                ConfiguredChannelTarget(
+                    "wecom:warm-peers-overflow",
+                    f"WeCom · recent-peer list truncated at the {WECOM_WARM_CHATS_MAX}-peer cap",
+                    available=False,
+                    unavailable_reason="warm_peers_truncated",
+                )
+            )
         return targets
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
@@ -533,9 +597,103 @@ class WeComTransport(MessagingTransport):
         )
 
     def note_warm_chat(self, chat_id: str) -> None:
-        """Record that *chat_id* has written to the bot, so it can be pushed to."""
-        if chat_id:
-            self._warm_chats.add(chat_id)
+        """Record that *chat_id* has written to the bot, so it can be pushed to.
+
+        Maintains the bounded warm set: the peer is (re)inserted as the most
+        recent, and the number of LEARNED (non-roster) peers is held at
+        ``WECOM_WARM_CHATS_MAX`` by evicting the oldest learned peer. Evicting a
+        learned peer's warmth is harmless — it is only an availability hint in
+        ``configured_targets``, never an authorization check (``_may_push``), and
+        the peer is simply re-warmed when it writes again.
+
+        The cap bounds the LEARNED subset ALONE, independently of roster members
+        (the owner and allow-listed userids), for two reasons:
+
+        * A roster member is never evicted. ``configured_targets`` advertises
+          every roster identity whether or not it is warm and sets ``available``
+          from warmth, so evicting a roster member that has written would flip its
+          row to unavailable with the reason "none seen since this gateway
+          started" — false, and it disables the dashboard's mirror toggle for a
+          reachable, authorized DM.
+        * Roster warmth must not consume the learned-peer budget. If the cap
+          counted roster entries, a roster of >= the cap that has all written
+          would leave no room for any learned peer: every newly inserted learned
+          peer would be the only evictable entry and be dropped again at once, so
+          an active authorized peer could never appear in ``configured_targets``.
+          Counting only learned entries means a learned peer is evicted only when
+          a NEWER learned peer displaces it, never by roster warmth.
+
+        The roster is itself bounded by config size, so the whole map stays
+        bounded at roster-size + ``WECOM_WARM_CHATS_MAX``.
+        """
+        if not chat_id:
+            return
+        # Bound the retained key SIZE, not only the entry count: a non-roster
+        # userid longer than the cap is not stored as warm (the message is still
+        # served — this method's only job is the availability hint). Roster
+        # identities are config-authored and exempt. The omission is counted and
+        # disclosed by the ``configured_targets`` truncation marker alongside
+        # evictions, so a dropped peer is never silent.
+        if len(chat_id) > WECOM_MAX_RETAINED_USERID_LEN and not self._is_roster_member(chat_id):
+            self._warm_dropped += 1
+            return
+        self._warm_chats[chat_id] = None
+        self._warm_chats.move_to_end(chat_id)
+        self._prune_learned_peers_to_cap()
+
+    def _is_roster_member(self, chat_id: str) -> bool:
+        """Whether *chat_id* is a configured identity (the owner or allow-listed).
+
+        Roster membership — not ``allow_all`` — is what exempts a warm entry from
+        the cap: under ``allow_all`` every peer is authorized, so exempting on
+        authorization would exempt everyone and defeat the cap. Only identities
+        ``configured_targets`` advertises in their own right (and whose row's
+        ``available`` flag reads warmth) are exempt.
+        """
+        return bool(chat_id) and (chat_id == self._owner_id or chat_id in self._allowed)
+
+    def _prune_learned_peers_to_cap(self) -> int:
+        """Hold the LEARNED (non-roster) warm peers at ``WECOM_WARM_CHATS_MAX``.
+
+        Returns the number of entries dropped, so callers can account for the
+        drop — a bounded structure that silently sheds entries is exactly what
+        the ``a-bound-bounds-every-field-it-retains`` rule forbids, because under
+        ``allow_all`` the warm peers ARE the whole ``configured_targets`` list and
+        a silently shortened list is indistinguishable from one those users never
+        joined.
+
+        Counts only non-roster entries and removes the oldest ones (least-recent
+        first) until at most ``WECOM_WARM_CHATS_MAX`` remain. Roster entries are
+        neither counted nor removed, so roster warmth cannot push a learned peer
+        out and a just-inserted learned peer is dropped only when an OLDER learned
+        peer exists to displace instead.
+
+        Removes EVERY excess entry in one pass, not just one, so the learned set
+        converges to the cap from any starting state — in particular after a
+        ``reconfigure`` that shrinks the allow-list converts many retained roster
+        entries to learned ones at once. A one-at-a-time eviction on each inbound
+        would then never catch up (one added, one removed per message), leaving
+        the oversized set resident and scanned on every frame; dropping every
+        excess entry in one pass means the next inbound after such a shrink fully
+        converges the set.
+        """
+        learned = [c for c in self._warm_chats if not self._is_roster_member(c)]
+        # The length bound holds wherever a learned entry is retained, not only at
+        # insert: a roster member demoted by ``reconfigure`` was stored exempt, so
+        # an over-length one is shed here on its first pass as a learned entry.
+        oversized = [c for c in learned if len(c) > WECOM_MAX_RETAINED_USERID_LEN]
+        for chat_id in oversized:
+            del self._warm_chats[chat_id]
+        if oversized:
+            learned = [c for c in learned if len(c) <= WECOM_MAX_RETAINED_USERID_LEN]
+        excess = max(0, len(learned) - WECOM_WARM_CHATS_MAX)
+        # learned is in oldest-first order (OrderedDict iteration); drop the oldest
+        # `excess` of them.
+        for chat_id in learned[:excess]:
+            del self._warm_chats[chat_id]
+        dropped = len(oversized) + excess
+        self._warm_dropped += dropped
+        return dropped
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:

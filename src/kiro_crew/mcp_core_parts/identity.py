@@ -306,6 +306,7 @@ REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
         "mcp_tools/messaging.py",
         "mcp_tools/sessions.py",
         "mcp_tools/skills.py",
+        "mcp_tools/spawn_parts/session_memory.py",
         # Not a tool module: the tool table's production caller, which every
         # table-built server's strict checks route through.
         "mcp_tools/table.py",

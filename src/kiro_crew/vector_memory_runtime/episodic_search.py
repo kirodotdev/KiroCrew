@@ -759,9 +759,9 @@ def get_episodic_context(
         if store.algorithm_version == "v2":
             line = f"{i}. [memory:{r['id']}] {text}"
         if total + len(line) > cap:
-            if store.algorithm_version == "v2":
-                continue
-            break
+            # Skip a line that does not fit; a shorter, lower-ranked one may.
+            # The kept lines keep their rank numbers, as on V2.
+            continue
         lines.append(line)
         total += len(line) + 1
     if not lines:

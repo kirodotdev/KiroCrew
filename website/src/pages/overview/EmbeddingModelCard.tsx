@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Cpu, CheckCircle, XCircle, Loader2 } from 'lucide-react'
-import { Trans } from 'react-i18next'
+import { Cpu, CheckCircle, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, Input, Badge } from '../../components/ui'
 import Modal from '../../components/Modal'
@@ -80,9 +79,12 @@ const EMBED_ERROR_KEYS = {
   protectedPath: 'pages.overview.embedModel.err_protected',
   unreadable: 'pages.overview.embedModel.err_unreadable',
   inProgress: 'pages.overview.embedModel.err_in_progress',
-  config: 'pages.overview.embedModel.err_config',
   restricted: 'pages.overview.embedModel.err_restricted',
   envOverride: 'pages.overview.embedModel.err_env_override',
+  ownerOnly: 'pages.overview.embedModel.err_owner_only',
+  probeBusy: 'pages.overview.embedModel.err_probe_busy',
+  memoryUnavailable: 'pages.overview.embedModel.err_memory_unavailable',
+  vectorStoreUnavailable: 'pages.overview.embedModel.err_vector_store_unavailable',
 } as const
 
 /** Localize a backend error by its machine-readable `code`.
@@ -118,9 +120,14 @@ export function embedModelErrorMessage(err: unknown): string {
     case 'model_path_protected': return i18nT(EMBED_ERROR_KEYS.protectedPath)
     case 'model_path_unreadable': return i18nT(EMBED_ERROR_KEYS.unreadable)
     case 'model_change_in_progress': return i18nT(EMBED_ERROR_KEYS.inProgress)
-    case 'config_unparseable': return i18nT(EMBED_ERROR_KEYS.config)
     case 'restricted_session': return i18nT(EMBED_ERROR_KEYS.restricted)
     case 'env_override_active': return i18nT(EMBED_ERROR_KEYS.envOverride)
+    case 'owner_only': return i18nT(EMBED_ERROR_KEYS.ownerOnly)
+    case 'path_probe_busy': return i18nT(EMBED_ERROR_KEYS.probeBusy)
+    // The refusal covers memory still starting, a failed recovery and a stopped
+    // startup; only the server's sentence says which, and what to do about it.
+    case 'store_unavailable': return i18nT(EMBED_ERROR_KEYS.memoryUnavailable, { error: prose })
+    case 'vector_store_unavailable': return i18nT(EMBED_ERROR_KEYS.vectorStoreUnavailable)
     default: return prose || String(err)
   }
 }
@@ -336,23 +343,23 @@ export default function EmbeddingModelCard() {
             <Loader2 className="lucide-inline animate-spin" /> {i18nT('pages.overview.embedModel.checking')}
           </div>
         )}
-        {checked && !checking && (
-          <div className={`text-[11px] mt-1.5 flex items-start gap-1 ${checked.ok ? 'text-ok' : 'text-danger'}`}>
-            {checked.ok ? <CheckCircle className="lucide-inline" /> : <XCircle className="lucide-inline" />}
-            <span>
-              {checked.code === 'env_override_active' ? (
-                <Trans
-                  i18nKey="pages.overview.embedModel.err_env_override_with_ref"
-                  components={{
-                    settingRef: <SettingRef kind="env" configKey="KIROCREW_EMBED_MODEL_PATH" valuePlaceholder="path" envIntent="unset" />,
-                  }}
-                />
-              ) : (
-                checked.msg
-              )}
-            </span>
+        {checked && !checking && checked.ok && (
+          <div className="text-[11px] mt-1.5 flex items-start gap-1 text-ok">
+            <CheckCircle className="lucide-inline" />
+            <span>{checked.msg}</span>
           </div>
         )}
+        {/* No hand-off: navigating away would discard the unsaved model path typed above.
+            The env override names the variable to unset, so its control rides in the footer. */}
+        <ErrorNotice
+          testId="embed-model-check-error"
+          message={checked && !checking && !checked.ok ? checked.msg : null}
+          footer={checked?.code === 'env_override_active'
+            ? <SettingRef kind="env" configKey="KIROCREW_EMBED_MODEL_PATH" valuePlaceholder="path" envIntent="unset" />
+            : undefined}
+          variant={checked?.code === 'env_override_active' ? 'block' : 'inline'}
+          className="mt-1.5"
+        />
 
         <div className="flex items-center gap-2 mt-3">
           <Btn

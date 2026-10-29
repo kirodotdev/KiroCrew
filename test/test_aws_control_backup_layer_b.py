@@ -235,8 +235,9 @@ class TestSessionsArchiveLayerBGatePermission(_SessionsArchiveLayerBGateHarness)
 
         with mock.patch.object(backup, "_prune_remote_archives") as prune:
             with mock.patch.object(backup, "_audit_retention") as audit:
-                self._run_capturing_names(monkeypatch)
+                record, _ = self._run_capturing_names(monkeypatch)
 
+        assert record["conversations_skipped"] == "store_relocated_outside_fence"
         assert prune.call_count == 0
         assert audit.call_count == 1
         # The event must name why, or an auditor sees a sweep that did nothing and

@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { createRef } from 'react'
+import { createRef, type ReactNode } from 'react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationBanner, { computeExitDelta, exitTarget } from '../components/notifications/NotificationBanner'
 import { SWIPE_CLICK_SWALLOW_MS } from '../components/notifications/SwipeToDismiss'
@@ -80,7 +80,7 @@ const mkN = (over: Partial<Notification> = {}): Notification => ({
   kind: 'cron', ts: `2026-09-21T10:00:0${seq++}.000Z`, title: `Note ${seq}`, body: 'body text', acked: false, ...over,
 })
 
-function renderBanner(opts: { popoverOpen?: boolean; route?: string; activeSlot?: string | null; items?: Notification[] } = {}) {
+function renderBanner(opts: { popoverOpen?: boolean; route?: string; activeSlot?: string | null; items?: Notification[]; after?: ReactNode } = {}) {
   const store = createTestStore({
     notifications: { items: opts.items ?? [] } as RootState['notifications'],
     ...(opts.activeSlot !== undefined ? { chat: { activeSlot: opts.activeSlot } as RootState['chat'] } : {}),
@@ -90,7 +90,7 @@ function renderBanner(opts: { popoverOpen?: boolean; route?: string; activeSlot?
   const utils = renderWithProviders(
     <>
       <button ref={bellRef}>bell</button>
-      <NotificationBanner bellRef={bellRef} popoverOpen={opts.popoverOpen ?? false} onOpenNote={onOpenNote} />
+      <NotificationBanner bellRef={bellRef} popoverOpen={opts.popoverOpen ?? false} onOpenNote={onOpenNote} after={opts.after} />
     </>,
     { store, route: opts.route ?? '/settings' },
   )
@@ -126,6 +126,19 @@ describe('NotificationBanner: arrival', () => {
     expect(cards()).toHaveLength(1)
     expect(screen.getByText('Digest ready')).toBeTruthy()
     expect(region.getAttribute('aria-live')).toBe('polite')
+  })
+
+  it('stacks host `after` content in flow below a live card, in the same fixed region', () => {
+    // The file-menu result toast shares this corner; rendering it inside the region
+    // (not as a second fixed overlay) is what keeps it from covering a feed card.
+    renderBanner({ after: <div data-testid="after-slot">Uploaded</div> })
+    arrive(mkN({ title: 'Digest ready' }))
+    const region = screen.getByTestId('notification-banner-region')
+    const after = screen.getByTestId('after-slot')
+    expect(region.contains(after)).toBe(true)
+    expect(region.lastElementChild).toBe(after)
+    const card = cards()[0]
+    expect(card.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('never renders passive or silenced notes', () => {
@@ -713,18 +726,90 @@ describe('NotificationBanner: swipe to dismiss (mobile)', () => {
     expect(el.getAttribute('data-swiping')).toBeNull()
   })
 
-  it('a vertical drag is left to the browser: the card never moves, even if the finger turns sideways later', () => {
+  it('a downward drag is declined: the card never moves, even if the finger turns sideways later', () => {
     isMobileMock = true
     const n = mkN()
     renderBanner()
     arrive(n)
     const el = swipeEl()
-    expect(el.className).toContain('touch-pan-y')
+    expect(el.className).toContain('touch-none')
     fireEvent.pointerDown(el, touch(200, 100))
     fireEvent.pointerMove(el, touch(202, 130))
     fireEvent.pointerMove(el, touch(320, 160))
     expect(el.style.transform).toBe('')
     fireEvent.pointerUp(el, touch(320, 160))
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('an upward swipe past the threshold dismisses the card the way the X does: gone, still unread', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { store } = renderBanner({ items: [n] })
+    arrive(n)
+    const el = swipeEl()
+    // The wrapper must not hand the vertical axis to the browser, or a real
+    // engine cancels the upward swipe as a scroll before it can dismiss.
+    expect(el.className).toContain('touch-none')
+    expect(el.className).not.toContain('touch-pan-y')
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(202, 185))
+    fireEvent.pointerMove(el, touch(204, 150))
+    expect(el.style.transform).toBe('translateY(-50.0px)')
+    fireEvent.pointerUp(el, touch(205, 110))
+    expect(cards()).toHaveLength(0)
+    expect(mockAck).not.toHaveBeenCalled()
+    expect(store.getState().notifications.items[0].acked).toBe(false)
+  })
+
+  it('a short upward swipe follows the finger and then springs back, dismissing nothing', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    vi.useFakeTimers()
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(200, 188))
+    fireEvent.pointerMove(el, touch(200, 160))
+    expect(el.style.transform).toBe('translateY(-40.0px)')
+    // Back down past the rest position: the card stops at rest, it is not pulled down.
+    fireEvent.pointerMove(el, touch(200, 230))
+    expect(el.style.transform).toBe('')
+    fireEvent.pointerMove(el, touch(200, 170))
+    fireEvent.pointerUp(el, touch(200, 170))
+    expect(cards()).toHaveLength(1)
+    expect(el.style.transform).toBe('')
+    expect(el.getAttribute('data-swiping')).toBeNull()
+    // The release's click is swallowed, as for a sideways snap-back.
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).not.toHaveBeenCalled()
+  })
+
+  it('an upward swipe the browser cancels springs back', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(200, 185))
+    fireEvent.pointerMove(el, touch(200, 90))
+    fireEvent.pointerCancel(el, touch(200, 90))
+    expect(el.style.transform).toBe('')
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('a drag that locks sideways stays sideways: turning upward later does not dismiss', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(215, 198))
+    fireEvent.pointerMove(el, touch(230, 100))
+    expect(el.style.transform).toBe('translateX(30.0px)')
+    fireEvent.pointerUp(el, touch(230, 100))
     expect(cards()).toHaveLength(1)
   })
 
@@ -818,7 +903,7 @@ describe('NotificationBanner: swipe to dismiss (mobile)', () => {
     arrive(n)
     swipe([[200, 100], [230, 100], [400, 100]])
     expect(cards()).toHaveLength(1)
-    expect(swipeEl().className).not.toContain('touch-pan-y')
+    expect(swipeEl().className).not.toContain('touch-none')
     isMobileMock = true
     const m = mkN()
     renderBanner()

@@ -894,6 +894,42 @@ class TestBulkCleanup:
         assert "pinned1" in state._slots
 
     @pytest.mark.asyncio
+    async def test_cleanup_by_an_app_keeps_its_slot_linked_to_another_session(
+        self, tmp_path, monkeypatch
+    ):
+        """An app's own slot running on a channel's session is not the app's to archive.
+
+        The per-slot checkpoint refuses that slot on every ``/api/chat/slots/{slot}``
+        route (``app_owns_slot_session``); the bulk cleanup applies the same rule.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from slot_ownership_checkpoint_helpers import _as
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        for name in ("own", "linked"):
+            slot = state.get_or_create_slot(name, app="crew-keyboard")
+            slot.append("user", "old msg", ts=old_ts)
+            slot.drain()
+        state._slots["linked"].linked_session_key = "slack:1700000000.000100"
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _as("crew-keyboard"))
+        async with TestClient(TestServer(app)) as client:
+            dry = await client.post(
+                "/api/chat/slots/cleanup", json={"max_inactive_days": 3, "dry_run": True}
+            )
+            assert (await dry.json())["keys"] == ["own"]
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
+            data = await resp.json()
+            assert (data["archived"], data["keys"]) == (1, ["own"])
+
+        assert "own" not in state._slots
+        assert "linked" in state._slots
+
+    @pytest.mark.asyncio
     async def test_cleanup_skips_active_slot(self, tmp_path, monkeypatch):
         """The active slot is never archived even if stale."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

@@ -183,12 +183,6 @@ class TestKeystonesAreSealedInEveryMode:
         # provider. Same class: the seal is what makes "the owner consents to
         # the egress, never the agent" true.
         "decisions_consent.json",
-        # Recorded consent to deliver a scanner-flagged file. Sealing it
-        # is the load-bearing half of the whole design: the deny-list tiers can
-        # be evaded by runtime path construction, so only a kernel write denial
-        # makes "the owner consents, never the agent" true rather than merely
-        # intended.
-        "file_delivery_consent.json",
         # Gateway-executed browser launcher. Agent shells must read and run it,
         # but a write would choose the binary the unsandboxed gateway executes.
         "playwright-cli",

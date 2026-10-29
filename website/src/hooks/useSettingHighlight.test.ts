@@ -163,6 +163,9 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
     // The Default crewmate row (Developer → Config) mounts after its config
     // query the same way; the roster's `default` badge deep-links to it.
     { name: 'the late-mounting default-crewmate row with no registry entry', highlight: `key:${DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR}`, target: { configKey: DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR }, sibling: { configKey: 'stt.provider' } },
+    // The desktop app's close-button row mounts only after its IPC read
+    // (#12204), well past the first highlight tick.
+    { name: 'the late-mounting desktop-app close row', highlight: 'display.keep-running-in-the-background-after-closing-the-window', target: { settingId: 'display.keep-running-in-the-background-after-closing-the-window' }, sibling: {} },
   ])('waits for the exact cold provider during $name', async ({ highlight, target, sibling }) => {
     vi.useFakeTimers()
     const otherProvider = settingControl('Provider', sibling)

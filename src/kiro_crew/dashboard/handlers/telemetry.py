@@ -48,6 +48,7 @@ from kiro_crew.dashboard.handlers.usage import (
     TimeWindow,
     context_occupancy,
     context_trace,
+    context_turn_detail,
     cost_breakdown,
     resolve_window,
     slot_turn_usage,
@@ -1517,6 +1518,20 @@ async def api_context_trace(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
     if not slot:
         return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
+    if "turn" in request.query:
+        # One kept turn's whole panel, read from the in-memory fold state when the
+        # panel picks a past turn: the pushed value carries only the chart's numbers.
+        raw = request.query.get("turn", "").strip()
+        if not raw.isascii() or not raw.isdigit() or len(raw) > 9 or int(raw) <= 0:
+            return web.json_response(
+                {"error": "turn must be a positive integer", "code": "turn_invalid"}, status=400
+            )
+        detail = await asyncio.to_thread(context_turn_detail, slot, int(raw))
+        if detail is None:
+            return web.json_response(
+                {"error": "turn is not kept", "code": "turn_not_kept"}, status=404
+            )
+        return web.json_response(detail)
     trace = await asyncio.to_thread(context_trace, slot, _WINDOW_DAYS)
     return web.json_response(trace)
 

@@ -19,6 +19,11 @@ import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
 import {
+  adoptServerLiquidGlass,
+  readLiquidGlass,
+  type TranslucentPanelsStored,
+} from '../utils/liquidGlass'
+import {
   clearCachedThemeData,
   readCachedThemeData,
   renderCacheProjection,
@@ -373,9 +378,9 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
  * installed pack or a `registerTheme()` caller supplies.
  *
  * Two kinds of entry live here:
- * - `High Contrast` names a rendering PROPERTY (the accessibility palette)
- *   rather than a palette identity, so it is copy in the same sense as every
- *   other settings label and each locale translates it.
+ * - `High Contrast` and `Color-blind safe` name a rendering PROPERTY (an
+ *   accessibility palette) rather than a palette identity, so they are copy in
+ *   the same sense as every other settings label and each locale translates them.
  * - A proper-noun theme added after the strict i18n gate (Nu Disco, Amethyst
  *   OLED). The gate refuses a new literal display string, so the name goes
  *   through the catalog and is pinned verbatim in every locale by its
@@ -391,6 +396,7 @@ export const THEME_LABEL_KEY: Record<string, string> = {
   highcontrast: 'hooks.theme.high_contrast',
   'nu-disco': 'hooks.theme.nu_disco',
   'amethyst-oled': 'hooks.theme.amethyst_oled',
+  colorblind: 'hooks.theme.color_blind_safe',
 }
 
 export const THEMES: ThemeEntry[] = [
@@ -422,6 +428,10 @@ export const THEMES: ThemeEntry[] = [
   { value: 'nu-disco', label: '🪩' },
   // Catalog-keyed: full name in `hooks.theme.amethyst_oled`.
   { value: 'amethyst-oled', label: '💜' },
+  // Catalog-keyed like `highcontrast`, and for the same reason: it names an
+  // accessibility property, so each locale translates it. Full name in
+  // `hooks.theme.color_blind_safe`.
+  { value: 'colorblind', label: '👁️' },
 ]
 
 /**
@@ -1059,6 +1069,7 @@ function useThemeState(): ThemeContextValue {
     mutationFn: (body: {
       mode?: string
       color?: string
+      translucent_panels?: TranslucentPanelsStored
       onboarded?: boolean
       import_onboarded?: boolean
       privacy_acked?: boolean
@@ -1085,6 +1096,16 @@ function useThemeState(): ThemeContextValue {
       if (bootData.color && bootData.color !== colorTheme) {
         safeSetItem('mc-color-theme', bootData.color)
         setColorThemeState(bootData.color)
+      }
+      // The Translucent panels switch, workspace-backed the same way. '' is a
+      // workspace that predates the key: the browser copy is then the only
+      // record of the choice, so an ON copy is published once, after which the
+      // workspace value is the one every browser adopts. The absent (off)
+      // copy is not published: it is also what a fresh browser holds.
+      if (bootData.translucent_panels === '' && readLiquidGlass()) {
+        persistTheme({ translucent_panels: 'on' })
+      } else {
+        adoptServerLiquidGlass(bootData.translucent_panels)
       }
       const hasOnboardingState =
         typeof bootData.onboarded === 'boolean'

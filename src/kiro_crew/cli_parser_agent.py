@@ -128,7 +128,9 @@ Examples:
         dest="agent",
         default="",
         help="Agent name for this job (e.g. 'customer360-code-agent'). "
-        "Empty or omitted uses the default kirocrew agent.",
+        "Empty or omitted uses agent.default_agent, or the kirocrew agent "
+        "when that is unset or not eligible (e.g. a default that restricts "
+        "subagents).",
     )
     cron_add_kind.add_argument(
         "--script",
@@ -258,7 +260,8 @@ Examples:
         "--agent",
         dest="agent",
         default=None,
-        help="New agent name (empty string resets to default kirocrew agent)",
+        help="New agent name (empty string resets to agent.default_agent, "
+        "or the kirocrew agent when that is unset or not eligible)",
     )
     cron_update.add_argument(
         "--approval-mode",

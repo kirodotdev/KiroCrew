@@ -70,12 +70,12 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
           // The shared fetch carries the backend's binary verdict with the text
           // (from the `X-File-Binary` header), so the tab knows whether it has
           // a buffer to edit at all.
-          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal, slot),
           staleTime: FILE_READ_STALE_MS,
         }),
         queryClient.prefetchQuery({
           queryKey: ['file-diff', filePath],
-          queryFn: () => api.fileDiff(filePath),
+          queryFn: () => api.fileDiff(filePath, slot),
         }),
       ])
       const { text, ok, status, binary } = read
@@ -113,12 +113,12 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       const [read] = await Promise.all([
         queryClient.fetchQuery({
           queryKey: fileReadQueryKey(filePath),
-          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal, slot),
           staleTime: FILE_READ_STALE_MS,
         }),
         queryClient.prefetchQuery({
           queryKey: ['file-diff', filePath],
-          queryFn: () => api.fileDiff(filePath),
+          queryFn: () => api.fileDiff(filePath, slot),
         }),
       ])
       const { text, ok, status, binary } = read
@@ -216,7 +216,8 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // draft we reconcile must be the one that owned this save, not whatever slot
     // is active when the write resolves.
     const requestSlot = slotRef.current ?? ''
-    const res = await fetch('/api/file-write', {
+    // Names the chat, so the gateway refuses a write for one that runs remotely.
+    const res = await fetch('/api/file-write' + (requestSlot ? '?slot=' + encodeURIComponent(requestSlot) : ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: filePath, content }),

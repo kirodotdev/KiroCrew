@@ -363,6 +363,19 @@ def _tailnet(args: argparse.Namespace) -> None:
         port = resolve_client_port(None)
     enabled = bool(cfg.dashboard.tailscale.enabled)
 
+    if action == "up":
+        # Asked first, so an enterprise build whose policy does not turn tailnet on
+        # says so before any port or config advice. A pure read here; the refusal is
+        # audited once, and a permit is audited by ``publish`` itself.
+        refused = (
+            tailnet_serve.policy_refusal(audit_tool="tailnet_cli_up")
+            if tailnet.policy_off()
+            else None
+        )
+        if refused is not None:
+            print(f"❌ {refused.detail}", file=sys.stderr)
+            sys.exit(1)
+
     if action == "up" and not port_source:
         # Publishing needs EVIDENCE about the port, not a default. Every source above
         # is evidence -- an explicit flag/env is the operator naming the target, and
@@ -379,14 +392,24 @@ def _tailnet(args: argparse.Namespace) -> None:
         print(
             f"❌ Cannot tell which port the dashboard is on, so refusing to publish "
             f"{port} — nothing is verified to be listening there, and `tailscale "
-            f"serve` would expose whatever is. Start the dashboard "
-            f"(`kirocrew dashboard`) and re-run, or name the port yourself with "
+            f"serve` would expose whatever is. Start the gateway that serves the "
+            f"dashboard (`kirocrew gateway`, or `kirocrew service install` to keep "
+            f"it running) and re-run, or name the port yourself with "
             f"`kirocrew tailnet up --port <port>`.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     if action == "status":
+        if tailnet.policy_off():
+            # The enterprise policy does not turn tailnet on; no daemon is read.
+            print("👻 Tailnet dashboard access")
+            print(f"   Policy:     {tailnet.POLICY_OFF_DETAIL}")
+            print(
+                f"   Trust:      {'enabled' if enabled else 'disabled'} "
+                f"(dashboard.tailscale.enabled)"
+            )
+            return
         pinned = tailnet.is_governance_pinned_off()
         # A LIVE read is correct here and would be wrong in the dashboard's status
         # endpoint. This command reports what the machine can do next; the
@@ -467,7 +490,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    result = tailnet_serve.publish(port)
+    result = tailnet_serve.publish(port, audit_tool="tailnet_cli_up")
     if not result.ok:
         print(f"❌ {result.detail}", file=sys.stderr)
         sys.exit(1)

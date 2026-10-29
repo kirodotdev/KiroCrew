@@ -27,16 +27,21 @@ from ai_review_workflows_helpers import (
     _workflow,
 )
 
-_GHA_CONDITION_TOKEN = re.compile(r"\s*(\|\||&&|==|!=|!|\(|\)|'(?:[^']|'')*'|[A-Za-z_][\w.\-]*)")
+_GHA_CONDITION_TOKEN = re.compile(
+    r"\s*(\|\||&&|==|!=|>=|<=|>|<|!|\(|\)|'(?:[^']|'')*'|\d+(?:\.\d+)?|[A-Za-z_][\w.\-]*)"
+)
+_GHA_RELATIONAL = (">", ">=", "<", "<=")
 
 
 def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
     """Evaluate a job `if:` against ``context`` the way GitHub reads it.
 
     Covers the subset the readiness job gate uses: `||`, `&&`, `!`, `==`,
-    `!=`, parentheses, single-quoted strings and dotted context paths. A path
-    that is absent reads as null, and string equality ignores case, as on
-    GitHub. Anything outside that subset fails the test rather than guessing.
+    `!=`, `>`, `>=`, `<`, `<=`, parentheses, single-quoted strings, number
+    literals and dotted context paths. A path that is absent reads as null,
+    and string equality ignores case, as on GitHub. A relational comparison
+    coerces both sides to a number the way GitHub does, so a null reads as 0.
+    Anything outside that subset fails the test rather than guessing.
     """
     text = expression.strip()
     tokens: list[str] = []
@@ -59,10 +64,23 @@ def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
     def lookup(token: str) -> object:
         if token.startswith("'"):
             return token[1:-1].replace("''", "'")
+        if token[0].isdigit():
+            return float(token) if "." in token else int(token)
         node: object = context
         for part in token.split("."):
             node = node.get(part) if isinstance(node, dict) else None
         return node
+
+    def as_number(value: object) -> float:
+        """GitHub coerces a relational operand to a number; null reads as 0."""
+        if value is None or value is False:
+            return 0.0
+        if value is True:
+            return 1.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        assert isinstance(value, str), f"cannot compare {value!r} as a number"
+        return float(value) if value.strip() else 0.0
 
     def primary() -> object:
         token = take()
@@ -76,6 +94,17 @@ def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
 
     def comparison() -> object:
         left = primary()
+        if peek() in _GHA_RELATIONAL:
+            operator = take()
+            right = as_number(primary())
+            number = as_number(left)
+            if operator == ">":
+                return number > right
+            if operator == ">=":
+                return number >= right
+            if operator == "<":
+                return number < right
+            return number <= right
         if peek() not in ("==", "!="):
             return left
         operator = take()
@@ -108,12 +137,102 @@ def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
 
 
 def _readiness_gate_context(
-    event_name: str, upstream_event: str = "", upstream_name: str = ""
+    event_name: str,
+    upstream_event: str = "",
+    upstream_name: str = "",
+    run_attempt: int = 1,
 ) -> dict[str, object]:
     event: dict[str, object] = {}
     if event_name == "workflow_run":
-        event["workflow_run"] = {"event": upstream_event, "name": upstream_name}
+        event["workflow_run"] = {
+            "event": upstream_event,
+            "name": upstream_name,
+            "run_attempt": run_attempt,
+        }
     return {"github": {"event_name": event_name, "event": event}}
+
+
+_HOLD_SUFFIX_MARKER = "&& 'hold' || 'noop'"
+_GATE_NON_WORKFLOW_RUN_CLAUSE = "github.event_name != 'workflow_run' ||"
+
+
+def _strip_outer_parens(text: str) -> str:
+    """Drop parentheses that wrap the WHOLE expression, however many layers."""
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        for offset, char in enumerate(text):
+            depth += (char == "(") - (char == ")")
+            if depth == 0:
+                break
+        if offset != len(text) - 1:
+            break
+        text = text[1:-1].strip()
+    return text
+
+
+def _readiness_hold_predicate(group: str) -> str:
+    """The condition the concurrency key's fourth segment resolves `hold` on.
+
+    Read back from the ``&& 'hold' || 'noop'`` marker to the balanced group
+    that feeds it, so the suffix is compared as an expression rather than by
+    hunting for one clause inside it.
+    """
+    text = " ".join(group.split())
+    end = text.find(_HOLD_SUFFIX_MARKER)
+    assert end != -1, f"no hold/noop suffix in {text!r}"
+    assert text.find(_HOLD_SUFFIX_MARKER, end + 1) == -1, "hold suffix appears more than once"
+    head = text[:end].rstrip()
+    assert head.endswith(")"), f"hold suffix does not follow a parenthesised group: {head!r}"
+    depth = 0
+    for offset in range(len(head) - 1, -1, -1):
+        depth += (head[offset] == ")") - (head[offset] == "(")
+        if depth == 0:
+            return _strip_outer_parens(head[offset:])
+    raise AssertionError(f"unbalanced parentheses in {head!r}")
+
+
+def _readiness_workflow_run_gate(gate: str) -> str:
+    """The job gate with its leading non-`workflow_run` clause removed.
+
+    That clause is the ONE part the concurrency key does not copy, and only
+    because the `format()` branch it would guard is unreachable for any other
+    event. What is left must be the key's hold predicate, character for
+    character.
+    """
+    text = " ".join(gate.split())
+    assert text.startswith(_GATE_NON_WORKFLOW_RUN_CLAUSE), (
+        "the job gate must still open with its non-workflow_run clause, " f"got {text[:60]!r}"
+    )
+    return _strip_outer_parens(text[len(_GATE_NON_WORKFLOW_RUN_CLAUSE) :].strip())
+
+
+# (event_name, upstream event, upstream workflow name, run_attempt, admitted).
+# One table, read by the gate test and by the concurrency-parity test, so a new
+# admission case cannot be added to one and forgotten in the other.
+_READINESS_ADMISSION_CASES = [
+    ("pull_request_target", "", "", 1, True),
+    ("workflow_dispatch", "", "", 1, True),
+    # A first attempt publishes nothing: the `pull_request_target` run for the
+    # same head already published `checking`.
+    ("workflow_run", "pull_request", "CI", 1, False),
+    ("workflow_run", "pull_request", "Internal Content Scan Gate", 1, False),
+    # A re-run is the only monitored start no other event covers.
+    ("workflow_run", "pull_request", "CI", 2, True),
+    ("workflow_run", "pull_request", "Internal Content Scan Gate", 3, True),
+    # The two lanes that start on `labeled`/`unlabeled`, which
+    # `pull_request_target` does not subscribe to, are exempt on a first
+    # attempt as well.
+    ("workflow_run", "pull_request", "Issue Gate", 1, True),
+    ("workflow_run", "pull_request", "Security Scope Review", 1, True),
+    # `dynamic` and the Sensitive Change Review review run are admitted on a
+    # FIRST attempt, so the concurrency suffix has to call them `hold` too.
+    ("workflow_run", "dynamic", "CodeQL", 1, True),
+    ("workflow_run", "pull_request_review", "Sensitive Change Review", 1, True),
+    ("workflow_run", "workflow_run", "CI", 2, False),
+    ("workflow_run", "pull_request", "Sensitive Change Review", 2, False),
+    # A review run is admitted only from the workflow that runs on one.
+    ("workflow_run", "pull_request_review", "CI", 1, False),
+]
 
 
 def _allowed_tools(workflow: str) -> str:
@@ -684,30 +803,117 @@ class TestPrReadiness:
         assert "held=true" not in completed_arm
 
     @pytest.mark.parametrize(
-        ("event_name", "upstream_event", "upstream_name", "admitted"),
-        [
-            ("pull_request_target", "", "", True),
-            ("workflow_dispatch", "", "", True),
-            ("workflow_run", "pull_request", "CI", True),
-            ("workflow_run", "pull_request", "Internal Content Scan Gate", True),
-            ("workflow_run", "dynamic", "CodeQL", True),
-            ("workflow_run", "workflow_run", "CI", False),
-            ("workflow_run", "pull_request", "Sensitive Change Review", False),
-            ("workflow_run", "pull_request_review", "Sensitive Change Review", True),
-            # A review run is admitted only from the workflow that runs on one.
-            ("workflow_run", "pull_request_review", "CI", False),
-        ],
+        ("event_name", "upstream_event", "upstream_name", "run_attempt", "admitted"),
+        _READINESS_ADMISSION_CASES,
     )
     def test_the_job_gate_admits_exactly_the_upstream_runs_it_can_use(
-        self, event_name: str, upstream_event: str, upstream_name: str, admitted: bool
+        self,
+        event_name: str,
+        upstream_event: str,
+        upstream_name: str,
+        run_attempt: int,
+        admitted: bool,
     ) -> None:
         gate = yaml.safe_load(_workflow("pr-readiness.yml"))["jobs"]["readiness"]["if"]
 
         assert (
             _eval_gha_condition(
-                gate, _readiness_gate_context(event_name, upstream_event, upstream_name)
+                gate,
+                _readiness_gate_context(event_name, upstream_event, upstream_name, run_attempt),
             )
             is admitted
+        )
+
+    def test_the_hold_group_is_the_job_gate_written_out_again(self) -> None:
+        # The condition has to appear twice, and GitHub gives nowhere to write
+        # it once: workflow-level `concurrency` is evaluated at run creation and
+        # can read only `github`, `inputs` and `vars` -- not `env`, and not a
+        # job output, because no job has run. The group key keeps a run that
+        # will not publish out of the cancelling `hold` group; the job `if:`
+        # stops it publishing. If the two drift in EITHER direction the
+        # stale-green window the `in_progress` subscription exists to close
+        # reopens: a gated dispatch in the hold group cancels a real in-flight
+        # hold and then skips, and an admitted run in the noop group is itself
+        # cancelled by the next gated dispatch. Mirroring only the attempt
+        # clause is the second of those, because the gate admits `dynamic` and
+        # Sensitive Change Review review runs on a first attempt. So this
+        # compares the WHOLE condition, not one clause of it.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        gate = readiness["jobs"]["readiness"]["if"]
+
+        assert _readiness_hold_predicate(_concurrency_group("pr-readiness.yml")) == (
+            _readiness_workflow_run_gate(gate)
+        )
+
+    @pytest.mark.parametrize(
+        ("event_name", "upstream_event", "upstream_name", "run_attempt", "admitted"),
+        [case for case in _READINESS_ADMISSION_CASES if case[0] == "workflow_run"],
+    )
+    def test_the_hold_group_and_the_job_gate_agree_on_every_admitted_run(
+        self,
+        event_name: str,
+        upstream_event: str,
+        upstream_name: str,
+        run_attempt: int,
+        admitted: bool,
+    ) -> None:
+        # The literal comparison above catches an edit to one expression. This
+        # catches the subtler case: two expressions that differ in text and
+        # disagree on a real run. `hold` must mean "the job will publish", for
+        # every row of the admission table, or a cancelling group holds a run
+        # that cannot replace what it cancels.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        context = _readiness_gate_context(event_name, upstream_event, upstream_name, run_attempt)
+        suffix = _readiness_hold_predicate(_concurrency_group("pr-readiness.yml"))
+
+        assert _eval_gha_condition(suffix, context) is admitted
+        assert _eval_gha_condition(readiness["jobs"]["readiness"]["if"], context) is admitted
+
+    def test_only_a_dispatch_that_can_hold_reaches_the_cancelling_group(self) -> None:
+        # A gated dispatch must collapse among its own siblings rather than in
+        # the group that holds the verdict, and `cancel-in-progress` must stay
+        # true for both: with `false` a superseded run waits PENDING in the
+        # group instead of going away, which is how runs accumulate in `queued`.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        group = _concurrency_group("pr-readiness.yml")
+
+        assert readiness["concurrency"]["cancel-in-progress"] is True
+        assert "'pr-readiness-wr-{0}-{1}-{2}-{3}'" in group
+        assert "&& 'hold' || 'noop'" in group
+
+    def test_the_exempt_lanes_are_the_only_ones_pull_request_target_cannot_hear(
+        self,
+    ) -> None:
+        # Why the exemption list is two lanes and not three. A monitored lane
+        # needs an attempt-1 exemption only when its first attempt starts on a
+        # pull-request activity type this workflow's own `pull_request_target`
+        # trigger does not subscribe to. Enumerate that from the workflow files
+        # rather than trusting the two names, so adding `labeled` to a third
+        # lane fails here instead of silently losing its first hold.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        readiness_on = readiness.get("on") or readiness[True]
+        heard = set(readiness_on["pull_request_target"]["types"])
+        monitored = set(readiness_on["workflow_run"]["workflows"])
+        assert monitored, "readiness must monitor at least one lane"
+
+        unheard: set[str] = set()
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(doc, dict) or doc.get("name") not in monitored:
+                continue
+            on = doc.get("on", doc.get(True))
+            pull_request = (on or {}).get("pull_request")
+            if not isinstance(pull_request, dict):
+                continue
+            # No `types:` means GitHub's default set, every member of which the
+            # `pull_request_target` trigger above also subscribes to.
+            types = set(pull_request.get("types") or ())
+            if types - heard:
+                unheard.add(str(doc["name"]))
+
+        assert unheard == {"Issue Gate", "Security Scope Review"}, (
+            "the attempt-1 exemption list in the job gate and the concurrency "
+            f"key must name exactly these lanes: {sorted(unheard)}"
         )
 
 

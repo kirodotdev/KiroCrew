@@ -25,6 +25,8 @@ import { UserMessage, AssistantMessage } from './chat'
 
 type Props = Parameters<typeof useTranscriptRendering>[0]
 
+const NO_REACTIONS: ReadonlySet<string> = new Set()
+
 const msg = (role: string, content: string, ts: string, meta?: Record<string, unknown>) =>
   ({ role, content, ts, cls: '', ...(meta ? { meta } : {}) }) as unknown as ChatMessage
 
@@ -47,6 +49,7 @@ function props(over: Partial<Props> = {}): Props {
     renderedDisplayItems: [], stableMsgKey: (m: ChatMessage) => String(m.ts), handleLoadEarlier: fn(), isPinned: () => false,
     handleJumpToQuote: fn(), handleTogglePinForMessage: fn(), handleSteerAction: fn(),
     steerActionPending: {}, steerActionRefusals: {}, steerActionRequestFailures: {},
+    reactionsFor: () => NO_REACTIONS, handleToggleReactionForMessage: fn(), reactionErrorFor: () => null, clearReactionError: fn(),
     ...over,
   }
 }
@@ -145,13 +148,14 @@ describe('message row handlers', () => {
     hook.rerender({
       ...first, messages: [user, reply], handleEditResend: vi.fn(), handleRegenerate: vi.fn(),
       quoteWholeMessage: vi.fn(), handleTogglePinForMessage: vi.fn(), handleJumpToQuote: vi.fn(),
+      handleToggleReactionForMessage: vi.fn(),
     })
     const after = rows()
-    for (const key of ['onEditResend', 'onTogglePin', 'onQuoteMessage', 'onJumpToQuote']) {
+    for (const key of ['onEditResend', 'onTogglePin', 'onQuoteMessage', 'onJumpToQuote', 'onToggleReaction']) {
       expect(after.user.props[key], key).toBeTypeOf('function')
       expect(after.user.props[key], key).toBe(before.user.props[key])
     }
-    for (const key of ['onTogglePin', 'onQuoteMessage', 'onRegenerate']) {
+    for (const key of ['onTogglePin', 'onQuoteMessage', 'onRegenerate', 'onToggleReaction']) {
       expect(after.reply.props[key], key).toBeTypeOf('function')
       expect(after.reply.props[key], key).toBe(before.reply.props[key])
     }
@@ -161,7 +165,7 @@ describe('message row handlers', () => {
     const { hook, first, rows } = mount()
     const latest = {
       handleEditResend: vi.fn(), handleRegenerate: vi.fn(), quoteWholeMessage: vi.fn(),
-      handleTogglePinForMessage: vi.fn(), handleJumpToQuote: vi.fn(),
+      handleTogglePinForMessage: vi.fn(), handleJumpToQuote: vi.fn(), handleToggleReactionForMessage: vi.fn(),
     }
     hook.rerender({ ...first, ...latest })
     const { user: u, reply: r } = rows()
@@ -172,11 +176,14 @@ describe('message row handlers', () => {
     ;(u.props.onEditResend as (i: number, ts: string, c: string) => void)(0, 'r1', 'edited')
     ;(u.props.onJumpToQuote as (q: unknown) => void)({ ts: 'r0' })
     ;(r.props.onRegenerate as () => void)()
+    ;(u.props.onToggleReaction as (e: string) => void)('👍')
+    ;(r.props.onToggleReaction as (e: string) => void)('⭐')
     expect(latest.handleTogglePinForMessage.mock.calls).toEqual([['m-user', 'r1', 'user', 'question'], ['m-reply', 'r2', 'assistant', 'answer']])
     expect(latest.quoteWholeMessage.mock.calls).toEqual([['user', 'shown', 'r1', 'm-user'], ['assistant', 'shown reply', 'r2', 'm-reply']])
     expect(latest.handleEditResend).toHaveBeenCalledWith(0, 'r1', 'edited')
     expect(latest.handleJumpToQuote).toHaveBeenCalledWith({ ts: 'r0' })
     expect(latest.handleRegenerate).toHaveBeenCalledTimes(1)
+    expect(latest.handleToggleReactionForMessage.mock.calls).toEqual([['m-user', '👍'], ['m-reply', '⭐']])
     expect(first.handleTogglePinForMessage).not.toHaveBeenCalled()
   })
 

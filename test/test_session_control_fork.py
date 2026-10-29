@@ -326,6 +326,20 @@ def test_the_child_takes_the_callers_posture_and_nothing_narrower(tmp_path):
     assert not getattr(child, "_trust_scope", "")
 
 
+def test_a_card_scoped_trust_is_not_carried_into_a_fork(tmp_path):
+    """A conductor card's "Trust this crew member" covers that member's own tools
+    only (``trust_carries``), so a fork it opens starts without it."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    caller._trust = True
+    caller._trust_card_scoped = True
+
+    child = state.get_slot(_fork(state, caller)["target"])
+
+    assert child._trust is False
+    assert getattr(child, "_trust_card_scoped", False) is False
+
+
 # ── the core: naming another session ────────────────────────────────────────────
 
 

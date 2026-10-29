@@ -453,10 +453,10 @@ def _cached_frontmatter(
     # and clobber a version snapshot. A reader that would rather show a row
     # than fail catches this at ITS call site instead.
     # Routed through the choke point rather than reading the path directly:
-    # this is the site the reviewer found, and a bare read_text here has no
-    # containment, no O_NOFOLLOW, no regular-file check and no size cap --
-    # so an out-of-project `description` reached the injected skills index
-    # verbatim and attacker-set `triggers`/`always` decided what auto-loaded.
+    # a bare read_text here has no containment, no O_NOFOLLOW, no regular-file
+    # check and no size cap -- so an out-of-project `description` would reach
+    # the injected skills index verbatim and attacker-set `triggers`/`always`
+    # would decide what auto-loads.
     raw = self._read_enumerated_skill_bytes(path, within, canonical_root=canonical_root)
     if raw is None:
         if for_write:
@@ -532,7 +532,6 @@ def load_skill(
             return None
         self._emit_lazy_load_metric(_t0, hit=True)
         return content
-    # Check extra paths
     for extra in self._extra_paths:
         skill_file = extra / name / "SKILL.md"
         if skill_file.exists():

@@ -71,6 +71,9 @@ class ConfigEntry:
     # re-exec jail). Declared per field with ``_meta(..., restart=True)``; every
     # other field is hot-applied by the config watcher (``config.live``).
     requires_restart: bool = False
+    # The other non-null JSON types of a scalar union (``int | str`` gives
+    # type "integer" and ``("string",)`` here). Empty for a single-type field.
+    other_types: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +357,12 @@ def _flatten_recurse(
     # the field accepts null.  Normalize to a single base type string plus a
     # ``nullable`` flag so downstream consumers (baseline emitter, UI, etc.)
     # continue to see a scalar type.
+    other_types: tuple[str, ...] = ()
     if isinstance(raw_type, list):
         non_null = [t for t in raw_type if t != "null"]
         nullable = "null" in raw_type
         node_type = non_null[0] if non_null else "null"
+        other_types = tuple(non_null[1:])
     else:
         node_type = raw_type
         nullable = False
@@ -391,6 +396,7 @@ def _flatten_recurse(
             default_value=default_value,
             nullable=nullable,
             requires_restart=requires_restart,
+            other_types=other_types,
         )
         out.append(entries_entry)
 

@@ -130,6 +130,19 @@ async def _stt_provider_rows(
     return [row for n in names if (row := built.get(n) or extra.get(n)) is not None]
 
 
+# Built-in providers that identify the language of each segment among the
+# ``stt.transcribe_languages`` candidates. Only Amazon Transcribe does.
+_LANGUAGE_IDENTIFYING_PROVIDERS = ("transcribe",)
+
+
+def _language_identifying_providers() -> tuple[str, ...]:
+    """Who the mixed-language picker applies to: the built-ins, then each edition
+    provider that declared ``identifies_languages``."""
+    from kiro_crew import speech_providers
+
+    return speech_providers.language_identifying_stt_names(_LANGUAGE_IDENTIFYING_PROVIDERS)
+
+
 # Common BCP-47 language codes surfaced in the Chat Settings STT picker, and the
 # candidates the Transcribe mixed-language picker offers. The handler accepts any
 # string value on PUT; this list only drives the UI dropdowns, and GET adds the
@@ -503,6 +516,9 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # streaming controls on a CAPABILITY rather than on a hardcoded provider
             # name, which would silently hide the toggle for a newly added provider.
             "streaming_providers": list(streaming_providers()),
+            # Which providers identify languages among `transcribe_languages`, so
+            # the mixed-language picker is gated on that capability as well.
+            "language_identification_providers": list(_language_identifying_providers()),
             "language_codes": _stt_language_codes(cfg.stt),
             "prereqs": prereqs,
             # True when no install channel can make Transcribe's import
@@ -525,24 +541,16 @@ async def api_stt_config(request: web.Request) -> web.Response:
 
 
 def _transcribe_extra_importable() -> bool:
-    """True when AWS Transcribe's half of the ``voice`` extra imported here.
+    """True when AWS Transcribe's half of the ``voice`` extra imports here. BLOCKING.
 
-    Reads ``kiro_crew.transcribe``'s own import outcome (its module-level
-    try/except sets ``boto3 = None`` on failure) rather than probing specs: a
-    partial installation whose dist-info exists but whose import fails must
-    surface the repair command, not suppress it. Runs off the event loop —
-    ``transcribe`` is already imported at module load, so this is an attribute
-    read, but callers batch it with the other filesystem probes anyway.
+    Asks ``transcribe_aws``'s own availability answer, which imports boto3 and
+    the streaming client rather than probing specs: a partial installation whose
+    dist-info exists but whose import fails must surface the repair command, not
+    suppress it. Runs off the event loop; the first call imports boto3.
     """
     from kiro_crew import transcribe
 
-    if transcribe.boto3 is None:
-        return False
-    try:
-        import amazon_transcribe  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return transcribe._aws_availability().ok
 
 
 def _ffmpeg_install_commands() -> list[str]:

@@ -305,11 +305,8 @@ def mask_baseline_symbol_tables(text: str) -> str:
     carrying both is not a slice of the constant either.
 
     The TEXT path deliberately keeps the unmasked scan. There a match costs a
-    redaction tag; here it costs the delivery of the file, and the only way past
-    that refusal is the durable class-wide grant in
-    :mod:`kiro_crew.file_delivery_consent`, which then disarms the refusal for
-    every content kind on every owner-facing gate. Noise on this path spends the
-    control, so this path is where the noise has to go.
+    redaction tag; here it costs the delivery of the file to a Slack or channel
+    upload, so this path is where the noise has to go.
 
     Returns *text* ITSELF when nothing is masked, which the callers read as
     identity to skip re-scanning a buffer whose answer they already hold.

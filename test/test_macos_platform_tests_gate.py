@@ -424,7 +424,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         if bash is None:
             pytest.skip("the verdict step is Bash")
         run = _verdict_step()["run"]
-        start = run.index('if [ -n "${BASE_SHA:-}" ]')
+        start = run.index('if added="$(git diff -U0 --no-color HEAD^1 HEAD')
         end = run.index("\nfi\n", run.index("content switch is off")) + len("\nfi\n")
         block = run[start:end]
         repo = tmp_path / "repo"
@@ -473,7 +473,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         # The lane is advisory, so a diff it cannot read must not fail
         # `decide` -- but it must say so rather than fall silent.
         run = _verdict_step()["run"]
-        assert 'added="$(git diff -U0 --no-color "${BASE_SHA}...${HEAD_SHA}"' in run
+        assert 'added="$(git diff -U0 --no-color HEAD^1 HEAD' in run
         assert "content switch is off for this run" in run
         assert "grep -qP" not in run
 

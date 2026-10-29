@@ -762,7 +762,11 @@ def _write_structured_memory(
     # pass and either can arm the latch for the other.
     budget = _EmbedBudget(_EMBED_BUDGET_SECS_PER_PASS, self._logger)
 
+    from kiro_crew.memory_kind_routing import record_kind_routing, route_consolidation_by_kind
+
     result, withheld = _withhold_unseen_deletes(result, visible_keys, self._logger)
+    routing = route_consolidation_by_kind(result, self._logger)
+    result = routing.result
 
     # Semantic entries
     semantic_items = result.get("semantic")
@@ -976,6 +980,13 @@ def _write_structured_memory(
                 stale_skipped,
                 withheld,
             )
+
+    if routing.decisions:
+        # Under the same hold as every other write of this pass: a switch turned
+        # off, or a lease lost, before the run's first commit refuses the log too.
+        with self._publication_hold_checked(key, commit_state) as publication:
+            if record_kind_routing(vector_store, routing, source):
+                publication.mark_committed()
 
     # Episodic entries
     episodic_items = result.get("episodic")

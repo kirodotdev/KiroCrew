@@ -110,13 +110,24 @@ def _error(rows: list[dict]) -> str:
 
 
 class TestTheListIsExplicit:
-    def test_only_the_core_knowledge_document_body_and_spawn_briefs_are_listed(self) -> None:
+    def test_only_the_reviewed_prose_fields_are_listed(self) -> None:
         assert dict(MCP_DOCUMENT_BODY_FIELDS) == {
             (_CORE, _TOOL): frozenset({"content"}),
             (_CORE, "spawn_run"): frozenset({"task", "tasks[]", "tasks[].task"}),
             (_CORE, "spawn_continue"): frozenset({"task"}),
             (_CORE, "spawn_steer"): frozenset({"message"}),
             (_CORE, "spawn_sub_agents"): frozenset({"agents[].prompt"}),
+            ("kirocrew-cron", "cron_add"): frozenset({"message"}),
+            (_CORE, "send_message"): frozenset({"text", "title"}),
+            (_CORE, "update_message"): frozenset({"text"}),
+            (_CORE, "send_notification"): frozenset({"title", "body"}),
+            (_CORE, "workflow_run"): frozenset({"intent"}),
+            (_CORE, "workflow_author"): frozenset({"intent"}),
+            (_CORE, "monitor_start"): frozenset({"message"}),
+            (_CORE, "monitor_update"): frozenset({"message"}),
+            (_CORE, "learn_add"): frozenset({"rule", "negative"}),
+            (_CORE, "artifact_post_comment"): frozenset({"text"}),
+            (_CORE, "artifact_reply_comment"): frozenset({"text"}),
         }
 
     @pytest.mark.parametrize(

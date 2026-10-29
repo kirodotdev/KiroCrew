@@ -77,7 +77,13 @@ jobs:
     # fork, which compares unequal and is therefore treated as a fork -- the
     # fail-toward-evaluating direction.
     if: github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
+    # Fork work cannot reach the CodeBuild fleet -- the `workflow_job` webhook
+    # payload carries no fork indicator, so the AWS side cannot admit it -- and
+    # the group is the only other capacity source. It is where the fork review
+    # lanes already run: a GitHub-hosted Ubuntu VM with no fleet credentials,
+    # and the checkout below still takes the base branch, never the fork.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 5
     steps:
       # The base branch's copy of the script, never the fork's: on

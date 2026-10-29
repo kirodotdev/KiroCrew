@@ -395,7 +395,7 @@ async def test_a_restart_records_one_recycled_end(monkeypatch, fail_start):
     async def _ended(k, *, end_reason):
         calls.append(("end", end_reason))
 
-    async def _started(k):
+    async def _started(k, provider=None):
         calls.append(("start", ""))
 
     monkeypatch.setattr(sc, "record_session_ended", _ended)

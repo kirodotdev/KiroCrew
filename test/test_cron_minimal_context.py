@@ -2,7 +2,7 @@
 
 When minimal_context=True:
 - build_session_context returns only date/time + agent identity (~200 tokens)
-- build_cron_session_context caps last_result to 2000 chars
+- cron_prior_result_context caps last_result to 2000 chars
 - Field round-trips through serialization
 
 Saves ~30-50k tokens per cron run for simple polling jobs.
@@ -15,6 +15,7 @@ import json
 import pytest
 
 from kiro_crew.cron import CronJob, CronService, build_cron_session_context
+from kiro_crew.cron_service.identity import cron_prior_result_context
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +74,7 @@ class TestBuildCronSessionContextMinimal:
             minimal_context=True,
             last_result="short output",
         )
-        _key, prompt = build_cron_session_context(job)
+        prompt = cron_prior_result_context(job)
         assert "short output" in prompt
         assert "[truncated]" not in prompt
 
@@ -87,7 +88,7 @@ class TestBuildCronSessionContextMinimal:
             minimal_context=True,
             last_result=long_result,
         )
-        _key, prompt = build_cron_session_context(job)
+        prompt = cron_prior_result_context(job)
         assert "x" * 2000 in prompt
         assert "x" * 2001 not in prompt
         assert "[truncated]…" + "x" * 2000 in prompt
@@ -102,7 +103,7 @@ class TestBuildCronSessionContextMinimal:
             minimal_context=False,
             last_result=long_result,
         )
-        _key, prompt = build_cron_session_context(job)
+        prompt = cron_prior_result_context(job)
         assert long_result in prompt
         assert "[truncated]" not in prompt
 

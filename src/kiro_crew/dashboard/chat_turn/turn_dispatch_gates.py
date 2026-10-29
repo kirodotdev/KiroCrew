@@ -47,8 +47,10 @@ if TYPE_CHECKING:
         _scrub_dashboard_prefix,
     )
     from kiro_crew.dashboard.chat_turn.recipient import (
+        _MIRROR_THINKING,
         _deliver_cross_surface_user_message,
         _prepare_mirror_msg,
+        _prompt_typed_in_dashboard,
     )
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
@@ -227,7 +229,6 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
 
 async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     """Pass the dispatch gates from the session's first turn up to the stream's start."""
-    _mirror_stream_ts: str
     injected: list[str]
     _attachments = turn._attachments
     _context_is_new = turn._context_is_new
@@ -483,34 +484,52 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._mirror_thread = _mirror_thread
         if _mirror_thread and _mirror_chan:
             try:
-                if not _is_synthetic:
+                # Only a prompt a person typed in the dashboard is quoted into
+                # the thread (see `_prompt_typed_in_dashboard`): a patrol wake,
+                # cron run, peer `session_send` or a message typed in Slack
+                # itself is never echoed. The placeholder and answer still post.
+                if _prompt_typed_in_dashboard(turn):
                     from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
-                        escape_mrkdwn,
+                        mirror_prompt_echo,
                     )
 
                     # The prompt is not only the operator's keystrokes (a
                     # session_send peer lands here too), and Slack parses
-                    # <!channel> / <@U…> in `text`, so escape at this sink.
-                    _mirror_msg = escape_mrkdwn(_prepare_mirror_msg(_user_msg_for_mirror))
+                    # <!channel> / <@U…> in `text`, so escape at this sink:
+                    # links and channel refs stay live, a user mention is
+                    # flattened so the echo never re-pings, and a broadcast
+                    # or stray bracket is escaped. Redaction runs first.
                     await state.slack_client.post_message(
-                        _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
+                        _mirror_chan,
+                        mirror_prompt_echo(_prepare_mirror_msg(_user_msg_for_mirror)),
+                        _mirror_thread,
                     )
-                # Start a stream for real-time tool animations
-                _mirror_stream_ts = (
-                    await state.slack_client.start_stream(
-                        _mirror_chan, _mirror_thread, initial_text="Thinking…"
+                # A separate placeholder, not the task stream's opening text:
+                # a stream only appends, so a "Thinking…" written into it stays
+                # above Slack's own "Thinking completed" plan header for good.
+                # The stream opens on the first tool call instead, and the
+                # placeholder is deleted then, before the answer is posted, or
+                # at turn end, whichever comes first.
+                turn._mirror_thinking_ts = (
+                    await state.slack_client.post_message(
+                        _mirror_chan, _MIRROR_THINKING, _mirror_thread
                     )
                     or ""
                 )
-                turn._mirror_stream_ts = _mirror_stream_ts
             except Exception:
                 logger.debug("Failed to mirror user message to Slack", exc_info=True)
+            # The Slack leg is done: a cancel landing in the cross-surface leg
+            # below must not have a requeue quote the question here twice.
+            turn._mirror_echo_posted = True
 
     # Channel-neutral leg: mirror the user message to a linked non-Slack
     # proactive channel (e.g. Telegram) so the remote conversation reads
     # coherently (question then reply), matching the Slack echo above.
-    if not is_slash and not _is_synthetic:
+    if not is_slash and _prompt_typed_in_dashboard(turn):
         await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
+    # Past this point every echo this turn owes has been made (or the surfaces it
+    # would go to were unlinked), so a recovery requeue of it owes none.
+    turn._mirror_echo_posted = True
 
     _stop_reason = ""
     turn._stop_reason = _stop_reason

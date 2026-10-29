@@ -153,7 +153,7 @@ function openImported(dispatch: AppDispatch, key: string, folderId: string | und
   } else {
     // A later click, minutes after the upload. A session that is gone or fails
     // to load by then is a real failure the user must be told about.
-    dispatch(switchSlot({ key, announceOnMissing: true }))
+    dispatch(switchSlot({ key, announceOnMissing: true, gesture: true }))
   }
   dispatch(requestSlotFolderOpen({ key, folder_id: folderId }))
 }

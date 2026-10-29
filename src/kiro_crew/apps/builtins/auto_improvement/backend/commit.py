@@ -166,8 +166,22 @@ def materialize_queued_diff(
             ),
         }
 
+    # Host-side, in the clone the agent edits: `apply` reads the index (spawning
+    # `core.fsmonitor`) and converts files through `filter.<name>.clean`/`smudge`
+    # (measured on git 2.47), so it carries the same pins and attributes pin as
+    # every other call here rather than a bare argv.
+    require_pinned(clone)
     apply_proc = subprocess.run(
-        ["git", "-C", str(clone), "apply", "--index", "-"],
+        [
+            "git",
+            "-C",
+            str(clone),
+            *_GIT_SAFE_CONFIG,
+            *hook_off_args(clone),
+            "apply",
+            "--index",
+            "-",
+        ],
         # Binary stdin preserves patch newlines on Windows; surrogateescape
         # restores any non-UTF-8 bytes exactly as captured.
         input=diff_text.encode("utf-8", errors="surrogateescape"),
@@ -299,6 +313,7 @@ def _commit_finding_locked(fp: str) -> dict[str, object]:
         "diff.external=",
         "diff",
         "--no-ext-diff",
+        "--no-textconv",
         f"{base_ref_local}..HEAD",
         timeout=_GIT_TIMEOUT_S,
     )

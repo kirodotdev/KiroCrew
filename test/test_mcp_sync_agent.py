@@ -1436,13 +1436,15 @@ class TestApiMcpSyncHotReload:
             monkeypatch, active=[self._provider(True), self._provider(False)]
         )
         reset.assert_awaited_once()
+        assert body["sessions_reset"] == 3
 
     @pytest.mark.asyncio
     async def test_a_mocked_provider_never_reads_as_a_skip(self, monkeypatch, mcp_env):
         """Only a literal ``True`` counts: a MagicMock provider's truthy attribute
         must fall on the reset side."""
-        _body, reset = await self._run(monkeypatch, active=[MagicMock()])
+        body, reset = await self._run(monkeypatch, active=[MagicMock()])
         reset.assert_awaited_once()
+        assert body["sessions_reset"] == 3
 
     def test_gate_fails_closed_on_error(self):
         """A gate that cannot answer must not skip the reset."""

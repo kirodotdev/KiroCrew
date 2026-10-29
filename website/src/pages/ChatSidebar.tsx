@@ -15,6 +15,7 @@ import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { setCrewEnabled } from '../lib/crewEnabled'
+import { crewModeView } from '../lib/crewMode'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -125,11 +126,16 @@ function ChatSidebar({
   // crash, so the names are the guard. The prop itself keeps its public name;
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
-  slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
+  slots: slotsProp, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
-  chatDropTarget, onDropSessionRef, staticRows,
+  chatDropTarget, onDropSessionRef, canStageSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // The person's list. A Crew Mode root's crew members are its side panel's to
+  // show (`crewModeView`): they never reach a lane, the Broadcast dialog or any
+  // other reader of this collection. The server keeps them in the slot frame
+  // (`?crew=all`), so the one filter is here, at the sidebar's door.
+  const localSlots = useMemo(() => crewModeView(slotsProp), [slotsProp])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the
@@ -251,7 +257,7 @@ function ChatSidebar({
   )
   const {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
-    suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
+    suppressMenuRestore, disarmMenuRestore, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
     onMenuCloseAutoFocus,
   } = useSessionRename({ dispatch, store, queryClient })
   const { autoTitleError, setAutoTitleError, onAutoTitle } = useSessionAutoTitle({ dispatch, store })
@@ -333,7 +339,7 @@ function ChatSidebar({
 
   const {
     folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
-  } = useFolderRename({ renamingSlot, suppressMenuRestoreRef })
+  } = useFolderRename({ renamingSlot, disarmMenuRestore })
   const [folderRenameAnnouncement, setFolderRenameAnnouncement] = useState('')
 
   // Folders via React Query. `isSuccess` gates the stale-collapse move
@@ -724,11 +730,13 @@ function ChatSidebar({
     onNativeDragStart: startBoardCardDrag, onNativeDragEnd: endNativeSessionDrag,
     onPinnedKeyboardReorder: reorderPinnedByKeyboard, onManualKeyboardReorder: reorderManualByKeyboard,
     openElsewhere, toggleConductor: toggleConductorExpanded,
+    onDropSessionRef, canStageSessionRef,
   }), [
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle, slotRenameEnterRef,
     sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     stableOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     reorderManualByKeyboard, openElsewhere, toggleConductorExpanded,
+    onDropSessionRef, canStageSessionRef,
   ])
   // The values every row shows the same way, ONE object per change of any of them:
   // each view holds it by reference, so it re-renders every row exactly when one of
@@ -818,7 +826,7 @@ function ChatSidebar({
     isFolderHidden, isMobile, isStaleExempt, lane, laneRowWindow, laneScrollMemory, laneSlots,
     laneSwitchLabel, lineage, listNarrowed, localSlots, missingLanes, modelFilterInverted, modelFilterRows,
     moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane,
-    onDropSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
+    onDropSessionRef, canStageSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedBandCaption, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
@@ -834,7 +842,7 @@ function ChatSidebar({
     manualOrderError, setManualOrderError,
     showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,
     sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
-    subagentApprovalCounts, suppressMenuRestoreRef, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
+    subagentApprovalCounts, suppressMenuRestore, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
     toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
@@ -922,7 +930,7 @@ function ChatSidebar({
        *  reaches: a running turn takes it after its current tool call, an idle
        *  session starts a new turn. Crewmate chats are left out by default. */}
       {broadcastOpen && (
-        <BroadcastPanel slots={localSlots} folders={folders} tags={tagsData ?? []} agents={installedAgents} signals={{ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet }} onClose={() => setBroadcastOpen(false)} onOpenSession={key => { dispatch(switchSlot({ key, announceOnMissing: true })); onSelectSlot?.(key) }} />
+        <BroadcastPanel slots={localSlots} folders={folders} tags={tagsData ?? []} agents={installedAgents} signals={{ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet }} onClose={() => setBroadcastOpen(false)} onOpenSession={key => { dispatch(switchSlot({ key, announceOnMissing: true, gesture: true })); onSelectSlot?.(key) }} />
       )}
 
       {/* Manage-tags panel — mirrors the Clean Up / Switch All panels. Renders

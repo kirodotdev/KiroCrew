@@ -323,7 +323,9 @@ async def test_maintenance_quiesce_wakes_a_firing_remove_waiter(tmp_path, monkey
     timer = asyncio.create_task(svc._timer(loop, delay=0))
     svc._timers[loop.id] = timer
     monkeypatch.setattr(an, "_INSTANCE", svc)
-    await await_until(entered_fire, timeout=1)
+    # The timer task must be scheduled into on_fire first; a loaded Windows runner
+    # can take over a second to do that, so wait on the lost-run bound, not 1 s.
+    await await_until(entered_fire, what="the timer entering on_fire")
 
     try:
         async with AutoNudgeService.maintenance_service(base_dir=tmp_path) as view:

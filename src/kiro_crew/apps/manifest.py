@@ -972,7 +972,12 @@ class AppManifest:
             config_keys = list(config_keys_raw)
             config_keys_error = ""
 
+        # A present non-list value for a list field reads as absent: `get` returns a
+        # stored `null` instead of the default, and iterating it would raise (or split
+        # a string into characters). The same guard covers every top-level list below.
         crons_raw = data.get("crons", [])
+        if not isinstance(crons_raw, list):
+            crons_raw = []
         crons = [CronEntry.from_dict(c) for c in crons_raw if isinstance(c, dict)]
 
         ui_raw = data.get("ui", {})
@@ -1038,13 +1043,19 @@ class AppManifest:
             minKiroCrewVersion=str(data.get("minKiroCrewVersion", "")),  # noqa: N815
             signer=str(data.get("signer", "")),
             signature=str(data.get("signature", "")),
-            agents=[str(a) for a in data.get("agents", []) if a],
+            agents=[
+                str(a)
+                for a in (data["agents"] if isinstance(data.get("agents"), list) else [])
+                if a
+            ],
             skills=[
                 str(s.get("path", s.get("name", "")) if isinstance(s, dict) else s)
-                for s in data.get("skills", [])
+                for s in (data["skills"] if isinstance(data.get("skills"), list) else [])
                 if s
             ],
-            sops=[str(s) for s in data.get("sops", []) if s],
+            sops=[
+                str(s) for s in (data["sops"] if isinstance(data.get("sops"), list) else []) if s
+            ],
             mcpServers=dict(data.get("mcpServers", {})),  # noqa: N815
             config_keys=config_keys,
             config_keys_error=config_keys_error,
@@ -1058,8 +1069,14 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
-            tags=[str(t) for t in data.get("tags", []) if t],
-            jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
+            tags=[
+                str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
+            ],
+            jobFamilies=[  # noqa: N815
+                str(j)
+                for j in (data["jobFamilies"] if isinstance(data.get("jobFamilies"), list) else [])
+                if j
+            ],
             extra=extra,
         )
 

@@ -26,6 +26,7 @@ from typing import Any, Callable, NamedTuple, Optional
 from kiro_crew import github_runner, platform_compat
 from kiro_crew.cloud import aws
 from kiro_crew.config.loader import config_dir
+from kiro_crew.platform.update_governance import git_command_env, repo_exec_driver_reason
 from kiro_crew.sel import sel
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -613,7 +614,11 @@ def _use_git_archive(root: Path, *, digest: Optional["hashlib._Hash"] = None) ->
         # which is the same substitutable name a reopen would be. stderr alone is
         # piped, because stdout is spoken for.
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            ["git", "-C", str(root), "archive", "--format=tar.gz", "HEAD"],
+            # Plain `tar`, compressed by _refilter_archive in Python: git runs the
+            # `tar.<format>.command` compressor the repository's config names, and
+            # `tar.tar.gz.command` is a repo-chosen program no env pin reaches.
+            ["git", "-C", str(root), "archive", "--format=tar", "HEAD"],
+            env=git_command_env(),
             stdout=out,
             stderr=subprocess.PIPE,
             timeout=120,
@@ -656,7 +661,8 @@ def _refilter_archive(archive: Any, *, digest: Optional["hashlib._Hash"] = None)
         archive.seek(0)
 
         def _fill(dst: tarfile.TarFile) -> None:
-            with tarfile.open(fileobj=archive, mode="r:gz") as src:
+            # "r:*": git now hands over a plain tar (see _use_git_archive).
+            with tarfile.open(fileobj=archive, mode="r:*") as src:
                 for member in src:
                     if _exclude_filter(member) is None:
                         logger.info("excluding %s from source tarball", member.name)
@@ -698,6 +704,43 @@ def _custom_home_rel_parts(root: Path) -> Optional[tuple]:
     return rel.parts or None
 
 
+def _tracked_attr_values(root: Path, names: list, attr: str) -> Optional[dict]:
+    """``{path: value}`` of git attribute *attr* for *names*, or ``None`` if git can't say.
+
+    ``check-attr`` reads attributes only and runs no driver.
+    """
+    try:
+        rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            ["git", "-C", str(root), "check-attr", "-z", "--stdin", attr],
+            env=git_command_env(),
+            input=b"\0".join(n.encode("utf-8", "surrogateescape") for n in names) + b"\0",
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc.returncode != 0:
+        return None
+    # `-z` output: `<path>\0<attr>\0<value>\0` per path.
+    fields = rc.stdout.decode("utf-8", "surrogateescape").split("\0")
+    return dict(zip(fields[0::3], fields[2::3]))
+
+
+def _tracked_paths_use_a_filter(root: Path) -> bool:
+    """True when any tracked path carries a ``filter`` attribute (or git can't say).
+
+    Fails toward True, which picks the working-tree packaging path: correct
+    content either way.
+    """
+    names = _git_tracked_files(root)
+    if not names:
+        return False
+    values = _tracked_attr_values(root, names, "filter")
+    if values is None:
+        return True
+    return any(v not in ("unspecified", "unset", "") for v in values.values())
+
+
 def _git_tracked_files(root: Path) -> Optional[list]:
     """The repo's tracked files (respects ``.gitignore``), or None if unavailable.
 
@@ -710,6 +753,8 @@ def _git_tracked_files(root: Path) -> Optional[list]:
     try:
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["git", "-C", str(root), "ls-files", "-z"],
+            # Pins `core.fsmonitor`, which `ls-files` runs (measured on git 2.47).
+            env=git_command_env(),
             capture_output=True,
             timeout=60,
         )
@@ -735,6 +780,7 @@ def _tracked_tree_is_dirty(root: Path) -> bool:
     try:
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            env=git_command_env(),
             capture_output=True,
             timeout=60,
             **UTF8_TEXT,
@@ -768,7 +814,33 @@ def _tar_fallback(root: Path, *, digest: Optional["hashlib._Hash"] = None) -> Pa
 
     home_parts = _custom_home_rel_parts(root)  # e.g. ("data", "kc-home") or None
 
+    # `git archive` leaves out `export-ignore` paths (a directory's attribute
+    # reaches every file under it, which `check-attr` reports per file). This
+    # path must leave out the same files, or it ships what the archive kept out.
+    # Fails closed: an unanswered query packages nothing.
+    # A directory's own `export-ignore` is not inherited by its files in
+    # `check-attr` output, but `git archive` honours it -- so every ancestor
+    # directory of a tracked path is asked too.
+    # Each directory is asked BOTH bare and with a trailing `/`: a directory-only
+    # pattern (`docs/ export-ignore`) matches only the slashed form in
+    # `check-attr` (git 2.47), while `git archive` still leaves the tree out.
+    ancestors = {str(parent.as_posix()) for rel in tracked for parent in Path(rel).parents}
+    ancestors.discard(".")
+    ancestor_queries = ancestors | {f"{a}/" for a in ancestors}
+    export = _tracked_attr_values(root, sorted(set(tracked) | ancestor_queries), "export-ignore")
+    if export is None:
+        raise aws.AWSError(
+            "cannot read the checkout's export-ignore attributes, so the source "
+            "cannot be packaged safely",
+            action="source:PackageLocalCheckout",
+        )
+    export_ignored = {path.rstrip("/") for path, value in export.items() if value == "set"}
+
     def _excluded(rel: str) -> bool:
+        if rel in export_ignored or any(
+            parent.as_posix() in export_ignored for parent in Path(rel).parents
+        ):
+            return True
         parts = Path(rel).parts
         if set(parts) & _EXCLUDE_DIRS:
             return True
@@ -853,6 +925,27 @@ def build_source_tarball(root: Optional[Path] = None) -> StagedSource:
     # fallback's checksum, which would then describe bytes the named file does not
     # contain -- and S3 would refuse a perfectly good tarball on a
     # --checksum-sha256 mismatch.
+    # `git status` and `git archive` run a repo-named `filter.<name>.clean` /
+    # `.smudge` from the checkout's own config, which an agent can write and no
+    # environment pin reaches. Such a tree skips both and is packaged by the
+    # tracked-file tar path, whose only git call (`ls-files`) runs no driver.
+    refused = repo_exec_driver_reason(str(root), git="git")  # the git spawned below
+    if refused:
+        logger.warning("%s; packaging the tracked files without git archive", refused)
+        guarded_digest = hashlib.sha256()
+        packaged = _tar_fallback(root, digest=guarded_digest)
+        return _staged(packaged, guarded_digest)
+
+    # `git archive` runs under the isolated env, which drops global config -- and
+    # with it a globally configured filter like `git lfs install`'s. A tracked
+    # path bound to ANY filter would then ship as its raw blob (an LFS pointer),
+    # so such a tree packages the checked-out working files instead.
+    if _tracked_paths_use_a_filter(root):
+        logger.info("tracked files use a content filter; packaging the working tree")
+        filtered_digest = hashlib.sha256()
+        packaged = _tar_fallback(root, digest=filtered_digest)
+        return _staged(packaged, filtered_digest)
+
     if _tracked_tree_is_dirty(root):
         logger.info("working tree has uncommitted tracked changes; packaging the working tree")
         dirty_digest = hashlib.sha256()

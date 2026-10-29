@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, _normalize_slot_key
 
@@ -242,8 +243,9 @@ def select_idle_slot_keys(
     """Pick the live slots idle since before *cutoff*.
 
     Skips pinned slots, slots in *looped* (an armed auto-nudge loop is idle by
-    nature between cycles, and archiving its tab ends the loop for good), slots of
-    another app when *request_app* is set, slots whose activity is unknown, with
+    nature between cycles, and archiving its tab ends the loop for good), when
+    *request_app* is set every slot that app does not own on its own session and
+    transcript (the per-slot checkpoint's rule), slots whose activity is unknown, with
     *skip_running* slots with a turn in flight, with *skip_app_owned* every
     app-owned slot, and with *skip_busy* slots a connected dashboard shows in
     the foreground, waiting on an approval or with sub-agent work attached
@@ -257,7 +259,7 @@ def select_idle_slot_keys(
         slot = state._slots.get(name)
         if slot is None or slot.pinned or name in looped:
             continue
-        if request_app and slot._app != request_app:
+        if request_app and not app_owns_slot_session(request_app, slot):
             continue
         if skip_running and slot.running:
             continue

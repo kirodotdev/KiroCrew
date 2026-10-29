@@ -547,7 +547,7 @@ class CloudConfig:
 
     This module has no writer. ``profile``, ``region`` and ``last_tag`` are still READ from
     here, because an install that launched before the launch record existed has its pointer
-    in this file and ``cloud resume`` must keep working; ``cloud.launch_state`` is where
+    in this file and ``cloud launch`` must keep working; ``cloud.launch_state`` is where
     those three are written now. The ``fargate`` block is the operator's own, and nothing
     in the product rewrites the file it lives in.
     """

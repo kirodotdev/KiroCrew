@@ -710,9 +710,14 @@ class TestSlackEnforcement:
 
         n = SLACK_CAPABILITIES.max_buttons
         blocks = build_options_blocks(self._choices(n + 3))
-        actions = next(b for b in blocks if b["type"] == "actions")
-        opts = actions["elements"][0]["options"]
-        assert len(opts) == n
+        buttons = [
+            el
+            for b in blocks
+            if b["type"] == "actions"
+            for el in b["elements"]
+            if el["type"] == "button"
+        ]
+        assert len(buttons) == n
         overflow = next(b for b in blocks if b["type"] == "context")
         text = overflow["elements"][0]["text"]
         # Numbering continues after the widget slots; every dropped choice shows.
@@ -752,7 +757,8 @@ class TestSlackEnforcement:
         blocks = build_options_blocks(huge)
         ctx = [b for b in blocks if b["type"] == "context"]
         assert len(ctx) <= 4, "block budget must be bounded"
-        assert len(blocks) <= 5
+        # Two rows of buttons (the cap is ten, five to a row) plus the context.
+        assert len(blocks) <= 6
         marker = ctx[-1]["elements"][0]["text"]
         assert "omitted" in marker
         # The marker counts what was dropped — no silent loss.

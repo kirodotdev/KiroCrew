@@ -291,34 +291,27 @@ always returns false, and the channel-join allowlist prompt is a no-op. A
 
 ### Reaction Emojis
 
-Kiro Crew adds phase-aware emoji reactions during message processing (queued → thinking → coding → done). Customize or disable:
+Kiro Crew shows that it picked up your message without a trail of reactions:
+
+- Where Slack shows the bot's native thread status ("Kiro Crew is working on your request…", e.g. in the assistant DM), that status is the progress signal and your message gets no reaction.
+- Where it does not, your message gets a single 👀 while it is being answered. It is removed when the reply lands: the reply itself is the done signal.
+- A turn that fails gets 😱, on either surface.
+
+Customize or disable:
 
 ```json
 {
   "slack": {
     "reactions": {
-      "done": "sparkle",
-      "thinking": "brain",
-      "coding": "computer"
+      "queued": "hourglass_flowing_sand",
+      "error": "warning"
     },
     "reactions_enabled": true
   }
 }
 ```
 
-Set `reactions_enabled` to `false` to disable all phase reactions. Valid keys: `queued`, `thinking`, `coding`, `browsing`, `tool`, `done`, `error`.
-
-To suppress a single phase (keep the others at their defaults), set it to `null`. For example, to keep the working/browsing/tool reactions but hide the terminal `🦞` on every message:
-
-```json
-{
-  "slack": {
-    "reactions": { "done": null }
-  }
-}
-```
-
-A suppressed phase removes any prior reaction but adds nothing new; stall reactions (`🥱` / `😨`) are unaffected.
+Set `reactions_enabled` to `false` to disable both. Valid keys: `queued` (the ack) and `error`. Set either to `null` to suppress it. Keys from the older per-phase trail (`thinking`, `coding`, `browsing`, `tool`, `done`) are accepted and ignored.
 
 ---
 

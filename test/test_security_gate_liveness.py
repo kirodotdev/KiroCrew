@@ -526,7 +526,33 @@ def _url_payload_command(n: int) -> str:
 #: ``paths``: one import and one ``or`` clause on the write gate, plus the blank line
 #: isort puts after the import. The matcher lives outside the package
 #: (``kiro_crew.edition_install_fence``).
-_PACKAGE_LINE_BUDGET = 32_616
+#:
+#: Raised by 19, from 32,616, for the ``rm`` floor's own segment walk: reserved
+#: words (``then``, ``do``, ``!``, ``time`` …) keep command position, a quoted
+#: substitution may expand to nothing in the program word, and
+#: ``#`` / ``<<`` inside an unpaired ``${…}`` / ``$[…]`` open no comment or heredoc.
+#: Each command is read with and without that tracking. Deny-only: no allow widened.
+#:
+#: Raised by 8, from 32,635, for the ``rm`` floor's program word: an unquoted
+#: ``$x`` / ``${…}`` / ``$1`` there may be unset, so ``${x}rm`` is read as ``rm``.
+#: A word already read as ``rm`` keeps that reading. Deny-only: no allow widened.
+#: Raised by 25, from 32,643, for ``exfil.restore_allowed_links``: an allowed host with several
+#: different addresses in one reply pairs its placeholders with its records by order
+#: instead of staying blocked, but only on a row marked ``blocked_links_ordered``, and
+#: every address put back must be the whole URL match that starts where it lands;
+#: plus the redactor's ``_ordered_out`` flag for a link rewritten inside a longer one.
+#: Display-time only; no redaction rule, pattern or threshold moved.
+#: Raised by 125, from 32,668, for ``shell_commands``: the shared quote-aware command
+#: reader (words with quote state and raw offsets, redirections, the live separator)
+#: that the ``rm`` floor's segment walk moved into, net of the walk it replaced, and
+#: the carve-out's first word in ``exfil_bash``. No rule, pattern or verdict moved.
+#: Raised by 5, from 32,793, for ``vm_stat``, ``uptime`` and ``free`` in the read-only
+#: allowlist of ``readonly_bash`` plus their two-line note. Table data, no matcher change.
+#:
+#: Raised again, from 32,798, by one line: the per-template MCP additions record joins
+#: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
+#: ``headers`` can hold an API key and only the floor masks it from a foreign child.
+_PACKAGE_LINE_BUDGET = 32_799
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

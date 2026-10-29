@@ -24,6 +24,7 @@ _spec.loader.exec_module(gate)
 # The ceiling only moves down. Raising it is the change this test exists to stop.
 X_CAPTURE_CEILING = 4
 KIRO_KAS_PAIR_CEILING = 0
+X_REGISTRATION_PENDING_CEILING = 9
 
 
 def test_tree_passes() -> None:
@@ -34,6 +35,89 @@ def test_allowlists_stay_under_their_ceiling() -> None:
     assert len(gate.X_CAPTURE_ALLOWLIST) <= X_CAPTURE_CEILING
     assert len(gate.KIRO_KAS_PAIR_ALLOWLIST) <= KIRO_KAS_PAIR_CEILING
     assert all(why.strip() for why in gate.X_CAPTURE_ALLOWLIST.values())
+    assert len(gate.X_REGISTRATION_PENDING) <= X_REGISTRATION_PENDING_CEILING
+
+
+def _with_set(monkeypatch, name: str) -> None:
+    sets = dict(gate.live_sets(), **{name: frozenset({"pi"})})
+    monkeypatch.setattr(gate, "live_sets", lambda: sets)
+
+
+def test_an_unclassified_new_set_fails(monkeypatch, capsys) -> None:
+    """A new ACP_BACKENDS_* set in none of the three lists cannot ship green."""
+    _with_set(monkeypatch, "ACP_BACKENDS_BRAND_NEW")
+    assert gate.enforce_x_captures(None) == 1
+    out = capsys.readouterr().out
+    assert "ACP_BACKENDS_BRAND_NEW: unclassified" in out and "HARNESS_EXEMPT_SETS" in out
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, "ACP_BACKENDS_BRAND_NEW", "routing-only")
+    assert gate.enforce_x_captures(None) == 0
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, "ACP_BACKENDS_BRAND_NEW", " ")
+    assert gate.enforce_x_captures(None) == 1
+
+
+def test_a_set_in_two_lists_fails(monkeypatch) -> None:
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, "ACP_BACKENDS_STEER", "standard")
+    assert any("keep it in one" in e for e in gate.check_coverage(gate.live_sets()))
+
+
+def test_pending_only_shrinks_into_x_feature_sets(monkeypatch) -> None:
+    sets, prior = gate.live_sets(), set(gate.X_REGISTRATION_PENDING)
+    assert gate._pending_ratchet(prior, sets) == []
+    name = "ACP_BACKENDS_HOOKS_LIST"
+    monkeypatch.delitem(gate.X_REGISTRATION_PENDING, name)
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, name, "moved to dodge the capture")
+    left = [f"{name}: left X_REGISTRATION_PENDING without joining X_FEATURE_SETS for every member"]
+    assert gate._pending_ratchet(prior, sets) == left
+    monkeypatch.delitem(gate.HARNESS_EXEMPT_SETS, name)
+    # An empty scope would check no member at all.
+    monkeypatch.setitem(gate.X_FEATURE_SETS, name, frozenset())
+    assert gate._pending_ratchet(prior, sets) == left
+    assert f"{name}: X_FEATURE_SETS scope checks none of its members" in gate.check_coverage(sets)
+    monkeypatch.setitem(gate.X_FEATURE_SETS, name, None)
+    assert gate._pending_ratchet(prior, sets) == []
+    assert gate._pending_ratchet(prior - {"ACP_BACKENDS_NATIVE_TODOS"}, sets) == [
+        "ACP_BACKENDS_NATIVE_TODOS: X_REGISTRATION_PENDING entry added; that list only shrinks"
+    ]
+
+
+def test_the_gate_holds_pending_to_the_base_ref(monkeypatch, capsys) -> None:
+    """The shrink-only rule runs through enforce_x_captures, not only its helper."""
+    prior = set(gate.X_REGISTRATION_PENDING)
+    monkeypatch.setattr(gate, "_base_allowlists", lambda base: None)
+    monkeypatch.setattr(gate, "_base_pending", lambda base: prior)
+    assert gate.enforce_x_captures("base") == 0
+    name = "ACP_BACKENDS_HOOKS_LIST"
+    monkeypatch.delitem(gate.X_REGISTRATION_PENDING, name)
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, name, "moved to dodge the capture")
+    assert gate.enforce_x_captures("base") == 1
+    assert f"{name}: left X_REGISTRATION_PENDING" in capsys.readouterr().out
+    smaller = set(gate.X_REGISTRATION_PENDING) - {"ACP_BACKENDS_NATIVE_TODOS"}
+    monkeypatch.setattr(gate, "_base_pending", lambda base: smaller)
+    assert gate.enforce_x_captures("base") == 1
+    assert (
+        "ACP_BACKENDS_NATIVE_TODOS: X_REGISTRATION_PENDING entry added" in capsys.readouterr().out
+    )
+
+
+def test_a_listed_set_no_longer_defined_fails(monkeypatch, capsys) -> None:
+    for list_name in ("X_REGISTRATION_PENDING", "HARNESS_EXEMPT_SETS"):
+        monkeypatch.setitem(getattr(gate, list_name), "ACP_BACKENDS_GONE", "was real")
+        assert gate.enforce_x_captures(None) == 1
+        out = capsys.readouterr().out
+        assert f"ACP_BACKENDS_GONE: in {list_name} but no longer defined" in out
+        monkeypatch.delitem(getattr(gate, list_name), "ACP_BACKENDS_GONE")
+
+
+def test_base_pending_is_read_back_from_the_gate_source(monkeypatch) -> None:
+    with open(_GATE_PATH, encoding="utf-8") as fh:
+        source = fh.read()
+    monkeypatch.setattr(gate, "git", lambda args: source)
+    assert gate._base_pending("base") == set(gate.X_REGISTRATION_PENDING)
+    plain = 'X_REGISTRATION_PENDING = {"ACP_BACKENDS_STEER": "v"}\n'
+    monkeypatch.setattr(gate, "git", lambda args: plain)
+    assert gate._base_pending("base") == {"ACP_BACKENDS_STEER"}
+    monkeypatch.setattr(gate, "git", lambda args: "X = 1\n")
+    assert gate._base_pending("base") is None
 
 
 def test_pi_in_steering_request_without_its_capture_fails() -> None:
@@ -94,6 +178,24 @@ def test_a_kas_capture_relabeled_kiro_fails(tmp_path) -> None:
     root = _relabeled(tmp_path, "kas", "kiro", '"backend": "kas"', '"backend": ""')
     gaps = gate.check_x_captures(gate.live_sets(), gate.set_comments(), root=root)
     assert "holds no kiro-cli initialize" in gaps[("ACP_BACKENDS_STEER", "kiro")]
+
+
+def test_another_adapters_capture_in_copilot_fails(tmp_path) -> None:
+    """The copilot compact capture, renamed to another adapter, cited for copilot."""
+    import shutil
+
+    name = "ACP_BACKENDS_COMPACT"
+    assert "acp_frames/copilot/compact-live.jsonl" in gate.set_comments()[name]
+    src = os.path.join(gate.REPO_ROOT, gate._FIXTURES, "copilot", "compact-live")
+    dst = tmp_path / gate._FIXTURES / "copilot"
+    dst.mkdir(parents=True)
+    with open(src + ".jsonl", encoding="utf-8") as fh:
+        text = fh.read()
+    assert '"Copilot"' in text
+    (dst / "compact-live.jsonl").write_text(text.replace('"Copilot"', '"OpenCode"'))
+    shutil.copy(src + ".expected.json", dst / "compact-live.expected.json")
+    gaps = gate.check_x_captures(gate.live_sets(), gate.set_comments(), root=str(tmp_path))
+    assert "is a capture of 'OpenCode', not ['Copilot']" in gaps[(name, "copilot")]
 
 
 def test_every_cited_kiro_and_kas_capture_carries_its_own_handshake() -> None:
@@ -326,3 +428,55 @@ def test_opencode_second_prompt_joins_the_running_turn() -> None:
         for u in _updates("opencode/concurrent-prompt-steer-live.jsonl", "agent_message_chunk")
     )
     assert reply.strip() == "first-done pineapple"
+
+
+def _responses(rel: str) -> dict[int, dict]:
+    """Every id-matched response frame in a capture, keyed by request id."""
+    return {f["id"]: f for f in _frames(rel)[1:] if "id" in f and "method" not in f}
+
+
+def test_session_eviction_captures_show_the_id_dying_on_teardown() -> None:
+    """Each member: a live request answered, the teardown answered, the SAME id 'not found'."""
+    for rel, live_id, teardown_id, gone_id in (
+        ("kiro/session-evict-live.jsonl", 3, 4, 5),
+        ("kas/session-evict-live.jsonl", 3, 4, 5),
+        ("codex/session-evict-live.jsonl", 3, 4, 5),
+    ):
+        r = _responses(rel)
+        assert "error" not in r[live_id], f"{rel}: the session was not live before teardown"
+        assert "error" not in r[teardown_id], f"{rel}: the teardown verb was refused"
+        gone = r[gone_id]
+        assert "error" in gone, f"{rel}: the id still answered after teardown"
+        text = json.dumps(gone["error"])
+        assert "not found" in text.lower(), f"{rel}: {text}"
+
+
+def test_client_meta_settings_capture_shows_tool_origin_from_the_client() -> None:
+    """KAS read settings.toolSearch.neverDefer: the probe tool_call is toolOrigin client."""
+    rel = "kas/client-meta-settings-live.jsonl"
+    (call,) = _updates(rel, "tool_call")
+    assert (call.get("_meta") or {}).get("kiro", {}).get("toolOrigin") == "client"
+    assert call["title"] == "@probe/probe_codeword"
+    reply = "".join(u["content"]["text"] for u in _updates(rel, "agent_message_chunk"))
+    assert reply.strip() == "tangerine-42"
+
+
+def test_host_auth_callback_capture_shows_the_engine_asking_for_a_token() -> None:
+    """KAS spawned without --auth-method cli sends _kiro/auth/getAccessToken, no secret in it."""
+    rel = "kas/host-auth-callback-live.jsonl"
+    asks = _methods(rel, "_kiro/auth/getAccessToken")
+    assert len(asks) == 1, rel
+    assert asks[0].get("params") in ({}, None), "the token request must carry no secret"
+    assert "id" in asks[0], "it is a request the client answers, so it carries an id"
+
+
+def test_spec_servers_off_wire_captures_run_the_spec_server_off_an_empty_array() -> None:
+    """kiro --agent off disk and KAS via customAgents: the probe tool ran and returned the codeword."""
+    for rel in (
+        "kiro/spec-servers-off-wire-live.jsonl",
+        "kas/client-meta-settings-live.jsonl",
+    ):
+        (call,) = _updates(rel, "tool_call")
+        assert "probe_codeword" in json.dumps(call), rel
+        reply = "".join(u["content"]["text"] for u in _updates(rel, "agent_message_chunk"))
+        assert reply.strip() == "tangerine-42", rel

@@ -139,6 +139,40 @@ def _gateway_memory_lines() -> list[str]:
     return lines
 
 
+def _windows_inert_limit_lines() -> list[str]:
+    """The ``inert limits`` line: ``resource_limits`` keys Windows accepts but ignores.
+
+    Windows only; an empty list elsewhere. The key list is the one the startup
+    warning uses (``sandbox_slice._WINDOWS_INERT_RESOURCE_LIMIT_KEYS``): every key
+    whose only mechanism is a cgroup/systemd property or a POSIX rlimit. A key counts
+    when set to a non-zero value, as at startup -- and ``max_open_files`` also when
+    UNSET, because unset means the built-in 1024 default, which Windows never
+    installs either. Advisory: never added to ``issues``.
+    """
+    if not cli_doctor.platform_compat.IS_WINDOWS:
+        return []
+    try:
+        from kiro_crew.sandbox_slice import _WINDOWS_INERT_RESOURCE_LIMIT_KEYS
+
+        limits = cli_doctor.KiroCrewConfig.load().resource_limits
+    except Exception:
+        return ["  inert limits:    ⚠  could not read resource_limits"]
+    named = [
+        f"resource_limits.{key}"
+        for key in _WINDOWS_INERT_RESOURCE_LIMIT_KEYS
+        if getattr(limits, key, None)
+    ]
+    if getattr(limits, "max_open_files", 0) is None:
+        named.append("resource_limits.max_open_files (default 1024)")
+    if not named:
+        return ["  inert limits:    ✅ no resource_limits key set that Windows ignores"]
+    return [
+        "  inert limits:    ⚠  set but not enforced on Windows: " + ", ".join(named),
+        "                   The Job object bounds only per-spawn max_processes and "
+        "max_memory_mb; these need a systemd user manager or POSIX rlimits.",
+    ]
+
+
 def _doctor_memory_pressure(issues: list[str]) -> None:
     """Report whether the host can degrade gracefully under memory pressure.
 
@@ -163,6 +197,8 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
     # recycles at. Printed before the Linux-only freeze check so a Windows or
     # macOS operator still sees the numbers that matter for a runaway tree.
     for line in _gateway_memory_lines():
+        print(line)
+    for line in _windows_inert_limit_lines():
         print(line)
     if not sys.platform.startswith("linux"):
         print(
@@ -665,9 +701,24 @@ def _doctor_acp_runtimes(issues: list[str]) -> None:
 # Inode exhaustion is the more likely face on a tmpfs (each leaked dir is tiny
 # but costs an inode), so both free-space and free-inode fractions are checked,
 # plus an absolute inode floor: a small tmpfs at 11% free inodes can still be a
-# few hundred dirs from failure.
-_TMPFS_FREE_PCT_WARN = 10.0
-_TMPFS_FREE_INODES_FLOOR = 1000
+# few hundred dirs from failure. The numbers are the resource_status tool's, so
+# the doctor and the tool never disagree about one directory.
+_TMPFS_FREE_PCT_WARN = cli_doctor.resource_status.TEMP_FREE_PCT_WARN
+_TMPFS_FREE_INODES_FLOOR = cli_doctor.resource_status.TEMP_FREE_INODES_FLOOR
+
+# The shared system temp dir. The sandbox chooser lists ``tempfile.gettempdir()``,
+# which is ``/tmp`` only while ``TMPDIR`` is unset; an agent shell's ``TMPDIR`` is
+# its own scratch dir, so a doctor run from there would otherwise never measure
+# the ``/tmp`` that test homes and AF_UNIX sockets still use.
+_SHARED_TMP = "/tmp"
+
+# A fake HOME left by a test run holds ``.cache/kirocrew`` (the conftest's
+# bytecode and Hypothesis caches resolve under ``~/.cache/kirocrew`` when
+# ``XDG_CACHE_HOME`` is unset). Counting them names the usual cause of a full
+# ``/tmp``. The scan reads top-level entries only and stops at the cap, because
+# the temp dir is shared and can hold a very large number of entries.
+_TEST_HOME_MARKER = (".cache", "kirocrew")
+_TEST_HOME_SCAN_CAP = 4096
 
 
 def _runtime_tmpfs_roots() -> list[str]:
@@ -677,6 +728,48 @@ def _runtime_tmpfs_roots() -> list[str]:
     change to the launcher's fallback chain moves this check with it.
     """
     return cli_doctor.sandbox._mount_source_candidate_roots()
+
+
+def _resource_status_tmp_roots() -> list[str]:
+    """Temp roots the pull diagnostic can measure independently."""
+    return cli_doctor.resource_status.temp_roots()
+
+
+def _measured_tmp_roots() -> list[str]:
+    """Sandbox roots, shared ``/tmp``, then other pull-diagnostic roots."""
+    roots = list(_runtime_tmpfs_roots())
+    if _SHARED_TMP not in roots:
+        roots.append(_SHARED_TMP)
+    for root in _resource_status_tmp_roots():
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _kirocrew_test_homes(root: str) -> tuple[int, bool]:
+    """``(count, capped)``: top-level dirs of *root* that look like test homes.
+
+    ``capped`` is true when the scan stopped at :data:`_TEST_HOME_SCAN_CAP`
+    entries, so the count is a lower bound. An unreadable root counts zero.
+    """
+    count = 0
+    seen = 0
+    try:
+        with os.scandir(root) as it:
+            for entry in it:
+                seen += 1
+                if seen > _TEST_HOME_SCAN_CAP:
+                    return count, True
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                if os.path.isdir(os.path.join(entry.path, *_TEST_HOME_MARKER)):
+                    count += 1
+    except OSError:
+        return 0, False
+    return count, False
 
 
 def _tmpfs_usage(root: str) -> tuple[float, float, int, int] | None:
@@ -690,31 +783,18 @@ def _tmpfs_usage(root: str) -> tuple[float, float, int, int] | None:
     Kiro Crew's own; every other temporary entry belongs to somebody else and
     is deliberately not counted, so the cleanup advice never points at it. A
     filesystem that reports no inode accounting (``f_files == 0``) reads as
-    100% free inodes rather than as exhausted.
+    100% free inodes rather than as exhausted. The measurement is the
+    resource_status tool's own, so both report the same figures.
     """
-    statvfs = getattr(os, "statvfs", None)
-    if statvfs is None:
+    reading = cli_doctor.resource_status.temp_headroom(root)
+    if reading is None:
         return None
-    try:
-        st = statvfs(root)
-    except OSError:
-        return None
-    free_space_pct = 100.0 * st.f_bavail / st.f_blocks if st.f_blocks else 100.0
-    if st.f_files:
-        free_inode_pct = 100.0 * st.f_favail / st.f_files
-        free_inodes = int(st.f_favail)
-    else:
-        # No inode accounting (btrfs, some FUSE mounts): both readings say
-        # "not a constraint" so neither the percentage nor the absolute floor
-        # below can fire on a filesystem that cannot run out of inodes.
-        free_inode_pct = 100.0
-        free_inodes = _TMPFS_FREE_INODES_FLOOR
     try:
         with os.scandir(root) as it:
             tmp_entries = sum(1 for e in it if e.name.startswith(cli_doctor._MOUNT_SOURCE_PREFIX))
     except OSError:
         tmp_entries = 0
-    return free_space_pct, free_inode_pct, free_inodes, tmp_entries
+    return reading.free_space_pct, reading.free_inode_pct, reading.free_inodes, tmp_entries
 
 
 def _doctor_runtime_tmpfs(issues: list[str]) -> None:
@@ -730,7 +810,7 @@ def _doctor_runtime_tmpfs(issues: list[str]) -> None:
     if not sys.platform.startswith("linux"):
         return
     print("\nRuntime tmpfs")
-    for root in _runtime_tmpfs_roots():
+    for root in _measured_tmp_roots():
         usage = _tmpfs_usage(root)
         if usage is None:
             print(f"  {root}: ⏭  not present or unreadable")
@@ -748,11 +828,20 @@ def _doctor_runtime_tmpfs(issues: list[str]) -> None:
                 what = "space and inodes"
             print(f"  {root}: ⚠️  low on {what} — {detail}")
             print(
-                "               Sandboxed tool spawns fail with rc=1 once this fills. "
+                "               Sandboxed tool spawns fail with rc=1 once this fills, "
+                "and test runs fail with ENOSPC. "
                 f"Kiro Crew's own leaked mount dirs are the {cli_doctor._MOUNT_SOURCE_PREFIX}* "
-                "entries; a gateway restart reclaims them. Other entries there "
-                "belong to other applications: leave them alone."
+                "entries; a gateway restart reclaims them."
             )
+            homes, capped = _kirocrew_test_homes(root)
+            if homes:
+                at_least = "at least " if capped else ""
+                print(
+                    f"               {at_least}{homes} top-level dirs here look like "
+                    "leftover test homes (they hold .cache/kirocrew), left by test runs "
+                    "that set HOME here. Remove the ones no running process uses."
+                )
+            print("               Other entries belong to other applications: leave them alone.")
             issues.append(f"runtime tmpfs {root} low on {what} ({detail})")
         else:
             print(f"  {root}: ✅ {detail}")
@@ -954,8 +1043,9 @@ def _doctor_skill_view_residue(agents_dir: Path) -> None:
         print(
             f"{render._INDENT}Another program rewrites the specs in {agents_dir} (a sandbox or"
             f" credential launcher does this on every launch). Kiro Crew tolerates it; if"
-            f" sessions still fail with 'Agent spec ... is not installed', set"
-            f" KIROCREW_NATIVE_SKILL_PROJECTION=0 for the gateway and report it."
+            f" sessions still fail with 'Agent spec ... is not installed', turn projection"
+            f" off (kirocrew config set agent.native_skill_projection false, or"
+            f" KIROCREW_NATIVE_SKILL_PROJECTION=0 for the gateway) and report it."
         )
 
 

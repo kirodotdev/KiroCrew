@@ -157,11 +157,12 @@ export interface DriveUsage {
 
 /**
  * Payload of `GET /drive/{account}`. Before the bucket is created the whole
- * body is `{exists:false}`; once created it also carries the bucket name, its
- * region and a (5-minute cached) usage report.
+ * body is `{exists:false, searched_region}` (the one region discovery looked
+ * in; absent from older backends); once created it also carries the bucket
+ * name, its region and a (5-minute cached) usage report.
  */
 export type DriveStatus =
-  | { exists: false }
+  | { exists: false; searched_region?: string }
   | {
       exists: true
       bucket: string

@@ -126,7 +126,7 @@ function buildMenuTemplate(deps) {
           label: "Toggle Developer Tools",
           accelerator: "CmdOrCtrl+Shift+I",
           id: "devtools-toggle",
-          visible: false, // hidden until dev-mode IPC fires
+          visible: true,
           click: toggleDevTools,
         },
       ],

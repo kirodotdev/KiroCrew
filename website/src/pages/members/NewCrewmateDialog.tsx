@@ -13,8 +13,8 @@
  * unless told otherwise, and the template is not named until the user asks
  * for more. The "Advanced settings" toggle unfolds the rest of the form
  * inline, in the same card, directly under that line, and the unfolded
- * region ends with a second Create: what the crewmate is built from, what it
- * looks after in plain words,
+ * region ends with a second Create: what the crewmate is built from, its goal
+ * in plain words,
  * and everything the crew manager's form also asks (workspace, model, routing
  * triggers, session colour), rendered by the SAME `Field` frame and field
  * components the editor mounts, so the two forms cannot drift. The disclosure
@@ -30,7 +30,7 @@
  * leads the list and is labelled as the default, and is offered even when the
  * installed read failed.
  *
- * "What it looks after" is stored as the crew record's `description`: the
+ * "Goal" is stored as the crew record's `description`: the
  * one free-text field the record already carries for a human-readable
  * account of the crew, and the line the crewmate's first greeting is seeded
  * from (see MembersPage). Memory is provisioned by the server on create
@@ -46,8 +46,8 @@
  * The crew manager's door does not ask, opens no chat, and shows no hint.
  *
  * `initialDraft` pre-fills an opening with a proposed name and goal (a
- * crewmate's create link, a guide): the name lands in Name, the goal in "What it
- * looks after", and Advanced settings opens with it so the goal is in view.
+ * crewmate's create link, a guide): the name lands in Name, the goal in "Goal",
+ * and Advanced settings opens with it so the goal is in view.
  * The draft is a starting point, not a change: an opening left as it was
  * proposed leaves without asking, like a blank one. `guided` marks the door
  * the `crewmate.create` guide walks: its Create carries the guide's anchor,
@@ -252,12 +252,12 @@ export const RECONCILE_BOUND_MS = 2500
 export interface CreatedCrewmate {
   /** Exact crew name — MembersPage's `?member=` resolves by name. */
   name: string
-  /** The "what it looks after" line as typed; '' when left blank. */
+  /** The goal line as typed; '' when left blank. */
   job: string
 }
 
 /** The `POST /api/agents` body — the crew manager's create payload plus the
- *  record's `description`, which carries "what it looks after". `model` is
+ *  record's `description`, which carries the goal. `model` is
  *  sent only when pinned: the inherit spelling is the server's default. */
 interface CreateBody {
   name: string

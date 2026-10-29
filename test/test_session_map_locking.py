@@ -221,6 +221,8 @@ class TestBatchIsOneCriticalSection:
                 session_map.set("dashboard:b", "sid-b")
                 session_map.set_flag("dashboard:a", "temporary", True)
         assert write.call_count == 1
+        assert session_map.mapped_sids_by_key() == {"dashboard:a": "sid-a", "dashboard:b": "sid-b"}
+        assert session_map.get_flag("dashboard:a", "temporary") is True
 
     def test_lock_is_released_when_a_batch_raises(self, session_map):
         with pytest.raises(ValueError):
@@ -327,9 +329,9 @@ class TestLockHoldIsBounded:
                 )
             )
             mutator.start()
-            assert loop_side_done.wait(timeout=5), (
-                "a loop-side mutation blocked behind a worker thread's map file read"
-            )
+            assert loop_side_done.wait(
+                timeout=5
+            ), "a loop-side mutation blocked behind a worker thread's map file read"
             mutator.join(timeout=10)
         finally:
             release.set()
@@ -549,8 +551,7 @@ class TestNoLockAcrossFlushAwait:
                 if not isinstance(node, (ast.With, ast.AsyncWith)):
                     continue
                 holds_map_lock = any(
-                    isinstance(item.context_expr, ast.Name)
-                    and item.context_expr.id == "_MAP_LOCK"
+                    isinstance(item.context_expr, ast.Name) and item.context_expr.id == "_MAP_LOCK"
                     for item in node.items
                 )
                 if not holds_map_lock:

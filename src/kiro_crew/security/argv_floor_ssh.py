@@ -56,7 +56,7 @@ from .shell_normalizer import (
 # host at run time (``$(some-command)``).  The literal
 # ``hostname``-substitution spellings and ``-o hostname=``/``-o proxyjump=``
 # values ARE checked below, as text, and a ``-o proxycommand=`` value is
-# checked twice (round-26): the floor recurses on it as a command line AND
+# checked twice: the floor recurses on it as a command line AND
 # scans it for a LITERAL self endpoint (``nc 127.0.0.1 22`` relays the
 # session to the local sshd with no ssh verb for the recursion to see) --
 # a resolvable ALIAS inside such a transport stays in the residual class.
@@ -122,7 +122,7 @@ _SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
 # Verbs that place a copy (or a link) of their SOURCE operand at their
 # DESTINATION operand.  A destination whose source is an ssh-family binary
 # IS that binary under a new name, so the walk binds it as the verb for the
-# rest of the line (round-20).
+# rest of the line.
 _BINARY_COPY_VERBS: frozenset[str] = frozenset({"cp", "mv", "ln", "install"})
 
 
@@ -226,7 +226,7 @@ def _mask_quoted_separators(text: str) -> str:
             out.append(ch)
         elif quote == '"' and ch == "\\" and i + 1 < n and text[i + 1] in '"\\$`':
             # Inside DOUBLE quotes bash honors ``\`` only before ``"  \  $  ` ``
-            # (round-8): ``\"`` is a literal quote, NOT a close.  Copy both bytes
+            # ``\"`` is a literal quote, NOT a close.  Copy both bytes
             # verbatim and skip the next char so the escaped quote never ends the
             # quote context -- otherwise ``scp "a\";b" localhost:/x`` would exit
             # the quote at ``\"`` and read the following ``;`` as a real
@@ -271,13 +271,13 @@ _EMPTY_EXPANSION_RE = re.compile(r"\$\(\s*\)|`\s*`")
 # ``-l`` a login name.  Every value except ``-R``'s is exempt from the
 # fail-closed operand check — ``ssh -L 127.0.0.1:8080:db:5432 far-host`` is
 # the recommended way to reach a remote service and must stay allowed.  The
-# ``-R`` destination is dialed FROM HERE, so its spec IS checked (round-27,
-# ``_remote_forward_value_targets_self``); ``-J`` deliberately stays checked
+# ``-R`` destination is dialed FROM HERE, so its spec IS checked
+# (``_remote_forward_value_targets_self``); ``-J`` deliberately stays checked
 # too: the jump connection originates from THIS machine.
 _SSH_FORWARD_OPT_LETTERS: frozenset[str] = frozenset("lrdwb")
 
 
-# round-10 static resolutions for ``_operand_targets_self``.  A ``$((…))``
+# Static resolutions for ``_operand_targets_self``.  A ``$((…))``
 # carrying ONE integer literal is normalized to the decimal spelling bash
 # prints (hex and bash-octal included); anything else inside ``$((…))`` is
 # left alone — an in-floor expression evaluator is itself attack surface, and
@@ -313,7 +313,7 @@ def _arith_int_literal_repl(match: "re.Match[str]") -> str:
             value = int(lit, 8)
         else:
             value = int(lit, 10)
-        # ``str`` stays INSIDE the try (round-18): hex/octal ``int`` uses a
+        # ``str`` stays INSIDE the try: hex/octal ``int`` uses a
         # power-of-two base exempt from the interpreter's digit cap, so a
         # ~3600-digit hex literal converts -- but its decimal ``str`` IS
         # capped and would raise straight through ``is_denied``, aborting
@@ -451,7 +451,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     for match in _EXPANSION_DEFAULT_RE.finditer(t):
         if _operand_targets_self(match.group(1), host_position=host_position):
             return True
-    # round-10: bash substitutes a parameter default INTO the surrounding
+    # Bash substitutes a parameter default INTO the surrounding
     # word (``local${KC_UNSET:-host}`` -> ``localhost``), so the whole
     # operand is resolved and re-checked — checking each default word in
     # isolation misses the reconstruction.  ``_resolve_param_defaults``
@@ -461,7 +461,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     resolved = _resolve_param_defaults(t)
     if resolved != t and _operand_targets_self(resolved, host_position=host_position):
         return True
-    # round-10: a single integer literal inside arithmetic expansion is
+    # A single integer literal inside arithmetic expansion is
     # printed decimally by bash (``$((0x7f))`` -> ``127``), gluing into the
     # surrounding word.  Only the literal spellings are normalized — an
     # expression or a variable stays unresolved (run-time residual, see the
@@ -470,18 +470,18 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     normalized = _ARITH_INT_LITERAL_RE.sub(_arith_int_literal_repl, t)
     if normalized != t and _operand_targets_self(normalized, host_position=host_position):
         return True
-    # round-17: an arithmetic expansion that SURVIVED normalization is an
+    # An arithmetic expansion that SURVIVED normalization is an
     # expression (``$((0+1))``) whose produced text only the shell knows.
     # In a connection-target position that unknown glues into the host
     # (``127.0.0.$((0+1))`` -> ``127.0.0.1``), so fail closed.  For the
     # ``host:path`` colon form only the PRE-COLON host part can name this
-    # machine (round-25): arithmetic after the colon glues into a remote
+    # machine: arithmetic after the colon glues into a remote
     # filename (``far:/backups/part$((i)).tar``), so it stays allowed.
     if "$((" in normalized and (
         host_position or (":" in normalized and "$((" in normalized.split(":", 1)[0])
     ):
         return True
-    # round-10: brace expansion splices each alternative into the
+    # Brace expansion splices each alternative into the
     # surrounding word BEFORE every other expansion (``local{h,}ost`` ->
     # ``localhost``), so each choice is re-checked.  ``None`` means the
     # fan-out exceeded the cap: fail closed — no legitimate single-target
@@ -506,7 +506,7 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # colon-splitting, which would read an IPv6 literal as an empty host.
     # The DNS layer applies to the WHOLE token only when the token sits in
     # host position (or a scheme marked it as an authority) -- a plain word
-    # here may be a local filename (round-17).
+    # here may be a local filename.
     if _host_is_self(t, dns_fallback=host_position or scheme_seen):
         return True
     if t.startswith("[") or "@[" in t:
@@ -529,13 +529,13 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # An isolated host part (a scheme authority, a bracketed literal, a
     # ``host:path`` prefix, a userinfo remainder) IS a host wherever the
     # operand sits, so the DNS layer applies; an operand isolation did not
-    # shorten is a bare word -- a host only in host position (round-17).
+    # shorten is a bare word -- a host only in host position.
     if "@" in t and (scheme_seen or "/" not in t):
         # Userinfo may CONTAIN a colon (``user:pass@host``): the colon-first
         # split above then reads the host as ``user``.  OpenSSH resolves the
         # destination AFTER the LAST ``@`` -- in a URI authority (its path is
         # already split off) and in the plain ``[user@]host`` form (which has
-        # no path).  A token with a ``/`` outside a scheme keeps the round-17
+        # no path).  A token with a ``/`` outside a scheme keeps the colon-first
         # order: its ``@`` is path data (``far:/backup/a@b``).
         tail = t.rsplit("@", 1)[1]
         if _host_is_self(tail, dns_fallback=host_position or scheme_seen):
@@ -597,7 +597,7 @@ _SSH_VALUELESS_SHORT_FLAGS = "1246acfgkmnqstvxy"
 
 
 # Case-folded option letters that CONSUME the next token as their value, PER
-# VERB (round-19).  The walk itself stays table-free and fail-closed -- these
+# VERB.  The walk itself stays table-free and fail-closed -- these
 # sets only decide whether the token AFTER an option keeps HOST POSITION and
 # whether it consumes the ssh/sftp positional slot.  The source is case-folded,
 # so where upper and lower case disagree on valueness the letter is IN the
@@ -605,8 +605,8 @@ _SSH_VALUELESS_SHORT_FLAGS = "1246acfgkmnqstvxy"
 # CONSUMES the slot and the real host after it is never checked at all
 # (``sftp -R 64 localhost``), while a host token mistaken for a value leaves
 # the slot pending, so every later token still gets the full checks --
-# over-checking is this floor's safe direction.  (This reverses the round-18
-# collision rule, whose "the DNS layer still covers a host after it" bet did
+# over-checking is this floor's safe direction.  (Treating such a letter as
+# valueless and betting that "the DNS layer still covers a host after it" does
 # not survive the consumption path.)  scp/rsync have no positional slot in
 # this walk, so they need no entry.
 _VERB_VALUE_TAKING_OPT_LETTERS: "dict[str, frozenset[str]]" = {
@@ -615,7 +615,7 @@ _VERB_VALUE_TAKING_OPT_LETTERS: "dict[str, frozenset[str]]" = {
 }
 
 
-# Folded letters whose two cases DISAGREE on valueness (round-31): the letter
+# Folded letters whose two cases DISAGREE on valueness: the letter
 # stays in the value set above (so the slot is not consumed by mistake), but
 # the swallowed token ALSO keeps full host-position checks — both candidate
 # destinations are over-checked, this floor's safe direction.  ssh: c/C, f/F,
@@ -763,7 +763,7 @@ def _routing_option_value_targets_self(token: str, *, value_slot: bool) -> bool:
     return False
 
 
-# round-17: same-line literal shell assignments.  bash substitutes ``$a`` /
+# Same-line literal shell assignments.  bash substitutes ``$a`` /
 # ``${a}`` from an assignment earlier on the SAME line before exec, so
 # ``a=s; ${a}sh localhost`` runs ``ssh``.  Only literal, separator-free values
 # are modeled (optionally quoted); a value carrying ``$``, a backtick, spaces,
@@ -797,7 +797,7 @@ def _resolve_line_assignments(text: str) -> str:
     return _VAR_REFERENCE_RE.sub(_substitute, text)
 
 
-# round-17: one-level function-call argument binding.  A same-line function
+# One-level function-call argument binding.  A same-line function
 # definition whose body dials a positional parameter (``f(){ ssh "$1" id; };
 # f localhost``) is an ordinary evasion: the literal call argument IS the
 # destination.  Each (definition, later call) pair is bound and the bound body
@@ -805,9 +805,9 @@ def _resolve_line_assignments(text: str) -> str:
 # function is the documented residual -- and both fan-outs are capped.
 _FUNCTION_DEF_RE = re.compile(
     # ``name() { … }``, ``function name() { … }``, and bash's parenthesis-free
-    # ``function name { … }`` keyword form (round-18) all define the same
-    # function.  The body group matches BALANCED braces one level deep
-    # (round-24): a non-greedy ``.*?`` stopped at the ``}`` inside ``${1}``,
+    # ``function name { … }`` keyword form all define the same
+    # function.  The body group matches BALANCED braces one level deep:
+    # a non-greedy ``.*?`` stopped at the ``}`` inside ``${1}``,
     # truncating the body and losing the dial.  The two alternatives are
     # disjoint on their first character, so the group is backtracking-safe;
     # a body nesting braces two deep stays unmatched -- same one-level scope
@@ -822,7 +822,7 @@ _FUNCTION_DEF_RE = re.compile(
 _FUNCTION_BIND_CAP = 8
 
 
-# round-24: a call still INVOKES the function behind leading assignment words
+# A call still INVOKES the function behind leading assignment words
 # (``x=1 f localhost``) and the invocation keywords that run their operand as
 # a command (``time f``, ``! f``, ``if f; then``).  ``command``/``exec``/
 # ``nohup`` are NOT here: ``command`` bypasses function lookup and the other
@@ -841,26 +841,26 @@ def _function_call_binds_self(text: str) -> bool:
     # byte while its closing ``}`` stays literal, which breaks the DEF
     # regex's balanced-brace body capture on ``"${10}"``.  Restore ONLY the
     # parameter-expansion opener -- ``${`` is an expansion, never a command
-    # boundary -- so quoted braced positionals capture and bind (round-33).
+    # boundary -- so quoted braced positionals capture and bind.
     text = text.replace("$\x06", "${")
     for def_count, m in enumerate(_FUNCTION_DEF_RE.finditer(text)):
         if def_count >= _FUNCTION_BIND_CAP:
             # Past the cap the binder cannot resolve what a definition does,
             # so it fails CLOSED: a 9th definition is deniable padding, not a
-            # command shape the floor can clear (round-30).
+            # command shape the floor can clear.
             return True
         name, body = m.group(1) or m.group(2), m.group(3)
         # The caller hands over masked text (quoted separators AND quoted
         # braces ride as mask bytes), so a quoted ``"${10}"`` reads as
         # ``"$\x0610}"`` here.  Unmask the captured body before binding or
-        # the braced replacements never match (round-33).
+        # the braced replacements never match.
         body = _unmask_separators(body)
         if "$" not in body:
             continue  # nothing to bind
         call_count = 0
         for segment in re.split(r"[;&|\n]", text[m.end() :]):
             words = segment.split()
-            # round-24: skip leading assignment words and invocation keywords
+            # Skip leading assignment words and invocation keywords
             # -- both still invoke the function.  Any OTHER leading word means
             # the name is an argument (``echo f localhost``), not a call.
             idx = 0
@@ -874,7 +874,7 @@ def _function_call_binds_self(text: str) -> bool:
             call_count += 1
             if call_count > _FUNCTION_BIND_CAP:
                 # Same fail-closed rule as the definition cap: the 9th call
-                # of one name is unresolvable padding, so deny (round-30).
+                # of one name is unresolvable padding, so deny.
                 return True
             args = [w.strip("\"'") for w in words[idx + 1 :]]
             bound = body
@@ -883,8 +883,7 @@ def _function_call_binds_self(text: str) -> bool:
                 bound = bound.replace(star, joined)
             # Braced ``${N}`` has no single-digit ceiling in bash, so it
             # binds for EVERY supplied argument; unbraced ``$N`` reads one
-            # digit (``$10`` is ``${1}0``), so it stays capped at nine
-            # (round-33).
+            # digit (``$10`` is ``${1}0``), so it stays capped at nine.
             for i, arg in enumerate(args, start=1):
                 bound = bound.replace('"${%d}"' % i, arg)
                 bound = bound.replace("${%d}" % i, arg)
@@ -961,7 +960,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         return match.group(0) if out == "\x00" else out
 
     text_lower = _FLAT_SUBSTITUTION_RE.sub(_splice_static_substitution, text_lower)
-    # round-17: substitute ``$a``/``${a}`` from literal same-line assignments
+    # Substitute ``$a``/``${a}`` from literal same-line assignments
     # (``a=s; ${a}sh localhost`` -> ``ssh localhost``) so neither the verb nor
     # the operand can be spliced from statically-known text.  Values are
     # separator-free by construction, so the substitution cannot fabricate a
@@ -977,7 +976,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     text_lower = _mask_quoted_separators(text_lower)
     # Quote/backslash splices survive into the tokens (shlex rejoins them) but
     # defeat this raw-substring gate, so probe a copy with them stripped out.
-    # round-20 (Opus): bash decodes ANSI-C quoting ($'\x73\x73\x68' -> ssh)
+    # Bash decodes ANSI-C quoting ($'\x73\x73\x68' -> ssh)
     # before exec, and the operand walk's tokenizer resolves it too -- so the
     # gate guarding that walk probes the DECODED text, or a verb spelling the
     # walk would deny slips past the gate the walk never gets to correct.
@@ -990,24 +989,24 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     probe = _resolve_param_defaults(probe)
     if not any(verb in probe for verb in _SSH_FAMILY_VERBS) and not _glob_can_name_ssh_verb(probe):
         return False
-    # round-17: bind one level of function-call arguments (``f(){ ssh "$1"
+    # Bind one level of function-call arguments (``f(){ ssh "$1"
     # id; }; f localhost``) and recurse on the bound body -- the literal call
     # argument is the destination the walk below cannot see through ``$1``.
     if _function_call_binds_self(text_lower):
         return True
-    # round-8: a self-targeting ``RSYNC_RSH`` set in one frame is inherited by
+    # A self-targeting ``RSYNC_RSH`` set in one frame is inherited by
     # LATER frames (an exported value, or a command-scoped prefix on a command
     # that spawns a nested ``sh -c`` payload), where the per-frame pending/export
     # walk below -- which re-initialises inside each frame -- cannot see it.
     # This function-scope latch carries that fact forward; it is set at the END
-    # of a frame (so the round-7 same-frame ``;``-clear semantics are unchanged
+    # of a frame (so the same-frame ``;``-clear semantics are unchanged
     # for the frame that owns the assignment) and never cleared.
     # Over-approximation, accepted for a deny floor: once set, the latch also
     # covers a textually-later SIBLING nested payload; a contrived same-frame
-    # ``RSYNC_RSH=self cmd; rsync other:/ .`` stays allowed by the round-7 clear
+    # ``RSYNC_RSH=self cmd; rsync other:/ .`` stays allowed by the ``;``-clear
     # rule because the latch is consulted only in LATER frames.
     rsync_rsh_carried_self = False
-    # round-20 (GPT): destination paths a same-line cp/mv/ln/install gave to
+    # Destination paths a same-line cp/mv/ln/install gave to
     # an ssh-family binary, bound to the verb they now carry.  Shared across
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
@@ -1029,12 +1028,12 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         rsync_rsh_pending: dict[str, str] = {}
         rsync_rsh_exported: dict[str, str] = {}
         # Names declared for export BEFORE any value exists (the POSIX
-        # ``export VAR; VAR=value`` order, round-31): a later assignment to a
+        # ``export VAR; VAR=value`` order): a later assignment to a
         # marked name is exported the moment it lands.  Never cleared by
         # separators.
         rsync_rsh_export_marked: set[str] = set()
-        # The last plain assignment seen in this frame, PER NAME (round-30:
-        # the two rsync env vars are independent — one shared slot let a later
+        # The last plain assignment seen in this frame, PER NAME (the two
+        # rsync env vars are independent — one shared slot would let a later
         # far assignment overwrite an earlier self value), wherever it
         # appeared: a shell variable persists for the rest of the line even
         # after the simple command it prefixed ends, so a later bare
@@ -1080,7 +1079,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         # text, and a glued separator (``export RSYNC_RSH;``)
                         # rides on the name token.  Declared BEFORE any value
                         # (export-first), the name is marked so the later
-                        # assignment exports itself (round-31).
+                        # assignment exports itself.
                         rsync_rsh_export_marked.add(exported_name)
                         if exported_name in rsync_rsh_assigned:
                             rsync_rsh_exported[exported_name] = rsync_rsh_assigned[exported_name]
@@ -1091,19 +1090,19 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         rsync_rsh_pending.clear()
                         xargs_prefix_index = None
                     outer_depth = max(outer_depth, 0)
-                # round-35 (GPT): xargs turns its stdin into argv for the
+                # ``xargs`` turns its stdin into argv for the
                 # program it launches -- remember a bare ``xargs`` in this
                 # simple command (any position: wrappers keep it off program
                 # position), so a later verb + here-string is judged as the
                 # command xargs actually runs.
                 if _program_basename(stripped_tok) == "xargs":
                     xargs_prefix_index = i
-                # round-20 (GPT): a program-position cp/mv/ln/install whose
+                # A program-position cp/mv/ln/install whose
                 # source operand is an ssh-family binary binds its DESTINATION
                 # operand as that verb for the rest of the line, so
                 # ``cp /usr/bin/ssh /tmp/x && /tmp/x localhost`` cannot shed
                 # the floor by shedding the basename.  Statically decidable,
-                # exactly like the round-17 assignment/function binders.
+                # exactly like the same-line assignment/function binders.
                 if cmd_start and _program_basename(stripped_tok) in _BINARY_COPY_VERBS:
                     operands: "list[str]" = []
                     for peek in tokens[i + 1 :]:
@@ -1140,7 +1139,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
-            # round-35 (GPT): launched through xargs, the verb's REAL argv
+            # Launched through xargs, the verb's REAL argv
             # arrives on stdin -- and a here-string puts that stdin in the
             # source text, so ``xargs ssh <<< localhost`` runs
             # ``ssh localhost``.  Rebuild that command and judge it like a
@@ -1161,7 +1160,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     env_val = rsync_rsh_pending.get(env_name, rsync_rsh_exported.get(env_name))
                     if env_val is not None and _is_ssh_to_self(env_val):
                         return True
-                # round-8: with neither a pending nor an exported value in THIS
+                # With neither a pending nor an exported value in THIS
                 # frame, fall back to a self-targeting value carried from an
                 # EARLIER frame (inherited into this nested payload).
                 if not rsync_rsh_pending and not rsync_rsh_exported and rsync_rsh_carried_self:
@@ -1200,7 +1199,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     if _is_ssh_to_self(stripped):
                         return True
                 elif proxyjump_value_pending:
-                    # The detached value of ``-J`` (round-17): a ProxyJump hop
+                    # The detached value of ``-J``: a ProxyJump hop
                     # chain whose FIRST hop is dialed from here -- comma-split
                     # it exactly like the attached ``-Jvalue`` spelling, which
                     # ``_routing_option_value_targets_self`` already covers.
@@ -1222,14 +1221,14 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         # Host position = the unshadowed ssh/sftp positional
                         # slot; an option value or an scp/rsync file operand
                         # is not one (its ``host:path`` colon form re-enables
-                        # the DNS layer inside the check) -- round-17.
+                        # the DNS layer inside the check).
                         if checkable and _operand_targets_self(
                             _unmask_separators(remainder),
                             host_position=positional_pending and not value_shadow,
                         ):
                             return True
                         if not value_shadow:
-                            # round-18: after a VALUELESS flag the token IS
+                            # After a VALUELESS flag the token IS
                             # the positional destination -- consuming the slot
                             # keeps a later dotted remote-command argument
                             # out of host position.
@@ -1239,7 +1238,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     option_shadow = False
                     value_shadow = False
                 elif stripped == "--" and not opts_terminated:
-                    # round-20 (GPT): exact ``--`` is the POSIX option
+                    # Exact ``--`` is the POSIX option
                     # TERMINATOR -- everything after it is an operand.
                     # Classified as a long option, ``value_shadow`` swallowed
                     # the NEXT token out of host position, so a DNS-classified
@@ -1282,7 +1281,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                                 rsh_value_pending = True
                     option_shadow = True
                     bare = stripped.lstrip("-")
-                    # round-18/19: only an option whose (bundle-final) letter
+                    # Only an option whose (bundle-final) letter
                     # takes a value for THIS verb swallows the next token out
                     # of host position; ``ssh -v self.example`` keeps its
                     # destination DNS-checked, ``sftp -R 64 localhost`` keeps
@@ -1293,7 +1292,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         bool(bare)
                         and bare[-1] in _VERB_VALUE_TAKING_OPT_LETTERS.get(verb, frozenset())
                     )
-                    # round-31: a folded letter whose two cases disagree on
+                    # A folded letter whose two cases disagree on
                     # valueness keeps the swallowed token host-checkable.
                     value_shadow_ambiguous = (
                         not stripped.startswith("--")
@@ -1319,7 +1318,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     # no valueless ``-r``, so within the ssh verb a leading
                     # ``r`` with a spec-shaped remainder is the forward.  A
                     # valueless bundle prefix (``-vR2222:…``) is stripped
-                    # first, the round-28 ``-o``/``-J`` treatment (round-31).
+                    # first, the same treatment ``-o``/``-J`` get.
                     fwd_bare = bare.lstrip(_SSH_VALUELESS_SHORT_FLAGS)
                     if (
                         verb == "ssh"
@@ -1330,7 +1329,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         and _remote_forward_value_targets_self(fwd_bare[1:])
                     ):
                         return True
-                    # round-17: a DETACHED ``-J`` -- or a flag bundle ending in
+                    # A DETACHED ``-J`` -- or a flag bundle ending in
                     # the jump letter (``-4J``) -- takes the NEXT token as its
                     # ProxyJump hop chain.  The attached spelling (``-Jhost``)
                     # is handled by ``_routing_option_value_targets_self``.
@@ -1343,8 +1342,8 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     # ``_SSH_FORWARD_OPT_LETTERS``) names a listen address or
                     # a far-side hop for every letter EXCEPT ``r``: a
                     # remote-forward destination is dialed FROM HERE, so its
-                    # spec is checked instead of exempted (round-27; the
-                    # branch table lives on ``_remote_forward_value_targets_self``).
+                    # spec is checked instead of exempted (the branch table
+                    # lives on ``_remote_forward_value_targets_self``).
                     if forward_value_letter == "r" and _remote_forward_value_targets_self(
                         _unmask_separators(stripped)
                     ):
@@ -1369,7 +1368,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     ):
                         return True
                     if not value_shadow:
-                        # round-18: same consumption rule as the redirect
+                        # Same consumption rule as the redirect
                         # branch above.
                         positional_pending = False
                     option_shadow = False

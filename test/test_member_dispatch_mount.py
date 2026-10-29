@@ -906,6 +906,7 @@ class TestRuntimeMemberThreading:
             member_dispatch=False,
             crew_panel=False,
             session_key="",
+            skill_scope_rules=(),
         ):
             seen.append(member_dispatch)
             return [{"id": agent}]
@@ -983,6 +984,7 @@ class TestMemberServerJoinsSubtraction:
             member_dispatch=False,
             crew_panel=False,
             session_key="",
+            skill_scope_rules=(),
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
@@ -1021,6 +1023,7 @@ class TestMemberServerJoinsSubtraction:
             member_dispatch=False,
             crew_panel=False,
             session_key="",
+            skill_scope_rules=(),
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]

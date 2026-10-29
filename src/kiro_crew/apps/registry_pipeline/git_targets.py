@@ -574,10 +574,21 @@ _GIT_AUTH_FAILURE_MARKERS = (
 # banner (PR-1418 lesson: free-text stderr passthrough cannot be closed by
 # shape enumeration). Matched case-insensitively; first match wins.
 _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
+    # libcurl's proxy phrasings ("Could not resolve proxy: …", "Received HTTP code
+    # 407 from proxy after CONNECT", "CONNECT tunnel failed, response 407", "Proxy
+    # CONNECT aborted"). Each carries a space, so no URL path segment matches.
+    # Listed before "could not resolve" so a proxy name failure is named as one.
+    ("could not resolve proxy", "the proxy host could not be resolved"),
+    ("from proxy", "the proxy refused the connection"),
+    ("connect tunnel failed", "the proxy refused the connection"),
+    ("proxy connect", "the proxy refused the connection"),
     ("could not resolve", "host could not be resolved"),
     ("connection timed out", "the connection timed out"),
     ("connection refused", "the connection was refused"),
     ("network is unreachable", "the network was unreachable"),
+    # After the three above: libcurl prefixes them with "Failed to connect to …",
+    # and the specific cause is the more useful label.
+    ("failed to connect", "the connection failed"),
     ("remote branch", "the requested branch does not exist"),
     # Anchored on git's own ref-error phrasing ("couldn't find remote ref …",
     # "remote ref … does not exist"), NOT the bare token "does not exist": that
@@ -615,6 +626,46 @@ def _git_output_is_auth_shaped(text: str) -> bool:
     """
     low = text.lower()
     return any(marker in low for marker in _GIT_AUTH_FAILURE_MARKERS)
+
+
+#: The labels above that mean the remote was never reached. A credentialed
+# transport's output is already reduced to one of these labels, so matching the
+# labels covers both the raw and the redacted text. ``"timed out"`` also catches
+# the fetch helper's own timeout, the usual symptom of a proxy-only network.
+_GIT_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
+    "could not resolve",
+    "could not be resolved",
+    "from proxy",
+    "connect tunnel failed",
+    "proxy connect",
+    "proxy refused",
+    "failed to connect",
+    "connection failed",
+    "timed out",
+    "connection refused",
+    "connection was refused",
+    "network is unreachable",
+    "network was unreachable",
+)
+
+#: Fixed text appended to a fetch, pull or clone error when the remote was not
+#: reached. A constant: it names the variables to check, never their values, so a
+#: proxy URL's ``user:password@`` cannot reach the banner.
+_GIT_NETWORK_FAILURE_HINT = "check your network and proxy settings (HTTPS_PROXY, NO_PROXY)"
+
+
+def _git_network_failure_hint(text: str) -> str:
+    """:data:`_GIT_NETWORK_FAILURE_HINT` when *text* says the remote was not reached, else ``""``.
+
+    Never echoes *text*.
+    """
+    # A `remote:` line is text the server chose to send, not a client-side result.
+    low = "\n".join(
+        line for line in text.lower().splitlines() if not line.lstrip().startswith("remote:")
+    )
+    if any(marker in low for marker in _GIT_NETWORK_FAILURE_MARKERS):
+        return _GIT_NETWORK_FAILURE_HINT
+    return ""
 
 
 def _redacted_git_failure_class(text: str) -> str:

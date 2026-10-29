@@ -22,6 +22,8 @@
     .arts div { display: flex; gap: 7px; }
     .arts k { color: var(--muted, #9aa); min-width: 74px; flex: none; }
     .arts v { word-break: break-all; min-width: 0; }
+    .arts .lnk { font: inherit; text-align: left; word-break: break-all; min-width: 0; padding: 0; border: 0; background: none; color: var(--info, #6aa9ff); text-decoration: underline; cursor: pointer; }
+    .arts .lnk:focus-visible { outline: 2px solid var(--accent, #00d492); outline-offset: 1px; }
     .ev { display: flex; gap: 7px; font-size: 10.5px; padding: 2px 0; border-bottom: 1px solid var(--border, #333); }
     .ev .k { color: var(--muted, #9aa); min-width: 62px; flex: none; }
     .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 7px; }
@@ -85,7 +87,8 @@
           no_reason: 'no reason recorded', none_rejected: 'Nothing rejected yet.',
           none_recorded: 'None recorded.', no_events: 'No event recorded.',
           tried_n: '{n} rejected approach(es)', arts_n: '{n} artifact pointer(s)',
-          events_n: '{n} event(s) in the fold window', no_headline: 'no headline written'
+          events_n: '{n} event(s) in the fold window', no_headline: 'no headline written',
+          open_title: 'Open {v}'
         },
         'zh-CN': {
           title: '\u4f1a\u8bdd\u8d26\u672c', headline_mark: '\u7531\u961f\u53cb\u64b0\u5199\uff0c\u800c\u975e\u6298\u53e0\u751f\u6210',
@@ -97,7 +100,8 @@
           no_reason: '\u672a\u8bb0\u5f55\u539f\u56e0', none_rejected: '\u5c1a\u65e0\u5426\u51b3\u9879\u3002',
           none_recorded: '\u65e0\u8bb0\u5f55\u3002', no_events: '\u65e0\u4e8b\u4ef6\u8bb0\u5f55\u3002',
           tried_n: '{n} \u4e2a\u5426\u51b3\u65b9\u6848', arts_n: '{n} \u4e2a\u4ea7\u7269\u6307\u9488',
-          events_n: '\u6298\u53e0\u7a97\u53e3\u5185 {n} \u4e2a\u4e8b\u4ef6', no_headline: '\u672a\u5199\u5165\u6807\u9898'
+          events_n: '\u6298\u53e0\u7a97\u53e3\u5185 {n} \u4e2a\u4e8b\u4ef6', no_headline: '\u672a\u5199\u5165\u6807\u9898',
+          open_title: '\u6253\u5f00 {v}'
         }
       };
       function locale() {
@@ -145,6 +149,15 @@
       }
       function bound(name) { return document.querySelector('[data-dashboard-field="' + name + '"]'); }
 
+      // A pointer the host can open, asked for BY THE HOST in a new tab: the frame
+      // has no popups. LINKABLE only picks what to draw as a link, so a path on disk
+      // or a branch name stays text.
+      var LINKABLE = /^(?:https?:\/\/|\/(?:artifacts|chat|schedule|capabilities|settings)\b)/;
+      function openLink(url) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*'); }
+        catch (e) { /* no host: the link simply does nothing */ }
+      }
+
       function drawPhases(phase) {
         var strip = document.getElementById('phases');
         var names = document.getElementById('phasenames');
@@ -187,7 +200,16 @@
         for (var i = 0; i < keys.length; i++) {
           var row = el('div');
           row.appendChild(el('k', null, keys[i]));
-          row.appendChild(el('v', null, String(map[keys[i]])));
+          var value = String(map[keys[i]]);
+          if (value.length <= 2048 && LINKABLE.test(value)) {
+            var b = el('button', 'lnk', value + ' \u2197');
+            b.type = 'button';
+            b.title = i18n('open_title', { v: value });
+            b.addEventListener('click', function (u) { return function () { openLink(u); }; }(value));
+            row.appendChild(b);
+          } else {
+            row.appendChild(el('v', null, value));
+          }
           host.appendChild(row);
         }
         if (!keys.length) host.appendChild(el('div', null, i18n('none_recorded')));

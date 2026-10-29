@@ -217,6 +217,13 @@ agent can use the operator's ssh-agent there, including a forwarded one. Under
 `strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
 records consent in the keystone leaf `ssh_auth_sock_consent.json`.
 
+To grant that consent, write `{"enabled": true}` to
+`<config_dir>/ssh_auth_sock_consent.json` from a terminal outside Kiro Crew;
+the next agent that starts picks it up. It applies to every agent whose
+sandbox hides `~/.ssh`. When a spawn starts without the socket for lack of this
+consent, the gateway log carries one warning per harness that names the file and
+this remedy, and `kirocrew doctor` lists those harnesses under Sandbox.
+
 ## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 
 `is_sensitive_path()` is the shared read+write block, and
@@ -582,7 +589,11 @@ allowlist would have decided -- rather than reverting to default-open.
 Dashboard tool approvals offer four decisions, in widening scope: `trust_command`
 (this exact command, session-scoped), `trust_base` (the base command glob, e.g.
 `ls *`, plus the bare binary, session-scoped), `trust_reads` (read-only bash for
-the slot), and `trust` (all tools for the slot). `yolo` is the global escalation.
+the slot, plus Kiro Crew's own read-only MCP tools -- `@kirocrew-core/memory_recall`
+and the rest of the closed `hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS` set, matched on
+the trusted `(server, tool)` identity the transport stamped, never on the title; every
+other MCP call still prompts), and `trust` (all tools for the slot). `yolo` is the
+global escalation.
 
 `trust_command` and `trust_base` can also be timed. The chat approval prompt
 offers each one for an hour or for the rest of the user's day, beside the grant

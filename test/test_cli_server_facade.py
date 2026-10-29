@@ -3,7 +3,7 @@
 ``kiro_crew.cli_server`` is a mirror facade (:mod:`kiro_crew._facade_mirror`) over the owners
 in its ``_OWNERS``, lowest layer first: ``cli_server_peer``, ``cli_server_requests``,
 ``cli_server_stop``, ``cli_server_restart`` and ``cli_server_update``. It keeps the
-file-delivery approval, status, gateway, run, service, sandbox and logs commands itself, and
+status, gateway, run, service, sandbox and logs commands itself, and
 every name an owner defines still resolves as ``kiro_crew.cli_server.<name>``.
 
 ``test/test_facade_mirror_guards.py`` holds every mirrored facade to the shared rules. These

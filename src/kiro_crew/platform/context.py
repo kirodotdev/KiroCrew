@@ -654,6 +654,17 @@ PEEK_CALLERS: "dict[str, str]" = {
         "half runs inside KiroCrewConfig.load(), and current_context() with nothing "
         "installed loads config, which would re-enter that load."
     ),
+    "edition_locks.py::policy_permits": (
+        "no-context answer is to fall through to current_context() and the full "
+        "fail-closed evaluation, exactly as if the peek were absent. The peek only "
+        "short-circuits an oss build whose INSTALLED policy does not name the scope, "
+        "where the answer is the same permit that evaluation would give."
+    ),
+    "edition_locks.py::policy_governs": (
+        "no-context answer is to fall through to current_context(), and its error "
+        "answers 'governed', which refuses the item; the peek only skips that "
+        "resolution on a host that already installed a context."
+    ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "
         "central fetch. It is reached only when boot never installed a context, "
@@ -1141,13 +1152,10 @@ def binary_content_is_flagged(raw: bytes) -> bool:
 
     Four gates guard the ``file_send`` delivery path -- the MCP tool before any
     byte is copied, ``POST /api/outbox/notify``, ``GET /api/outbox/{filename}``,
-    and the ``_gate_upload_file`` shared by the Slack and channel upload legs. All
-    four must agree on what counts as flagged content, for two different reasons.
-    The three owner-facing gates each read the one durable grant
-    :mod:`kiro_crew.file_delivery_consent` records, so a disagreement among them
-    turns that grant into "delivered, card rendered, download refused". The upload
-    legs read no grant at all and refuse regardless, so a disagreement there
-    splits one file's verdict across two delivery legs instead. Agreement is why
+    and the ``_gate_upload_file`` shared by the Slack and channel upload legs. The
+    owner gets their own file unscanned; a non-owner outbox download and the upload
+    legs scan, and they must agree on what counts as flagged content, or one
+    file's verdict splits across two delivery legs. Agreement is why
     this lives here as one function rather than as the same three lines written
     out four times.
 

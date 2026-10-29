@@ -199,7 +199,13 @@ def test_a_default_template_crewmate_gets_a_file_that_adds_nothing(layout, persi
     assert read_record("rty") is None
 
 
-def test_a_crewmate_whose_worker_would_differ_is_skipped_and_logged(layout, persisted, caplog):
+def test_a_crewmate_whose_worker_would_lose_a_grant_moves_and_is_told_once(
+    layout, persisted, caplog
+):
+    """Owner decision: a loss moves the crewmate, and its user is told once."""
+    from kiro_crew.mate_upgrade_notice import claim_notice_prompt
+    from kiro_crew.members import member_slug
+
     user, mates = layout
     # A built-in tool the worker base does not mount cannot be carried.
     _write(user, "shell", _template("shell", tools=["execute_bash"]))
@@ -209,12 +215,160 @@ def test_a_crewmate_whose_worker_would_differ_is_skipped_and_logged(layout, pers
     with caplog.at_level(logging.WARNING, logger="kiro_crew.mate_config_migration"):
         report = migrate_existing_crewmates(cfg)
 
-    assert report.migrated == []
-    assert "execute_bash" in report.dry_run_failed["uio"]
-    assert cfg.agents["uio"].kiro_agent == "shell"
-    assert saved == {}
-    assert not (mates / "uio.json").exists()
+    assert report.migrated == ["uio"] and report.dry_run_failed == {}
+    assert "execute_bash" in report.moved_with_changes["uio"]
+    assert cfg.agents["uio"].kiro_agent == "uio"
+    assert saved["uio"]["changed_fields"] == {"kiro_agent"}
+    assert "execute_bash" not in json.dumps(_file(mates, "uio"))
     assert any(r.levelno == logging.WARNING and "Ops Pal" in r.getMessage() for r in caplog.records)
+    # Exactly one notice, naming the loss; a second claim gets nothing.
+    first = claim_notice_prompt(member_slug("uio"), "uio")
+    assert "it no longer has tool 'execute_bash'" in first
+    assert claim_notice_prompt(member_slug("uio"), "uio") == ""
+    assert migrate_existing_crewmates(cfg).migrated == []
+    assert claim_notice_prompt(member_slug("uio"), "uio") == ""
+    reasons = _ledger(mates)["reasons"]
+    assert reasons["uio"].startswith("moved; it no longer has tool 'execute_bash'")
+
+
+def test_a_grant_the_worker_would_gain_is_withheld_for_the_card(layout, persisted, monkeypatch):
+    """A gain is never written: the worker lacks it until a capability card adds it."""
+    from kiro_crew import mate_config_migration as migration
+    from kiro_crew.mate_upgrade_notice import claim_notice_prompt
+    from kiro_crew.members import member_slug
+
+    user, mates = layout
+    _write(user, "builder", _template("builder", prompt="Follow the release SOP."))
+    real = migration.migration_file
+
+    def with_a_gain(name, base, source):
+        planned = real(name, base, source)
+        planned["mcpServers"] = {**planned["mcpServers"], "jira": JIRA}
+        planned["tools"] = [*planned["tools"], "@jira"]
+        planned["allowedTools"] = [*planned["allowedTools"], "@jira/search"]
+        return planned
+
+    monkeypatch.setattr(migration, "migration_file", with_a_gain)
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["zxc"]
+    written = _file(mates, "zxc")
+    assert "jira" not in written["mcpServers"]
+    assert "@jira" not in written["tools"] and "@jira/search" not in written["allowedTools"]
+    monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member, config=None: member)
+    monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
+    spec = mate_worker.resolve_worker_spec(dict(BASE), "zxc")
+    assert "jira" not in spec["mcpServers"]
+    assert "jira" not in {
+        s["name"] for s in mate_capability_catalog.worker_has(spec, {})["servers"]
+    }
+    prompt = claim_notice_prompt(member_slug("zxc"), "zxc")
+    assert "it was not given MCP server 'jira'" in prompt
+    assert "request_capabilities" in prompt
+    # The card's operations are what grant it: they add the server to the file,
+    # and only then does the worker have it.
+    ops = mate_capability_catalog.addition_operations("jira", JIRA, ["search"])
+    assert {op["section"] for op in ops} == {"mcpServers", "tools", "allowedTools"}
+    approved = {
+        **written,
+        "mcpServers": {**written["mcpServers"], "jira": JIRA},
+        "tools": [*written["tools"], "@jira"],
+    }
+    _write(mates, "zxc", approved)
+    assert "jira" in mate_worker.resolve_worker_spec(dict(BASE), "zxc")["mcpServers"]
+
+
+def test_an_agent_whose_prompt_does_not_resolve_keeps_its_stated_limits(layout, persisted):
+    """It parses, so the deny it states is read; the default template would drop it."""
+    user, mates = layout
+    _write(user, "kirocrew", _template("kirocrew"))
+    deny = {"fs_write": {"deniedPaths": ["/etc/**"]}}
+    _write(
+        user,
+        "careful",
+        _template("careful", prompt="file://missing-prompt.md", toolsSettings=deny),
+    )
+    cfg = _cfg(ijk=KiroCrewAgentConfig(member_id="ijk", kiro_agent="careful"))
+    saved = persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == [] and report.moved_from_default == []
+    assert "toolsSettings" in report.dry_run_failed["ijk"]
+    assert cfg.agents["ijk"].kiro_agent == "careful"
+    assert saved == {} and not (mates / "ijk.json").exists()
+
+
+def test_a_prompt_that_does_not_resolve_keeps_its_switched_off_server_and_tools_off(
+    layout, persisted
+):
+    """The default-template move never starts what the old agent switched off."""
+    user, mates = layout
+    _write(user, "kirocrew", _template("kirocrew"))
+    spec = _template(
+        "quiet",
+        prompt="file://missing-prompt.md",
+        excludedTools=["fs_read"],
+    )
+    spec["mcpServers"]["kirocrew-core"] = {**spec["mcpServers"]["kirocrew-core"], "disabled": True}
+    _write(user, "quiet", spec)
+    cfg = _cfg(qaz=KiroCrewAgentConfig(member_id="qaz", kiro_agent="quiet"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.moved_from_default == ["qaz"]
+    written = _file(mates, "qaz")
+    assert written["mcpServers"]["kirocrew-core"] == {"disabled": True}
+    assert "fs_read" in written["excludedTools"]
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+    assert "fs_read" in merged["excludedTools"]
+    assert merged["mcpServers"]["kirocrew-core"].get("disabled") is True
+
+
+def test_a_prompt_that_does_not_resolve_gets_no_grant_its_agent_lacked(layout, persisted):
+    user, mates = layout
+    # The default template adds jira; the old agent never had it.
+    _write(
+        user,
+        "kirocrew",
+        _template("kirocrew", tools=["@jira"], mcpServers={"jira": JIRA}),
+    )
+    _write(user, "plain", _template("plain", prompt="file://missing-prompt.md"))
+    cfg = _cfg(wsx=KiroCrewAgentConfig(member_id="wsx", kiro_agent="plain"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.moved_from_default == ["wsx"]
+    written = _file(mates, "wsx")
+    assert "jira" not in written["mcpServers"] and "@jira" not in written["tools"]
+
+
+def test_an_unreadable_agent_moves_onto_the_default_template_and_says_so(layout, persisted):
+    from kiro_crew.mate_upgrade_notice import claim_notice_prompt
+    from kiro_crew.members import member_slug
+
+    user, mates = layout
+    _write(user, "kirocrew", _template("kirocrew"))
+    (user / "gone.json").write_text("{not json", encoding="utf-8")
+    cfg = _cfg(vbn=KiroCrewAgentConfig(member_id="vbn", kiro_agent="gone"))
+    saved = persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["vbn"] and report.skipped_no_source == []
+    assert report.moved_from_default == ["vbn"]
+    assert _file(mates, "vbn") == {"name": "vbn", "mcpServers": {}, "tools": [], "allowedTools": []}
+    assert saved["vbn"]["expected_values"] == {"kiro_agent": "gone"}
+    assert read_record("vbn") is None
+    prompt = claim_notice_prompt(member_slug("vbn"), "vbn")
+    assert "(gone) could not be read" in prompt and "default template" in prompt
+    assert "source unreadable" not in prompt
+    assert migrate_existing_crewmates(cfg).migrated == []
 
 
 @pytest.mark.parametrize(
@@ -887,7 +1041,7 @@ def test_a_crash_right_after_the_repoint_still_moves_the_old_threads(
     key = "dashboard:member-zxc"
     _thread(ec, key, "zxc", "builder")
 
-    def _crash(_name):
+    def _crash(_name, _changes=""):
         raise SystemExit("killed")
 
     monkeypatch.setattr(mate_upgrade_notice, "mark_notice_owed", _crash)

@@ -36,7 +36,7 @@ from kiro_crew.crew_log import CrewLog, bus, eager, emit, lease
 from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import projection_catalogue, slot_prime
 from kiro_crew.crew_log import store as crew_log_store
-from kiro_crew.crew_log import store_cuts, store_paths
+from kiro_crew.crew_log import store_cuts, store_paths, store_units
 from kiro_crew.crew_log.session_tree import SessionTree
 from kiro_crew.testing.wait import await_until
 
@@ -385,17 +385,20 @@ def test_a_warm_session_read_that_earns_a_savepoint_reads_only_the_gap(meter):
     assert meter.entries + meter.hashed <= SAVEPOINT_GAP + ENTRY_SLACK, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="full root listing on every slot read: store_units.session_units_by_slot lists "
-    "every unit dir before its cache check; fixed by #24274 "
-    "(crew_log/store_units.py)",
-)
-def test_a_warm_baseline_does_not_list_the_crew_log_root(meter):
+def test_a_warm_baseline_does_not_list_the_crew_log_root(meter, monkeypatch):
+    """Once a second listing a racy window later confirms the root, a warm read lists nothing.
+
+    The window is elapsed time on ``store_units._monotonic_ns``, held here and stepped
+    past by hand, so the confirming listing never waits on the real clock.
+    """
+    now = [1_000_000_000_000]
+    monkeypatch.setattr(crew_log_store, "_monotonic_ns", lambda: now[0])
     units = _board_slot()
     _other_slots()
     _subscribe_baseline()
     assert slot_prime.drain(30), "the cold prime must finish"
+    now[0] += store_units._RACY_WINDOW_NS + 1
+    _subscribe_baseline()  # the confirming listing, a full window after the first
     _append_work(units[-1], 1, "list")
     with meter.measure():
         _subscribe_baseline()
@@ -416,21 +419,40 @@ def test_a_cold_prime_copies_the_fold_state_a_fixed_number_of_times(meter):
     assert meter.copies <= 4, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="savepoint resume re-reads the log prefix: _resume_slot_fold / "
-    "checkpoint.resumed_prefix_still_verifies re-hash or re-walk every folded record; "
-    "fixed by the PR that changes crew_log/projection_slot_memo.py _resume_slot_fold and "
-    "crew_log/checkpoint.py",
-)
+def _savepoint_bytes(handle: CrewLog, fold: str) -> bytes:
+    """The slot savepoint *fold* keeps at *handle*'s unit, or ``b""`` when there is none."""
+    from kiro_crew.crew_log import checkpoint
+
+    path = checkpoint.slot_checkpoint_path(lg.KIND_SESSION, handle.id, fold)
+    return path.read_bytes() if path.exists() else b""
+
+
+def _earn_a_savepoint_write(handle: CrewLog, read: Any, fold: str) -> None:
+    """Append enough for the next warm read to rewrite the savepoint, and check it did.
+
+    A savepoint moves only once a fold is ``MIN_ADVANCE_ENTRIES`` past the saved seq, so
+    a smaller gap leaves it where the cold read put it and a restart bound would measure
+    the write interval instead of the resume.
+    """
+    from kiro_crew.crew_log import checkpoint
+
+    before = _savepoint_bytes(handle, fold)
+    _append_work(handle, checkpoint.MIN_ADVANCE_ENTRIES + 4, "earn")
+    read()  # warm, moves the savepoint on
+    assert (
+        _savepoint_bytes(handle, fold) != before
+    ), "setup did not earn a savepoint write (append >= checkpoint.MIN_ADVANCE_ENTRIES)"
+
+
 def test_a_baseline_after_restart_resumes_from_the_savepoint(meter):
     """A new process (no warm cell) with a savepoint on disk reads the gap, not the log."""
     # The ledger fold: its units come from the header index, so what this measures is
     # the fold and its savepoint, not the work fold's unit resolution.
     units = _board_slot()
     crew_log.read_slot_projection(BOARD, RESUME_FOLD)  # cold fold, writes a savepoint
-    _append_work(units[-1], 60, "earn")
-    crew_log.read_slot_projection(BOARD, RESUME_FOLD)  # warm, moves the savepoint on
+    _earn_a_savepoint_write(
+        units[-1], lambda: crew_log.read_slot_projection(BOARD, RESUME_FOLD), RESUME_FOLD
+    )
     # The restart: every in-memory cell is gone, only the files remain.
     crew_log.forget_slot_folds()
     crew_log.forget_session_folds()
@@ -438,6 +460,32 @@ def test_a_baseline_after_restart_resumes_from_the_savepoint(meter):
     with meter.measure():
         crew_log.read_slot_projection(BOARD, RESUME_FOLD)
     assert meter.entries + meter.hashed <= ENTRY_SLACK + 3, meter
+
+
+def test_a_worktree_board_read_with_no_new_entry_reads_no_old_entries(meter):
+    """A second ``worktree`` read over a log that has not grown reads nothing old."""
+    _board_slot()
+    crew_log.read_tree_projection(BOARD, "worktree")  # the one cold fold this process pays
+    with meter.measure():
+        crew_log.read_tree_projection(BOARD, "worktree")
+    assert meter.entries == 0, meter
+    assert meter.hashed == 0, meter
+
+
+def test_a_worktree_read_after_restart_resumes_from_the_savepoint(meter):
+    """After a restart the ``worktree`` fold reads the gap past its savepoint, not the log."""
+    units = _board_slot()
+    crew_log.read_tree_projection(BOARD, "worktree")  # cold fold, writes a savepoint
+    _earn_a_savepoint_write(
+        units[-1], lambda: crew_log.read_tree_projection(BOARD, "worktree"), "worktree"
+    )
+    crew_log.forget_slot_folds()
+    crew_log.forget_session_folds()
+    _append_work(units[-1], 3, "gap")
+    with meter.measure():
+        value = crew_log.read_tree_projection(BOARD, "worktree").value
+    assert meter.entries + meter.hashed <= ENTRY_SLACK + 3, meter
+    assert [row["board"] for row in value["boards"]] == [BOARD]
 
 
 # --------------------------------------------------------------------------- #

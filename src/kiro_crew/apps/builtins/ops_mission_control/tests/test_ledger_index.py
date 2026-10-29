@@ -7,15 +7,15 @@ scales:
 1. **Import is incremental.** A second import of an unchanged ledger must embed nothing.
    This is the whole difference between a 100k-entry ledger being usable and being a
    multi-hour stall on every dispatch cycle.
-2. **Embedding is deferred and batched.** One sweep per import, not one inference per
-   row.
+2. **Embedding is deferred.** Import writes NULL-vector rows and runs no sweep; the
+   gateway's paced repair loop embeds them.
 3. **Import is merge-only.** It must never tombstone a row another writer owns.
 4. **Nothing is fatal.** A broken store, a bad row, or a failed sweep degrades to "no
    semantic search", never to a failed cycle.
 
 A fake store is used rather than a real SQLite/FAISS pair: these assertions are about
-*how the adaptor calls the store*, and a fake is the only way to assert "embedded
-exactly once" or "never called with preserve_existing=False".
+*how the adaptor calls the store*, and a fake is the only way to assert "never
+sweeps" or "never called with preserve_existing=False".
 """
 
 from __future__ import annotations
@@ -58,7 +58,6 @@ class _FakeStore:
         if self._fail_backfill:
             raise RuntimeError("model unavailable")
         self.backfill_calls += 1
-        self.backfill_paced = pace
         return len(self.texts)
 
     def search_episodic(self, **kw: Any) -> list[dict]:
@@ -110,16 +109,11 @@ class TestIncrementalImport(_Env):
 
         first = ledger_index.import_pending(store)
         self.assertEqual(first["written"], 20)
-        self.assertEqual(store.backfill_calls, 1, "one batched sweep, not 20")
-        self.assertTrue(
-            store.backfill_paced,
-            "the only caller is the ledger-hygiene cron, which blocks but is "
-            "unattended, so the whole-corpus sweep must stay paced",
-        )
+        self.assertEqual(store.backfill_calls, 0, "the gateway repair loop embeds, not import")
 
         second = ledger_index.import_pending(store)
         self.assertEqual(second["written"], 0, "an unchanged ledger must re-embed nothing")
-        self.assertEqual(store.backfill_calls, 1, "no second sweep when nothing was written")
+        self.assertEqual(store.backfill_calls, 0, "import never runs an embedding sweep")
         self.assertEqual(len(store.writes), 20, "the store was not touched again")
 
     def test_only_new_entries_are_imported(self) -> None:
@@ -335,18 +329,21 @@ class TestNeverFatal(_Env):
         result = ledger_index.import_pending(_FakeStore(fail_write=True))
         self.assertEqual(result["written"], 0)
 
-    def test_a_failed_embedding_sweep_leaves_rows_written(self) -> None:
-        """Rows stay keyword-searchable; only vector search waits for the model."""
+    def test_import_writes_rows_without_an_embedding_sweep(self) -> None:
+        """Rows stay keyword-searchable with a NULL vector; the gateway's repair loop
+        embeds them later. The import must not call the sweep (its store has no
+        ``embed_fn``, so the sweep could only report 0) nor report an ``embedded``
+        count it cannot produce."""
         self._seed(2)
         store = _FakeStore(fail_backfill=True)
         result = ledger_index.import_pending(store)
-        self.assertEqual(result["written"], 2)
-        self.assertEqual(result["embedded"], 0)
+        self.assertEqual(result, {"scanned": 2, "written": 2, "skipped": 0})
+        self.assertEqual(store.backfill_calls, 0)
 
     def test_an_empty_ledger_is_a_quiet_noop(self) -> None:
         store = _FakeStore()
         result = ledger_index.import_pending(store)
-        self.assertEqual(result, {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0})
+        self.assertEqual(result, {"scanned": 0, "written": 0, "skipped": 0})
         self.assertEqual(store.backfill_calls, 0)
 
 
@@ -386,13 +383,13 @@ class TestScale(_Env):
         for _ in range(4):
             total += ledger_index.import_pending(store, limit=500)["written"]
         self.assertEqual(total, 2000)
-        self.assertEqual(store.backfill_calls, 4, "one sweep per batch, not per row")
+        self.assertEqual(store.backfill_calls, 0, "import never runs an embedding sweep")
 
         # The property that matters: a full re-import after everything is indexed
         # costs zero embeddings.
         again = ledger_index.import_pending(store, limit=500)
         self.assertEqual(again["written"], 0)
-        self.assertEqual(store.backfill_calls, 4, "no extra sweep")
+        self.assertEqual(store.backfill_calls, 0, "no sweep")
 
     def test_cursor_stays_proportional_to_entry_count(self) -> None:
         """The cursor is the scaling risk: it must hold ids, never texts."""
@@ -497,9 +494,7 @@ class TestSemanticRecallWiring(_Env):
 
         def _query_vector(text: str, priority: int) -> list[float]:
             work = embedding_work.get()
-            calls.append(
-                (text, priority, None if work is None else work.deadline, clock())
-            )
+            calls.append((text, priority, None if work is None else work.deadline, clock()))
             return [1.0, 0.0]
 
         before = clock()
@@ -713,8 +708,13 @@ class TestLedgerMutationsAreLocked(_Env):
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
 
-        for fn in (ledger.upsert, ledger.record_use, ledger.record_miss, ledger.remove,
-                   ledger.hygiene):
+        for fn in (
+            ledger.upsert,
+            ledger.record_use,
+            ledger.record_miss,
+            ledger.remove,
+            ledger.hygiene,
+        ):
             src = inspect.getsource(fn)
             self.assertIn(
                 "_LedgerLock()",

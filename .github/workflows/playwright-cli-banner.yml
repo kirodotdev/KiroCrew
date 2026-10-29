@@ -14,6 +14,11 @@ name: Playwright CLI Banner Check
 # scheduled-failure-watch.yml (which lists this workflow) turns a red scheduled
 # run into one tracking issue. Nothing on the install path changes.
 #
+# The same job then runs scripts/check_playwright_cli_attach_guard.py, which
+# runs the managed launcher's attach guard against that install and fails when
+# the guard can no longer load the CLI's own parser and the option list
+# `program.js` declares (a layout it reads from the package's source).
+#
 # WHY A SCHEDULE AND NOT A PR CHECK: the fact it reads belongs to npm, not to a
 # commit. A PR job would go red on unrelated diffs the day upstream ships.
 
@@ -58,3 +63,6 @@ jobs:
 
       - name: Launch show --port 0 and parse its banner
         run: python3 scripts/check_playwright_cli_banner.py
+
+      - name: The attach guard still reads the CLI's parser and option list
+        run: python3 scripts/check_playwright_cli_attach_guard.py

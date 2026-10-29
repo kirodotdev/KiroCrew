@@ -89,6 +89,7 @@ from kiro_crew.config.sections import (
     MemoryStoreConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     PublishConfig,
     ResourceLimitsConfig,
     SessionConfig,
@@ -243,6 +244,10 @@ class KiroCrewConfig:
     work_ledger: WorkLedgerConfig = field(
         default_factory=WorkLedgerConfig,
         metadata=_meta("Work ledger", "Work-ledger nesting: how many levels may conduct."),
+    )
+    power: PowerConfig = field(
+        default_factory=PowerConfig,
+        metadata=_meta("Power", "What Knowledge Library sweeps do while on battery."),
     )
     resource_limits: ResourceLimitsConfig = field(
         default_factory=ResourceLimitsConfig,
@@ -678,6 +683,7 @@ class KiroCrewConfig:
             "taskrunner": asdict(self.taskrunner),
             "watchdog": asdict(self.watchdog),
             "work_ledger": asdict(self.work_ledger),
+            "power": asdict(self.power),
             "resource_limits": asdict(self.resource_limits),
             "messaging": asdict(self.messaging),
             "cron_history": asdict(self.cron_history),

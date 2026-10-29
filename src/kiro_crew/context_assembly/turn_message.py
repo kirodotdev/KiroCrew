@@ -26,6 +26,7 @@ from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
+from kiro_crew.context_assembly import markers as _markers
 from kiro_crew.context_assembly import member as _member
 from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import turn as _turn
@@ -72,6 +73,7 @@ def build_message(
     folder_path: str | None = None,
     model_window: int | None = None,
     board_tags: list[tuple[str, str]] | None = None,
+    session_dashboard: str | None = None,
     user_text_range: tuple[int, int] | None = None,
     user_span_out: list[int] | None = None,
     needs_reinjection: bool = False,
@@ -82,6 +84,7 @@ def build_message(
     steering_dirs: tuple[str, ...] = (),
     skill_bodies_session: str | None = None,
     skill_trigger_text: str | None = None,
+    template_dir: str | None = None,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -121,6 +124,11 @@ def build_message(
     or ``""`` for a turn whose text the person did not write, which then
     matches and selects no skill. ``None`` keeps *text*.
 
+    Pass *template_dir* to name the directory whose ``.kiro/agents`` holds the
+    agent's template when the turn has no *project*. It is used only to find
+    the agent spec, never read for project guides and never made the project.
+    ``None`` falls back to the context provider's cwd.
+
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
     the caller. The essentials builder (and :meth:`build_session_context`,
@@ -159,8 +167,16 @@ def build_message(
         if isinstance(candidate_delivery, EssentialDelivery):
             delivery = candidate_delivery
             provider_type = context_provider.context_provider_type
+            # A sub-agent's provider cwd is its per-run scratch directory, not
+            # a checkout, so a run that named no project keeps none. Its agent
+            # template is looked up in the caller's template_dir, else the
+            # provider cwd. Any other session with no project takes the
+            # provider cwd as its project.
             if project is None:
-                project = context_provider.cwd or None
+                provider_cwd = context_provider.cwd or None
+                template_dir = template_dir or provider_cwd
+                if not (session_key or "").startswith("subagent:"):
+                    project = provider_cwd
             if is_new_session or needs_reinjection:
                 provider_native_documents = context_provider.native_context_documents
                 native_launch_sources = tuple(provider_native_documents)
@@ -229,6 +245,7 @@ def build_message(
             member=member,
             member_is_id=bool(execution_context and execution_context.member_id),
             project=project,
+            template_dir=template_dir,
             workspace=workspace,
             blocks_reads=blocks_reads,
             context_groups=context_groups,
@@ -306,7 +323,7 @@ def build_message(
             if slim_resume
             else self._resolve_agent_prompt(
                 agent,
-                project=project,
+                project=project or template_dir,
                 mode=mode,
                 session_key=session_key,
                 is_cc=is_cc,
@@ -349,25 +366,21 @@ def build_message(
             # provenance) WITHOUT touching the trusted critical-rules block
             # that build_session_context prepends as parts[0] — that block
             # legitimately carries [CRITICAL RULES]/[END CRITICAL RULES] and
-            # must survive intact. The block is one of two fixed module
-            # constants (runtime-selected, never templated) and is always
-            # the prefix (only tail-truncation ever trims the string), and
+            # must survive intact. The block is one of the fixed module
+            # constants in _CRITICAL_RULES_VARIANTS (runtime-selected,
+            # never templated) and is always the prefix (only tail-truncation ever trims the string), and
             # none of the other trusted framing uses these markers, so
             # scrubbing everything after the block is safe.
             _rules_prefix = next(
-                (
-                    rb
-                    for rb in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                    if session_ctx.startswith(rb)
-                ),
+                (rb for rb in ctx._CRITICAL_RULES_VARIANTS if session_ctx.startswith(rb)),
                 None,
             )
             if _rules_prefix is not None:
-                session_ctx = _rules_prefix + ctx._neutralize_structural_markers(
+                session_ctx = _rules_prefix + _markers._neutralize_context_payload(
                     session_ctx[len(_rules_prefix) :]
                 )
             else:
-                session_ctx = ctx._neutralize_structural_markers(session_ctx)
+                session_ctx = _markers._neutralize_context_payload(session_ctx)
             if slim_resume:
                 # Re-anchor the critical rules (dashboard/Slack UI
                 # contracts: diff blocks, [OPTIONS:] buttons, absolute
@@ -412,11 +425,22 @@ def build_message(
             elif minimal_context:
                 parts.append(session_ctx)
             else:
+                # An empty group set means the spawning parent withheld memory,
+                # lessons and project, so the block holds only conduct; claiming
+                # "your memory" there makes the child look for content it lacks.
+                _opener = (
+                    "This block holds the rules and runtime facts for this turn. "
+                    "Use it to stay consistent but ONLY respond to the "
+                    if context_groups is not None and not context_groups
+                    else "This is your memory, lessons, and conversation history from prior "
+                    "sessions. Use it to stay consistent but ONLY respond to the "
+                )
                 parts.append(
                     "[SESSION CONTEXT — background reference only, NOT a task to act on.\n"
-                    "This is your memory, lessons, and conversation history from prior "
-                    "sessions. Use it to stay consistent but ONLY respond to the "
-                    "CURRENT USER REQUEST below.]\n" + session_ctx + "[END OF SESSION CONTEXT]\n\n"
+                    + _opener
+                    + "CURRENT USER REQUEST below.]\n"
+                    + session_ctx
+                    + "[END OF SESSION CONTEXT]\n\n"
                 )
         # Folder-inherited steering: the ONE delivery seam for every
         # provider. No is_cc / is_custom gate on purpose -- kiro-cli,
@@ -466,7 +490,7 @@ def build_message(
         if compressed_history:
             parts.append(
                 "[CONVERSATION HISTORY — recent session replay, tail-heavy, may be truncated]\n"
-                + ctx._neutralize_structural_markers(compressed_history)
+                + _markers._neutralize_context_payload(compressed_history)
                 + "\n[END CONVERSATION HISTORY]\n\n"
             )
 
@@ -491,6 +515,7 @@ def build_message(
                 session_key=session_key,
                 agent=agent,
                 project=project,
+                template_dir=template_dir,
                 mode=mode,
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
@@ -506,6 +531,13 @@ def build_message(
                 provider_type=provider_type,
                 context_provider=context_provider,
                 native_launch_sources=native_launch_sources,
+                # The user's own text (or a transform hook's output), never a
+                # dispatcher prefix, ranks the lessons -- as on the per-message path.
+                query_text=(
+                    hook_result.text
+                    if hook_result.action == ctx.HOOK_MODIFY
+                    else text[user_text_range[0] : user_text_range[1]]
+                ),
             )
         )
         # The session's durable work state, which a monitor cycle already gets
@@ -550,7 +582,7 @@ def build_message(
         if ch_ctx:
             # Group-channel context is authored by other users — scrub the
             # primary boundary markers so it cannot forge a prompt boundary.
-            parts.append(ctx._neutralize_structural_markers(ch_ctx))
+            parts.append(_markers._neutralize_context_payload(ch_ctx))
 
     # Thread parent text — inject whenever available, even alongside
     # channel history (they serve different purposes: ch_ctx has recent
@@ -570,7 +602,7 @@ def build_message(
     # for injection when it was read; here the block is fenced and its
     # markers neutralized, the same framing as the thread parent above.
     if channel_id and thread_ts and thread_replies_text:
-        safe_replies = ctx._neutralize_structural_markers(
+        safe_replies = _markers._neutralize_context_payload(
             ctx._neutralize_fence_markers(thread_replies_text)
         )
         parts.append(
@@ -613,6 +645,7 @@ def build_message(
             project=project,
             context_groups=context_groups,
             board_tags=board_tags,
+            session_dashboard=session_dashboard,
             minimal_context=minimal_context,
             folder_path=folder_path,
             session_key=session_key,
@@ -737,11 +770,15 @@ def build_message(
         triggered = self.skills.get_triggered_skills(
             trigger_text, project_dir=project, select=select, unusable=unusable
         )
-        pinned = ctx.pinned_skill_globs(session_key, project_dir=project)
+        # The agent's spec is found where its template lives (template_dir for
+        # a sub-agent with no project); its mapping only narrows the triggered
+        # set, which, like scoped_skills, reads from *project* alone.
+        template_root = project or template_dir
+        pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root)
         mapped = (
             pinned
             if pinned is not None
-            else (ctx.agent_skill_globs(agent, project_dir=project) if agent else [])
+            else (ctx.agent_skill_globs(agent, project_dir=template_root) if agent else [])
         )
         if mapped:
             allowed = {

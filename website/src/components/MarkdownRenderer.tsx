@@ -60,6 +60,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { CodeBlock } from './CodeBlock'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
 import WidgetFrame from './WidgetFrame'
+import MarkdownWidget from './MarkdownWidget'
 import WidgetPlaceholder from './WidgetPlaceholder'
 import { i18nT } from '../i18n/t'
 import { toDate } from '../i18n/format'
@@ -70,6 +71,7 @@ import {
   LinkOverrideCtx,
   LinkUnfurlCtx,
   MdSourceCtx,
+  MdBlockStartCtx,
   ParagraphNoticeSlotCtx,
   PathActionCtx,
   PathProbeCtx,
@@ -709,6 +711,14 @@ export function fixCodeFences(s: string): string {
   return s
 }
 
+/** An HTML element tag: `<div`, `<svg`, `</p>`, `<br/>`. Comments and `<` in text do not match. */
+const HTML_ELEMENT_RE = /<\/?[a-zA-Z][\w-]*(?:\s[^<>]*)?\/?>/
+
+/** Whether a widget body is markdown rather than HTML: it has text and no element tag. */
+function isMarkdownWidgetBody(body: string): boolean {
+  return body.trim().length > 0 && !HTML_ELEMENT_RE.test(body)
+}
+
 const MCWIDGET_STRIP_RE = /<mcwidget[\s\S]*?<\/mcwidget>|<mcwidget[\s\S]*$/g
 
 // Anthropic tool-use protocol markup occasionally leaks into the visible
@@ -892,7 +902,9 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
       </ReactMarkdown>
     </MdSourceCtx.Provider>
   )
-  const body = sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
+  const body = sourcePos
+    ? <div data-block-start={startLine ?? 1}><MdBlockStartCtx.Provider value={startLine ?? 1}>{md}</MdBlockStartCtx.Provider></div>
+    : md
   // The provider carries no DOM node, so sourcepos / lightbox scoping upstream
   // is unaffected. It is the only way MdAnchor / MdParagraph — which react-markdown
   // instantiates deep inside its own tree — can see the gate.
@@ -1083,9 +1095,17 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       return smooth ? <SmoothResize enabled={!block.complete}>{node}</SmoothResize> : node
     }
     case 'widget':
-      return block.complete
-        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
-        : <WidgetPlaceholder title={block.language} />
+      if (!block.complete) return <WidgetPlaceholder title={block.language} />
+      // A widget whose body holds no HTML element is markdown an agent wrapped in
+      // the widget tag (a "Task board" table, say). Drawn in the frame it reads as
+      // raw `**` and `|` text, so it is rendered as the markdown it is, under its title.
+      // The title row keeps the widget's artifact link and star (`MarkdownWidget`).
+      if (isMarkdownWidgetBody(block.content)) {
+        return <MarkdownWidget body={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey}>
+          <MarkdownBlock content={block.content.trim()} sourcePos={false} startLine={block.startLine} glow={false} smooth={false} softBreaks={softBreaks} live={false} unfurl={unfurl} markers={markers} />
+        </MarkdownWidget>
+      }
+      return <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
     case 'markdown':
       // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
       // with the block's own `complete` flag so a provisional block is treated

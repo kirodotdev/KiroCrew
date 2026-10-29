@@ -12,11 +12,11 @@
  *    the build is inert" is the claim this seam makes, and it is only true if something
  *    asserts the menus render nothing.
  */
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, onTestFinished } from 'vitest'
 
 // The folder-row surface collapses its rows behind a DropdownMenu; the shared stub makes
 // the content render on a plain trigger click instead of Radix's pointer-event gating.
@@ -52,6 +52,8 @@ import {
   type FileMenuAppRecord,
 } from '../apps/fileMenuContributions'
 import { RESERVED_APP_PATH_SEGMENTS } from '../apps/coreAppRoutes'
+import FileMenuResultToast, { FileMenuResultToastFrame } from '../components/notifications/FileMenuResultToast'
+import { BANNER_AUTO_HIDE_MS } from '../hooks/notificationBanner'
 
 function item(over: Partial<ContributedFileMenuItem> = {}): ContributedFileMenuItem {
   return {
@@ -404,9 +406,12 @@ describe('FolderRowActions — folder-row surface', () => {
   function renderRow(items: ContributedFileMenuItem[]) {
     const rowActivate = vi.fn()
     render(
-      <div role="presentation" onClick={rowActivate}>
-        <FolderRowActions items={items} node={{ path: 'notes/x.md', kind: 'file' }} onError={onError} />
-      </div>,
+      <>
+        <FileMenuResultToast />
+        <div role="presentation" onClick={rowActivate}>
+          <FolderRowActions items={items} node={{ path: 'notes/x.md', kind: 'file' }} onError={onError} />
+        </div>
+      </>,
     )
     return { rowActivate }
   }
@@ -510,6 +515,105 @@ describe('FolderRowActions — folder-row surface', () => {
     expect(screen.getByText(/kiro-crew/)).toBeInTheDocument()
     // And it is framed rather than bare, so the row does not read as a core action.
     expect(screen.getByText(/kiro-crew/).textContent).not.toBe('kiro-crew')
+  })
+
+  it('shows the Send result as plain text with a safe url in the host toast', async () => {
+    const message = '<img src=x onerror="alert(1)"> Uploaded'
+    const url = 'https://example.com/doc/42?view=1'
+    invokeApi.mockResolvedValueOnce({ message, url })
+    renderRow([item()])
+    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+    // The link names its destination host, not the raw URL, which stays on the title.
+    const link = await screen.findByRole('link', { name: 'example.com' })
+    expect(link.getAttribute('title')).toBe(url)
+    expect(link.textContent).not.toContain('?view=1')
+    expect(screen.getByRole('status').textContent).toContain(message)
+    expect(screen.getByRole('status').querySelector('img')).toBeNull()
+    expect(link.getAttribute('href')).toBe(url)
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it.each(['javascript:alert(1)', 'data:text/html,<h1>bad</h1>', 'file:///etc/passwd', 'https://user:pass@example.com', '<a href=x>bad</a>'])(
+    'keeps the Send message but does not link unsafe URL %s', async url => {
+      invokeApi.mockResolvedValueOnce({ message: 'Uploaded', url })
+      renderRow([item()])
+      fireEvent.click(screen.getByRole('button'))
+      fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+      expect(await screen.findByRole('status')).toHaveTextContent('Uploaded')
+      expect(screen.queryByRole('link')).toBeNull()
+      expect(onError).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([null, {}, { message: null }, { message: '' }, { message: '  ' }, { message: { html: '<b>bad</b>' } }])(
+    'does not invent a toast for an empty/malformed result %j', async result => {
+      invokeApi.mockResolvedValueOnce(result)
+      renderRow([item()])
+      fireEvent.click(screen.getByRole('button'))
+      await act(async () => {
+        fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+      })
+      expect(screen.queryByRole('status')).toBeNull()
+      expect(onError).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['approval required', 'cancelled', 'HTTP 401'])('preserves rejected Send outcome %s without a success toast', async reason => {
+    invokeApi.mockRejectedValueOnce(new Error(reason))
+    renderRow([item()])
+    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(reason))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('keeps the link usable while focused, then auto-hides the Send result', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => vi.useRealTimers())
+    invokeApi.mockResolvedValueOnce({ message: 'Uploaded', url: 'https://example.com/doc/42' })
+    renderRow([item()])
+    fireEvent.click(screen.getByRole('button'))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+    })
+    const toast = screen.getByRole('status')
+    const link = screen.getByRole('link')
+    fireEvent.pointerEnter(toast)
+    fireEvent.focus(link)
+    fireEvent.pointerLeave(toast)
+    act(() => vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS * 2))
+    expect(screen.getByRole('link')).toBe(link)
+    fireEvent.blur(link, { relatedTarget: document.body })
+    act(() => vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('shows the Send result in its own fixed corner in a popout or embed frame', async () => {
+    invokeApi.mockResolvedValueOnce({ message: 'Uploaded', url: 'https://example.com/doc/42' })
+    render(
+      <>
+        <FileMenuResultToastFrame />
+        <FolderRowActions items={[item()]} node={{ path: 'notes/x.md', kind: 'file' }} onError={onError} />
+      </>,
+    )
+    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+    const toast = await screen.findByRole('status')
+    const frame = screen.getByTestId('file-menu-result-toast-frame')
+    expect(frame.contains(toast)).toBe(true)
+    expect(frame.className).toContain('fixed')
+    expect(screen.getByRole('link', { name: 'example.com' })).toBeTruthy()
+  })
+
+  it('does not change notifications from other actions on the host bus', () => {
+    renderRow([item()])
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc:notify', { detail: { message: 'Other action', type: 'success' } }))
+    })
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('reports a rejected dispatch to the host instead of the console', async () => {

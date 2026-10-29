@@ -827,12 +827,21 @@ def test_mac_universal_leg_flattens_only_its_own_mac_bytes() -> None:
     DMG) to the same run; either would trip the exactly-one-DMG assertion or
     hand the wrong zip to the signer. All three are excluded by artifact name."""
     run = _step(_steps(MAC_WORKFLOW, "sign"), "Flatten artifacts")["run"]
-    for excluded in (
-        "artifacts/unsigned-build-darwin-arm64/*",
-        "artifacts/unsigned-build-darwin-x64/*",
-        "artifacts/KiroCrew-notarized-*/*",
-    ):
-        assert f'-not -path "{excluded}"' in run, f"flatten must exclude {excluded}"
+    assert '-not -path "artifacts/KiroCrew-notarized-*/*"' in run, "flatten must exclude gated zips"
+    # The single-arch build artifacts excluded here are exactly the ones
+    # build-desktop-mac-single-arch uploads -- read from build-desktop.yml, not
+    # retyped, so a rename in either file fails here instead of on the nightly
+    # signing lane.
+    rows = _jobs(BUILD_DESKTOP_WORKFLOW)["build-desktop-mac-single-arch"]["strategy"]["matrix"][
+        "include"
+    ]
+    built = {row["artifact-name"] for row in rows}
+    assert len(built) == len(rows) == len(_MAC_VARIANTS), f"one artifact per arch, got {rows}"
+    excluded = set(re.findall(r'-not -path "artifacts/(unsigned-build-[^"/*]+)/\*"', run))
+    assert excluded == built, (
+        f"flatten excludes {sorted(excluded)} but build-desktop-mac-single-arch "
+        f"uploads {sorted(built)}"
+    )
     attest = _step(_steps(MAC_WORKFLOW, "sign"), "Attest build provenance")
     assert (
         attest.get("if") == "${{ inputs.mac_variant == '' }}"

@@ -299,7 +299,51 @@ def _restored_agent_name(session_key: str, meta: dict) -> str:
         logger.warning("Could not read restored agent selection for %s", session_key, exc_info=True)
         selected = None
     agent = meta.get("agent")
+    if selected and isinstance(agent, str) and agent and agent != selected:
+        if _member_record_runs_another_template(session_key, agent):
+            return agent
     return selected or (agent if isinstance(agent, str) else "")
+
+
+def _member_record_runs_another_template(session_key: str, agent: str) -> bool:
+    """Whether *agent* names an id-less member worker's committed template.
+
+    ``session_create`` keeps an id-less creator's member selection and gives
+    its worker a different ``template_id``. The transcript agent is used only
+    when it resolves to that recorded template; an interrupted switch can leave
+    a provisional agent on the transcript even for an existing worker. Any read
+    or resolve failure keeps the record's selection and member identity intact.
+    """
+    from kiro_crew.config.loader import member_template_id, resolve_agent_bindings
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+    from kiro_crew.execution_context import _same_agent
+
+    try:
+        execution = cp.read_session_execution(session_key)
+        if (
+            execution is None
+            or execution.member_id is not None
+            or execution.selection_kind != "member"
+            or not execution.selection_name
+        ):
+            return False
+        cfg = KiroCrewConfig.load()
+        member = cfg.agents.get(execution.selection_name)
+        if member is None or _same_agent(member_template_id(member), execution.template_id):
+            return False
+        if _same_agent(agent, execution.template_id):
+            return True
+        alias = cfg.agents.get(agent)
+        if alias is not None and _same_agent(member_template_id(alias), execution.template_id):
+            return True
+        bindings = resolve_agent_bindings(
+            cfg, agent, selection_kind="template", validate_memory_files=False
+        )
+        return bindings.requested_resolved and _same_agent(
+            bindings.kiro_agent, execution.template_id
+        )
+    except (UnknownMemoryStore, LookupError, StopIteration, ValueError, OSError):
+        return False
 
 
 def _deletion_during_read(

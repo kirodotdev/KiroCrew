@@ -8,7 +8,7 @@
  * - Action buttons appear on hover only
  * - Detail page: pill badges for kind/status, grouped sections
  */
-import React, { useEffect, useState, useCallback, useRef } from 'react'
+import React, { useEffect, useId, useState, useCallback, useRef } from 'react'
 import { ArrowLeft, Eye, X } from 'lucide-react'
 import { WATCHLIST_PANEL_WIDTH } from '../shared/constants'
 import { TERMINAL_STATUSES, MIN_CHECK_INTERVAL_MINS } from '../shared/watchlistTypes'
@@ -122,6 +122,7 @@ export interface WatchlistPanelProps {
 }
 
 export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose, petName }) => {
+  const priorityId = useId()
   const [items, setItems] = useState<WatchItem[]>([])
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<Partial<EditableFields> | null>(null)
@@ -577,10 +578,11 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
         {/* Priority + Interval side by side (interval hidden for reminder/meeting) */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
+            <label htmlFor={priorityId} style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
               {i18nT('apps.mochi.watchPanel.field.priority')}
-            </div>
+            </label>
             <select
+              id={priorityId}
               value={currentPriority}
               onChange={(e) => updateDraft('priority', e.target.value as WatchPriority)}
               style={{
@@ -900,7 +902,7 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
                   }}
                   style={{
                     background: 'var(--danger)', border: 'none', borderRadius: 6,
-                    padding: '5px 12px', color: '#fff', fontSize: 12, fontWeight: 600,
+                    padding: '5px 12px', color: 'var(--danger-fg, #fff)', fontSize: 12, fontWeight: 600,
                     cursor: clearState === 'working' ? 'wait' : 'pointer',
                     opacity: clearState === 'working' ? 0.6 : 1,
                   }}

@@ -120,7 +120,7 @@ describe('useSteerRetract', () => {
       expect(localStorage.getItem(TAKE_BACKS_KEY)).toBeNull()
       expect(restoreDraft).not.toHaveBeenCalled()
       expect(hook.result.current.pending).toEqual({})
-      expect(hook.result.current.refusals).toEqual({ 'm-1': 'failed' })
+      expect(hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'failed', action: 'edit' } })
       expect(hook.result.current.requestFailures).toEqual({})
     } finally {
       restoreLocks()
@@ -154,8 +154,8 @@ describe('useSteerRetract', () => {
         second.hook.result.current.onSteerAction('m-2', 'edit')
       })
 
-      expect(first.hook.result.current.refusals).toEqual({ 'm-1': 'failed' })
-      expect(second.hook.result.current.refusals).toEqual({ 'm-2': 'failed' })
+      expect(first.hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'failed', action: 'edit' } })
+      expect(second.hook.result.current.refusals).toEqual({ 'm-2': { refusal: 'failed', action: 'edit' } })
       expect(first.hook.result.current.pending).toEqual({})
       expect(second.hook.result.current.pending).toEqual({})
       expect(retractSteer).not.toHaveBeenCalled()
@@ -194,7 +194,7 @@ describe('useSteerRetract', () => {
     act(() => { second.hook.result.current.onSteerAction('m-2', 'queue') })
 
     await waitFor(
-      () => expect(second.hook.result.current.refusals).toEqual({ 'm-2': 'busy' }),
+      () => expect(second.hook.result.current.refusals).toEqual({ 'm-2': { refusal: 'busy', action: 'queue' } }),
       { timeout: 500 },
     )
     expect(retractSteer).toHaveBeenCalledTimes(1)
@@ -237,7 +237,7 @@ describe('useSteerRetract', () => {
       act(() => { first.hook.result.current.onSteerAction('m-1', 'edit') })
 
       await waitFor(
-        () => expect(second.hook.result.current.refusals).toEqual({ [secondMid]: 'busy' }),
+        () => expect(second.hook.result.current.refusals).toEqual({ [secondMid]: { refusal: 'busy', action: 'edit' } }),
         { timeout: 500 },
       )
       expect(retractSteer).toHaveBeenCalledTimes(1)
@@ -369,7 +369,7 @@ describe('useSteerRetract', () => {
       act(() => { second.hook.result.current.onSteerAction('m-2', 'edit') })
 
       expect(second.hook.result.current.pending).toEqual({})
-      expect(second.hook.result.current.refusals).toEqual({ 'm-2': 'failed' })
+      expect(second.hook.result.current.refusals).toEqual({ 'm-2': { refusal: 'failed', action: 'edit' } })
       expect(retractSteer).not.toHaveBeenCalled()
       expect(localStorage.getItem(TAKE_BACKS_KEY)).toBe(firstStored)
     } finally {
@@ -510,7 +510,7 @@ describe('useSteerRetract', () => {
         ['queue', 'm-1', 'queue'],
       ])
       expect(edit.hook.result.current.pending).toEqual({})
-      expect(edit.hook.result.current.refusals).toEqual({ 'm-1': 'failed' })
+      expect(edit.hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'failed', action: 'edit' } })
     } finally {
       Storage.prototype.setItem = orig
     }
@@ -586,7 +586,7 @@ describe('useSteerRetract', () => {
       act(() => { current.hook.result.current.onSteerAction('m-2', secondAction) })
 
       expect(current.hook.result.current.pending).toEqual({})
-      expect(current.hook.result.current.refusals).toEqual({ 'm-2': 'failed' })
+      expect(current.hook.result.current.refusals).toEqual({ 'm-2': { refusal: 'failed', action: secondAction } })
       expect(current.hook.result.current.requestFailures).toEqual({})
       expect(retractSteer).toHaveBeenCalledTimes(1)
       expect(storedTakeBacks()).toMatchObject({
@@ -672,7 +672,91 @@ describe('useSteerRetract', () => {
     hook.rerender({ messages: [row({ steerState: 'written', steerRetract: false })] })
 
     expect(restoreDraft).not.toHaveBeenCalled()
-    expect(hook.result.current.refusals).toEqual({ 'm-1': 'unsupported' })
+    expect(hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'unsupported', action: 'unsend' } })
+  })
+
+  it('records which action a refusal refused, so its notice can name it', async () => {
+    const { hook } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', 'edit') })
+
+    hook.rerender({ messages: [row({ steerState: 'written', steerRetract: false })] })
+
+    expect(hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'unsupported', action: 'edit' } })
+
+    retractSteer.mockRejectedValueOnce(new ApiError(409, 'busy', JSON.stringify({ code: 'steer_retract_busy' })))
+    hook.rerender({ messages: [row({ steerState: 'written' })] })
+    act(() => { hook.result.current.onSteerAction('m-1', 'queue') })
+    await waitFor(
+      () => expect(hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'busy', action: 'queue' } }),
+      { timeout: 500 },
+    )
+  })
+
+  it.each(['edit', 'queue'] as const)('keeps a refused %s as a refusal, with nothing put in the composer', (action) => {
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', action) })
+
+    hook.rerender({ messages: [row({ steerState: 'written', steerRetract: false })] })
+
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'unsupported', action } })
+  })
+
+  const expiredOffer = () => row({ steerState: 'written', steerRetract: false, steerRetractExpired: true })
+
+  it.each(['edit', 'queue'] as const)('hands a %s back when a later turn withdrew its stopped turn offer', (action) => {
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', action) })
+
+    // A hard Stop left the row written, and the next turn, still running, withdrew the offer.
+    hook.rerender({ messages: [expiredOffer()] })
+
+    expect(restoreDraft).toHaveBeenCalledTimes(1)
+    expect(restoreDraft.mock.calls[0][0]).toBe('read @notes.md')
+    expect(hook.result.current.refusals).toEqual({})
+    expect(hook.result.current.pending).toEqual({})
+    expect(storedTakeBacks()).not.toHaveProperty('test')
+  })
+
+  it('settles an unsend whose stopped turn offer a later turn withdrew, with no refusal', () => {
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', 'unsend') })
+
+    hook.rerender({ messages: [expiredOffer()] })
+
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(hook.result.current.refusals).toEqual({})
+    expect(hook.result.current.pending).toEqual({})
+  })
+
+  it('hands an Edit back on returning to its chat after a hard Stop and a newer turn there', () => {
+    retractSteer.mockImplementation(() => new Promise(() => {}))
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', 'edit') })
+
+    hook.rerender({ slot: 'other', messages: [row({ mid: 'm-9', steerState: 'consumed' }, 'elsewhere')] })
+    expect(restoreDraft).not.toHaveBeenCalled()
+
+    hook.rerender({ slot: 'test', messages: [expiredOffer()] })
+
+    expect(restoreDraft).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.refusals).toEqual({})
+    expect(hook.result.current.pending).toEqual({})
+  })
+
+  it('hands a stored Edit back after a reload once a later turn withdrew its stopped turn offer', async () => {
+    retractSteer.mockImplementationOnce(() => new Promise(() => {}))
+    const first = setup([row({ steerState: 'written' })])
+    act(() => { first.hook.result.current.onSteerAction('m-1', 'edit') })
+    first.hook.unmount()
+
+    __resetSteerTakeBacksForTests()
+    const second = setup([expiredOffer()], false)
+
+    await waitFor(() => expect(second.restoreDraft).toHaveBeenCalledTimes(1), { timeout: 500 })
+    expect(second.restoreDraft.mock.calls[0][0]).toBe('read @notes.md')
+    expect(second.hook.result.current.refusals).toEqual({})
+    expect(storedTakeBacks()).not.toHaveProperty('test')
   })
 
   it.each(['edit', 'queue'] as const)('hands a %s back to the composer when a hard stop discarded the steer', (action) => {
@@ -701,7 +785,7 @@ describe('useSteerRetract', () => {
 
     act(() => { hook.result.current.onSteerAction('m-1', 'unsend') })
     await waitFor(
-      () => expect(hook.result.current.refusals).toEqual({ 'm-1': 'busy' }),
+      () => expect(hook.result.current.refusals).toEqual({ 'm-1': { refusal: 'busy', action: 'unsend' } }),
       { timeout: 500 },
     )
     expect(hook.result.current.pending).toEqual({})

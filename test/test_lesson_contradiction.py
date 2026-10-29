@@ -781,7 +781,9 @@ class TestApiLessonsDeleteOffloadsRemove:
         seen: dict[str, int] = {}
 
         class _RecordingStore:
-            def remove(self, rule_sub, repo_scope=None, *, exact=False):  # noqa: ANN001 - test double
+            def remove(  # noqa: ANN001 - test double
+                self, rule_sub, repo_scope=None, *, exact=False, keep_one=False
+            ):
                 seen["remove"] = threading.get_ident()
                 return True
 

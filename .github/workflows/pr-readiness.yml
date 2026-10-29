@@ -186,18 +186,63 @@ concurrency:
   # merge guard's other half: the cancelled run's reads predate the re-run, so
   # it must not publish. The hold this run writes instead stands until the
   # sweep's recompute, which reads the re-run's completion.
+  #
+  # The `workflow_run` key carries a FOURTH segment, `hold` or `noop`, and it is
+  # the job gate's COMPLETE admission condition for this event, not just the
+  # attempt clause. A run is in the cancelling hold group if and only if the job
+  # will run; everything else collapses among itself in a sibling `noop` group
+  # and skips without ever allocating a runner. Mirroring only part of the gate
+  # is a defect, not a smaller version of this: the gate admits `dynamic` runs
+  # and Sensitive Change Review `pull_request_review` runs on a FIRST attempt,
+  # so an attempt-only suffix would label those `noop` and park an admitted hold
+  # in a cancelling group with the dispatches this change gates -- the next one
+  # would cancel it and then skip, publishing nothing and leaving the previous
+  # verdict standing. The predicate CANNOT live in the `if:` alone:
+  # workflow-level `concurrency` is evaluated when the run is created, before
+  # any job condition is read, so a single group would let a gated dispatch
+  # cancel a real in-flight hold and then skip -- leaving no hold published
+  # while a monitored lane re-runs, which is the exact stale-green window this
+  # subscription exists to close (#25037, and #24715 for why a job-level `if:`
+  # cannot carry it). It cannot move to `cancel-in-progress` either: a `false`
+  # there leaves the superseded run PENDING in the group rather than gone, which
+  # is the pathology behind the runs stuck in `queued` on this repository.
+  #
+  # THE TWO EXPRESSIONS MUST NEVER DRIFT. GitHub offers nowhere to write the
+  # predicate once -- `concurrency` can read only the `github`, `inputs` and
+  # `vars` contexts, not `env` and not a job output -- so
+  # `test/test_ai_review_workflows.py` compares them two ways: the suffix is
+  # literally the gate with its leading non-`workflow_run` clause removed, and
+  # the two agree on every admission case the gate's own table enumerates.
+  # Change one, change the other, or those tests fail.
+  #
+  # `Issue Gate` and `Security Scope Review` are exempt unconditionally because
+  # they are the only monitored lanes that start on `labeled`/`unlabeled`, which
+  # this workflow's `pull_request_target` trigger does not subscribe to. For
+  # those two a FIRST attempt can be the only hold a running blocking lane ever
+  # gets. Every other monitored lane's attempt-1 start path is either already
+  # excluded by the event clauses below (`merge_group`, `push`, `schedule`,
+  # `workflow_dispatch`) or an event `pull_request_target` already hears.
   group: >-
     ${{
       github.event_name == 'pull_request_target'
       && format('pr-readiness-pt-{0}', github.run_id)
       || github.event_name == 'workflow_dispatch'
       && format('pr-readiness-wd-{0}-{1}', inputs.pr, inputs.sha)
-      || format('pr-readiness-wr-{0}-{1}-{2}',
+      || format('pr-readiness-wr-{0}-{1}-{2}-{3}',
            github.event.workflow_run.head_repository.full_name
              || github.run_id,
            github.event.workflow_run.head_branch || '',
            github.event.workflow_run.head_sha
-             || github.run_id)
+             || github.run_id,
+           ((github.event.workflow_run.event == 'pull_request'
+             && github.event.workflow_run.name != 'Sensitive Change Review'
+             && (github.event.workflow_run.run_attempt > 1
+                 || github.event.workflow_run.name == 'Issue Gate'
+                 || github.event.workflow_run.name == 'Security Scope Review'))
+            || github.event.workflow_run.event == 'dynamic'
+            || (github.event.workflow_run.event == 'pull_request_review'
+                && github.event.workflow_run.name == 'Sensitive Change Review'))
+             && 'hold' || 'noop')
     }}
   cancel-in-progress: true
 
@@ -231,10 +276,26 @@ jobs:
     # the shared pool. A review run is the opposite case: no other event this
     # workflow hears follows a review. Both clauses name the lane by its
     # `name:`, the same field the trigger allowlist matches on.
+    #
+    # The `run_attempt > 1` clause is the other half of the fourth concurrency
+    # key segment above, and the comment there is the full account: the group
+    # key decides which runs may cancel a hold, and this condition decides which
+    # of them publish one. EVERYTHING BELOW THE FIRST CLAUSE IS COPIED INTO THAT
+    # KEY, every branch of it, and `test/test_ai_review_workflows.py` fails if
+    # the two diverge by a character or on any admission case. The first clause
+    # is the exception, and only because the key's `format()` branch it would
+    # guard is unreachable for a non-`workflow_run` event. A first attempt
+    # of a monitored lane needs no hold here because the
+    # `pull_request_target: synchronize` run for the same head has already
+    # published `checking`; a re-run is the only start this workflow hears that
+    # no other event covers.
     if: >-
       github.event_name != 'workflow_run'
       || (github.event.workflow_run.event == 'pull_request'
-          && github.event.workflow_run.name != 'Sensitive Change Review')
+          && github.event.workflow_run.name != 'Sensitive Change Review'
+          && (github.event.workflow_run.run_attempt > 1
+              || github.event.workflow_run.name == 'Issue Gate'
+              || github.event.workflow_run.name == 'Security Scope Review'))
       || github.event.workflow_run.event == 'dynamic'
       || (github.event.workflow_run.event == 'pull_request_review'
           && github.event.workflow_run.name == 'Sensitive Change Review')

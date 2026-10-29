@@ -275,6 +275,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, slot_key: 'str', payload: 'dict') -> 'None'",
     ),
+    "broadcast_slot_fold": (
+        "function",
+        False,
+        False,
+        "(self, slot: 'str', legacy: 'WsPayload', delta: 'WsPayload | None') -> 'None'",
+    ),
     "broadcast_ws": (
         "function",
         False,
@@ -294,6 +300,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, msg_type: 'str', data: 'WsPayload') -> 'None'",
     ),
     "bump_pinned_order_rev": ("function", False, False, "(self) -> 'None'"),
+    "bump_tags_generation": ("function", False, False, "(self) -> 'None'"),
     "cancel_questions_for_slot": ("function", False, False, "(self, slot_key: 'str') -> 'int'"),
     "channel_status": ("function", False, False, "(self) -> 'dict[str, dict[str, Any]]'"),
     "clear_notifications": ("function", True, False, "(self) -> 'None'"),
@@ -332,6 +339,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "ensure_dynamic_card_store": ("function", False, False, "(self) -> 'Any'"),
     "finish_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
     "flush_slot_now": ("function", False, False, "(self, slot: '_ChatSlot') -> 'None'"),
+    "fold_apply_watch": ("function", False, False, "(self) -> 'frozenset[str]'"),
     "fold_watch_routing": (
         "function",
         False,
@@ -387,7 +395,9 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "linked_session_busy": ("function", False, False, "(self, session_key: 'str') -> 'bool'"),
     "live_slot_count": ("function", False, False, "(self) -> 'int'"),
+    "ensure_chat_reactions_loaded": ("function", True, False, "(self) -> 'None'"),
     "load_chat_pins": ("function", False, False, "(self) -> 'None'"),
+    "load_chat_reactions": ("function", False, False, "(self) -> 'None'"),
     "load_cron_folders": ("function", False, False, "(self) -> 'None'"),
     "load_folders": ("function", False, False, "(self) -> 'None'"),
     "load_tags": ("function", False, False, "(self) -> 'None'"),
@@ -487,6 +497,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, *, legacy_only: 'bool' = False) -> 'None'",
     ),
     "push_source_status": ("function", False, False, "(self, delta: 'dict') -> 'None'"),
+    "push_subagent_patch": ("function", False, False, "(self) -> 'None'"),
     "push_update_progress": (
         "function",
         False,
@@ -609,6 +620,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "running_session_keys": ("function", False, False, "(self) -> 'frozenset[str]'"),
     "save_chat_pins": ("function", False, False, "(self) -> 'None'"),
+    "save_chat_reactions": (
+        "function",
+        False,
+        False,
+        "(self, records: 'list[dict] | None' = None) -> 'None'",
+    ),
     "save_cron_folders": ("function", False, False, "(self) -> 'None'"),
     "save_folders": ("function", False, False, "(self) -> 'None'"),
     "save_pinned_session_order": ("function", False, False, "(self, keys: 'list[str]') -> 'None'"),
@@ -650,6 +667,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "served_bundle_id": ("staticmethod", False, False, "(index: 'Path | None' = None) -> 'str'"),
     "serving_loop": ("property", False, False, "(self) -> \"'asyncio.AbstractEventLoop | None'\""),
     "set_dynamic_cards_enabled": ("function", False, False, "(self, enabled: 'bool') -> 'None'"),
+    "set_fold_apply_capable": (
+        "function",
+        False,
+        False,
+        "(self, ws: 'web.WebSocketResponse', capable: 'bool') -> 'bool'",
+    ),
     "set_fold_delta_capable": (
         "function",
         False,
@@ -699,6 +722,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> \"'Iterator[Callable[[str], None]]'\"",
     ),
+    "tags_generation": ("function", False, False, "(self) -> 'int'"),
     "unack_notification": ("function", True, False, "(self, ts: 'str') -> 'bool'"),
     "unregister_sse": (
         "function",

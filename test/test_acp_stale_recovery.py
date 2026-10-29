@@ -768,6 +768,51 @@ async def test_established_flat_model_wait_gets_extended_window():
 
 
 @pytest.mark.asyncio
+async def test_platform_limited_model_wait_gets_extended_window():
+    """macOS has no socket evidence to tell a non-streamed think from a wedge,
+    so a flat wait there (tagged platform_limited) gets the same
+    model_silent_probe_secs window as an established_flat one on Linux."""
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        stale_window_secs=0.05,
+        model_silent_probe_secs=10.0,
+        tool_stall_hard_cap_secs=999.0,
+    )
+    handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_model_wait = lambda pid: (
+        "unknown",
+        "platform_limited: backend subtree flat (cpu +0ns (darwin cpu-only))",
+    )
+
+    await _drain(handle, req_id=1, timeout=0.3)
+
+    assert handle._stale_probe is False
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_platform_limited_model_wait_probes_past_the_extended_window():
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        stale_window_secs=999.0,
+        model_silent_probe_secs=0.05,
+        tool_stall_hard_cap_secs=999.0,
+    )
+    handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_model_wait = lambda pid: (
+        "unknown",
+        "platform_limited: backend subtree flat (cpu +0ns (darwin cpu-only))",
+    )
+
+    await _drain(handle, req_id=1, timeout=0.3)
+
+    assert handle._stale_probe is True
+    handle._runtime.send_notification.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_dead_model_wait_probes_immediately():
     """A DEAD model-wait verdict (no backend socket, flat counters — the
     done-but-lost-frame wedge) probes without waiting for the stale window."""

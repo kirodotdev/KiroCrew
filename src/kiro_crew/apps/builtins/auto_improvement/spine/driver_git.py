@@ -27,7 +27,7 @@ from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 #: os.devnull disables every hook; `core.fsmonitor=false` disables the fsmonitor daemon, a second
 #: repo-controlled exec vector (a repo can set it to an arbitrary program git then spawns). These
 #: are `-c` overrides on OUR argv, which take precedence over anything in the repo's own config,
-#: and they are placed BEFORE the subcommand so git applies them. Raised by the GPT review.
+#: and they are placed BEFORE the subcommand so git applies them.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
@@ -43,12 +43,12 @@ def _git(
     # Git substitutes objects named by ``refs/replace/<oid>`` transparently in reads while the
     # push transport sends the ORIGINAL, and `git replace` is not on the pre-push reviewer's
     # denylist -- so any read here that a replacement could redirect is a place where what this
-    # code inspects and what it publishes come apart. Two instances were found one at a time
-    # (the scan, then the rebase); disabling it at the single chokepoint every read goes through
-    # closes the class FOR THE DRIVER FAMILY'S READS instead of the next
+    # code inspects and what it publishes come apart. Patching reads one at a time (the scan,
+    # the rebase) leaves the next one open; disabling it at the single chokepoint every read
+    # goes through closes the class FOR THE DRIVER FAMILY'S READS instead of the next
     # instance. It is not repository-wide: `pr_recipe` and `backend/commit.py` do their own
     # git reads and still honour `refs/replace/*`, so their scans remain substitutable the
-    # same way. Out of scope here, named so the guarantee is not read as broader than it is. Raised by the GPT review of this branch.
+    # same way. Out of scope here, named so the guarantee is not read as broader than it is.
     # ``errors="replace"``: callers run `diff`/`show`, which print file CONTENT, and a repo
     # legitimately holds non-UTF-8 bytes. A strict decode raises inside
     # ``subprocess.communicate``, so the failure cannot be read off ``returncode`` — the

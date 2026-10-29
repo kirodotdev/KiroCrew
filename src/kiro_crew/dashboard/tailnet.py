@@ -38,7 +38,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from kiro_crew import github_runner
+from kiro_crew import edition, github_runner
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.context import redact_log_via_context
@@ -551,6 +551,32 @@ def probe_daemon() -> DaemonProbe:
     )
 
 
+#: What every tailnet surface says when an enterprise policy does not turn it on.
+POLICY_OFF_DETAIL = "Tailnet is off by policy."
+
+
+def policy_off(*, audit_tool: str = "") -> bool:
+    """True in an enterprise build whose policy does not turn tailnet access on.
+
+    One boolean, ``capabilities.tailnet_origin``, asked of the policy layer alone
+    (``edition_locks.policy_permits``, RFC D3): a policy that permits it turns it on;
+    a silent or denying policy leaves it off. Local config, a local tier and the
+    environment cannot turn it on. No tailnet list and no Tailscale daemon is read
+    here. An ``oss`` build answers ``False`` without reading anything, and its
+    existing pin check (:func:`is_governance_pinned_off`) applies unchanged.
+
+    Pass *audit_tool* from an acting call so the answer is written to SEL; the
+    status card and other pure reads pass nothing. Publishing
+    (``tailnet_serve.publish``), origin derivation (:func:`resolve_tailnet_host`,
+    used by both gateway entry points) and its background recovery all ask here.
+    """
+    if not edition.is_enterprise():
+        return False
+    from kiro_crew.edition_locks import policy_permits
+
+    return not policy_permits("capabilities.tailnet_origin", audit_tool=audit_tool)
+
+
 def is_governance_pinned_off(*, audit_tool: str = "") -> bool:
     """Return whether an enterprise ceiling pins ``capabilities.tailnet_origin`` off.
 
@@ -660,6 +686,15 @@ async def resolve_tailnet_host(enabled: bool) -> str:
     """
     if not enabled:
         return ""
+    # Audited (SEL) off the event loop: resolving the ceiling and the SEL write
+    # both touch disk.
+    if await asyncio.to_thread(policy_off, audit_tool="tailnet_origin_resolve"):
+        logger.warning(
+            "dashboard.tailscale.enabled is on, but %s No tailnet origin was "
+            "derived and the Tailscale daemon was not consulted.",
+            POLICY_OFF_DETAIL,
+        )
+        return ""
     # Chokepoint (a) — THE ACTION. A ceiling pinning ``capabilities.tailnet_origin``
     # off stops the derivation itself, ahead of the daemon call: nothing is spawned
     # and no origin is contributed, so the pin closes both halves an administrator
@@ -761,6 +796,10 @@ async def _origin_governance_pinned(*, audit_tool: str = "") -> bool:
     """Evaluate the live governance ceiling off-loop, failing closed."""
 
     try:
+        # An enterprise policy that does not turn tailnet on is the same answer:
+        # recovery keeps waiting and adds no origin.
+        if await asyncio.to_thread(policy_off, audit_tool=audit_tool):
+            return True
         return await asyncio.to_thread(
             is_governance_pinned_off,
             audit_tool=audit_tool,
@@ -1235,6 +1274,61 @@ async def resolve_forwarded_peer(request: web.Request, trust: TailnetTrust) -> F
             _USER_LOGIN_HEADER,
             header_login[:64],
         )
+        return None
+    return ForwardedPeer(login=login, node=node, address=addr)
+
+
+def _direct_peer_candidate(request: web.Request, trust: TailnetTrust) -> str | None:
+    """The socket address of a tailnet peer that connected to this gateway directly.
+
+    The counterpart of :func:`_forwarded_peer_candidate` for a gateway bound to
+    its tailnet address with no local proxy in front. The address is the TCP
+    peer itself, never a header, so the only questions are whether identity
+    trust is on, whether the peer is a tailnet address, and whether it carries
+    no forwarding header. A non-loopback peer that sends any forwarding header
+    (``origin.is_proxied_request``) is a proxy on another node: its socket
+    address names the proxy device, not the person behind it, so it is never
+    attributed. No I/O.
+    """
+    from kiro_crew.dashboard.origin import is_proxied_request
+
+    if not trust.enforces_identity:
+        return None
+    remote = request.remote or ""
+    if not remote or is_loopback(remote):
+        return None
+    if is_proxied_request(request):
+        return None
+    try:
+        candidate = ipaddress.ip_address(remote)
+    except ValueError:
+        return None
+    if not any(candidate in net for net in _TAILNET_RANGES):
+        return None
+    return str(candidate)
+
+
+async def resolve_direct_peer(request: web.Request, trust: TailnetTrust) -> ForwardedPeer | None:
+    """Resolve a directly connected tailnet peer through the daemon, or ``None``.
+
+    Attribution only. The result never takes part in the session pin or the
+    login allowlist, which keep their existing behaviour for a direct
+    connection, so resolving it cannot admit or refuse a request. The daemon
+    call shares the forwarded path's cache and executor. A
+    ``Tailscale-User-Login`` header that disagrees with the daemon drops the
+    attribution, the same corroboration rule the forwarded path applies.
+    """
+    addr = _direct_peer_candidate(request, trust)
+    if addr is None:
+        return None
+    resolved = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), _whois_cached, addr
+    )
+    if resolved is None:
+        return None
+    login, node = resolved
+    header_login = (request.headers.get(_USER_LOGIN_HEADER) or "").strip()
+    if header_login and header_login.lower() != login.lower():
         return None
     return ForwardedPeer(login=login, node=node, address=addr)
 

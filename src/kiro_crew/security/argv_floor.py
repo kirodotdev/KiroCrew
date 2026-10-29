@@ -184,7 +184,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_dev_mode_out_of_root_confirm,
         _is_kill_by_name_program,
         _is_self_cloud_destructive,
-        _is_self_file_delivery,
         _is_self_gateway_restart,
         _is_self_kill,
         _is_self_module_flag,
@@ -314,6 +313,5 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     )
     from kiro_crew.security.vocabulary import (  # noqa: F401
         _KILL_BY_NAME_PROGRAMS,
-        _SELF_FILE_DELIVERY_VERBS,
         _SELF_NAME_RE,
     )

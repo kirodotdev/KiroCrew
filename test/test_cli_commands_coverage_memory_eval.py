@@ -155,12 +155,18 @@ class TestLearnCli:
             cc._learn(_ns(learn_action="remove", query="q"))
         assert "Removed lessons matching: q" in capsys.readouterr().out
 
-    def test_remove_no_match(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_remove_no_match_exits_1_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A miss removed nothing, so `learn remove q && next` must stop.
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []
             h.jsonl.remove.return_value = False
-            cc._learn(_ns(learn_action="remove", query="q"))
-        assert "No lessons match: q" in capsys.readouterr().out
+            with pytest.raises(SystemExit) as exc:
+                cc._learn(_ns(learn_action="remove", query="q"))
+            h.vs.close.assert_called_once()
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "No lessons match: q\n"
 
     def test_remove_forwards_repo_scope_to_vector_store(
         self, capsys: pytest.CaptureFixture[str]
@@ -405,14 +411,19 @@ class TestMemoryCli:
         assert "Migration complete" in out and "Skipped:  3" in out
 
     def test_import_requires_a_file_argument(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with _MemHarness():
+        with _MemHarness(), pytest.raises(SystemExit) as exc:
             cc._memory_cmd(_ns(mem_action="import", file=None))
-        assert "Usage: kirocrew memory import" in capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "Usage: kirocrew memory import" in capsys.readouterr().err
 
     def test_import_missing_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        with _MemHarness():
+        # A refused import must stop `memory import f && next`.
+        with _MemHarness(), pytest.raises(SystemExit) as exc:
             cc._memory_cmd(_ns(mem_action="import", file=str(tmp_path / "absent.json")))
-        assert "File not found" in capsys.readouterr().out
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "File not found" in out.err
 
     def test_import_reads_through_safe_read_file(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -953,8 +964,13 @@ class TestArtifactCli:
 class TestPodDispatch:
     def test_pod_delegates_to_verb_layer(self) -> None:
         args = _ns(pod_action="ls")
-        with patch("kiro_crew.pod.cli.dispatch") as dispatch:
+        # The verb layer's exit status must reach the shell unchanged.
+        with (
+            patch("kiro_crew.pod.cli.dispatch", side_effect=SystemExit(3)) as dispatch,
+            pytest.raises(SystemExit) as exc,
+        ):
             cc._pod(args)
+        assert exc.value.code == 3
         dispatch.assert_called_once_with(args)
 
 
@@ -1226,7 +1242,7 @@ class TestRunEval:
 
     @pytest.mark.asyncio
     async def test_all_scenarios_loads_the_whole_directory(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
         scenarios = [_scenario("a"), _scenario("b")]
@@ -1237,10 +1253,13 @@ class TestRunEval:
             await cc._run_eval(_ns(all_scenarios=True, scenarios=None, judge=False))
         assert loader.call_args[0][0].name == "scenarios"
         h.runner.run_scenarios.assert_awaited_once_with(scenarios)
+        out = capsys.readouterr().out
+        assert "Running: a, b (4 turns)" in out
+        assert "Overall: 1/2 scenarios passed" in out
 
     @pytest.mark.asyncio
     async def test_named_scenario_is_resolved_by_extension(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
         with (
@@ -1251,15 +1270,21 @@ class TestRunEval:
                 _ns(all_scenarios=False, scenarios=["memory_recall_basic"], judge=False)
             )
         assert ld.call_args[0][0].name == "memory_recall_basic.json"
+        out = capsys.readouterr().out
+        assert "Running: named" in out and "Overall: 1/1 scenarios passed" in out
 
     @pytest.mark.asyncio
     async def test_unknown_scenario_lists_available_and_returns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        with _EvalHarness([]) as h:
+        with _EvalHarness([]) as h, pytest.raises(SystemExit) as exc:
             await cc._run_eval(_ns(all_scenarios=False, scenarios=["does-not-exist"], judge=False))
-        out = capsys.readouterr().out
+        # An unknown name ran nothing, so `kirocrew eval x && next` must stop.
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        out = captured.err
         assert "scenario 'does-not-exist' not found" in out
         assert "smoke_test" in out
         h.runner.run_scenarios.assert_not_awaited()

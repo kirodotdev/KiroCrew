@@ -78,6 +78,15 @@ _SCHEMA_VERSION = 7
 #: let the caller read files this once rather than block a chat turn on a lock.
 _BUSY_TIMEOUT_SECS = 2.0
 
+#: Cap on the ``-wal`` file a checkpoint leaves behind. In WAL mode SQLite reuses
+#: the log file after a checkpoint instead of shrinking it, so on one long-lived
+#: connection the file stays at the largest transaction it ever held (10 MB beside
+#: an 18 MB index was measured) until the process exits. With
+#: ``journal_size_limit`` set, the log is truncated to this size each time it is
+#: reset after a checkpoint. That is the same automatic checkpoint that already
+#: runs, so no write waits on a reader and readers stay non-blocking.
+_WAL_SIZE_LIMIT_BYTES = 4 * 1024 * 1024
+
 #: Above this size, decline the index for the current search so the caller uses
 #: the legacy full-body reader. Indexing only a prefix would silently hide terms
 #: later in an otherwise valid global skill.
@@ -369,6 +378,8 @@ class SkillSearchIndex:
                 # because a lost commit only costs a re-index.
                 enable_wal(conn, timeout_secs=_BUSY_TIMEOUT_SECS)
                 conn.execute("PRAGMA synchronous=NORMAL")
+                # Per connection, not stored in the file, so every opener sets it.
+                conn.execute(f"PRAGMA journal_size_limit={_WAL_SIZE_LIMIT_BYTES}")
                 conn.executescript(_DDL)
                 signature = tokenizer_signature()
                 row = conn.execute("SELECT version, tokenizer FROM skill_index_schema").fetchone()

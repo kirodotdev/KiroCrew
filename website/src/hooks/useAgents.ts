@@ -2,11 +2,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { KiroCrewAgent } from '../components/AgentSelector'
-import { hideMateWithoutPreview } from '../lib/assistantMember'
 import { withMarkdownBlocks } from '../lib/markdownAgents'
-import { PREVIEW_CREW } from '../utils/previewFlags'
 import { jsonEqual } from '../utils/structuralEqual'
-import { usePreviewFlag } from './usePreviewFlag'
+import { setCrewModeCatalog, withoutConductors } from '../lib/crewMode'
 
 /**
  * Reads the execution-choice catalog (`GET /api/agents/catalog`): configured
@@ -34,7 +32,8 @@ import { usePreviewFlag } from './usePreviewFlag'
  *   withheld when a listed template reaches the same binding (see
  *   `withoutCoveredCrewmates`); a crewmate no template covers stays pickable, and
  *   so does the member named as the default agent unless a listed template
- *   shares its name.
+ *   shares its name. Conductor templates (the catalog's `conductor_agents`) are
+ *   always left out: a chat reaches a conductor through Crew Mode.
  *   With the key on, every member is listed, a member and a template of one name
  *   are two rows here, and picking one sends its kind.
  * @returns `agents` — the same catalog folded to ONE row per name for the
@@ -72,6 +71,7 @@ function keepIfEqual(prev: KiroCrewAgent[], next: KiroCrewAgent[]): KiroCrewAgen
   return jsonEqual(prev, next) ? prev : next
 }
 
+
 export function useAgents(refreshTrigger: number, sessionKey?: string, projectDir?: string) {
   const [choices, setChoices] = useState<KiroCrewAgent[]>(NO_CHOICES)
   // The last roster that actually LOADED, kept across a scope switch. `choices`
@@ -93,6 +93,11 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   const [error, setError] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
+  // The catalog's Crew Mode facts as a string, so the picker memos below re-run
+  // when only the conductor changed: `lib/crewMode` keeps the conductor set in a
+  // module variable, and `keepIfEqual` keeps the agent arrays when the roster is
+  // unchanged, so without this a new `agent.crew_mode_agent` left the picker
+  // hiding the old conductor and offering the new one.
   const reload = useCallback(() => {
     setReloading(true)
     setReloadTick(t => t + 1)
@@ -125,6 +130,10 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       // same "Kiro Agent only" pill: the catalog was asked for THIS chat, so its
       // `session_backend` is the harness this chat runs.
       const rows = withMarkdownBlocks(d.agents || [], d)
+      // Recorded before the state update below re-renders, so every reader of
+      // lib/crewMode (the Crew Mode switch, the picker filter) sees this catalog's
+      // conductor on the same render as its rows.
+      setCrewModeCatalog(d.crew_mode_agent, d.conductor_agents)
       // Every `refresh` frame and every session switch refetches the catalog,
       // and the reply is almost always the roster already held. Keeping the
       // held array then keeps every memo downstream of it, including the
@@ -148,23 +157,20 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     return () => { cancelled = true }
   }, [refreshTrigger, sessionKey, projectDir, reloadTick])
 
-  // Mate stays out of every list until the Crewmates preview is on.
-  const crewPreview = usePreviewFlag(PREVIEW_CREW)
-  const shown = useMemo(() => hideMateWithoutPreview(choices, crewPreview), [choices, crewPreview])
-  const shownDisplay = useMemo(() => hideMateWithoutPreview(displayChoices, crewPreview), [displayChoices, crewPreview])
-  const agents = useMemo(() => foldByName(shown), [shown])
-  const displayAgents = useMemo(() => foldByName(shownDisplay), [shownDisplay])
+  const agents = useMemo(() => foldByName(choices), [choices])
+  const displayAgents = useMemo(() => foldByName(displayChoices), [displayChoices])
   // Filtered AFTER the fold, so hiding a member from the pop-up never changes
   // which row a bare name resolves to for the name-only consumers.
+  // Conductor templates never reach a chat's picker: Crew Mode is the way in.
   const pickerChoices = useMemo(
-    () => (memberChoices ? shown : withoutCoveredCrewmates(shown)),
-    [shown, memberChoices],
+    () => withoutConductors(memberChoices ? choices : withoutCoveredCrewmates(choices)),
+    [choices, memberChoices],
   )
   // The picker's rows as of the last successful load, for display-only labels
   // that must agree with the picker on when a same-name pair exists (#19472).
   const displayPickerChoices = useMemo(
-    () => (memberChoices ? shownDisplay : withoutCoveredCrewmates(shownDisplay)),
-    [shownDisplay, memberChoices],
+    () => withoutConductors(memberChoices ? displayChoices : withoutCoveredCrewmates(displayChoices)),
+    [displayChoices, memberChoices],
   )
 
   return { agents, displayAgents, choices: pickerChoices, displayChoices: displayPickerChoices, defaultAgent, error, reload, reloading }

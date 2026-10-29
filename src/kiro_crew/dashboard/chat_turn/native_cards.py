@@ -317,8 +317,18 @@ def _unregister_native_card(state, card_id: str) -> None:
         state._native_cards.pop(card_id, None)
 
 
-def _native_subagent_close_all(state, slot, tracker, card_output=None) -> None:
-    """Complete any still-open native subagent cards (turn-end safety net)."""
+NATIVE_SUBAGENT_INTERRUPTED_ERROR = "interrupted (parent turn ended)"
+
+
+def _native_subagent_close_all(
+    state, slot, tracker, card_output=None, error: str | None = None
+) -> None:
+    """Complete any still-open native subagent cards (turn-end safety net).
+
+    ``error`` is None only when the parent turn landed normally; a stopped,
+    timed-out or crashed turn passes ``NATIVE_SUBAGENT_INTERRUPTED_ERROR`` so a
+    child cut off mid-run does not show as a clean completion.
+    """
     for sid, info in tracker.items():
         if info.get("done"):
             continue
@@ -328,7 +338,7 @@ def _native_subagent_close_all(state, slot, tracker, card_output=None) -> None:
         _elapsed = time.time() - info.get("started", time.time())
         _result = _feed or "(output in chat)"
         info["elapsed"] = _elapsed
-        info["error"] = None
+        info["error"] = error
         info["result"] = _result
         info["done_at"] = time.time()
         _unregister_native_card(state, _cid)
@@ -338,7 +348,7 @@ def _native_subagent_close_all(state, slot, tracker, card_output=None) -> None:
                 "id": _cid,
                 "slot": slot.key,
                 "elapsed": _elapsed,
-                "error": None,
+                "error": error,
                 "task": info.get("task", ""),
                 "agent": info.get("agent", ""),
                 "result": _result,

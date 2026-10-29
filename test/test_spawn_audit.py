@@ -1027,10 +1027,13 @@ def test_gateway_spawns_all_own_session():
         spawns += 1
         if not any(kw.arg == "start_new_session" for kw in node.keywords):
             missing.append(f"{_GATEWAY_REL}:{node.lineno}")
-    assert spawns >= 10, (
+    assert spawns >= 9, (
         f"only {spawns} spawn sites found in {_GATEWAY_REL} — the audit's "
         "spawn matcher no longer matches the file's spawn idiom; fix the "
-        "matcher rather than deleting the ratchet"
+        "matcher rather than deleting the ratchet. (The floor dropped from 10 "
+        "to 9 when the unattended apply's inline fetch moved to the shared "
+        "update_governance.fetch_and_pin_upstream helper, which carries the same "
+        "start_new_session discipline and is covered by the spawn allowlist.)"
     )
     assert not missing, (
         "Spawn(s) in slack/gateway.py without start_new_session — a timeout "

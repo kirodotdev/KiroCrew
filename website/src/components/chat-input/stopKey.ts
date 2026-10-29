@@ -10,7 +10,9 @@ import { escapeStoppedSpeech } from '../../utils/speechStopKey'
    into the editors' own key handling (the textarea's keydown in keyboard.ts,
    the rich-text editor's Escape command in LexicalComposerInput), so a
    dialog, the command bar, a terminal or the transcript holding focus never
-   reaches it. */
+   reaches it. The one page-level caller is the composer's Escape-stack layer
+   (hooks/useEscapeLayer), registered only while an optimize runs, where the
+   locked rich-text editor drops keys; there it can only cancel the optimize. */
 
 /** The part of an Escape keydown the gate reads. Both React's synthetic event
  *  (textarea) and the native event Lexical hands its Escape command fit it. */
@@ -28,7 +30,7 @@ export interface StopKeyContext {
 /** Run on a bare Escape. Returns true when the gate claimed the key. */
 export type StopTurnOnEscape = (e: StopKeyEvent, key: StopKeyContext) => boolean
 
-export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive }: {
+export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize }: {
   /** A turn is running on THIS composer's slot. */
   isRunning: boolean
   /** The Stop protocol the button runs (soft cancel, then force kill on a
@@ -43,14 +45,16 @@ export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceR
   hasApproval: boolean
   /** The approval-mode nudge is up: Escape hides it for the session. */
   approvalNudgeActive: boolean
+  /** A prompt optimize is in flight: Escape cancels it, as its Cancel button does. */
+  optimizingRef?: React.RefObject<boolean>
+  onCancelOptimize?: () => void
 }): StopTurnOnEscape {
   return useCallback((e: StopKeyEvent, { native, composing }: StopKeyContext): boolean => {
     // Leave Escape alone when an IME composition owns the key (Escape cancels
-    // the candidate window, never the turn), when there is no turn to stop, or
-    // when this surface has no stop. The caller computes `composing` from its
-    // own latch, which also catches the post-`compositionend` WebKit keydown
-    // (keyCode 229, isComposing already false).
-    if (composing || !isRunning || !onStop) return false
+    // the candidate window, never the turn). The caller computes `composing`
+    // from its own latch, which also catches the post-`compositionend` WebKit
+    // keydown (keyCode 229, isComposing already false).
+    if (composing) return false
     // This same keydown already stopped voice read-back (the capture-phase
     // stop-speaking shortcut). The press was for the speech: stopping the turn
     // too would soft-cancel it, and a second press to silence the next
@@ -72,6 +76,15 @@ export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceR
     // probe so the two gates cannot drift (escapeOwners.ts documents exactly
     // which surfaces count and why).
     if (anotherEscapeOwnerIsOpen()) return false
+    // An in-flight prompt optimize comes next: Escape cancels it the way its
+    // Cancel button does, and this press stops nothing else.
+    if (optimizingRef?.current && onCancelOptimize) {
+      e.preventDefault()
+      onCancelOptimize()
+      return true
+    }
+    // No turn to stop, or no stop on this surface.
+    if (!isRunning || !onStop) return false
     // The key is ours. But a HELD Escape must never escalate: after the first
     // soft cancel the slot is optimistically `soft_pending`, and a keydown more
     // than FORCE_KILL_ARMING_MS (400ms) later is read as a force kill by the
@@ -89,5 +102,5 @@ export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceR
     e.preventDefault()
     onStop()
     return true
-  }, [isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive])
+  }, [isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize])
 }

@@ -518,17 +518,23 @@ class TestSlackInteractions:
 
         monkeypatch.setattr(ix, "is_allowed_user", lambda _u: True)
         monkeypatch.setattr(ix, "channel_refusal", lambda _c, **_k: "refused")
-        handled = AsyncMock()
-        monkeypatch.setattr(ix, "_handle_options_submit", handled)
-        payload = {
-            "type": "block_actions",
-            "actions": [{"action_id": ix.OPTIONS_SUBMIT_ACTION}],
-            "channel": {"id": "C0999"},
-            "message": {"ts": "1"},
-            "user": {"id": "U1"},
-        }
-        await ix.dispatch(payload)
-        handled.assert_not_awaited()
+        click, menu = AsyncMock(), AsyncMock()
+        monkeypatch.setattr(ix, "_handle_options", click)
+        monkeypatch.setattr(ix, "_open_options_several", menu)
+        for action in (
+            {"action_id": f"{ix.OPTIONS_ACTION_PREFIX}0", "value": "A"},
+            {"action_id": ix.OPTIONS_SEVERAL_ACTION},
+        ):
+            payload = {
+                "type": "block_actions",
+                "actions": [action],
+                "channel": {"id": "C0999"},
+                "message": {"ts": "1"},
+                "user": {"id": "U1"},
+            }
+            await ix.dispatch(payload)
+        click.assert_not_awaited()
+        menu.assert_not_awaited()
 
     def test_every_slack_inbound_gate_also_asks_the_channel(self) -> None:
         # The intake gate (events.py), the nudge fire and the two review-modal

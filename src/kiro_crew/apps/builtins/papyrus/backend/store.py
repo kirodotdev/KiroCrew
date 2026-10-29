@@ -282,7 +282,7 @@ def safe_project_dir(name: str, root: Path | None = None) -> Path:
     #
     # Junctions included: they are the link type a Windows user can create WITHOUT
     # elevation, and `is_symlink()` does not report them — so a symlink-only check
-    # left the whole guard bypassable on exactly the platform this PR adds.
+    # leaves the whole guard bypassable on Windows.
     if is_reparse_link(candidate):
         raise PathRejected("project path is a symlink")
     try:

@@ -289,7 +289,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: hold, so leaf-only is the only hold available to them:
     #:
     #: * ``credential_redaction.json`` -- the owner's credential-redaction
-    #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
+    #:   switch, on the same read-only floor as ``aws_service_consent.json``;
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
     #:   refresh-chain state is never listable from inside the namespace;

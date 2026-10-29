@@ -546,8 +546,10 @@ def _isolated_backup_state(tmp_path, monkeypatch):
     # behaviour lives in test_aws_control_backup_retention.py.
     monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
     backup.clear_stop()
+    hooks._task = None
     yield
     backup.clear_stop()
+    hooks._task = None
 
 
 def _resolvable():
@@ -602,7 +604,10 @@ class TestRouteStartsAJob:
         # upload -- the second adopts the first. The SDK indexes on
         # (kind, dedupe_key), so snapshot and sessions stay independent.
         start = AsyncMock(return_value="c" * 32)
-        _post_run(backup.KIND_SESSIONS, start=start)
+        resp = _post_run(backup.KIND_SESSIONS, start=start)
+        assert resp.status == 200
+        assert _payload(resp)["runId"] == "c" * 32
+        assert _payload(resp)["kind"] == backup.KIND_SESSIONS
         start.assert_awaited_once_with(backup.KIND_SESSIONS, dedupe_key=ACCOUNT)
 
     def test_run_rejects_an_unknown_kind_before_claiming(self):
@@ -709,7 +714,9 @@ class TestRunnerResolvesItsTarget:
             mock.patch.object(backup, "run_snapshot_backup") as work,
         ):
             run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            _await_terminal(sdk, run_id)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
+        assert run.error == ""
         find.assert_called_once_with(PROFILE, REGION, account=ACCOUNT)
         assert work.call_args.args[3] == "moved-bucket"
 
@@ -1090,7 +1097,8 @@ class TestRunnerReadsTheCallerFromParams:
             mock.patch.object(backup, "run_snapshot_backup") as work,
         ):
             run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            _await_terminal(sdk, run_id)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
         assert work.call_args.kwargs["caller"] == backup.CALLER_OWNER
 
 
@@ -1416,7 +1424,11 @@ class TestSharedDriveNoticeCostsOneListCall:
     pays at most this one call."""
 
     def test_the_notice_costs_exactly_one_paid_list_call(self):
-        with mock.patch.object(backup, "_install_folders", return_value=set()) as folders:
-            backup.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
+        mine = backup.install_identity()["id"]
+        seen = {mine, "b" * 32, "a" * 32}
+        with mock.patch.object(backup, "_install_folders", return_value=seen) as folders:
+            others = backup.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
+        # The one listing's folders, minus this install's own, in sorted order.
+        assert others == ["a" * 32, "b" * 32]
         assert folders.call_count == 1
         assert folders.call_args.args[3] == backup.KIND_SNAPSHOT

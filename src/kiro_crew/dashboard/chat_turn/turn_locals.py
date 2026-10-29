@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
 
+    from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         MonitorCompletionHook,
@@ -82,6 +83,7 @@ class _ChatTurn:
     _directive_loop_gen: "int"
     _directive_channel_origin: "bool"
     _commands_off: "bool"
+    _recovery_echo_owed: "bool"
     _turn_actor: "str"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
@@ -91,6 +93,10 @@ class _ChatTurn:
 
     # State those functions write, or read after the turn rebinds it.
     _acquired: "bool"
+    # The embed-pool admission reservation _turn_build_prompt opened for the
+    # context build, settled in _turn_settle_debts. None until (and unless) the
+    # context-builder branch takes one; set in __init__ so every exit can read it.
+    _admission_slot: "Any"
     _activity_after_terminal: "int"
     _allocation_kwargs: "dict[str, Any]"
     _answer_text: "str"
@@ -146,6 +152,9 @@ class _ChatTurn:
     _mirror_stream_ts: "str"
     _mirror_task_counter: "int"
     _mirror_thread: "str | None"
+    _mirror_stream_tried: "bool"
+    _mirror_thinking_ts: "str"
+    _mirror_echo_posted: "bool"
     _msg: "str"
     _native_card_output: "dict[str, list[str]]"
     _native_card_output_len: "dict[str, int]"
@@ -160,6 +169,7 @@ class _ChatTurn:
     _pending_dir_for_digest: "dict[str, str]"
     _pending_dir_tool: "dict[str, str]"
     _pending_input_digest: "dict[str, str]"
+    _pending_tool_ids: "dict[str, PostToolIdentity]"
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
     _produced_visible_output: "bool"
@@ -308,6 +318,7 @@ class _ChatTurn:
         _directive_loop_gen: "int",
         _directive_channel_origin: "bool",
         _commands_off: "bool",
+        _recovery_echo_owed: "bool",
         _turn_actor: "str",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
@@ -336,12 +347,15 @@ class _ChatTurn:
         self._directive_loop_gen = _directive_loop_gen
         self._directive_channel_origin = _directive_channel_origin
         self._commands_off = _commands_off
+        self._recovery_echo_owed = _recovery_echo_owed
         self._turn_actor = _turn_actor
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed
         self._on_irreversibly_consumed = _on_irreversibly_consumed
         self.monitor_completion = monitor_completion
         self._current_message = _current_message
+        # No admission reservation until the context-builder branch opens one.
+        self._admission_slot = None
 
     if not TYPE_CHECKING:
 

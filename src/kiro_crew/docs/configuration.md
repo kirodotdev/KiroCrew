@@ -135,6 +135,7 @@ provider.
 | `pi` | Pi | Uses `pi-acp` and its Pi gate extension. |
 | `goose` | goose | Uses goose's native ACP server. |
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
+| `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
 
 Codex runs with `~/.aws/credentials` and `~/.aws/sso/cache` hidden on purpose,
 and only `~/.aws/config` readable. Codex on Amazon Bedrock therefore needs a
@@ -173,7 +174,10 @@ from a sha256-pinned manifest (`agent.kas_bundle_url`) into
 engine version; after a Kiro Crew update run `kirocrew kas install` again. And
 `agent.kas_bundle: true` makes the `kas` backend spawn that engine directly. On
 this route Kiro Crew is always the credential owner: sign in from the dashboard
-(Sign in) — kiro-cli's login is not consulted. `kirocrew kas status` shows what is
+(Sign in) — kiro-cli's login is not consulted. The chat model picker lists the
+models the engine serves, with their credit multipliers, once a chat has started
+on this route (the engine reports them when a session opens; before that the
+picker offers `auto`). `kirocrew kas status` shows what is
 installed and whether the route is on; `kirocrew doctor` reports it under
 "KAS backend". The engine directory is read-only inside the agent sandbox and
 fenced from the agent's file tools, so a session cannot rewrite the code its next
@@ -273,9 +277,11 @@ work-dispatch tools need a backend that takes them per session.
 |-----|-------------|---------|
 | `agent.provider` | LLM provider backend. `"acp"` (KiroACP / kiro-cli) is the only accepted value | `"acp"` |
 | `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
+| `agent.crew_mode_agent` | The conductor template a chat runs when Crew Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart | `"kirocrew-conductor"` |
 | `agent.kas_bundle` | Run the `kas` backend from Kiro Crew's own installed engine bundle (`kirocrew kas install`) with its bundled Node, instead of kiro-cli's ACP relay. kiro-cli is not needed; the engine signs in through Kiro Crew's own login only. `true` with nothing installed refuses the spawn and names the install command | `false` |
 | `agent.kas_persist_mcp_sign_in` | Keep a remote MCP server's OAuth sign-in across `kas` sessions, subagents, crons and gateway restarts. Kiro Crew stores the server's client registration and tokens in a dedicated encrypted vault under the data home (`kas/mcp-grants/`); it is not the Secrets vault, is not listed there, cannot be granted to a cron, and the agent cannot read it. `false` keeps each sign-in in the engine's memory, so every new session asks again. Takes effect when a KAS process starts | `false` |
 | `agent.kas_bundle_url` | `https://` base `kirocrew kas install` fetches the engine manifest from (`<base>/kas/<version>/manifest.json`). Every artifact is sha256-pinned by the manifest and the manifest by the release, so this chooses where the pinned build is fetched from, never what is trusted. Non-https values fall back to the default | the project's release bucket |
+| `agent.native_skill_projection` | Launch each `kiro` backend agent under a Kiro Crew managed view (`kirocrew-skill-view-*.json` in the kiro agents directory) that serves skills through Kiro Crew's skill search, with `.kiro/settings/cli.json` in the workspace overlaid while it runs. `false` launches agents under their authored names, writes no view, rolls the workspace overlay back, and lets kiro-cli load skill metadata natively. Turn it off when you also run kiro-cli on its own against the same agents directory. `KIROCREW_NATIVE_SKILL_PROJECTION=0` disables it regardless of this value. Takes effect when a native session is next spawned | `true` |
 | `agent.deepseek_env` | Provider keys handed to the DeepSeek Harness (`agent.acp_backend: deepseek`) as environment variables at spawn: a map of environment-variable NAME to a `secret://<vault name>` reference. Store the key under Settings → Secrets first, then map it — e.g. `{"DEEPSEEK_API_KEY": "secret://my-dsh-key"}`. Any provider name the harness knows works. A plaintext value is refused at write time — the `config set` itself fails, so no key is ever stored in `config.json` — and, at spawn, so is a name the harness would forward to its own shell children, a name Kiro Crew sets itself, or one Kiro Crew's agent environment scrub strips: the session is refused before it starts, naming the offending key. Empty means no key — a locally served model needs none. Other backends ignore it | `{}` |
 | `agent.approval_mode` | `"auto"` or `"interactive"` | `"auto"` |
 | `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
@@ -284,7 +290,7 @@ work-dispatch tools need a backend that takes them per session.
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |
-| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; KAS defers all of them, and only when the active agent's `tools` grants `tool_search` (otherwise the setting is sent off for that agent). Other ACP backends ignore it. Kiro Crew's own MCP servers defer only when the spawn runs the pinned kiro-cli install (or its `kiro-cli-chat`) at 2.27.0 or later; any other executable, or an older or unknown version, keeps them resident. Setting `ASBX_KIRO_MANDATORY_MCPS` (comma-separated server names) in the gateway's environment overrides that never-defer list | `true` |
+| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; On KAS, an agent whose `tools` grants `tool_search` has all of its MCP tools deferred and loaded through KAS's own `tool_load`; an agent that grants no `tool_search` keeps them direct, because Kiro Crew lists each of its MCP tools in KAS's never-defer list (a whole-server `@server` grant is expanded from the tool list Kiro Crew already holds for that server, and a server it holds none for stays deferred). KAS ignores this toggle and both thresholds. Other ACP backends ignore it. Kiro Crew's own MCP servers defer only when the spawn runs the pinned kiro-cli install (or its `kiro-cli-chat`) at 2.27.0 or later; any other executable, or an older or unknown version, keeps them resident. Setting `ASBX_KIRO_MANDATORY_MCPS` (comma-separated server names) in the gateway's environment overrides that never-defer list | `true` |
 | `agent.tool_search_min_pct` | Tool-definition context threshold as a percentage; `0` with the token threshold also `0` always defers | `5` |
 | `agent.tool_search_min_tokens` | Tool-definition token threshold; `0` with the percentage threshold also `0` always defers | `50000` |
 | `agent.fallback_model` | Model used after the active model exhausts its transient-retry budget. `"auto"` defers to availability-aware routing; `""` disables fallback | `"auto"` |
@@ -354,8 +360,8 @@ work-dispatch tools need a backend that takes them per session.
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Channel records retained in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
-| `slack.reactions` | Override phase reaction emojis (set a value to `null` to suppress that phase) | `{}` |
-| `slack.reactions_enabled` | Show phase reactions on Slack messages | `true` |
+| `slack.reactions` | Override the status reaction emojis: `queued` (the ack shown while answering where Slack shows no native thread status) and `error`; set a value to `null` to suppress it | `{}` |
+| `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |
 | `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message. Applies only on the default messaging transport (`messaging.use_transport`, on by default) and never in a DM set to `review` mode | `false` |
 
 Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
@@ -579,7 +585,7 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 |-----|-------------|---------|
 | `memory.embedding_provider` | Vector embedding backend. `"llama_cpp"` is the only accepted value; any other value in an existing config (including a legacy `"ollama"` or `"none"`) is coerced to it on load | `"llama_cpp"` |
 | `memory.embedding_dim` | Output width of the embedding model in use. Must match a custom model's real width, or the load is refused | `1024` |
-| `memory.embedding_threads` | CPU threads llama.cpp may use per embedding call; explicit settings are clamped to the CPUs the process may run on, which a CPU-set restriction (`--cpuset-cpus`, `taskset`) narrows below the host's cores | `4` |
+| `memory.embedding_threads` | CPU threads llama.cpp may use per embedding call; explicit settings are clamped to the CPUs the process may run on, which a CPU-set restriction (`--cpuset-cpus`, `taskset`) narrows below the host's cores | `4` (`6` where the process may use 12 or more CPUs; a saved `4` is read as this default there, so set 3 or 5 to stay low) |
 | `memory.embedding_bulk_threads` | Threads used for background embedding; `0` inherits `embedding_threads` | `1` |
 | `memory.embedding_bulk_duty` | Target fraction of worker time spent on background embedding; interactive queries take priority | `0.2` |
 | `memory.embedding_idle_evict_secs` | Unload the embedding model after this many seconds with no embedding; the next search loads it again. `0` keeps it loaded | `3600` |
@@ -599,6 +605,7 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.persistence_enabled` | Global switch for persistent memory. Off: no automatic memory writes anywhere — `learn_add` and `kirocrew learn add` refuse, history consolidation pauses entirely (no LLM turn spent), task-runner lesson extraction skips, and app-owned projections such as Ops Mission Control's ledger import are no-ops before opening the memory store — and stored memory/lessons are not injected into new sessions. Within-conversation context is unaffected, and explicit dashboard edits/deletions (the right to forget) stay available. | `true` |
 | `memory.writes_enabled` | Read-only memory. Off: the same automatic writers `memory.persistence_enabled` stops are stopped (`learn_add`, `kirocrew learn add`, history consolidation, task-runner lesson extraction, app-owned projections), while stored memory and lessons are still injected into new sessions and `memory_recall` still answers. Incognito and temporary sessions behave as before. Explicit dashboard edits/deletions stay available | `true` |
 | `memory.lesson_extraction_enabled` | Off: history consolidation and the task runner save no extracted lessons. The rest of each consolidation pass (history, preferences, semantic and episodic memory) still runs, and `learn_add` still saves lessons | `true` |
+| `memory.kind_routing` | What history consolidation does with the `kind` it tags each `project.*` fact with: `fact`, `event` (something that happened) or `state` (a PR, issue, CI, branch or round status that GitHub, git or the work ledger already holds). `off` keeps today's prompt and writes. `shadow` (opt-in) asks for the tag, writes every fact as before and only logs what routing would do, inside fixed caps (one counter row a day; at most 50 samples a day, 2,000 in all and 1 MB, for the first 7 days). `enforce` skips a state item and writes facts and events as before. Stored facts are never changed. `pref.*`, `user.*`, lessons and facts you state yourself are never routed | `"off"` |
 | `memory.inject_memory` | Inject the stored memory block (preferences, the memory activity index, recent-session snippets) into new-session context, including the re-injection after a compaction. On-demand `memory_recall` and writes are unaffected | `true` |
 | `memory.inject_lessons` | Inject the learned-corrections and user-profile blocks into new-session context. Writes are unaffected | `true` |
 | `memory.inject_lessons_per_turn` | On each follow-up message, add up to three stored lessons (2,000 characters) that match it and that the session has not been shown yet: the session-start block holds only what fits its budget. A lesson matches when it shares at least two distinct words with the message that are each rare among stored lessons: carried by at most 1% of them, and never fewer than one. Request words on the lesson stop list and words of two letters or fewer are ignored. Each lesson is sent at most once until a compaction drops it from context, even when the turn that carried it was cancelled or failed; a gateway restart, or turning this on mid-session, can send one once more; it can also be sent once more after 256 newer lessons in that session or after its record is dropped past 256 sessions. Vector stores only. Requires `inject_lessons` | `false` |
@@ -671,6 +678,7 @@ member-memory sandbox is required.
 | `knowledge.auto_ingest_artifact_kinds` | Artifact kinds eligible for auto-ingest. `widget` is excluded as UI rather than a document; `svg` is excluded because the file reader has no support for it | `["markdown", "text", "html", "json"]` |
 | `knowledge.max_ingest_file_mb` | Per-file Knowledge Library ingestion size cap; oversized files are skipped. `0` disables the cap | `100.0` |
 | `knowledge.auto_add_documents` | Let the agent add documents it reads while working to the Knowledge Library (one aggregate "Auto-added" source). The agent fetches the content with its own tools under your approval; Kiro Crew fetches nothing, so `doc_ingest_hosts` does not apply. Renamed from `auto_ingest_doc_links`, which is still accepted on read | `false` |
+| `knowledge.doc_ingest_hosts` | Exact hostnames whose pages Kiro Crew itself may fetch for a Web Page source (Knowledge → Add Source). `https://` only, default port only, no subdomain matching; the host must also resolve to public addresses, and a redirect to another host is refused. Empty fetches nothing, and a source naming an unlisted host is refused when added and when synced | `[]` |
 | `knowledge.folder_ingest_chunk_budget` | Chunks a folder you add by hand may ingest per watcher sweep, including the first scan started by confirming the source. Nothing is skipped — newest files land first and the rest continue on later sweeps — so this paces spend rather than limiting what is ingested. 0 removes the bound; a per-source `chunk_budget` property overrides it for one folder | `300` |
 | `knowledge.dedup_every_n_sweeps` | Run a full duplicate-collapsing pass every Nth watcher sweep (the per-write gate only catches byte-identical documents). 0 disables | `12` |
 | `knowledge.extraction_pool_size` | Concurrent LLM workers for document extraction. Applies live: the pool resizes once its in-flight extractions finish | `3` |
@@ -684,6 +692,12 @@ member-memory sandbox is required.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `work_ledger.max_depth` | How many levels of the work ledger may conduct. Depth 0 is the root conductor, so `2` lets it dispatch one level of conductors whose own items are workers, and `3` lets those conductors dispatch conductors of their own. Accepted range 2-10; a value outside it is refused at load with a warning and the default applies, it is never clamped. Each extra level multiplies sessions (three levels of three items is 27), so raise it only where concurrency is already capped per level. Lowering it leaves open ledgers alone, but new ledgers and new items at the levels it removes are refused. | `2` |
+
+### Power
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `power.on_battery` | What Knowledge Library background sweeps do while this machine runs on battery; nothing else reads it yet. `normal` ignores the power source; `reduced` cuts each sweep to a quarter of `knowledge.sweep_chunk_budget`, at least 10 chunks and never more than the configured budget; `paused` skips the sweeps until the machine is back on mains. A document you add yourself always ingests; a folder you add ingests its first paced batch at once, and the rest of a large folder arrives with the sweeps, so under `paused` it waits for mains. A host that cannot report its power source counts as plugged in. Read on Linux and Windows; macOS always counts as plugged in for now | `"normal"` |
 
 ### Top level
 

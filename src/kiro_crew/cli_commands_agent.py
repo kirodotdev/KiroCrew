@@ -111,7 +111,15 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     model = normalize_agent_model(raw)
     if not model:
         return ""
-    if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
+    if len(model) > MAX_SHORT_STRING:
+        # A plain id's segment is unbounded in the pattern, so a well-formed id can
+        # be refused by the length cap alone; name the cap, not the shape it has.
+        print(
+            f"Error: invalid model format (expected at most {MAX_SHORT_STRING} characters)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not _MODEL_NAME_RE.match(model):
         # Read here, not at module level: the facade mirrors every module-level
         # import of its owners, and its import inventory is frozen.
         from kiro_crew.validation import MODEL_NAME_HINT

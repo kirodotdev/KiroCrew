@@ -156,6 +156,26 @@ describe('ChatEmbed hide', () => {
     await act(async () => { view.rerender(tree(['toolDetails'])) })
     expect(screen.queryByTestId('tool-pill-details')).toBeNull()
   })
+
+  it('keeps a tool panel closed when the host stops hiding toolDetails', async () => {
+    const view = await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'read_file' }))
+    expect(screen.getByTestId('tool-pill-details')).toBeInTheDocument()
+    await act(async () => { view.rerender(tree(['toolDetails'])) })
+    await act(async () => { view.rerender(tree()) })
+    const toggle = screen.getByRole('button', { name: 'read_file' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('tool-pill-details')).toBeNull()
+  })
+
+  it('hides the sub-agent delivery line with the queue strip', async () => {
+    const delivery = { id: 'd1', content: '[Subagent completion event] worker finished' }
+    mockGet.mockResolvedValue({ ...BUSY, queue: [delivery] })
+    const view = await mount()
+    expect(screen.getByTestId('subagent-delivery-progress')).toBeInTheDocument()
+    await act(async () => { view.rerender(tree(['queue'])) })
+    expect(screen.queryByTestId('subagent-delivery-progress')).toBeNull()
+  })
 })
 
 describe('ChatEmbedHideKey', () => {

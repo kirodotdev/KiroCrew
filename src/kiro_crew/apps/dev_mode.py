@@ -54,7 +54,8 @@ from kiro_crew.apps.manager import (
     holds_app_record_locks,
 )
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.edition_locks import LOCKED_BY_POLICY, local_enable_locked
+from kiro_crew.edition_locks import LOCKED_BY_POLICY
+from kiro_crew.extension_governance import developer_mode_permitted
 from kiro_crew.security import is_sensitive_path, path_contains_sensitive
 from kiro_crew.sel import sel
 
@@ -153,7 +154,7 @@ def _load_dev_apps() -> set[str]:
     sentinel changes and at seeding, never per UI request.
     """
     keep: set[str] = set()
-    if local_enable_locked("app_dev_mode"):
+    if not developer_mode_permitted():
         return keep
     for name in _read_dev_sentinel():
         try:
@@ -341,7 +342,7 @@ def _reconcile_sentinel_from_installed() -> set[str]:
             # but the record's existence also keeps the operator-attestation
             # write probe exercising the same open() the seal governs.
             _write_dev_grants(live)
-        _set_dev_cache(installed)
+        _set_gated_dev_cache(installed)
     return installed
 
 
@@ -357,6 +358,15 @@ def _stat_sentinel() -> tuple[float, int] | None:
 def _set_dev_cache(names: set[str]) -> None:
     global _dev_apps_cache
     _dev_apps_cache = set(names)
+
+
+def _set_gated_dev_cache(names: set[str]) -> None:
+    """:func:`_set_dev_cache`, emptied when governance turns developer mode off.
+
+    Blocking (a governance read): for the off-loop writers only. The watcher sets
+    the set :func:`_load_dev_apps` already filtered.
+    """
+    _set_dev_cache(names if developer_mode_permitted() else set())
 
 
 @holds_app_record_locks
@@ -378,7 +388,7 @@ def set_dev_mode(
     """
     if not _check_path_safety(name):
         return {"error": f"invalid app name {name!r}"}
-    if enabled and local_enable_locked("app_dev_mode"):
+    if enabled and not developer_mode_permitted(audit=True):
         # Audited here, not by the caller, so the CLI and the HTTP toggle both record it.
         sel().log_api_access(
             caller=f"app:{name}",
@@ -601,7 +611,7 @@ def set_dev_mode(
                 )
         # Update the in-process cache immediately so a same-process POST toggle
         # takes effect on the very next UI request (no wait for a watcher tick).
-        _set_dev_cache(names)
+        _set_gated_dev_cache(names)
     return {"name": name, "dev": enabled}
 
 
@@ -631,7 +641,7 @@ def remove_dev_app(name: str) -> None:
             if name in names:
                 names.discard(name)
                 _write_dev_sentinel(names)
-                _set_dev_cache(names)
+                _set_gated_dev_cache(names)
     except Exception:
         logger.debug("dev-mode sentinel cleanup for %r failed", name, exc_info=True)
 
@@ -648,7 +658,7 @@ def is_dev_mode(name: str) -> bool:
     authorization decision use :func:`dev_mode_granted_root`, which also requires
     the gateway-owned sentinel.
     """
-    if not _check_path_safety(name) or local_enable_locked("app_dev_mode"):
+    if not _check_path_safety(name) or not developer_mode_permitted():
         return False
     meta = _read_installed(name)
     return bool(meta and meta.dev)
@@ -699,8 +709,11 @@ def is_dev_mode_cached(name: str) -> bool:
 
     Safe to call on the event loop per-request. The cache is seeded at watcher
     init and refreshed each tick, so it lags disk by at most one poll interval.
+    It holds only apps :func:`_load_dev_apps` admitted, and that read asks
+    governance (``capabilities.app_dev_mode``), so a policy that turns developer
+    mode off empties the cache within one tick without a governance read here.
     """
-    return name in _dev_apps_cache and not local_enable_locked("app_dev_mode")
+    return name in _dev_apps_cache
 
 
 def _scan_ui_mtimes(ui_dir: Path) -> tuple[int, int]:
@@ -742,7 +755,8 @@ async def _watch_loop(broadcast_fn: Callable[[str, dict], None]) -> None:
     """Poll dev-mode apps' ui/ dirs; broadcast ``app_reload`` on change.
 
     Steady-state cost when NO app is in dev mode: one ``stat()`` of the sentinel
-    per tick — no ``list_apps()``, no ``ui/`` walks, no writes. The dev-app set
+    and one governance read per tick, both off the loop — no ``list_apps()``, no
+    ``ui/`` walks, no writes. The dev-app set
     is re-read (off the event loop) only when the sentinel's stat changes.
 
     Per-app state is (file_count, digest): a changed count catches
@@ -752,14 +766,19 @@ async def _watch_loop(broadcast_fn: Callable[[str, dict], None]) -> None:
     """
     state: dict[str, tuple[int, int]] = {}
     sentinel_sig: tuple[float, int] | None = None
+    was_permitted: bool | None = None
     dev_apps: set[str] = set()
     while True:
         try:
             await asyncio.sleep(POLL_INTERVAL_SECS)
             # Cheap change-detection: stat one small file off the event loop.
             sig = await asyncio.to_thread(_stat_sentinel)
-            if sig != sentinel_sig:
+            # A governance change re-reads the dev-app set too: the set is
+            # filtered by ``capabilities.app_dev_mode`` (``_load_dev_apps``).
+            permitted = await asyncio.to_thread(developer_mode_permitted)
+            if sig != sentinel_sig or permitted != was_permitted:
                 sentinel_sig = sig
+                was_permitted = permitted
                 dev_apps = await asyncio.to_thread(_load_dev_apps)
                 _set_dev_cache(dev_apps)
                 # Drop state for apps that left dev mode so re-enabling re-seeds.

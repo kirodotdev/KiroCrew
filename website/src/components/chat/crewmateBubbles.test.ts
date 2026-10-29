@@ -72,6 +72,32 @@ describe('filterCrewmateChat', () => {
     expect(notices).toHaveLength(4)
   })
 
+  it('hides the pending links of the transient-retry ladder; the give-up and any other error stay', () => {
+    // The ladder writes its progress under the `error` role with a wire token
+    // in `meta.notice`. A pending link ("retrying…" / "resuming…", which the
+    // main chat settles to "Connection restored") is the runtime talking about
+    // itself: the turn is already re-queued and the person can do nothing
+    // with it, so it is dropped like a `notice` row. The terminal give-up is
+    // the one shape the person must act on and keeps drawing, as does every
+    // error row that is not the ladder's. Fails if the filter drops errors by
+    // role, or if it keeps the pending links and a patroller stacks one
+    // "Connection restored" card per retried wake again.
+    const retrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', ts: at('2026-10-20T11:00:00Z'), meta: { notice: 'transient_retrying' } }
+    const resuming: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — resuming…', cls: '', ts: at('2026-10-20T11:00:01Z'), meta: { notice: 'transient_resuming' } }
+    // Persisted by a gateway that predates the token: classified by content, as
+    // `transientNotice.ts` does.
+    const legacyRetrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', ts: at('2026-10-20T11:00:02Z') }
+    const giveUp: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — please retry.', cls: '', ts: at('2026-10-20T11:00:03Z'), meta: { notice: 'transient_give_up' } }
+    const other: ChatMessage = { role: 'error', content: '❌ Something else entirely', cls: '', ts: at('2026-10-20T11:00:04Z') }
+    expect(isCrewmateChatRow(retrying)).toBe(false)
+    expect(isCrewmateChatRow(resuming)).toBe(false)
+    expect(isCrewmateChatRow(legacyRetrying)).toBe(false)
+    expect(isCrewmateChatRow(giveUp)).toBe(true)
+    expect(isCrewmateChatRow(other)).toBe(true)
+    expect(filterCrewmateChat([retrying, said(at('2026-10-20T11:00:05Z')), resuming, legacyRetrying, giveUp, other]))
+      .toEqual([said(at('2026-10-20T11:00:05Z')), giveUp, other])
+  })
+
   it('an all-machinery transcript filters to nothing (so the empty hint can show)', () => {
     const rows: ChatMessage[] = [
       { role: 'nudge', content: '[auto-nudge cycle 1]', cls: '', ts: at('2026-09-22T04:00:00Z') },
@@ -418,6 +444,20 @@ describe('awaitingCrewmateReply', () => {
     const stop: ChatMessage = { role: 'system', content: '', cls: '', kind: 'stop_event', meta: { kind: 'stop_event' } }
     const ask: ChatMessage = { role: 'permission', content: 'allow?', cls: '', meta: { approval_id: 'a1' } }
     for (const row of [quiet, error, stop, ask]) expect(awaitingCrewmateReply([sent(), row], 's1')).toBe(false)
+  })
+
+  it('a pending transient-retry link keeps the wait; the give-up or the retried answer ends it', () => {
+    // The crewmate chat hides the pending "retrying…" / "resuming…" cards
+    // (isCrewmateChatRow), so the typing bubble is the person's only sign the
+    // re-queued turn is still coming. Fails if a pending link ends the wait
+    // like any error row, which leaves the chat blank until the retry answers.
+    const retrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', meta: { kind: 'transient_retry', notice: 'transient_retrying' } }
+    const resuming: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — resuming…', cls: '', meta: { kind: 'transient_retry', notice: 'transient_resuming' } }
+    const giveUp: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — please retry.', cls: '', meta: { notice: 'transient_give_up' } }
+    expect(awaitingCrewmateReply([sent(), retrying], 's1')).toBe(true)
+    expect(awaitingCrewmateReply([sent(), retrying, resuming], 's1')).toBe(true)
+    expect(awaitingCrewmateReply([sent(), retrying, giveUp], 's1')).toBe(false)
+    expect(awaitingCrewmateReply([sent(), retrying, said('2026-10-14T08:00:03Z')], 's1')).toBe(false)
   })
 
   it('waits on nothing for a dropped send, a send in doubt or no send', () => {

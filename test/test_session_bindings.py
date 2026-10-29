@@ -280,7 +280,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "recycle_background": ("function", True, "56a38eea24ac", "runtimes"),
     "recycle_heartbeat": ("function", True, "b60c5fea256e", "runtimes"),
     "refresh_defaults": ("function", True, "9ce79a530960", "config_apply"),
-    "release": ("function", False, "b35cc323b390", "claims"),
+    "release": ("function", False, "b3a2d80a5701", "claims"),
     "release_subagent_runtime": ("function", True, "0f7ee42764e5", "runtimes"),
     "reload_provider_factory": ("function", True, "9ce79a530960", "config_apply"),
     "remove": ("function", True, "958babeb61c8", "teardown"),

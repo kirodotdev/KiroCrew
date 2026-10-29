@@ -97,6 +97,11 @@ async def test_a_failed_startup_reclaim_is_logged_and_the_stop_stays_registered(
         "browser_cli_launcher",
         SimpleNamespace(reclaim_stranded=_fail(calls, "reclaim_stranded")),
     )
+    monkeypatch.setattr(
+        server,
+        "browser_cli_managed_launcher",
+        SimpleNamespace(ensure_managed_launcher=_fail(calls, "ensure_managed_launcher")),
+    )
     state = SimpleNamespace(_background_tasks=set())
     app = web.Application()
     server._register_browser_view_cleanup(app, state)
@@ -108,6 +113,7 @@ async def test_a_failed_startup_reclaim_is_logged_and_the_stop_stays_registered(
     await asyncio.wait_for(asyncio.gather(*pending), timeout=30)
 
     assert registered == ["Browser view"]
-    assert calls == ["reclaim_stranded"]
+    # The launcher refresh runs first; its failure does not stop the reclaim.
+    assert calls == ["ensure_managed_launcher", "reclaim_stranded"]
     assert state._background_tasks == set()
     assert callable(state._browser_view_unregister)

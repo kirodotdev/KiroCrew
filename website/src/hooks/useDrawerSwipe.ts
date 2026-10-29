@@ -90,9 +90,9 @@ const PLATFORM_EDGE = 24
  * than that takes, and it makes a slow deliberate pull feel like it snapped back
  * for no reason.
  */
-const COMMIT_DRAG_SHARE = 0.2
+export const COMMIT_DRAG_SHARE = 0.2
 /** Release faster than this (px/ms) commits regardless of how far it got. */
-const COMMIT_VELOCITY = 0.4
+export const COMMIT_VELOCITY = 0.4
 /**
  * Trailing window the release speed is measured over.
  *
@@ -106,7 +106,7 @@ const VELOCITY_WINDOW_MS = 100
 /** Shortest base the speed may be measured over. A finger that was still for
  *  most of the window and twitched once just before lifting would otherwise
  *  read as a hard throw off two adjacent samples. */
-const VELOCITY_MIN_SPAN_MS = 16
+export const VELOCITY_MIN_SPAN_MS = 16
 /** Samples retained for the window — 100ms at 60Hz is ~6, with headroom for a
  *  higher-rate digitizer and one baseline sample outside the window. */
 const VELOCITY_SAMPLES = 16

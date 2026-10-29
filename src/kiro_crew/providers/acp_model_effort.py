@@ -232,7 +232,7 @@ def accepts_effort_level(self: AcpProvider, level: str) -> bool:
     advertised = self._advertised_effort_levels()
     if not advertised:
         return True
-    return effort_config_option_value(self._client.backend, level) in advertised
+    return effort_config_option_value(self._client.backend, level, advertised) in advertised
 
 
 def supports_effort(self: AcpProvider) -> bool:
@@ -278,15 +278,18 @@ def _resolve_effort(self: AcpProvider) -> str | None:
     """
     # The fold the WRITE path takes, handed in so it runs BEFORE the
     # advertised-list check rather than after it. ``change_effort`` admits any
-    # level the dynamic validation set knows, so a stored ``max`` on a harness
-    # whose ceiling is ``xhigh`` is this harness's ``xhigh`` -- and a filter
-    # that ran first would drop the very level the live push applied.
+    # level the dynamic validation set knows, so a stored level a harness spells
+    # differently must be checked in that harness's spelling -- a filter that
+    # ran first would drop the very level the live push applied.
+    advertised = self._advertised_effort_levels()
     return resolve_effort_for_model(
         self._effort_model,
         slot_overrides=self._effort_per_model,
         defaults=self._effort_defaults,
-        levels=self._advertised_effort_levels(),
-        normalize=functools.partial(effort_config_option_value, self._client.backend),
+        levels=advertised,
+        normalize=functools.partial(
+            effort_config_option_value, self._client.backend, advertised=advertised
+        ),
     )
 
 
@@ -339,7 +342,8 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     # the reason ``effort_config_option_value`` gives: a vocabulary that omits
     # one of Crew's levels is a declared fact, and the descent below can only
     # recover from it when the refusal shape is one this tree recognises.
-    target = effort_config_option_value(self._client.backend, level)
+    advertised = self._advertised_effort_levels()
+    target = effort_config_option_value(self._client.backend, level, advertised)
     if target != level:
         logger.info(
             "effort %r spelled %r on backend %s",
@@ -355,7 +359,6 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     # advertised is not written at all: such a level is hidden there, not
     # stepped onto a neighbour, and every value this sends is one the harness
     # offered -- so no refusal shape has to be recognised for it.
-    advertised = self._advertised_effort_levels()
     if advertised and target not in advertised:
         logger.info(
             "effort %r is not advertised by backend %s; skipping effort push",

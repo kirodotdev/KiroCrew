@@ -1266,6 +1266,188 @@ def unresolved_notice(slug: str, member: str) -> str:
     return f"[DASHBOARD]\n{line}" if line else ""
 
 
+def session_turn_block(slot_key: str) -> str:
+    """The ``[DASHBOARD]`` lines for a ROOT session's turn, or ``""`` when it has none.
+
+    :func:`turn_block`, keyed by the session's own store key
+    (``instance.session_instance_key``), so a session that has ADOPTED a page is told
+    which page its side panel Overview shows and which fields are its to write, the
+    same lines a crewmate gets for its Dashboard tab.
+
+    Only an adopted page counts. A session that never adopted one reads the default
+    page in force (``project-report``) and gets no block: that page is drawn without
+    the session doing anything, and a block on every turn of every root chat would be
+    paid for by sessions that never write a dashboard. The caller owns the root test
+    (``card_lifecycle.is_root_session``); a non-root session has no page, and the
+    gateway refuses to serve one.
+    TOTAL: a page that cannot be read costs the turn this block, nothing else.
+    """
+    try:
+        from kiro_crew.dashboard_templates import instance as instance_store
+
+        key = instance_store.session_instance_key(slot_key)
+        if instance_store.read(key).state == instance_store.STATE_EMPTY:
+            return ""
+    except Exception:
+        logger.debug("no session dashboard block for %r", slot_key, exc_info=True)
+        return ""
+    block = turn_block(key)
+    if block and _shows_board(key):
+        # Said beside the page name, every turn: the prompt's rule alone was not
+        # kept (a conductor still wrote its "Task board" into the reply).
+        block += "\n" + BOARD_IN_PANEL_LINE
+    return block
+
+
+#: The pages that draw every task from the work ledger and keep themselves current.
+BOARD_TEMPLATES: Final[frozenset[str]] = frozenset({"goal-board", "work-kanban"})
+
+#: The [DASHBOARD] line a root session on one of :data:`BOARD_TEMPLATES` gets.
+BOARD_IN_PANEL_LINE: Final[str] = (
+    "That page IS the task board, in the side panel. Do not write a task board, "
+    "a task table or a task-dashboard artifact in your reply: give only what needs "
+    "the person, then one line on what changed and what is next."
+)
+
+
+def _shows_board(key: str) -> bool:
+    """Whether the page in force for store key *key* is one of :data:`BOARD_TEMPLATES`."""
+    try:
+        _record, manifest, _locked = _read_page(key)
+    except Exception:
+        return False
+    return manifest is not None and manifest.id in BOARD_TEMPLATES
+
+
+async def root_session_dashboard_block(slot: Any) -> str:
+    """:func:`session_turn_block` for a Crew Mode chat *slot*, or ``""`` for any other.
+
+    Crew Mode is a ROOT session running a conductor TEMPLATE (``crew_mode``), so only such a slot
+    gets the block: one on another agent (Crew Mode turned off lands on the default
+    template) or on a crewmate (``agent_kind == "member"``, even one carrying the
+    conductor's name) gets none, and its page is left as it is. The root test is the
+    gateway's own (``card_lifecycle.is_root_session``), the one the page's read and
+    write routes apply, asked on the loop as that function requires; the page read
+    runs off it. A crewmate's DM slot is skipped: its block rides in its member
+    section, keyed by the crewmate. TOTAL.
+    """
+    import asyncio
+
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.card_lifecycle import is_root_session
+
+    try:
+        if not crew_mode.runs_crew_mode(
+            getattr(slot, "agent", ""),
+            getattr(slot, "agent_kind", ""),
+            stamp=getattr(slot, crew_mode.STAMP_FIELD, ""),
+        ):
+            return ""
+        if getattr(slot, "agent_kind", "") == "member" or getattr(slot, "mode", "") == "member":
+            return ""
+        if not is_root_session(slot):
+            return ""
+        return await asyncio.to_thread(session_turn_block, str(slot.key))
+    except Exception:
+        logger.debug("no session dashboard block for this slot", exc_info=True)
+        return ""
+
+
+#: The page a root session's side panel Overview shows once Crew Mode is on: the
+#: shipped work-ledger board, which the Conductor prompt names as one that keeps
+#: itself current.
+CREW_MODE_BOARD_TEMPLATE: Final[str] = "goal-board"
+
+
+async def adopt_crew_mode_board_on_switch(slot: Any, agent_name: str, state: Any = None) -> None:
+    """After a committed agent switch, adopt the Crew Mode board if this is Crew Mode on.
+
+    Crew Mode is a chat on a conductor TEMPLATE (``crew_mode``), so a switch to one in the
+    template namespace on a ROOT session is Crew Mode turning on. A crewmate that
+    happens to carry the conductor's name is that crewmate, not Crew Mode. The root
+    test is the gateway's own (``is_root_session``), asked on the loop; the page write
+    runs off it. An adoption is told to the open side panel with the frame an agent's
+    ``dashboard_apply`` sends for a session page (``dashboard_instance_changed``,
+    ``{slot}``, owner sockets only), so an Overview opened before the page changed
+    re-reads it. Only a Persistent chat (an unset mode counts as one) adopts: an
+    Incognito or Temporary session may not open sessions, so it cannot conduct. TOTAL.
+    """
+    import asyncio
+
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.card_lifecycle import is_root_session
+
+    try:
+        if not crew_mode.runs_crew_mode(
+            agent_name,
+            getattr(slot, "agent_kind", ""),
+            stamp=getattr(slot, crew_mode.STAMP_FIELD, ""),
+        ):
+            return
+        if (getattr(slot, "memory_mode", "") or "persistent") != "persistent":
+            return
+        if getattr(slot, "agent_kind", "") == "member":
+            return
+        # The root test answers "not root yet" while the session tree is still seeding
+        # (boot, before the first slots frame) and asks for the seed. This adoption is
+        # taken once, so it waits for that seed, bounded, instead of reading the
+        # provisional answer as a refusal; a seed that does not land keeps the
+        # fail-closed answer.
+        if not is_root_session(slot):
+            deadline = asyncio.get_running_loop().time() + _BOARD_ADOPTION_SEED_WAIT_SECS
+            while not _lineage_seeded() and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.1)
+            if not is_root_session(slot):
+                return
+        if await asyncio.to_thread(adopt_crew_mode_board, str(slot.key)) and state is not None:
+            state.broadcast_ws_owners("dashboard_instance_changed", {"slot": str(slot.key)})
+    except Exception:
+        logger.warning("Crew Mode board not adopted after the switch", exc_info=True)
+
+
+#: How long :func:`adopt_crew_mode_board_on_switch` waits for the session tree's seed
+#: when the root test could not answer yet. The seed is one fold of the crew log on the
+#: maintenance pool, normally well under a second.
+_BOARD_ADOPTION_SEED_WAIT_SECS: Final[float] = 5.0
+
+
+def _lineage_seeded() -> bool:
+    """Whether there is no seed left to wait for: the session tree's projection is seeded
+    for the current store, or the crew log is off and no seed will ever land. Never raises."""
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.enabled():
+            return True
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        return bool(projection().seeded_for_current_store)
+    except Exception:
+        return True
+
+
+def adopt_crew_mode_board(slot_key: str) -> bool:
+    """Put :data:`CREW_MODE_BOARD_TEMPLATE` on a root session's page; whether it did.
+
+    The ordinary adopt (``instance_adopt.adopt_if_empty``), the call an agent's
+    ``dashboard_apply`` of a template makes. Only on a page nothing has been adopted on
+    yet, checked under the instance's own write lock: a page the session or the person
+    chose, even one committed while the switch was still running, is kept, so turning
+    Crew Mode on never replaces it. The caller owns the root test.
+    TOTAL: a page that cannot be read or written leaves the session on its default
+    page, which the side panel still draws.
+    """
+    try:
+        from kiro_crew.dashboard_templates import instance as instance_store
+        from kiro_crew.dashboard_templates.instance_adopt import adopt_if_empty
+
+        key = instance_store.session_instance_key(slot_key)
+        return adopt_if_empty(key, CREW_MODE_BOARD_TEMPLATE) is not None
+    except Exception:
+        logger.warning("Crew Mode board not adopted for %r", slot_key, exc_info=True)
+        return False
+
+
 def _recent_history(history: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
     """The last few changes to this dashboard, newest last, four columns wide.
 

@@ -57,6 +57,7 @@ from kiro_crew import (  # noqa: F401
     diagnostics,
     gateway_lock,
     platform_compat,
+    resource_status,
     sandbox,
     session_pid,
     stdlib_shadow,
@@ -683,6 +684,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     mcp._doctor_mcp_gateway_daemon(issues)
     mcp._doctor_mcp_share_refused(cfg, issues)
     mcp._doctor_unresolved_mcp_refs()
+    mcp._doctor_template_mcp_additions()
     mcp._doctor_backend_ability_cards(cfg)
     mcp._doctor_selected_backend_projection(cfg)
 
@@ -781,6 +783,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             py_result.check_returncode()
             ver = py_result.stdout.strip()
             print(f"  python:      ✅ {venv_py} ({ver})")
+            print(f"  kiro_crew:   ✅ {_mc_version}")
         except Exception as exc:
             print(f"  python:      ❌ venv python broken: {exc}")
             issues.append("venv python")

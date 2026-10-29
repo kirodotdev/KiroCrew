@@ -208,6 +208,7 @@ def _mock_dashboard_state():
     ds._yolo = False
     ds.notify = MagicMock()
     ds.push_slots_update = MagicMock()
+    ds.push_subagent_patch = MagicMock()
     ds.push_refresh = MagicMock()
     ds.broadcast_ws = MagicMock()
     ds.broadcast_ws_subagent_subscribers = MagicMock()

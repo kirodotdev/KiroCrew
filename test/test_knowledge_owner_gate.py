@@ -65,7 +65,6 @@ def _make_app(store, identity: dict, seen: list, pipeline=None):
     state.owner_id = OWNER
     app["state"] = state
     app["knowledge_pipeline"] = pipeline if pipeline is not None else MagicMock()
-    app["knowledge_fetch_pool"] = MagicMock()
     app["knowledge_llm_pool"] = MagicMock(shutdown=AsyncMock())
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
     for method, path, handler in MUTATING_ROUTES:

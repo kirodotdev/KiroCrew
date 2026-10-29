@@ -33,7 +33,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
 | `session_history_list` | `GET /api/session-control/history` | List the archived sessions the caller could revive, newest first, optionally narrowed to one folder; every row passes the same containment and ownership fence `session_revive` applies |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
-| `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
+| `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to the named `targets`, or with `all: true` to every session the caller created, in a required `queue` or `steer` mode, reporting the outcome per target; a call that selects neither, or both, is refused |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_adopt` | `POST /api/session-control/adopt` | Take another session under the caller in the session tree, keeping the parent it had on record; refused when the target is already above the caller |
 | `session_handoff` | `POST /api/session-control/handoff` | Make another session the manager of a target the caller manages, so the verbs that run the target answer to the new manager; `_created_by` does not move |
@@ -113,18 +113,28 @@ then calls `send_to_target` once per target, so every bound above holds per
 delivery unchanged — the same gate, the same containment snapshot, the same
 queue-drain re-check — and a broadcast can reach nothing a sequence of
 `session_send` calls could not. What it adds is the audience rule and the
-reporting contract: the default audience is the caller's OWN created sessions
+reporting contract: the `all: true` audience is the caller's OWN created sessions
 (`broadcast_audience` reads the same `_created_by` field the ownership fence
 reads, so it is a subset of what the fence admits by construction), deliveries
 are SEQUENTIAL rather than gathered, one target's refusal is COLLECTED as a row
 instead of aborting the rest, and the audience is capped at
 `MAX_BROADCAST_TARGETS` (50) with an over-cap request refused rather than
 truncated — a silently-cut broadcast is one the caller believes reached everyone.
-That cap sits at `MAX_SLOTS_PER_CREATOR` and must never fall below it: the default
-audience is bounded by the per-creator slot cap and by nothing else, so a lower
-broadcast cap would make the default path refuse an audience the caller never
-chose. An explicit list is bounded at the ROUTE — both its length and each
-element's — before any name is resolved, because resolution is per-name work and
+That cap sits at `MAX_SLOTS_PER_CREATOR` and must never fall below it: the
+`all: true` audience is bounded by the per-creator slot cap and by nothing else, so
+a lower broadcast cap would make that path refuse an audience the caller never
+chose. Reaching the whole set always takes an explicit `all: true`: a `targets`
+that is absent, `null` or empty selects nobody, because Kiro CLI drops an empty
+list from a tool call and the server cannot tell it from an omission. A call with
+neither `targets` nor `all: true` is refused `target_required`, and one with both is
+refused `audience_conflict`, each before anything is sent. The tool runner
+refuses a call that names neither before it sends a request, because a gateway
+older than the tool reads a body without `targets` as every created session; an
+explicit `targets: []` is forwarded as given, since that older gateway refuses it.
+A session that still holds the old tool text is refused once and told to pass
+`all: true`. An explicit list is
+bounded at the ROUTE — both its length and each element's — before any name is
+resolved, because resolution is per-name work and
 the MCP schema's `maxItems` does not bind a caller that reaches the route itself.
 The `mode` argument (`queue` | `steer`) is required with no default, because the
 two are different instructions and defaulting either way silently substitutes one
@@ -304,7 +314,7 @@ stamped by `dashboard/channel_handoff.py` for a message a channel conversation
 queued into a resumed dashboard session), is stripped for the same reason with a
 wider blast radius — it names a conversation on a network surface — and its notice
 re-runs the outbound recipient check with the principal the channel authorized on
-inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord)).
+inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery)).
 
 A send whose caller is the target's own creator (`_created_by` equals the
 caller's slot key) also sets the target's in-memory `_reports_to_creator`. With
@@ -522,6 +532,20 @@ memory boundary stay the caller's. An invalid folder project refuses the create
 with 400 `folder_project_invalid`, and a folder whose project changes while the
 creation is in flight refuses with 409 `folder_target_changed`.
 
+A caller inside a Crew Mode tree — a chat that turned Crew Mode on, or a session
+such a chat dispatched (`crew_mode.slot_in_turned_on_tree`, the rule the slot
+list stamps; see [crew-mode](crew-mode.md) § Crew Mode) — files nothing: the
+chat is the person's one entry for the whole crew. `session_create` with a
+`folder` still resolves it (an unknown or ambiguous reference is refused, no
+path segment is created), gives the child that folder's project directory, and
+leaves the child unfiled; the reply carries `folder_ignored: "crew_mode"` when
+a folder was named and `crew_mode: true` whenever the caller is in such a tree.
+`session_fork` from such a caller clears even the folder the source transcript
+carried before the child's first save and answers the same two fields.
+`chat_folder_file_self` from such a caller is a no-op that says where the
+session stays. The MCP tools' replies say "unfiled (this chat is in Crew Mode)"
+so the agent does not report a filing that did not happen.
+
 `session_create` also takes an optional `agent_kind`, with one value: `template`.
 It is the selection namespace for `agent`, and it exists for the one case a bare
 `agent` cannot express: a shared template that a crew member of the same name
@@ -700,7 +724,9 @@ through the child's mint, message copy, save and the deleted-source rollback. Th
 session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
 folder, tags, `forked_from` — is by construction what a person's fork copies
-and inherits, except the sidebar pin (last table row). The human route's behaviour is unchanged by the split; the core
+and inherits, except the sidebar pin (last table row) and the folder of a
+Crew Mode caller's child, which is cleared (§ `session_create`'s Crew Mode
+filing rule). The human route's behaviour is unchanged by the split; the core
 takes the request-derived facts as arguments (`request_app`, `origin`,
 `count_user_session`, `jev_route_allowed`, the SEL caller and operation) and the
 two routes answer them differently:
@@ -2372,6 +2398,9 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   the deferred model pick.
 - `src/kiro_crew/dashboard/session_control_parts/session_titles.py`: title cleaning,
   `session_rename`, `session_generate_title` and `session_set_color`.
+- `src/kiro_crew/dashboard/session_control_parts/crew_filing.py`: the Crew Mode filing
+  rule `session_create` and `session_fork` share: whether the caller is in a turned-on
+  Crew Mode tree, and the `folder_ignored` / `crew_mode` reply keys.
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,

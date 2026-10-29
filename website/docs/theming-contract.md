@@ -30,7 +30,7 @@ with the theme CSS custom properties or Tailwind classes mapped to them,
 <div className="bg-[var(--card)] text-[var(--card-fg)]" />
 ```
 
-The 56 CSS variables are the single source of truth for color. They are the
+The 60 CSS variables are the single source of truth for color. They are the
 customization surface a theme (built-in, custom, or installed) can set.
 
 **Fills are flat.** The brand system is flat: a new decorative gradient fill
@@ -42,7 +42,7 @@ bands under every social platform's re-encode. Functional gradients are not
 fills and are fine: `mask-image` scroll-edge fades, loading shimmer, and the
 streaming glow. So are the shipped gradient mechanisms — the appstore gradient
 art in `components/appstore/gradient.ts` (which reads as content, not chrome)
-and the session `'gradient'` color mode. The UX review lane
+and the session `'gradient'` color mode. So is the **crew gradient** (`.crew-grad`, `--aim` to `--info`) on Crew Mode's own surfaces -- the CREW MODE session row, the Crew Mode filter chip, the composer chip, the Crew panel's crew cards -- which the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew; it is not a style for anything else. The UX review lane
 (`.github/workflows/ux-review.yml` and its fork variant) applies this rule.
 Theme blocks in `src/styles/design-tokens.css` and `src/styles/theme-palettes.css` also set a few non-color properties that are
 deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
@@ -198,7 +198,7 @@ about MCP apps. Do not copy the three-dep spelling into a new site.
 
 **Where each wash comes from is not symmetric, and follows the dashboard.**
 `--ok-subtle`, `--warn-subtle` and `--danger-subtle` are stored per theme and are
-read directly. `--info` has no stored companion in the 56 — `bg-info-subtle` is
+read directly. `--info` has no stored companion in the 60 — `bg-info-subtle` is
 derived in `src/tailwind-theme.css` as
 `color-mix(in srgb, var(--info) 12%, transparent)` — so `COLOR_TOKEN_MAP` derives
 `--color-background-info` the same way, from `INFO_WASH` of the resolved
@@ -215,7 +215,7 @@ cannot shrink.
 
 | Tier | Surface |
 |---|---|
-| **L0 Color** | the 56 CSS vars (dark + light) |
+| **L0 Color** | the 60 CSS vars (dark + light) |
 | **L1 Brand** | logo, favicon, welcome image, wordmark, botName, fonts, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
@@ -232,6 +232,14 @@ is the opposite by design: it is branding laid OVER the header strip and stays
 above it. The `body::before` / `body::after` idiom in `overrides.css` is not
 covered by this rule: it paints at the document root and therefore over the
 whole shell, header included.
+
+**L2 overlay triggers.** An overlay's `trigger` is `continuous`, `activate`, or
+`idle-<N>s`. An `idle-<N>s` overlay mounts after N seconds without input and
+unmounts on the next one. Input is a key press, a pointer press, or a wheel or
+touch scroll anywhere in the dashboard: inside a scroll container, and in the
+built-in terminal, which stops propagation of the events it consumes, so
+`ThemeExperienceLayer` listens in the capture phase. Under
+`prefers-reduced-motion: reduce` no overlay mounts at all.
 
 ## Brand identity
 
@@ -492,7 +500,11 @@ code:
 - **`loader/*.png` `.webp` `.gif` `.svg`** — ship your **own images** (Level 1).
   Ship **one** and it renders on its own; ship **2–8** and the stock carousel
   cycles them. Animated WebP/APNG/GIF and animated SVG **self-animate** inside
-  the `<img>`, so a single fully-authored loop is a first-class loader. Ordered
+  the `<img>`, so a single fully-authored loop is a first-class loader. Under
+  `prefers-reduced-motion: reduce` each image is painted once, at its first
+  frame, onto a `<canvas>` instead (`src/pages/chat/PackLoaderImage.tsx`),
+  because the page cannot pause an image's own animation; make that first
+  frame read as the loader at rest. Ordered
   by filename; each is served with a strict Content-Type + `nosniff` under the
   sandboxed asset CSP (`default-src 'none'; sandbox`), referenced only as an
   `<img>`. SVG is safe here for the same reason `logo.svg` is: an `<img>`-loaded

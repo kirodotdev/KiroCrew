@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         compose_nudge_body,
         load_window_off_loop,
         logger,
+        mark_turn_unstarted,
         nudge_cycle_header,
         rehydrate_slot_from_history_async,
         render_nudge_message,
@@ -413,19 +414,36 @@ async def _fire_dashboard_nudge(
             mode_refused = not await self._dashboard_mode_admits(loop, turn_slot)
             if mode_refused:
                 await self._audit_fire_refused(loop, turn_slot)
-            if (
-                current_slot is not turn_slot
-                or bool(getattr(turn_slot, "is_closing", False))
-                or mode_refused
-                or str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent"
-            ):
-                _settle_admission(MonitorDispatchResult.UNAVAILABLE)
+            if current_slot is not turn_slot:
+                refusal = "its slot was replaced"
+            elif bool(getattr(turn_slot, "is_closing", False)):
+                refusal = "its slot is closing"
+            elif mode_refused:
+                refusal = "the crew/member slot did not admit the loop"
+            elif str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent":
+                refusal = "the session's memory is not persistent"
+            else:
+                refusal = ""
+            if refusal:
+                _refuse_dashboard_turn(refusal)
                 return False
             callback = base_hook.authorization_callback
             authorized = True if callback is None else await callback(monitor_id, fingerprint)
             if not authorized:
-                _settle_admission(MonitorDispatchResult.UNAVAILABLE)
+                _refuse_dashboard_turn("its wake claim was revoked")
             return authorized
+
+        def _refuse_dashboard_turn(reason: str) -> None:
+            # One line per refused wake, at either boundary (before the runner
+            # or at its final recheck): a refused wake writes no row, so the
+            # log is the only record of why it did not run.
+            logger.info(
+                "AutoNudge: loop %s dashboard wake refused on slot %s: %s",
+                loop.id,
+                loop.slot_key,
+                reason,
+            )
+            _settle_admission(MonitorDispatchResult.UNAVAILABLE)
 
         def _accept_dashboard_turn() -> None:
             callback = base_hook.acceptance_callback
@@ -486,8 +504,11 @@ async def _fire_dashboard_nudge(
         # prompt-submit hooks run during its setup and must not observe a
         # monitor the user stopped while this turn waited for admission.
         # The runner retains its own final recheck immediately before
-        # provider entry to cover revocation during that setup.
+        # provider entry to cover revocation during that setup. Returning here
+        # runs no turn tail, so the exit marks itself and spawn_guarded_turn's
+        # done callback hands off the queue a send built behind this task.
         if completion_hook is not None and not await completion_hook.authorize():
+            mark_turn_unstarted(turn_slot)
             return
         # NO AUDIENCE FENCE for the work-ledger wake, by construction: the
         # wake carries ``wake_brief`` lines

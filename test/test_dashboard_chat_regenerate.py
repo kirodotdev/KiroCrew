@@ -195,6 +195,54 @@ class TestRegenerateAndVariants:
         assert captured[-1]["content"] == "newest"
 
     @pytest.mark.asyncio
+    async def test_regenerate_keeps_the_shown_oldest_version_under_the_cap(
+        self, tmp_path, monkeypatch
+    ):
+        """A full list (the flush appends the new reply past the stash) with the
+        user reading its oldest version: that version is the reply being
+        replaced, so the cap drops the oldest OTHER version, never it."""
+        from kiro_crew.dashboard.chat import _MAX_VARIANTS
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "v0")
+        existing = [{"content": f"v{i}", "ts": f"t{i}"} for i in range(_MAX_VARIANTS + 1)]
+        slot.messages[-1]["variants"] = existing
+        slot.messages[-1]["variant_idx"] = 0
+        slot.drain()
+        captured = []
+
+        async def _capture(*a, **kw):
+            captured.extend(list(slot._pending_variants))
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                await asyncio.sleep(0)
+        contents = [v["content"] for v in captured]
+        assert len(contents) == _MAX_VARIANTS
+        assert contents[0] == "v0"
+        assert "v1" not in contents
+        assert contents[-1] == f"v{_MAX_VARIANTS}"
+
+    def test_cap_keeping_shown_falls_back_to_the_text_when_the_index_is_stale(self):
+        """A ``variant_idx`` that does not point at the shown text: the newest
+        entry holding that text is the one kept."""
+        from kiro_crew.dashboard.chat import _MAX_VARIANTS
+        from kiro_crew.dashboard.chat_regenerate import _cap_keeping_shown
+
+        full = [{"content": f"v{i}"} for i in range(_MAX_VARIANTS + 2)]
+        kept = [v["content"] for v in _cap_keeping_shown(full, "v1", 5)]
+        assert len(kept) == _MAX_VARIANTS
+        assert kept[0] == "v1"
+        assert "v0" not in kept and "v2" not in kept
+        newest = [v["content"] for v in _cap_keeping_shown(full, f"v{_MAX_VARIANTS + 1}", None)]
+        assert newest == [f"v{i}" for i in range(2, _MAX_VARIANTS + 2)]
+
+    @pytest.mark.asyncio
     async def test_regenerate_rejects_missing_slot(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

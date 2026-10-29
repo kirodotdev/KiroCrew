@@ -16,13 +16,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.dashboard import pinned_session_order
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.state_parts import dashboard_services as _dashboard_services
-from kiro_crew.dashboard.state_parts import own_methods
 from kiro_crew.dashboard.state_parts import session_events as _session_events
 from kiro_crew.dashboard.state_parts import sidebar_stores as _sidebar_stores
 from kiro_crew.dashboard.state_parts import slot_directory as _slot_directory
@@ -112,10 +112,13 @@ class DashboardState:
     resource_pressure_notifier: ResourcePressureNotifier
     file_indexes: FileIndexRegistry
     _chat_pins_lock: LoopBoundLock
+    _chat_reactions_lock: LoopBoundLock
+    _chat_reactions_loaded: bool
     _folders_lock: LoopBoundLock
     _folders_generation: int
-    #: Set lazily by ``push_lineage_patch``: key -> (parent, lineage_pending).
-    _lineage_sent: dict[str, tuple[Any, bool]]
+    _tags_generation: int
+    #: Set lazily by ``push_lineage_patch``: key -> (parent, lineage_pending, crew stamps).
+    _lineage_sent: dict[str, tuple[Any, bool, tuple[str, bool]]]
 
     # Class-level defaults, NOT just __init__ assignments. push_slots_update and
     # _persist_open_slots read these on every call, and a partially-constructed
@@ -447,6 +450,11 @@ class DashboardState:
         # Short reason from the most recent WhatsApp start failure, empty when
         # connected or never attempted. Read by the settings badge.
         self.whatsapp_connect_error: str = ""
+        # True when the most recent WhatsApp state is a failure (a broken link,
+        # a missing SDK, a start exception), False while connected or still
+        # pairing. The settings panel reads this rather than parsing the text
+        # in ``whatsapp_connect_error``.
+        self.whatsapp_connect_failed: bool = False
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated
@@ -548,6 +556,12 @@ class DashboardState:
         self._slot_list_channel_held_keys: set[str] = set()
         self._slot_list_released_keys: set[str] = set()
         self._slot_list_hold_channels = False
+        # Set by the first ``finish_slot_list_rebuild`` and never cleared, so a
+        # waiter that arrives after it still sees it. From then on, every tab the
+        # startup restore and the channel reconciler's first complete pass rebuilt
+        # is in ``_slots`` and published to the surface registry. The gateway
+        # holds the boot orphan sweep's notices until it is set (``run()``).
+        self.startup_tabs_rebuilt: asyncio.Event = asyncio.Event()
         # The slot each connected owner dashboard reports in the foreground, by
         # connection (``slot_retention.note_foreground``). The idle sweep never
         # archives a slot someone is looking at.
@@ -619,6 +633,17 @@ class DashboardState:
         # LoopBoundLock, not asyncio.Lock: DashboardState outlives any
         # single event loop (in-process gateway restart, test loops).
         self._chat_pins_lock = LoopBoundLock()
+        self._chat_reactions: list[dict[str, Any]] = []  # message reactions
+        # Malformed chat_reactions.json entries dropped at load time, kept
+        # verbatim so save_chat_reactions round-trips them back instead of
+        # erasing bytes a hand-edit left in a shape the loader could not
+        # validate (mirrors the chat-pins unparsed-entry preservation).
+        self._unparsed_chat_reaction_entries: list[Any] = []
+        # Reactions load lazily on first request, not on the gateway boot path
+        # (no-new-work-on-gateway-boot-path); this guards the one-time load.
+        self._chat_reactions_loaded = False
+        # Serializes reaction mutation + persistence; see _chat_pins_lock.
+        self._chat_reactions_lock = LoopBoundLock()
         # Serializes read-modify-write of the folder store; see
         # mutate_folders(). Constructed here rather than lazily so two
         # concurrent first-callers cannot each make their own lock and
@@ -630,6 +655,9 @@ class DashboardState:
         # (the store's only writer) on each confirmed write. See
         # folders_generation() for what the client does with it.
         self._folders_generation = 0
+        # The tag-vocabulary / board-column twin; bumped by every save of
+        # either store. See tags_generation().
+        self._tags_generation = 0
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # Malformed tags.json entries dropped at load time, kept verbatim so a
@@ -826,6 +854,12 @@ class DashboardState:
             from kiro_crew.subagent import set_parent_project_resolver
 
             set_parent_project_resolver(lambda key: session_project_for_spawn_gate(self, key))
+            # A child's prompt carries the folder steering its parent receives.
+            from kiro_crew.dashboard.handlers._shared import session_folder_steering_dirs
+
+            self.subagents._parent_steering_dirs = lambda key: session_folder_steering_dirs(
+                self, key
+            )
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)
@@ -982,6 +1016,7 @@ class DashboardState:
     # ── Chat message pin persistence ──
 
     _CHAT_PINS_FILE = "chat_pins.json"
+    _CHAT_REACTIONS_FILE = "chat_reactions.json"
 
     @staticmethod
     def _atomic_write_json(path: Path, data: Any) -> None:
@@ -1131,7 +1166,12 @@ class DashboardState:
     load_chat_pins = _sidebar_stores.load_chat_pins
     save_chat_pins = _sidebar_stores.save_chat_pins
     remove_chat_pins_for_slots = _sidebar_stores.remove_chat_pins_for_slots
+    load_chat_reactions = _sidebar_stores.load_chat_reactions
+    save_chat_reactions = _sidebar_stores.save_chat_reactions
+    ensure_chat_reactions_loaded = _sidebar_stores.ensure_chat_reactions_loaded
     folders_generation = _sidebar_stores.folders_generation
+    tags_generation = _sidebar_stores.tags_generation
+    bump_tags_generation = _sidebar_stores.bump_tags_generation
     mutate_folders = _sidebar_stores.mutate_folders
     read_folders = _sidebar_stores.read_folders
     hold_folders = _sidebar_stores.hold_folders
@@ -1171,6 +1211,7 @@ class DashboardState:
     push_slot_title = _slots_push.push_slot_title
     push_slot_patch = _slots_push.push_slot_patch
     push_lineage_patch = _slots_push.push_lineage_patch
+    push_subagent_patch = _slots_push.push_subagent_patch
     push_slot_removed = _slots_push.push_slot_removed
     _has_slot_patch_clients = _slots_push._has_slot_patch_clients
     _send_slot_patch = _slots_push._send_slot_patch
@@ -1199,7 +1240,10 @@ class DashboardState:
     dashboard_user_ws_count = _slots_push.dashboard_user_ws_count
     set_fold_delta_capable = _slots_push.set_fold_delta_capable
     set_fold_watch = _slots_push.set_fold_watch
+    set_fold_apply_capable = _slots_push.set_fold_apply_capable
+    broadcast_slot_fold = _slots_push.broadcast_slot_fold
     fold_watch_routing = _slots_push.fold_watch_routing
+    fold_apply_watch = _slots_push.fold_apply_watch
     add_fold_watch_listener = _slots_push.add_fold_watch_listener
     broadcast_browser_event = _slots_push.broadcast_browser_event
     register_ws = _slots_push.register_ws
@@ -1226,4 +1270,20 @@ class DashboardState:
     finish_slot_list_rebuild = _slot_list_hold.finish_slot_list_rebuild
 
 
-own_methods(DashboardState)
+#: The owners whose functions :class:`DashboardState` binds as its members, this shell included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.dashboard.state_parts.dashboard_services",
+        "kiro_crew.dashboard.state_parts.dashboard_state",
+        "kiro_crew.dashboard.state_parts.session_events",
+        "kiro_crew.dashboard.state_parts.sidebar_stores",
+        "kiro_crew.dashboard.state_parts.slot_directory",
+        "kiro_crew.dashboard.state_parts.slot_list_hold",
+        "kiro_crew.dashboard.state_parts.slots_frame",
+        "kiro_crew.dashboard.state_parts.slots_push",
+        "kiro_crew.dashboard.state_parts.source_links",
+        "kiro_crew.dashboard.state_parts.status_payload",
+    }
+)
+
+own_methods(DashboardState, _MEMBER_OWNERS)

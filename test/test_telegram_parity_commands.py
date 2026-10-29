@@ -567,6 +567,142 @@ class TestAgentPicker:
         assert all(label != "" for _v, label in choices)
         assert not any("not shown" in label for _v, label in choices)
 
+    def test_a_bound_crew_copy_is_labelled_by_the_crew_not_its_hex_id(self) -> None:
+        """The reported harm: a crew's private copy is named ``crew-<hex>`` and
+        the button showed that id. A copy its crew is still bound to shows the
+        crew's display name (else its name); a copy no crew is bound to says
+        reads "No crew"; a shared template keeps its own name."""
+        from kiro_crew.agent_discovery import AgentInfo
+        from kiro_crew.config import loader
+        from kiro_crew.telegram import transport_dispatch as td
+
+        def _spec(name: str, private_to: str = "") -> AgentInfo:
+            return AgentInfo(
+                name=name,
+                filename=f"{name}.json",
+                description="",
+                model="auto",
+                private_to=private_to,
+            )
+
+        roster = [
+            _spec("crew-3cc49292d162a41643f706a9", private_to="finance"),
+            _spec("crew-aaaaaaaaaaaaaaaaaaaaaaaa", private_to="tax"),
+            _spec("crew-684020c058dd1862549784a6", private_to="finance"),  # orphan
+            _spec("crew-bbbbbbbbbbbbbbbbbbbbbbbb", private_to="gone"),  # crew removed
+            _spec("crew-cccccccccccccccccccccccc", private_to="essay"),
+            _spec("shared-template"),
+        ]
+        crews = {
+            "finance": SimpleNamespace(kiro_agent="crew-3cc49292d162a41643f706a9", display_name=""),
+            "tax": SimpleNamespace(kiro_agent="crew-aaaaaaaaaaaaaaaaaaaaaaaa", display_name="Tax"),
+            "essay": SimpleNamespace(
+                kiro_agent="crew-cccccccccccccccccccccccc", display_name="x" * 80
+            ),
+            "helper": SimpleNamespace(kiro_agent="shared-template", display_name="Helper"),
+        }
+        with (
+            patch.object(td, "list_agents", lambda: roster),
+            patch.object(loader.KiroCrewConfig, "load", lambda: SimpleNamespace(agents=crews)),
+        ):
+            labels = td.TelegramDispatcher._agent_labels()
+
+        assert labels == {
+            "crew-3cc49292d162a41643f706a9": "finance",
+            "crew-aaaaaaaaaaaaaaaaaaaaaaaa": "Tax",
+            "crew-cccccccccccccccccccccccc": "x" * 47 + "…",
+            "crew-684020c058dd1862549784a6": "No crew (crew-6840…)",
+            "crew-bbbbbbbbbbbbbbbbbbbbbbbb": "No crew (crew-bbbb…)",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_crewless_copy_is_labelled_and_still_selects_its_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``crew-<hex>`` copy no crew is bound to -- with or without its
+        ``private_to`` record -- shows as "No crew" instead of a bare hash,
+        stays pickable, and a press still stores the exact id. A user's own spec
+        that merely starts with ``crew-`` keeps its name."""
+        from test_telegram import _press
+
+        from kiro_crew.agent_discovery import AgentInfo
+        from kiro_crew.config import loader
+        from kiro_crew.telegram import transport_dispatch as td
+
+        orphan = "crew-6f74da5cdcb1d25e0b608f92"
+        roster = [
+            AgentInfo(name=orphan, filename=f"{orphan}.json", description="", model="auto"),
+            AgentInfo(name="crew-notes", filename="crew-notes.json", description="", model="auto"),
+        ]
+        monkeypatch.setattr(td, "list_agents", lambda: roster)
+        monkeypatch.setattr(
+            loader.KiroCrewConfig, "load", staticmethod(lambda: SimpleNamespace(agents={}))
+        )
+        dispatcher, client, _ = _dispatcher({1})
+        await dispatcher.handle_message(_msg("/agent"))
+        _text, markup = client.sent[-1]
+        labels = [row[0]["text"] for row in markup["inline_keyboard"]]
+        assert labels[1:] == ["No crew (crew-6f74…)", "crew-notes"]
+
+        await dispatcher.on_callback(_press("g:1", uid=1))
+        assert dispatcher._agent_picks.get(("direct", "1")) == orphan
+
+    def test_an_unreadable_config_falls_back_to_the_ids(self) -> None:
+        from kiro_crew.config import loader
+        from kiro_crew.telegram import transport_dispatch as td
+
+        def _boom() -> Any:
+            raise OSError("config gone")
+
+        with patch.object(loader.KiroCrewConfig, "load", _boom):
+            assert td.TelegramDispatcher._agent_labels() == {}
+
+    @pytest.mark.asyncio
+    async def test_a_labelled_button_still_selects_the_exact_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The label is display only: the press resolves to the spec id, the
+        reply names the label, and the audit records the id."""
+        from test_telegram import _press
+
+        rows: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw)),
+        )
+        from kiro_crew.agent_discovery import AgentInfo
+        from kiro_crew.config import loader
+        from kiro_crew.telegram import transport_dispatch as td
+
+        hex_id = "crew-3cc49292d162a41643f706a9"
+        roster = [
+            AgentInfo(
+                name=hex_id,
+                filename=f"{hex_id}.json",
+                description="",
+                model="auto",
+                private_to="finance",
+            ),
+            AgentInfo(name="plain", filename="plain.json", description="", model="auto"),
+        ]
+        crews = {"finance": SimpleNamespace(kiro_agent=hex_id, display_name="")}
+        monkeypatch.setattr(td, "list_agents", lambda: roster)
+        monkeypatch.setattr(
+            loader.KiroCrewConfig, "load", staticmethod(lambda: SimpleNamespace(agents=crews))
+        )
+        dispatcher, client, _ = _dispatcher({1})
+        await dispatcher.handle_message(_msg("/agent"))
+        _text, markup = client.sent[-1]
+        labels = [row[0]["text"] for row in markup["inline_keyboard"]]
+        assert labels[1:] == ["finance", "plain"]
+        assert hex_id not in labels
+
+        await dispatcher.on_callback(_press("g:1", uid=1))
+        assert dispatcher._agent_picks.get(("direct", "1")) == hex_id
+        assert "Agent set to finance" in client.edits[-1][1]
+        audit = [r for r in rows if r["operation"] == "telegram.set_agent"]
+        assert audit and audit[-1]["resources"] == f"agent={hex_id}"
+
 
 class TestSharedSessionsCollector:
     def test_the_slack_wrapper_threads_its_OWN_data_home_override(

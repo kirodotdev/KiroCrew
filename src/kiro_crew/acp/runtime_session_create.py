@@ -49,7 +49,11 @@ from kiro_crew.acp.session_handle import (
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
-from kiro_crew.acp.types import METHOD_SESSION_NEW, JsonRpcMessage
+from kiro_crew.acp.types import (
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    METHOD_SESSION_NEW,
+    JsonRpcMessage,
+)
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -317,13 +321,20 @@ async def create_session(
     # The generation the wire payload was built from, or None when this host takes its
     # agent at spawn time. Consumed by the activation bracket below.
     payload_snapshot = kas_extras.derived_spec_snapshot
+    # The vault identity the request goes out under, for the KAS catalog recorder;
+    # read by the harness with the payload, ``""`` on every host but KAS.
+    request_identity = kas_extras.vault_identity
     # Crew's managed servers travel in the session-level array, the one
     # declaration site the captured 2.18.0 release honours over a same-named
     # global/workspace entry and 2.20.0 reports as the client's own (see
     # ``hoist_servers_for_session``). The kiro path returns None here and is
     # untouched.
     kas_agents, mcp_servers = hoist_servers_for_session(
-        kas_agents, active_agent, mcp_servers, session_token=stub_token
+        kas_agents,
+        active_agent,
+        mcp_servers,
+        session_token=stub_token,
+        managed_entries=kas_extras.managed_entries,
     )
     # The host's last word on its own tool surface. A host that reads an
     # agent spec passes the list straight back; one that has nothing else
@@ -442,6 +453,7 @@ async def create_session(
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
             request_sent_at=request_sent_at,
+            request_identity=request_identity,
         )
         if collector is None:
             permit.release()
@@ -476,6 +488,7 @@ async def create_session(
         session_key=session_key,
         member_dispatch_mounted=member_mounted,
         request_sent_at=request_sent_at,
+        request_identity=request_identity,
     )
 
 
@@ -504,6 +517,7 @@ def _collect_late_start(
     session_key: str = "",
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
+    request_identity: str = "",
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -590,6 +604,7 @@ def _collect_late_start(
                 session_key=session_key,
                 member_dispatch_mounted=member_dispatch_mounted,
                 request_sent_at=request_sent_at,
+                request_identity=request_identity,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -653,6 +668,7 @@ async def _finish_create_session(
     session_key: str = "",
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
+    request_identity: str = "",
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -702,8 +718,19 @@ async def _finish_create_session(
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
+    # The vault identity the request went out under, read by the KAS catalog
+    # recorder inside ``store_session_config``; see the handle's field.
+    handle.request_vault_identity = request_identity
     # Populate state from session/new response (configOptions, available models)
     handle.store_session_config(resp)
+    # A backend whose served list is the authority on what it accepts feeds
+    # that list into the cross-session advertised-model cache and persists it
+    # off the loop, so the picker keeps it after this session is gone. Gated
+    # HERE rather than inside the methods so the first-class kiro path gains no
+    # call and no failure point in service of an adapter (harness-parity H13).
+    if self.acp_backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        handle._feed_advertised_model_cache()
+        await handle._persist_advertised_models_if_changed()
     # Both halves of that snapshot are now known, which is what makes the
     # served-default check answerable: the model the backend picked for
     # this session can be one the account's partition does not serve.

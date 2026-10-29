@@ -32,6 +32,7 @@ from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
+from kiro_crew.mcp_tools.spawn_parts.session_memory import session_memory_lines
 from kiro_crew.mcp_tools.spawn_parts.wave import _SA_ERROR_MAX_CHARS, spawn_sub_agents
 from kiro_crew.spawn_label import normalize_spawn_label
 from kiro_crew.subagent import (
@@ -759,6 +760,7 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
                 f"  Sub-agent ceiling: {cap} (configured max; the cap actually in "
                 "force could not be read from the gateway)"
             )
+    out.extend(session_memory_lines())
     if rstatus.posture == "critical":
         out.append(
             "\nGuidance: memory is critically low — do NOT start heavy work "
@@ -787,6 +789,12 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
             "\nGuidance: headroom could not be measured on this host — "
             "proceed with normal caution."
         )
+    # After the memory guidance, which stays about memory alone: a full /tmp
+    # fails a test run with ENOSPC however much RAM is free.
+    temp_lines = host_status.temp_headroom_lines()
+    if temp_lines:
+        out.append("")
+        out.extend(temp_lines)
     return "\n".join(out)
 
 
@@ -810,10 +818,12 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
 #
 #   ``spawn_parts.schemas`` -- every spawn descriptor and the agent roster they name.
 #   ``spawn_parts.listing`` -- spawn_list, spawn_status and the queued-wait wording.
+#   ``spawn_parts.session_memory`` -- resource_status's block on the caller's own memory.
 #   ``spawn_parts.wave`` -- spawn_sub_agents: submit a batch, wait for it off the MCP worker.
 _OWNERS = (
     "kiro_crew.mcp_tools.spawn_parts.schemas",
     "kiro_crew.mcp_tools.spawn_parts.listing",
+    "kiro_crew.mcp_tools.spawn_parts.session_memory",
     "kiro_crew.mcp_tools.spawn_parts.wave",
 )
 for _owner in _OWNERS:
@@ -834,7 +844,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parent_template_for_roster,
         schemas,
     )
+    from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
+        _MEMORY_HEADER,
+        _memory_count,
+        _memory_mb,
+        _memory_runtime_line,
+        render_session_memory,
+    )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
+        _MARK_COLLECTED_TIMEOUTS,
         _OWNER_UNRESOLVED_PREFIX,
         RESUME_HOLD_SECS,
         _audit_owner,
@@ -843,9 +861,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SubAgentsStep,
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
-    from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS, NO_TOOL_CALLS_NOTE  # noqa: F401
+    from kiro_crew.constants import (  # noqa: F401
+        DEFAULT_SUBAGENT_MAX_TURNS,
+        LEAKED_TOOL_CALL_NOTE,
+        NO_TOOL_CALLS_NOTE,
+    )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
+    from kiro_crew.platform import redact_log_via_context as redact_log  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
     from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401

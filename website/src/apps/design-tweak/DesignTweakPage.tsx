@@ -354,7 +354,7 @@ function RequestGroup({
                 onClick={(e: React.MouseEvent) => { e.stopPropagation(); onResend?.(req) }}
                 disabled={!!sending}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md text-[12px] font-semibold cursor-pointer mt-0.5 disabled:cursor-wait"
-                style={{ background: 'var(--danger)', color: '#fff', opacity: sending ? 0.7 : 1, border: 0 }}
+                style={{ background: 'var(--danger)', color: 'var(--danger-fg)', opacity: sending ? 0.7 : 1, border: 0 }}
               >
                 <Send size={13} />
                 {sending

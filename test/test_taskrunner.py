@@ -1237,10 +1237,20 @@ class TestRun:
 
 
 class TestCancel:
-    def test_cancel_not_running(self) -> None:
+    def test_cancel_not_running(self, tmp_path: Path) -> None:
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
-        runner.cancel()  # should not raise
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        runner.cancel()  # no runs: must not raise
+        for status in ("planned", "paused", "completed"):
+            runner._runs[status] = TaskRun(
+                task_id=status, spec_path="", spec_content="", status=status
+            )
+        runner.cancel()
+        assert {k: r.status for k, r in runner._runs.items()} == {
+            "planned": "planned",
+            "paused": "paused",
+            "completed": "completed",
+        }
 
     def test_running_property(self) -> None:
         sessions = _make_mock_sessions()

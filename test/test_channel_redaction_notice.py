@@ -92,12 +92,14 @@ async def test_a_reply_with_a_rewritten_url_names_the_url_remedy():
 
 @pytest.mark.asyncio
 async def test_a_clean_reply_posts_no_notice():
-    agent, ch = _make_agent(), _make_channel()
+    ch = Channel(id="c1", topic="review")
+    dev = ch.add_agent("dev")
+    assert dev is not None
 
-    await _stream_task(agent, ch, _text_client("all tests pass"), "hi")
+    result = await _stream_task(dev, ch, _text_client("all tests pass"), "hi")
 
-    ch.post.assert_awaited_once()
-    assert ch.post.await_args.args[1] == "all tests pass"
+    assert result == channel_mod._STREAM_OK
+    assert [(m.content, m.msg_type) for m in ch.messages] == [("all tests pass", "progress")]
 
 
 @pytest.mark.asyncio

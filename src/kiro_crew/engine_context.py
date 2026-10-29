@@ -44,6 +44,30 @@ HISTORY_PARTS: Final[tuple[tuple[str, str], ...]] = (
     ("compactionSummaryChars", "compaction_summary"),
 )
 
+#: The three list categories. Each carries ``count``: the entries its list holds.
+LIST_CATEGORIES: Final[tuple[str, ...]] = ("agentsIndex", "skillsIndex", "powersIndex")
+
+#: Sub-fields that split a category's ``chars`` and always add up to it:
+#: (category, wire name, the name Kiro Crew records).
+SUB_PARTS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("toolIO", "inputChars", "input"),
+    ("toolIO", "outputChars", "output"),
+    ("workspace", "fileTreeChars", "file_tree"),
+    ("workspace", "openFilesChars", "open_files"),
+    ("workspace", "environmentChars", "environment"),
+    ("workspace", "repositoriesChars", "repositories"),
+    ("memory", "learningsChars", "learnings"),
+    ("memory", "knowledgeChars", "knowledge"),
+)
+
+#: ``media``: images and documents the request carried, OUTSIDE ``totalChars``.
+MEDIA_PARTS: Final[tuple[tuple[str, str], ...]] = (
+    ("images", "images"),
+    ("imageBytes", "image_bytes"),
+    ("documents", "documents"),
+    ("documentBytes", "document_bytes"),
+)
+
 #: Ceiling on every count and duration kept, so a recorded value is at most eight
 #: digits. A real request is a few million characters at most.
 MAX_COUNT: Final[int] = 99_999_999

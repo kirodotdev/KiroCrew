@@ -50,7 +50,12 @@ from kiro_crew.apps.registry_pipeline.sources import (
     is_clone_host_trusted,
 )
 from kiro_crew.apps.registry_pipeline.store_art import _contained_join, _store_asset_path
-from kiro_crew.apps.registry_pipeline.subprocess_env import anonymous_git_env, minimal_env
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+    anonymous_git_env,
+    minimal_env,
+)
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -122,6 +127,9 @@ async def _fetch_app_manifest(
         return None
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     # Try persistent clone first (already installed).
     #
@@ -239,7 +247,7 @@ async def _fetch_app_manifest(
                     str(err),
                 )
                 return None
-        elif credentialed_transport:
+        elif isolate_transport:
             # A credentialed `git clone` performs both the network fetch and the
             # checkout in one process. The checkout may launch an inherited filter
             # selected by the fetched `.gitattributes`, which would inherit the
@@ -284,7 +292,9 @@ async def _fetch_app_manifest(
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            transport_env = _git_transport_env(credential_target, git_url, clone_env)
+            transport_env = _git_network_env(
+                _git_transport_env(credential_target, git_url, clone_env), git_url
+            )
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,

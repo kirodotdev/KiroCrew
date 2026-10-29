@@ -4,26 +4,24 @@ through /api/file-read (UTF-8 decode with errors='replace').
 
 Covers the regression case (docx round-trip preserves original bytes),
 the security envelope (path validation, sensitive paths, symlinks, size),
-and the text-redaction defense in depth.
+and that the owner's file is served as-is, with no content scan.
 """
 
 from __future__ import annotations
 
 import base64
 import io
-import json
 import os
 import random
 import string
 import urllib.parse
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner, as_owner
 
-from kiro_crew import file_delivery_consent
 from kiro_crew.dashboard.handlers import api_file_download
 
 
@@ -111,7 +109,7 @@ async def test_unknown_extension_falls_back_to_octet_stream(tmp_path, mock_sel):
             assert resp.headers["Content-Type"] == "application/octet-stream"
 
 
-# --- Text files: still scanned for sensitive content (defense in depth) ---
+# --- Text files: served as-is, no content scan ---
 
 
 @pytest.mark.asyncio
@@ -126,12 +124,11 @@ async def test_text_file_served_when_clean(tmp_path, mock_sel):
 
 
 @pytest.mark.asyncio
-async def test_text_file_redacted_blocks_download(tmp_path, mock_sel):
-    """If text content trips the redaction pass, the download is aborted —
-    matches the api_outbox_download policy. The handler routes content through
-    the context-aware redact() shim (which runs both the exfil-URL and
-    credential passes, plus a loaded companion's extra regexes); this test
-    forces redact() to mutate the text so the abort path is exercised.
+async def test_flagged_text_file_is_served_whole(tmp_path, mock_sel):
+    """The route is owner-only, so content the redactor would flag still downloads.
+
+    redact() is forced to mutate the text: a handler that still scanned would
+    refuse, and one that served redacted text would send the wrong bytes.
     """
     f = tmp_path / "leaky.txt"
     f.write_text("ok body")
@@ -140,14 +137,8 @@ async def test_text_file_redacted_blocks_download(tmp_path, mock_sel):
             patch(redact_path, return_value="ok body REDACTED"):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
-            assert resp.status == 400
-            payload = await resp.json()
-            assert "redacted" in payload["error"]
-            # The scan refusal carries a machine-readable discriminator (the
-            # same one file-stream/upload emit) so the client can name it a
-            # CREDENTIAL refusal rather than confusing it with the endpoint's
-            # other 400s (invalid input, out-of-project path).
-            assert payload["code"] == "content_redacted"
+            assert resp.status == 200
+            assert (await resp.read()) == b"ok body"
 
 
 # --- Security envelope ---
@@ -203,7 +194,7 @@ async def test_symlink_rejected(tmp_path, mock_sel):
             assert "symlinks" in payload["error"]
 
 
-# --- Over the scan threshold: confirm, then stream unscanned ---
+# --- Over the in-memory threshold: stream in bounded chunks ---
 #
 # The threshold is shrunk instead of writing 50 MB to disk; the file is
 # genuinely over the (patched) threshold, so the real branch runs.
@@ -230,32 +221,17 @@ def _sel_errors(mock_sel) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_a_large_file_asks_before_it_sends_a_byte(tmp_path, mock_sel, small_threshold):
-    f = tmp_path / "huge.bin"
-    f.write_bytes(b"\x00" * 1024)
-    status, body, _ = await _get(f)
-    assert status == 409
-    assert json.loads(body) | {"error": ""} == {
-        "error": "",
-        "code": "large_file_unscanned",
-        "size": 1024,
-        "limit": 512,
-    }
-    assert "large_file_unconfirmed" in _sel_errors(mock_sel)
-
-
-@pytest.mark.asyncio
-async def test_a_confirmed_large_file_streams_whole_and_unscanned(
+async def test_a_large_file_streams_whole_with_no_confirmation(
     tmp_path, mock_sel, small_threshold
 ):
-    """The bytes arrive whole, no content scan runs, and SEL tags the delivery."""
+    """No 409 ask: the bytes arrive whole, no content scan runs, and SEL tags it."""
     f = tmp_path / "huge.docx"
     raw = bytes(random.Random(5).randrange(256) for _ in range(2048))
     f.write_bytes(raw)
     with patch(f"{_FILES}.binary_content_is_flagged") as binary, \
          patch(f"{_FILES}.wide_content_is_flagged") as wide, \
          patch(f"{_FILES}.redact") as redact:
-        status, body, headers = await _get(f, "&confirm_unscanned=1")
+        status, body, headers = await _get(f)
     assert status == 200
     assert body == raw
     assert headers["Content-Length"] == "2048"
@@ -286,7 +262,7 @@ async def test_a_large_file_is_never_read_whole(tmp_path, mock_sel, small_thresh
         return real_open(fd, mode, *a, **k)
 
     with patch("os.fdopen", spy_fdopen):
-        status, body, _ = await _get(f, "&confirm_unscanned=1")
+        status, body, _ = await _get(f)
     assert status == 200
     assert body == b"x" * 2048
     assert sizes and all(0 < n <= 100 for n in sizes)
@@ -309,20 +285,20 @@ async def test_a_growing_large_file_stops_at_its_fstat_size(
         return await real(request, fobj, path, size, *rest)
 
     with patch(f"{_FILES}._stream_unscanned_download", grow_then_stream):
-        status, body, _ = await _get(f, "&confirm_unscanned=1")
+        status, body, _ = await _get(f)
     assert status == 200
     assert body == b"a" * 1024
 
 
 async def _get_streamed(path):
-    """GET a confirmed large download; returns (status, bytes received, ended short)."""
+    """GET a large download; returns (status, bytes received, ended short)."""
     import aiohttp
 
     received = bytearray()
     short = False
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(path)):
         async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get(f"/api/file-download?path={path}&confirm_unscanned=1")
+            resp = await client.get(f"/api/file-download?path={path}")
             try:
                 async for chunk in resp.content.iter_any():
                     received.extend(chunk)
@@ -541,19 +517,18 @@ async def test_a_busy_pool_closes_the_file_off_the_event_loop(tmp_path, mock_sel
 
 
 @pytest.mark.asyncio
-async def test_a_small_file_ignores_the_flag_and_is_still_scanned(
-    tmp_path, mock_sel, small_threshold
-):
+async def test_a_small_key_file_is_read_whole_and_served(tmp_path, mock_sel, small_threshold):
     f = tmp_path / "env.txt"
-    f.write_text(f"aws_secret_access_key = {_key_shaped(9)}\n")
-    status, body, _ = await _get(f, "&confirm_unscanned=1")
-    assert status == 400
-    assert json.loads(body)["code"] == "content_redacted"
+    raw = f"aws_secret_access_key = {_key_shaped(9)}\n".encode()
+    f.write_bytes(raw)
+    status, body, _ = await _get(f)
+    assert status == 200
+    assert body == raw
     assert "unscanned_large_file" not in _sel_errors(mock_sel)
 
 
 @pytest.mark.asyncio
-async def test_a_sensitive_path_over_the_threshold_is_refused_even_confirmed(
+async def test_a_sensitive_path_over_the_threshold_is_refused(
     tmp_path, small_threshold
 ):
     f = tmp_path / "huge.env"
@@ -561,18 +536,18 @@ async def test_a_sensitive_path_over_the_threshold_is_refused_even_confirmed(
     with patch(f"{_FILES}.is_sensitive_path", return_value=True), \
          patch("kiro_crew.sel.sel") as m:
         m.return_value = MagicMock()
-        status, _, _ = await _get(f, "&confirm_unscanned=1")
+        status, _, _ = await _get(f)
     assert status == 403
 
 
 @pytest.mark.asyncio
-async def test_a_non_owner_is_refused_even_confirmed(tmp_path, mock_sel, small_threshold):
+async def test_a_non_owner_is_refused_a_large_file(tmp_path, mock_sel, small_threshold):
     f = tmp_path / "huge.bin"
     f.write_bytes(b"x" * 2048)
     req = _owner_request(f, user="slack-user-7")
     req = make_mocked_request(
         "GET",
-        f"/api/file-download?path={urllib.parse.quote(str(f))}&confirm_unscanned=1",
+        f"/api/file-download?path={urllib.parse.quote(str(f))}",
         app=req.app,
     )
     req["user"] = "slack-user-7"
@@ -612,7 +587,7 @@ async def test_resolve_relative_path_outside_project_rejected(tmp_path, mock_sel
         assert resp.status == 400
 
 
-# --- Flagged content: the owner's file-delivery grant releases it ---
+# --- Flagged content: the owner gets it as-is ---
 
 
 def _owner_request(path, *, user: str = "local-app"):
@@ -642,108 +617,47 @@ def _inline_png_html() -> bytes:
     return f'<html><body><img src="data:image/png;base64,{b64}"></body></html>'.encode()
 
 
-def _grant() -> None:
-    file_delivery_consent.record_grant(
-        file_delivery_consent.CLASS_OWNER_DASHBOARD, granted_at="2026-10-07T00:00:00+00:00"
-    )
-
-
-@pytest.fixture(autouse=True)
-def isolated_consent_store(tmp_path, _floor_monkeypatch):
-    """Point the consent store at a tmp file so the host's real grant cannot leak in."""
-    store = tmp_path / "consent" / "file_delivery_consent.json"
-    store.parent.mkdir()
-    _floor_monkeypatch.setattr(
-        file_delivery_consent, "file_delivery_consent_path", lambda: store, raising=True
-    )
-    return store
-
-
 async def _download(path, **kwargs):
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(path)):
         return await api_file_download(_owner_request(path, **kwargs))
 
 
-class TestFlaggedDownloadHonoursOwnerGrant:
-    """A flagged file is refused by default and released to the owner by the grant."""
+class TestFlaggedDownloadIsServedToTheOwner:
+    """Content the scanner would flag downloads for the owner, byte for byte."""
 
     @pytest.mark.asyncio
-    async def test_inline_png_html_is_refused_without_a_grant(self, tmp_path, mock_sel):
-        f = tmp_path / "report.html"
-        f.write_bytes(_inline_png_html())
-        resp = await _download(f)
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "content_redacted"
-
-    @pytest.mark.asyncio
-    async def test_inline_png_html_is_delivered_to_the_owner_under_a_grant(
-        self, tmp_path, mock_sel
-    ):
+    async def test_inline_png_html_is_delivered(self, tmp_path, mock_sel):
         f = tmp_path / "report.html"
         raw = _inline_png_html()
         f.write_bytes(raw)
-        _grant()
-        with patch.object(file_delivery_consent, "audit_decision") as audit:
-            resp = await _download(f)
+        resp = await _download(f)
         assert resp.status == 200
         assert resp.body == raw
-        audit.assert_called_once_with(
-            file_delivery_consent.CLASS_OWNER_DASHBOARD,
-            outcome="delivered",
-            detail="download: report.html",
-        )
 
     @pytest.mark.asyncio
-    async def test_grant_does_not_release_to_a_non_owner(self, tmp_path, mock_sel):
-        """The grant's own owner conjunct refuses, even past an admitting front gate."""
+    async def test_non_owner_is_stopped_at_the_front_gate(self, tmp_path, mock_sel):
         f = tmp_path / "report.html"
         f.write_bytes(_inline_png_html())
-        _grant()
-        with patch(
-            "kiro_crew.dashboard.handlers.files.require_owner_dashboard_request",
-            new=AsyncMock(return_value=None),
-        ), patch.object(file_delivery_consent, "audit_refusal") as refusal:
-            resp = await _download(f, user="slack-user-7")
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "content_redacted"
-        assert refusal.call_args.kwargs["reason"] == "flagged content, non-owner caller"
-        assert refusal.call_args.kwargs["caller"] == "slack-user-7"
-
-    @pytest.mark.asyncio
-    async def test_non_owner_is_still_stopped_at_the_front_gate(self, tmp_path, mock_sel):
-        f = tmp_path / "report.html"
-        f.write_bytes(_inline_png_html())
-        _grant()
         resp = await _download(f, user="slack-user-7")
         assert resp.status == 403
 
     @pytest.mark.asyncio
-    async def test_real_key_is_refused_without_a_grant(self, tmp_path, mock_sel):
+    async def test_real_key_is_delivered(self, tmp_path, mock_sel):
         f = tmp_path / "env.txt"
-        f.write_text(f"aws_secret_access_key = {_key_shaped(1)}\n")
-        with patch.object(file_delivery_consent, "audit_refusal") as refusal:
-            resp = await _download(f)
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "content_redacted"
-        assert refusal.call_args.kwargs["reason"] == "flagged content, no grant"
-
-    @pytest.mark.asyncio
-    async def test_wide_encoded_key_is_refused_without_a_grant(self, tmp_path, mock_sel):
-        """The wide pass: a UTF-16 key decodes cleanly yet matches no narrow detector."""
-        f = tmp_path / "notes.txt"
-        f.write_bytes(f"aws_secret_access_key = {_key_shaped(2)}".encode("utf-16-le"))
+        raw = f"aws_secret_access_key = {_key_shaped(1)}\n".encode()
+        f.write_bytes(raw)
         resp = await _download(f)
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "content_redacted"
+        assert resp.status == 200
+        assert resp.body == raw
 
     @pytest.mark.asyncio
-    async def test_clean_file_never_reads_the_grant(self, tmp_path, mock_sel):
+    async def test_wide_encoded_key_is_delivered(self, tmp_path, mock_sel):
         f = tmp_path / "notes.txt"
-        f.write_text("hello world")
-        with patch.object(file_delivery_consent, "is_granted") as is_granted:
-            resp = await _download(f)
+        raw = f"aws_secret_access_key = {_key_shaped(2)}".encode("utf-16-le")
+        f.write_bytes(raw)
+        resp = await _download(f)
         assert resp.status == 200
-        is_granted.assert_not_called()
+        assert resp.body == raw
 
 
 def _telegram_shaped() -> str:
@@ -751,35 +665,25 @@ def _telegram_shaped() -> str:
     return "123456789:" + _key_shaped(3, 35).replace("+", "_").replace("/", "-")
 
 
-class TestBinaryDownloadUsesTheBinaryScan:
-    """Non-UTF-8 bytes go through the shared binary scan, not the text redactor."""
+class TestBinaryDownloadIsServed:
+    """Non-UTF-8 bytes download as-is, credential-shaped or not."""
 
     @pytest.mark.asyncio
     async def test_baseline_jpeg_downloads(self, tmp_path, mock_sel):
-        # Every baseline JPEG carries the standard Huffman table, whose
-        # printable run reads as a bot token to the text redactor.
         image = pytest.importorskip("PIL.Image")
         f = tmp_path / "shot.jpg"
         image.new("RGB", (64, 36), (120, 30, 200)).save(f, "JPEG")
-        assert b"456789:CDEFGHIJ" in f.read_bytes()
         resp = await _download(f)
         assert resp.status == 200
 
     @pytest.mark.asyncio
-    async def test_text_with_telegram_token_is_still_refused(self, tmp_path, mock_sel):
-        f = tmp_path / "config.txt"
-        f.write_text(f"bot_token = {_telegram_shaped()}\n")
-        resp = await _download(f)
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "content_redacted"
-
-    @pytest.mark.asyncio
-    async def test_binary_with_telegram_token_is_still_refused(self, tmp_path, mock_sel):
+    async def test_binary_with_telegram_token_is_delivered(self, tmp_path, mock_sel):
         f = tmp_path / "blob.bin"
-        f.write_bytes(b"\xff\xd8\xff\xe0\x80 " + _telegram_shaped().encode() + b" \x80")
+        raw = b"\xff\xd8\xff\xe0\x80 " + _telegram_shaped().encode() + b" \x80"
+        f.write_bytes(raw)
         resp = await _download(f)
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "content_redacted"
+        assert resp.status == 200
+        assert resp.body == raw
 
 
 class TestBinaryScanReadsBothProjections:
@@ -803,11 +707,3 @@ class TestBinaryScanReadsBothProjections:
         buf = io.BytesIO()
         image.new("RGB", (64, 36), (120, 30, 200)).save(buf, "JPEG")
         assert not binary_content_is_flagged(buf.getvalue())
-
-    @pytest.mark.asyncio
-    async def test_nbsp_bearer_download_is_refused(self, tmp_path, mock_sel):
-        f = tmp_path / "trace.bin"
-        f.write_bytes(self._nbsp_bearer())
-        resp = await _download(f)
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "content_redacted"

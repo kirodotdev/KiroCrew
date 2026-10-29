@@ -589,10 +589,10 @@ async def test_opener_precedes_the_single_model_call_and_result_is_a_structured_
     )
     prompt = call_kwargs["prompt"]
     assert '"original_request": "Fix the failing test"' in prompt
-    # The model sees the gateway's count so its "remaining" line agrees with it.
+    # The model sees the gateway's count so its text agrees with it.
     assert '"progress": {"accepted": 0, "total": 1}' in prompt
-    assert "professional manager" in prompt and "Never invent numbers" in prompt
-    assert '"needs_you"' in prompt and "no markdown, no HTML, no links" in prompt
+    assert "trusted teammate" in prompt and "Never invent numbers" in prompt
+    assert '"needs_you"' in prompt and "no\nmarkdown, HTML or links" in prompt
     # The user's reply-style choice reaches the prompt.
     assert warm_task_brief._STYLE_HINTS["answer_only"] in prompt
 

@@ -305,6 +305,26 @@ async def test_me_401_without_an_authenticated_user() -> None:
 
 
 @pytest.mark.asyncio
+async def test_me_reports_the_published_principal_and_unknown_without_one() -> None:
+    from kiro_crew.shared_crew.contracts import (
+        ACTOR_REQUEST_KEY,
+        ActorContext,
+        Provenance,
+        Transport,
+    )
+    from kiro_crew.shared_crew.identity import tailnet_principal
+
+    alice = tailnet_principal("alice@example.com", "laptop", Provenance.TAILSCALE_SERVE)
+    request = _mk("GET", "/api/auth/me", user="local-app")
+    request[ACTOR_REQUEST_KEY] = ActorContext(
+        principal=alice, request_id="r", transport=Transport.HTTP
+    )
+    assert _body(await h.api_auth_me(request))["principal"] == alice.to_public_dict()
+    bare = _mk("GET", "/api/auth/me", user="local-app")
+    assert _body(await h.api_auth_me(bare))["principal"]["kind"] == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_me_reports_both_expiries(state: RefreshStateManager) -> None:
     access = generate_token("alice", ttl_seconds=MAX_SESSION_TTL_SECS, register_nonce=False)
     refresh, _chain, _jti, refresh_exp = generate_refresh_token("alice")

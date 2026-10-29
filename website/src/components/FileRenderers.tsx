@@ -12,6 +12,7 @@ import { fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSli
 import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { pathBasename } from '../utils/pathBasename'
+import { AUDIO_EXTS, VIDEO_EXTS } from '../utils/mediaExts'
 import { guideUntrusted, stripGuideMarkers } from '../guide/untrustedContent'
 import {
   MD_EM_CLS,
@@ -26,13 +27,9 @@ import {
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
-// Media served through /api/file-stream (Range-capable). Split decides the
-// element: <video> renders a picture surface, <audio> a compact control bar.
-// .ogg goes to audio -- the extension is overwhelmingly audio in practice and
-// the .ogv variant exists for video. .opus is an audio-only Ogg mapping, so it
-// follows the same compact-player route.
-const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.mkv', '.ogv'])
-const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga', '.opus'])
+// Media served through /api/file-stream (Range-capable): VIDEO_EXTS and
+// AUDIO_EXTS (utils/mediaExts) decide the element. <video> renders a picture
+// surface, <audio> a compact control bar.
 const JSON_EXTS = new Set(['.json'])
 const JSONL_EXTS = new Set(['.jsonl'])
 const HTML_EXTS = new Set(['.html', '.htm'])
@@ -443,7 +440,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
         <button
           type="button"
           onClick={() => { void revealOrOpenWithAck('open') }}
-          className={`inline-flex items-center gap-2 rounded border-none cursor-pointer bg-accent text-white hover:opacity-90 ${sizeCls}`}
+          className={`inline-flex items-center gap-2 rounded border-none cursor-pointer bg-accent text-accent-fg hover:opacity-90 ${sizeCls}`}
         >
           <ExternalLink size={iconSize} aria-hidden="true" />
           {openLabel}
@@ -454,7 +451,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
         download={filename}
         className={`inline-flex items-center gap-2 rounded no-underline ${sizeCls} ${canOpen
           ? 'border border-border bg-bg-hover text-text hover:bg-bg-elevated'
-          : 'bg-accent text-white hover:opacity-90'}`}
+          : 'bg-accent text-accent-fg hover:opacity-90'}`}
         ariaLabel={i18nT('components.fileRenderers.download_file', { filename })}
         onError={setDownloadError}
       >
@@ -489,7 +486,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
       <div className="relative">
         <FileText size={showBigDownload ? 64 : 40} className="text-muted" strokeWidth={1.25} />
         <span
-          className={`absolute bottom-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded font-semibold bg-accent text-white text-[10px]`}
+          className={`absolute bottom-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded font-semibold bg-accent text-accent-fg text-[10px]`}
           aria-hidden="true"
         >{ext}</span>
       </div>
@@ -1155,7 +1152,7 @@ export const MediaPlayer = memo(function MediaPlayer({ filePath, kind }: { fileP
           <FileDownloadLink
             filePath={filePath}
             download={filename}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-white hover:opacity-90 no-underline"
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-accent-fg hover:opacity-90 no-underline"
             ariaLabel={i18nT('components.fileRenderers.download_file', { filename })}
           >
             <Download size={16} aria-hidden="true" />

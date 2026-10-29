@@ -18,9 +18,6 @@ import { useGuardedLeave, usePublishNavigationStake, useRegisterNavigationLeaveG
 // bodies, never at module top level) — the same shape MembersPage already pulls
 // both modules in through.
 import NewCrewmateDialog, { type CreatedCrewmate } from './members/NewCrewmateDialog'
-import { hideMateWithoutPreview } from '../lib/assistantMember'
-import { usePreviewFlag } from '../hooks/usePreviewFlag'
-import { PREVIEW_CREW } from '../utils/previewFlags'
 
 import { i18nT } from '../i18n/t'
 import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
@@ -99,8 +96,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // (`sharedTargets`). React Query's structural sharing keeps `agentsData`
   // identical until the roster actually changes, so this is stable between
   // fetches that return the same rows.
-  const crewPreview = usePreviewFlag(PREVIEW_CREW)
-  const agents = useMemo<KiroCrewAgent[]>(() => hideMateWithoutPreview(agentsData?.agents || [], crewPreview), [agentsData, crewPreview])
+  const agents = useMemo<KiroCrewAgent[]>(() => agentsData?.agents || [], [agentsData])
   const defaultAgent = agentsData?.default_agent || ''
 
   const [filter, setFilter] = useState('')
@@ -151,8 +147,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   }
   const rosterAdmitted = !!editingCrew && rosterAdmittedRef.current === editingCrew
   const editorAgents = useMemo<KiroCrewAgent[]>(
-    () => (rosterAdmitted ? hideMateWithoutPreview(editorRosterQuery.data?.agents || [], crewPreview) : []),
-    [rosterAdmitted, editorRosterQuery.data, crewPreview],
+    () => (rosterAdmitted ? editorRosterQuery.data?.agents || [] : []),
+    [rosterAdmitted, editorRosterQuery.data],
   )
   const closeEditor = useCallback(() => {
     setEditingCrew('')

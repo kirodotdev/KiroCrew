@@ -1032,6 +1032,57 @@ class TestBackupIsNeverOverwritten:
         sir.apply_repair(p, lines2, backup=True, expect=report2.source_stat)
         assert sidecar.exists()
 
+    def test_a_failed_replacement_write_removes_this_calls_backup(self, tmp_path, monkeypatch):
+        """A retryable write failure must not leave a sidecar that blocks retry."""
+        p = tmp_path / "s.jsonl"
+        _write_transcript(p, [_prompt_record((3000, 1200))])
+        report, lines = sir.scan_file(p)
+        assert lines is not None
+        before = p.read_bytes()
+        sidecar = p.with_suffix(".jsonl.pre-image-repair.bak")
+
+        fsync_calls = 0
+        real_fsync = os.fsync
+
+        def fail_the_temp_fsync(fd):
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == 2:
+                raise OSError("disk full during replacement write")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", fail_the_temp_fsync)
+
+        with pytest.raises(OSError, match="disk full during replacement write"):
+            sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
+
+        assert fsync_calls == 2  # backup completed before the replacement failed
+        assert p.read_bytes() == before  # replacement did not land
+        assert not sidecar.exists()  # no failed-attempt sidecar blocks retry
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_a_failed_temp_allocation_removes_this_calls_backup(self, tmp_path, monkeypatch):
+        """No inode for the temp (ENOSPC) must not strand the backup either."""
+        p = tmp_path / "s.jsonl"
+        _write_transcript(p, [_prompt_record((3000, 1200))])
+        report, lines = sir.scan_file(p)
+        assert lines is not None
+        before = p.read_bytes()
+        sidecar = p.with_suffix(".jsonl.pre-image-repair.bak")
+
+        def no_inode_left(*_a, **_k):
+            assert sidecar.exists()  # the backup was written before the temp
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(sir.tempfile, "mkstemp", no_inode_left)
+
+        with pytest.raises(OSError, match="No space left on device"):
+            sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
+
+        assert p.read_bytes() == before
+        assert not sidecar.exists()  # a retry is not turned into BackupExistsError
+        assert not list(tmp_path.glob("*.tmp"))
+
     def test_a_dangling_symlink_sidecar_is_also_refused(self, tmp_path):
         """exists() is False for a dangling link, so is_symlink is checked too."""
         p = tmp_path / "s.jsonl"

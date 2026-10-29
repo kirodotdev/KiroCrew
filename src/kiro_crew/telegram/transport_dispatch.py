@@ -1131,6 +1131,7 @@ class TelegramDispatcher:
 
     # dispatch/pickers.py
     _installed_agent_names = staticmethod(_pickers._installed_agent_names)
+    _agent_labels = staticmethod(_pickers._agent_labels)
     _agent_choices = _pickers._agent_choices
     _handle_agent = _pickers._handle_agent
     _apply_agent = _pickers._apply_agent

@@ -1317,6 +1317,18 @@ class TestSemanticContext:
         ctx = store.get_semantic_context(cap=500)
         assert len(ctx) < 700  # cap + delimiters
 
+    def test_oversized_fact_is_skipped_not_a_stop(self, tmp_path: Path, opened) -> None:
+        # The long row ranks first (newer, and first by key on a timestamp tie);
+        # it does not fit the cap, but the short row after it does.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        assert store.algorithm_version != "v2"
+        store.set_semantic("project.b_short", "PostgreSQL", 1.0, "user_explicit")
+        store.set_semantic("project.a_long", "y" * 600, 1.0, "user_explicit")
+        ctx = store.get_semantic_context(cap=500)
+        assert "y" * 600 not in ctx
+        assert "PostgreSQL" in ctx
+
 
 class TestEpisodicCRUD:
     def test_write_and_list(self, tmp_path: Path, opened) -> None:
@@ -1444,6 +1456,24 @@ class TestEpisodicCRUD:
         assert ctx, "Expected non-empty episodic context"
         # Count numbered entry lines, not every ". ": the header holds sentences too.
         assert sum(1 for line in ctx.splitlines() if line[:1].isdigit()) <= 2
+
+    def test_oversized_episode_is_skipped_not_a_stop(
+        self, tmp_path: Path, opened, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Rank 2 does not fit the cap; rank 3 after it does and must still appear.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        assert store.algorithm_version != "v2"
+        ranked = [
+            {"id": "a", "text": "first short episode"},
+            {"id": "b", "text": "y" * 1200},
+            {"id": "c", "text": "third short episode"},
+        ]
+        monkeypatch.setattr(store, "search_episodic", lambda **_kw: ranked)
+        ctx = store.get_episodic_context(query_text="anything", cap=500)
+        assert "y" * 1200 not in ctx
+        assert "1. first short episode" in ctx
+        assert "3. third short episode" in ctx
 
 
 class TestEpisodicInjectionScreening:

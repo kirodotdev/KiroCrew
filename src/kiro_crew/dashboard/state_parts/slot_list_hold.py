@@ -12,7 +12,7 @@ Fields of ``DashboardState`` this module reads and writes:
 Writes: ``slot_list_rebuilding``, ``_slot_list_channel_held_keys``,
 ``_slot_list_released_keys``, ``_slot_list_hold_channels``,
 ``_slot_list_rebuild_finish_requested``, ``_slot_list_rebuild_began``,
-``_slot_list_rebuild_deadline``.
+``_slot_list_rebuild_deadline``, ``startup_tabs_rebuilt``.
 
 Reads: ``unrestored_slot_notice``, ``unrestored_slot_keys``, ``_slots``,
 ``_slots_under_construction``, ``_slots_push_suspend``.
@@ -218,7 +218,14 @@ def finish_slot_list_rebuild(self: DashboardState) -> None:
     Once called, later slot-list pushes retry the same condition. This lets a
     dropped tab rebuilt after boot clear the label even when channel surfacing is
     off, while a running channel reconciler still owns the first finish request.
+
+    Each call also sets ``startup_tabs_rebuilt``, whether or not the label
+    clears: each caller runs once this boot's rebuilt tabs are in ``_slots`` and
+    published (the restore after its pass; the channel reconciler after a
+    complete pass, which publishes what it surfaced before it returns), and a
+    dropped tab still holding the label will not come back by waiting.
     """
     self._slot_list_rebuild_finish_requested = True
+    self.startup_tabs_rebuilt.set()
     if self._complete_slot_list_rebuild_if_ready():
         self.push_slots_update()

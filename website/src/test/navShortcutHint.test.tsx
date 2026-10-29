@@ -257,7 +257,7 @@ describe('nav shortcut hint — the global shortcuts toggle', () => {
 
 describe('App nav rail — rows declare and display their chord', () => {
   beforeEach(() => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
   })
 

@@ -326,7 +326,7 @@ class TestPostAwaitOwnership:
 
 
 class TestAcquisitionRecheckPlacement:
-    @pytest.mark.parametrize("handler_name", ["api_chat", "api_chat_slot_create"])
+    @pytest.mark.parametrize("handler_name", ["_api_chat_send", "api_chat_slot_create"])
     def test_no_await_between_final_recheck_and_acquisition(self, handler_name) -> None:
         import inspect
 

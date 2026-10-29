@@ -124,3 +124,4 @@ def test_workflow_installs_the_installer_spec_and_runs_the_check():
     runs = [step.get("run", "") for step in document["jobs"]["check"]["steps"]]
     assert f"npm install -g {install.NPM_SPEC}" in runs
     assert "python3 scripts/check_playwright_cli_banner.py" in runs
+    assert "python3 scripts/check_playwright_cli_attach_guard.py" in runs

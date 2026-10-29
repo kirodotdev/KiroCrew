@@ -11,17 +11,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import signal
 import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.handlers.terminal_session import _read_terminal_config, _sel
 from kiro_crew.dashboard.handlers.terminal_transport import (
     _close_terminal_ws_bounded,
     _send_owner_control_frame,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.notifications.bus import NotificationPayload
 
 if TYPE_CHECKING:
@@ -35,7 +37,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.dashboard.handlers.terminal")
 
 
-_ORPHAN_TIMEOUT_S = 900  # 15 min with no WS → reap PTY (grace window for reload/network drops; in-app nav keeps the WS alive)
+# How long a shell may run with no browser attached before the sweep ends it and
+# every process it started. Long enough for a laptop that sleeps overnight to
+# reattach to a remote gateway; ``dashboard.terminal.orphan_timeout_s`` overrides it.
+_ORPHAN_TIMEOUT_S = 12 * 60 * 60
+
+# A configured timeout below this is raised to it, so a typo cannot end a shell
+# during an ordinary reload, which reattaches within seconds.
+_ORPHAN_TIMEOUT_MIN_S = 60
+
+# How often the sweep looks at the registry.
+_ORPHAN_SWEEP_INTERVAL_S = 60
 
 
 # A submitted close retains ownership of its descriptor after this wait ends.
@@ -363,26 +375,209 @@ async def _kill_session(sess: _TerminalSession) -> None:
                 pass
 
 
+def _orphan_timeout_s(cfg: dict) -> float:
+    """Seconds a detached shell is kept, from ``dashboard.terminal.orphan_timeout_s``.
+
+    config.json is hand-edited, so anything that is not a finite number -- a
+    string, a boolean, null, NaN -- reads as the default rather than as a value
+    that would reap at once or never; a number below the floor reads as the floor.
+    """
+    raw = cfg.get("orphan_timeout_s", _ORPHAN_TIMEOUT_S)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+        return float(_ORPHAN_TIMEOUT_S)
+    return float(max(raw, _ORPHAN_TIMEOUT_MIN_S))
+
+
+def _format_idle(seconds: float) -> str:
+    """A detached span as a person reads it: hours when it is a whole number of
+    them, else minutes, so a 90-minute timeout never reads as "1 hour"."""
+    if seconds >= 3600 and int(seconds) % 3600 == 0:
+        hours = int(seconds) // 3600
+        return f"{hours} hour" if hours == 1 else f"{hours} hours"
+    minutes = max(1, int(seconds // 60))
+    return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+
+
+def _record_orphan_reap(
+    app: web.Application,
+    sid: str,
+    pid: int | None,
+    idle_s: float,
+    *,
+    timeout_s: float | None = None,
+    max_sessions: int | None = None,
+) -> None:
+    """Say that a detached live shell was ended: a warning, an audit event and a
+    bell note. ``timeout_s`` names the sweep's timeout; ``max_sessions`` names the
+    cap a new terminal needed room under.
+
+    The shell and everything it ran are gone, and the tab that held it is dropped
+    silently on the next load, so these are the only places the reason survives.
+    The bell note carries no session id or path, because the feed reaches every
+    dashboard session. Each step is best-effort: the caller must go on regardless.
+    """
+    if max_sessions is not None:
+        why = f"to make room for a new terminal (dashboard.terminal.max_sessions={max_sessions})"
+        detail = f"max_sessions={max_sessions}"
+        body = (
+            f"A terminal shell, and everything running in it, was ended to make room for "
+            f"a new terminal: {max_sessions} were open, and this one had had no browser "
+            f"attached the longest ({_format_idle(idle_s)}). Raise "
+            f"dashboard.terminal.max_sessions to keep more shells open."
+        )
+    else:
+        timeout_s = _ORPHAN_TIMEOUT_S if timeout_s is None else timeout_s
+        why = f"(dashboard.terminal.orphan_timeout_s={int(timeout_s)})"
+        detail = f"timeout_s={int(timeout_s)}"
+        body = (
+            f"A terminal shell, and everything running in it, was ended after "
+            f"{_format_idle(timeout_s)} with no browser attached. Raise "
+            f"dashboard.terminal.orphan_timeout_s to keep detached shells longer, "
+            f"or run long jobs inside tmux."
+        )
+    logger.warning(
+        "terminal %s: ended its shell (pid %s) after %s with no browser attached %s",
+        sid,
+        pid,
+        _format_idle(idle_s),
+        why,
+    )
+    try:
+        _sel().log_api_access(
+            caller="gateway",
+            operation="terminal.session.reap",
+            outcome="ok",
+            source="dashboard",
+            resources=f"session={sid},pid={pid},idle_s={int(idle_s)},{detail}",
+        )
+    except Exception:  # noqa: BLE001 -- teardown must not depend on the audit sink
+        logger.warning("terminal %s: could not record the reap audit event", sid, exc_info=True)
+    bus: NotificationBus | None = getattr(app.get("state"), "notification_bus", None)
+    if bus is None:
+        return
+    try:
+        bus.push(
+            NotificationPayload(
+                source="system",
+                channel="system.terminal",
+                title="Terminal closed",
+                body=body,
+                group_key="terminal-reaped",
+                meta={"idle_s": int(idle_s)},
+            )
+        )
+    except Exception:  # noqa: BLE001 -- teardown must not depend on the feed
+        logger.warning("terminal %s: could not publish the reap notification", sid, exc_info=True)
+
+
+def _take_shell_to_evict(
+    registry: dict[str, _TerminalSession | None],
+    max_sessions: int,
+    now: float,
+) -> tuple[str, _TerminalSession, float] | None:
+    """At the session cap, remove from ``registry`` the live shell that has had no
+    browser attached the longest, and return it with its idle span for
+    ``_end_evicted_shell``.
+
+    A detached shell may belong to a browser that will never come back for it
+    (another device, a closed private window); with a timeout measured in hours,
+    such shells would otherwise hold every slot and refuse each new terminal
+    until they expire. Synchronous, so an opener can take the slot and reserve
+    its own in one step with no other opener in between. Never taken: a
+    reservation, a connected shell, an exited one, one detached for less than
+    ``_ORPHAN_TIMEOUT_MIN_S`` (a tab mid-reload), or one whose reconnect is
+    mid-takeover (``replace_lock`` held). None unless the registry is exactly at
+    the cap, or when nothing qualifies; the caller's own cap check still decides.
+    Above the cap (``max_sessions`` lowered while more shells run) one eviction
+    would not free a slot, the caller would refuse anyway, and the shell taken
+    here would never be torn down.
+    """
+    if len(registry) != max_sessions:
+        return None
+    oldest: tuple[float, str, _TerminalSession] | None = None
+    for sid, sess in registry.items():
+        if sess is None or sess.last_ws_disconnect is None or sess.replace_lock.locked():
+            continue
+        if now - sess.last_ws_disconnect < _ORPHAN_TIMEOUT_MIN_S or not _sess_alive(sess):
+            continue
+        if oldest is None or sess.last_ws_disconnect < oldest[0]:
+            oldest = (sess.last_ws_disconnect, sid, sess)
+    if oldest is None:
+        return None
+    detached_at, sid, sess = oldest
+    registry.pop(sid)
+    return sid, sess, now - detached_at
+
+
+def _restore_evicted_shell(
+    registry: dict[str, _TerminalSession | None],
+    evicted: tuple[str, _TerminalSession, float],
+) -> bool:
+    """Put back, untouched, a shell ``_take_shell_to_evict`` removed for an open
+    that did not go ahead. Synchronous, so no opener sees the slot in between.
+    False when its id was opened afresh meanwhile: the shell cannot go back, and
+    the caller must end it with ``_end_evicted_shell`` instead.
+    """
+    sid, sess, _idle_s = evicted
+    if sid in registry:
+        return False
+    registry[sid] = sess
+    return True
+
+
+async def _end_evicted_shell(
+    app: web.Application,
+    evicted: tuple[str, _TerminalSession, float],
+    max_sessions: int,
+) -> None:
+    """Tear down a shell ``_take_shell_to_evict`` removed, and say why."""
+    sid, sess, idle_s = evicted
+    pid = _sess_pid(sess)
+    await _kill_session(sess)
+    _record_orphan_reap(app, sid, pid, idle_s, max_sessions=max_sessions)
+
+
+async def _sweep_terminals(app: web.Application, now: float) -> None:
+    """One sweep: tear down every session whose shell exited, or whose shell has had
+    no browser attached for longer than the orphan timeout as of ``now``."""
+    state = app.get("state")
+    if not state or not hasattr(state, "_terminal_sessions"):
+        return
+    registry: dict[str, _TerminalSession | None] = state._terminal_sessions
+    if not registry:
+        return
+    # Read per sweep, off the loop, so an edit applies without a restart. On the
+    # pool reserved for periodic sweeps: every live PTY reader parks a blocking
+    # read on the default executor, and browser-driven scans share the discovery
+    # one, so either could starve the very sweep that ends idle shells.
+    cfg = await asyncio.get_running_loop().run_in_executor(
+        maintenance_executor(), _read_terminal_config
+    )
+    timeout_s = _orphan_timeout_s(cfg)
+    for sid, sess in list(registry.items()):
+        # Earlier teardown can yield to DELETE, a new opener, or reconnect.
+        if sess is None or registry.get(sid) is not sess:
+            continue
+        alive = _sess_alive(sess)
+        detached_at = sess.last_ws_disconnect
+        idle_s = now - detached_at if detached_at is not None else 0.0
+        orphaned = alive and detached_at is not None and idle_s > timeout_s
+        if alive and not orphaned:
+            continue
+        registry.pop(sid)
+        pid = _sess_pid(sess)
+        await _kill_session(sess)
+        if orphaned:
+            _record_orphan_reap(app, sid, pid, idle_s, timeout_s=timeout_s)
+        else:
+            logger.info("Reaped exited terminal session %s", sid)
+
+
 async def reap_orphaned_terminals(app: web.Application) -> None:
-    """Background task: kill PTY sessions with no WS connection for >5 min."""
+    """Background task: run ``_sweep_terminals`` every ``_ORPHAN_SWEEP_INTERVAL_S``."""
     try:
         while True:
-            await asyncio.sleep(60)
-            state = app.get("state")
-            if not state or not hasattr(state, "_terminal_sessions"):
-                continue
-            registry: dict[str, _TerminalSession | None] = state._terminal_sessions
-            for sid, sess in list(registry.items()):
-                # Earlier teardown can yield to DELETE, a new opener, or reconnect.
-                if sess is None or registry.get(sid) is not sess:
-                    continue
-                now = time.monotonic()
-                if not (
-                    sess.last_ws_disconnect and (now - sess.last_ws_disconnect) > _ORPHAN_TIMEOUT_S
-                ) and _sess_alive(sess):
-                    continue
-                registry.pop(sid)
-                await _kill_session(sess)
-                logger.info("Reaped orphaned terminal session %s", sid)
+            await asyncio.sleep(_ORPHAN_SWEEP_INTERVAL_S)
+            await _sweep_terminals(app, time.monotonic())
     except asyncio.CancelledError:
         pass

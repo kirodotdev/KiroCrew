@@ -82,10 +82,17 @@
     }
     #title.show { opacity: 1; transform: translate(-50%, -50%) translateY(0) scale(1); }
 
-    /* ---- status pill (bottom-centre) ---- */
+    /* ---- status pill (bottom-centre) ----
+       The foreground ghosts drift through the bottom band, and a white ghost
+       body under white ink erases the covered words. The line gets the same
+       ~pure-accent surface as #exit, so the --ink-status contrast applyInk
+       computes against the accent still holds. No border and a small radius
+       keep it from reading as a second button. */
     #status {
       position: absolute; left: 50%; bottom: 6%; transform: translateX(-50%);
       display: inline-flex; align-items: center; gap: 9px; z-index: 50;
+      background: color-mix(in srgb, var(--accent) 92%, transparent);
+      padding: 6px 12px; border-radius: 8px;
       font-family: var(--font-body);
       font-size: 14px; font-weight: 600; color: var(--ink-status);
     }

@@ -50,7 +50,7 @@ This module defines a **namespaced, versioned, typed** protocol extension:
    identity -- pooled and identity-blind, which is worse than either alone.
    The "refuse to pool an unadvertised backend" behaviour described in earlier
    revisions of this docstring was never implemented; ``rewriter_spec.py`` records
-   the same fact next to ``UNPOOLABLE_SERVERS``, which is empty and remains the
+   the same fact next to ``UNPOOLABLE_SERVERS``, which lists only credential vendors and remains the
    only mechanism of its kind. A backend that cannot consume the block must be
    listed there.
 

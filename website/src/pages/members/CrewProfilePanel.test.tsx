@@ -195,14 +195,20 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.queryByTestId('crew-profile-model')).toBeNull()
   })
 
-  it('carries one guide marker of its own: the Profile tab, the step a guide to the Settings row takes first', () => {
-    // The permission picker the card holds is answered in words, not guided (it
-    // is a trust root); the settings body is a slot here, so its row is absent.
+  it('carries a guide marker on its Schedules, Goals and Profile tabs and nowhere else', () => {
+    // Schedules and Goals are where a mate's welcome tour points; Profile is also
+    // the step a guide to the Settings row takes first. The permission picker the
+    // card holds is answered in words, not guided (it is a trust root); the
+    // settings body is a slot here, so its row is absent.
     setup()
-    const marked = document.querySelectorAll('[data-ui-location]')
-    expect(marked).toHaveLength(1)
-    expect(marked[0]).toBe(screen.getByRole('tab', { name: 'Profile' }))
-    expect(marked[0]).toHaveAttribute('data-ui-location', 'members.profile-tab')
+    const marked = Array.from(document.querySelectorAll('[data-ui-location]'))
+    expect(marked.map(el => el.getAttribute('data-ui-location'))).toEqual([
+      'members.schedule-tab',
+      'members.goals-tab',
+      'members.profile-tab',
+    ])
+    for (const el of marked) expect(el).toHaveAttribute('role', 'tab')
+    expect(marked[2]).toBe(screen.getByRole('tab', { name: 'Profile' }))
   })
 
   it('says there is no description instead of rendering an empty card', () => {

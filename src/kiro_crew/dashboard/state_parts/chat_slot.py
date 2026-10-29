@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -16,7 +17,6 @@ from kiro_crew.dashboard.slot_queue_repository import (
     durable_queue_view,
     queue_persist_signature,
 )
-from kiro_crew.dashboard.state_parts import own_methods
 from kiro_crew.dashboard.state_parts import slot_ladder as _slot_ladder
 from kiro_crew.dashboard.state_parts import slot_session as _slot_session
 from kiro_crew.dashboard.state_parts import slot_sidebar as _slot_sidebar
@@ -64,6 +64,7 @@ class _ChatSlot:
         "title",
         "agent",
         "agent_kind",
+        "crew_mode_agent",
         "app_agent_owner",
         "model",
         "jev_route",
@@ -95,6 +96,7 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_unstarted_generation",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -110,6 +112,7 @@ class _ChatSlot:
         "_approval_instances",
         "_approval_stopped",
         "_trust",
+        "_trust_card_scoped",
         "_trust_scope",
         "_trust_reads",
         "_member_approval_seeded",
@@ -130,6 +133,7 @@ class _ChatSlot:
         "_last_stop_reason",
         "_created_by",
         "_created_by_sid",
+        "_saved_created_by",
         "_lineage_minted",
         "_reports_to_creator",
         "_revived_by",
@@ -372,6 +376,7 @@ class _ChatSlot:
 
     # Initialised by state_parts/slot_session.py.
     agent_kind: str
+    crew_mode_agent: str
     app_agent_owner: str
     _welcomed_agent: str
     jev_route: bool
@@ -411,6 +416,7 @@ class _ChatSlot:
     _last_stop_reason: str
     _created_by: str
     _created_by_sid: str
+    _saved_created_by: str
     _lineage_minted: bool
     _reports_to_creator: bool
     _revived_by: str
@@ -457,6 +463,7 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    _unstarted_generation: int
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event
@@ -472,6 +479,7 @@ class _ChatSlot:
     _approval_instances: dict[str, tuple[asyncio.Future[str], str]]
     _approval_stopped: set[str]
     _trust: bool
+    _trust_card_scoped: bool
     _trust_scope: str
     _trust_reads: bool
     _member_approval_seeded: bool
@@ -1131,4 +1139,17 @@ class _ChatSlot:
     to_dict = _slot_transcript.to_dict
 
 
-own_methods(_ChatSlot)
+#: The owners whose functions :class:`_ChatSlot` binds as its members, this shell included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.dashboard.state_parts.chat_slot",
+        "kiro_crew.dashboard.state_parts.slot_session",
+        "kiro_crew.dashboard.state_parts.slot_sidebar",
+        "kiro_crew.dashboard.state_parts.slot_todo",
+        "kiro_crew.dashboard.state_parts.slot_transcript",
+        "kiro_crew.dashboard.state_parts.slot_turns",
+        "kiro_crew.dashboard.state_parts.source_links",
+    }
+)
+
+own_methods(_ChatSlot, _MEMBER_OWNERS)

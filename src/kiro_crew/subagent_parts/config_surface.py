@@ -1,11 +1,11 @@
 """The manager's live configuration: re-reading the sizing config, the turn limit and
-completion keep, the effective concurrency cap and its raise listener, and the queue
-dispatch release.
+completion keep, the effective concurrency cap and its raise listener, the queue
+dispatch release, and the orphan-notice release.
 
 Each function takes the manager as ``self`` and is bound as the ``SubagentManager``
 attribute of the same name in :mod:`kiro_crew.subagent_parts.manager`.
 
-Manager fields read: ``_admission``, ``_queue``, ``_run_events``.
+Manager fields read: ``_admission``, ``_orphan_notice_gate``, ``_queue``, ``_run_events``.
 
 Manager fields written: ``_adaptive_cap``, ``_cap_raise_listener``, ``_default_timeout``,
 ``_default_turn_limit``, ``_last_sizing_fields``, ``_max_concurrent``,
@@ -179,6 +179,20 @@ def release_queue_dispatch(self: SubagentManager) -> None:
     self._queue_dispatch_held = False
     self._drain_queue()
     self._admission.taskq_schedule_owed_replay()
+
+
+def release_orphan_notices(self: SubagentManager) -> None:
+    """Let the boot orphan sweep send the notices held by ``hold_orphan_notices``.
+
+    Called by the gateway once the surface that receives them is up: the
+    dashboard has restored its tabs, or the API-only server is listening. It
+    is also called when that start fails, because the owner DM digest is then
+    the only delivery left. Idempotent, and a no-op for a manager built
+    without the hold.
+    """
+    gate = self._orphan_notice_gate
+    if gate is not None:
+        gate.set()
 
 
 def _clamp_effective_cap(self: SubagentManager) -> int:

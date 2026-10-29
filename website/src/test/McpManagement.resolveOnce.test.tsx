@@ -17,6 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { api, ApiError } from '../api/client'
 import { McpManagement } from '../pages/settings/McpManagement'
+import { i18nT } from '../i18n/t'
+/** The page's own English copy, so a wording change never breaks a test. */
+const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 
 function mount() {
   const qc = new QueryClient({
@@ -25,7 +28,7 @@ function mount() {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <McpManagement />
+        <McpManagement initialAdvancedOpen />
       </QueryClientProvider>
     </MemoryRouter>,
   )
@@ -46,13 +49,15 @@ function stubPage() {
 }
 
 const pressUpdate = async () => {
-  const button = await screen.findByRole('button', { name: /update now/i })
+  const button = await screen.findByRole('button', { name: M('resolve_update_now') })
   button.click()
   return button
 }
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // The hero's memory read: answered with no figures unless a test says otherwise.
+  vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue({ using_now_bytes: null, with_sharing_bytes: null, open_chats: 0, stale_chats: [] } as never)
 })
 afterEach(cleanup)
 
@@ -69,7 +74,7 @@ describe('McpManagement pre-resolve', () => {
     await pressUpdate()
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/2/)
+      expect(screen.getByRole('status').textContent).toContain('2')
     })
   })
 
@@ -85,7 +90,7 @@ describe('McpManagement pre-resolve', () => {
     await pressUpdate()
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/nothing needed/i)
+      expect(screen.getByRole('status').textContent).toContain(M('resolve_none_ready'))
     })
   })
 
@@ -104,7 +109,7 @@ describe('McpManagement pre-resolve', () => {
     await pressUpdate()
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/no servers are routed/i)
+      expect(screen.getByRole('status').textContent).toContain(M('resolve_no_targets'))
     })
     expect(screen.queryByRole('alert')).toBeNull()
   })
@@ -128,8 +133,8 @@ describe('McpManagement pre-resolve', () => {
       // Per-package install failures are an error, not a status: they render
       // through ErrorNotice, so the role is `alert`.
       const text = screen.getByRole('alert').textContent ?? ''
-      expect(text).toMatch(/2/)
-      expect(text).not.toMatch(/nothing needed/i)
+      expect(text).toContain('2')
+      expect(text).not.toContain(M('resolve_none_ready'))
     })
     expect(screen.queryByRole('status')).toBeNull()
   })
@@ -150,8 +155,8 @@ describe('McpManagement pre-resolve', () => {
       const text = screen.getByRole('alert').textContent ?? ''
       // One ready, two failed -- a notice naming only the win would still be a
       // partial all-clear.
-      expect(text).toMatch(/1/)
-      expect(text).toMatch(/2/)
+      expect(text).toContain('1')
+      expect(text).toContain('2')
     })
   })
 
@@ -171,7 +176,7 @@ describe('McpManagement pre-resolve', () => {
     await pressUpdate()
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/already running/i)
+      expect(screen.getByRole('status').textContent).toContain(M('resolve_already_running'))
     })
     expect(screen.queryByRole('alert')).toBeNull()
   })
@@ -203,7 +208,7 @@ describe('McpManagement pre-resolve', () => {
     mount()
     const button = await pressUpdate()
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/1/)
+      expect(screen.getByRole('status').textContent).toContain('1')
     })
 
     refresh.mockRejectedValueOnce(new Error('boom'))

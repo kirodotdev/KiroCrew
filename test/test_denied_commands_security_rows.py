@@ -539,6 +539,53 @@ class TestRecursiveForceRmFloor:
             "> /dev/null RM -fr /",
             "X=1 Y=2 >log RM -rf /",
             "&>/dev/null RM -fr /",
+            # A reserved word or ``!`` / ``time`` leaves the next word the program.
+            "if :; then RM -fr ~; fi",
+            "if false; then :; else RM -fr ~; fi",
+            "for i in 1; do RM -fr ~; done",
+            "while :; do RM -fr /; done",
+            "{ RM -fr ~; }",
+            "! RM -fr ~",
+            "time RM -fr ~",
+            "time -p RM -fr /",
+            "! time RM -fr ~",
+            "case x in x) RM -fr /;; esac",
+            "echo ${x:-$(RM -fr ~)}",
+            # A substitution in command position may expand to nothing.
+            "$(true)RM -fr ~",
+            "$(true) RM -fr ~",
+            "echo hi | `true`RM -fr /",
+            '"$(true)"RM -fr ~',
+            # An unquoted backtick still cuts the argv, as on base.
+            "RM -fr ~/`true`",
+            # A leading redirection keeps its substitution target.
+            ">$(mktemp) RM -fr ~",
+            '>"$(mktemp)" RM -fr ~',
+            "2>`mktemp` RM -fr /",
+            "<$(x) RM -fr ~",
+            "2>$(printf /dev/null) RM -fr ~",
+            # ``#`` and ``<<`` inside ``${…}`` / ``$[…]`` are data, not a comment or heredoc.
+            "echo ${x:- #}; RM -fr /",
+            "echo ${x:- <<EOF}; RM -fr /",
+            "echo ${a[1]:- #}; RM -fr ~",
+            "echo $[ 1 << 2 ]\nRM -fr /",
+            "echo ${x:-[} # don't remove this marker\nRM -fr ~",
+            # ``$$`` is the PID, so ``$${`` opens no expansion and the comment is skipped.
+            "echo $${x:- # don't remove this marker\nRM -fr ~",
+            "echo $${x:- #} don't\nRM -fr ~",
+            # A comment inside a tracked ``${…}`` cannot quote away the wipe.
+            "unset x; echo ${x:-$( # don't\nRM -fr ~\n# '\n)}",
+            "unset x; echo ${x:-` # don't\nRM -fr ~\n# '\n`}",
+            "echo ${x:-$( # it's\nRM -fr /\n# '\n)}",
+            "echo $[ $( # don't\nRM -fr ~\n# '\n) ]",
+            # An expansion that never closes is also read as if it were not there.
+            "echo \\$${x # don't\nRM -fr ~",
+            # An unset parameter in the program word expands to nothing.
+            "${x}RM -fr ~",
+            "$x RM -fr ~",
+            '"${x}"RM -fr ~',
+            "${x}${y}RM -fr /",
+            "$1RM -fr ~",
         ],
     )
     def test_a_recursive_force_wipe_of_root_or_home_is_denied(self, command):
@@ -551,8 +598,18 @@ class TestRecursiveForceRmFloor:
             "RM -rf $HOME/.cache",
             "RM -rf ./build",
             "RM -f /",
+            "RM -r /",
+            "RM -r ~",
             "RM -r /tmp/x",
             "RM -fr $HOME_BACKUP",
+            # A parameter glued to the program word that leaves no ``rm`` stays allowed.
+            "${x}echo hi",
+            "${x}RM -fr /tmp/x",
+            "${x}RM -f ~",
+            "$xrm -fr ~",
+            "'${x}'RM -fr ~",
+            "\\${x}RM -fr ~",
+            "echo ${x}RM -fr ~",
             "echo RM -fr /",
             # Quoted text and heredoc bodies are data, not commands.
             'git commit -m "pin floor; RM -fr / and RM -fr ~ are refused"',
@@ -580,10 +637,37 @@ class TestRecursiveForceRmFloor:
             # still a descendant, not the root operand.
             "RM -fr /tmp/2>/dev/null",
             ">> log RM -rf ./build",
+            # A keyword as an argument, or a substitution operand, is not a root/home target.
+            "echo then RM -fr ~",
+            "RM -fr $(mktemp -d)",
+            "echo ${a[1]} # RM -fr ~",
+            "echo $((1 << 2)) # RM -fr ~",
+            # A substitution inside a target is a real path: cache clears stay allowed.
+            'RM -rf "$(pip cache dir)"/*',
+            'RM -rf "$(go env GOCACHE)"/*',
+            'cd build && RM -rf "$(pwd)"/*',
+            'RM -rf "$HOME/$(basename "$PWD")"',
         ],
     )
     def test_descendants_and_partial_flags_stay_allowed(self, command):
         assert is_denied(command.replace("RM", "rm")) is None
+
+    def test_nested_open_expansions_are_read_a_bounded_number_of_times(self, monkeypatch):
+        """Twenty ``"$( ${`` levels cost a linear number of walks, not 2**20."""
+        from kiro_crew.security import rm_floor
+
+        calls = 0
+        real = rm_floor._segments
+
+        def _counted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(rm_floor, "_segments", _counted)
+        command = 'echo "$( ${ ' * 20 + "rm -fr /tmp/x" + ' )"' * 20
+        rm_floor._rm_wipe_targets(command)
+        assert calls <= 4 * 20 + 2
 
     def test_the_floor_reports_the_catalog_row(self):
         reason = is_denied("rm -fr /")

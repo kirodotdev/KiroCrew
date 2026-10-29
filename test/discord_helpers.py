@@ -136,6 +136,11 @@ class FakeClient(MultipartFake):
         self.response_destinations: list[str] = []
         self.reactions: list[tuple[str, str]] = []
         self.thread_channels: set[str] = set()
+        #: thread id -> ``ThreadOrigin`` as Discord would report it; absent reads
+        #: as a failed lookup.
+        self.thread_origins: dict[str, Any] = {}
+        self.origin_lookups: list[str] = []
+        self.bot_user_id = "bot"
         self.created_threads: list[tuple[str, str, str]] = []
         self.attachment_bodies: dict[str, bytes] = {}
         self.attachment_downloads: list[str] = []
@@ -157,6 +162,10 @@ class FakeClient(MultipartFake):
 
     async def is_thread_channel(self, channel_id: str) -> bool:
         return channel_id in self.thread_channels
+
+    async def thread_origin(self, channel_id: str) -> Any:
+        self.origin_lookups.append(channel_id)
+        return self.thread_origins.get(channel_id)
 
     async def send_typing(self, channel_id: str) -> None:
         return None

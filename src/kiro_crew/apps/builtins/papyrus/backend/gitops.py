@@ -280,13 +280,13 @@ def _pin_attributes_sync(cwd: Path) -> None:
     # at ANOTHER repository, `info` and `attributes` are legitimate non-links
     # *inside that repo*, so both inner checks pass and a `GET /git` status poll
     # rewrites a different repository's attributes, outside this project entirely.
-    # Verified before the fix. The rule has to hold for every segment KiroCrew
+    # Verified. The rule has to hold for every segment Kiro Crew
     # traverses by name, not just the leaf.
     #
     # `store.is_reparse_link`, not `is_symlink()`: a Windows directory JUNCTION is a
     # reparse point `is_symlink()` does not report, and it is the link type a user
-    # can create there without elevation — so a symlink-only check left this guard
-    # bypassable on the platform this PR adds support for.
+    # can create there without elevation — so a symlink-only check leaves this guard
+    # bypassable on Windows.
     if (
         store.is_reparse_link(git_dir)
         or store.is_reparse_link(info)

@@ -436,7 +436,8 @@ async def _clone_build_app_locked(
     # `AppManifest.from_json_file(...).to_dict()`), so a second, differently
     # normalized reading of these bytes is exactly the disagreement to avoid.
     cloned_app_manifest = AppManifest.from_dict(cloned_manifest)
-    denied = app_admission_denied(
+    denied = await asyncio.to_thread(
+        app_admission_denied,
         app_name,
         manifest=cloned_app_manifest,
         action="install_from_registry",

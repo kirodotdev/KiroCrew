@@ -112,7 +112,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       if (cursorAwaySubscribers === 0) ipcRenderer.send("focus-mode-watch-cursor", false);
     };
   },
-  // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
+  // Renderer signals main process to show/hide the DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
   // Windows custom titlebar: menu surfaces render in the dashboard so hover
   // can switch between them; command execution stays in the main process.
@@ -238,6 +238,14 @@ contextBridge.exposeInMainWorld("crashReportsAPI", {
 // shell" and renders nothing.
 contextBridge.exposeInMainWorld("wslAPI", {
   detect: () => ipcRenderer.invoke("wsl:detect"),
+});
+
+// What the main window's close button does: "background" or "quit". The main
+// process returns the stored value only to the main window's own dashboard.
+// Absent in plain browsers and in the PWA.
+contextBridge.exposeInMainWorld("closeActionAPI", {
+  get: () => ipcRenderer.invoke("close-action:get"),
+  set: (action) => ipcRenderer.invoke("close-action:set", String(action || "")),
 });
 
 // File-open bridge for the chat path chip's "Open in editor" affordance. Hands

@@ -70,7 +70,7 @@ is defined in an owner module beside it. Import and patch every one as
     `test/test_kill_chokepoint_ratchet.py` exempts that one file;
   - `platform_compat_metrics`: resident and peak memory, heap trimming and the malloc
     arena cap, open descriptors, CPU time, process-subtree samples, and the host's
-    memory, CPU load and memory pressure.
+    memory, CPU load, memory pressure and power source (`power_source`).
 
   No carved module imports the facade. The facade installs `kiro_crew._facade_mirror`,
   so a write through it (`monkeypatch.setattr`, `mock.patch`) lands on every carved
@@ -153,6 +153,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Read a state file that a writer replaces atomically (a store's JSON; a record a request, a gate or an install depends on) | `kiro_crew.atomic_write.read_bytes_with_retry(path)`, then decode and parse. A Windows sharing violation (`PermissionError`, `WinError 32`, while the writer's replace is in flight) is retried inside a bounded budget. An absent file and a damaged one are not retried and reach the reader's own handling, and a hold that outlasts the budget raises as before, so a gate or refusal that fails closed stays closed. The retry runs only off the event loop: a reader reached from a coroutine is offloaded with `asyncio.to_thread` | `path.read_text()` / `path.read_bytes()` (POSIX permits the overlapping read, so only the Windows matrix and Windows hosts ever fail) |
 | Is a path on a NETWORK volume | `path_volume_is_remote(path)` (Windows: the volume ROOT's drive type through `windows_acl.volume_is_remote`, so a UNC path and a mapped drive both read remote, at no SMB round trip; `None` off Windows, where the caller has a mount table — `taskq.store.detect_network_filesystem` is the caller) | reading a failed query, `DRIVE_UNKNOWN` or a non-Windows host as "local" (`windows_acl.volume_is_local` collapses unknown onto `False` on purpose; that is the trust answer, not this one) |
 | Confirm a Linux readonly filesystem | `is_readonly_filesystem(path)`; false for other platforms or probe failure. Used to reject a private-runtime diagnostic marker planted in the writable host home, and to send a memory store reader on a confirmed read-only mount straight to its read-only lock open (elsewhere the reader falls back on the refused write itself). | `os.statvfs` in a cross-platform consumer, or readonly file mode alone |
+| Is this host on mains or battery | `power_source()` → `POWER_AC` / `POWER_BATTERY` / `POWER_UNKNOWN`. Linux reads `/sys/class/power_supply`: external power is any `type == "Mains"` supply or any `type == "USB"` supply whose `scope` is not `Device` (the USB-C port supplies, `ucsi-source-psy-*`), and ANY online one means mains, so a USB-C PD charger counts even when only its port reports it; a tree with no external supply is `UNKNOWN`, not battery, so a desktop with a peripheral's battery never reads as a laptop. Battery needs every external supply read offline: an unreadable one may be the charger, so with none online the answer is `UNKNOWN`. Battery also needs a system battery (`type == "Battery"`, `scope` not `Device`), so a desktop whose only external supply is an idle USB-C port reads `UNKNOWN`. Windows reads `GetSystemPowerStatus`, whose `ACLineStatus` 255 stays `UNKNOWN`. macOS has no reader yet and answers `UNKNOWN`, so it never throttles. Never raises, never cached: callers read it once per unit of work. Fixture tests pass `sysfs_root=` to `_linux_power_source` and patch `_windows_ac_line_status` | treating `POWER_UNKNOWN` as battery (every consumer MUST read it as mains: deferring optional work on an unreadable probe is a silent, permanent stoppage), reading `/sys/class/power_supply` outside this layer, requiring a supply name like `AC0`, or caching the answer across units of work |
 | Directory link | `symlink_or_junction(target, link)` | `os.symlink` (`WinError 1314` without elevation) |
 | Detect/remove a dir link | `is_link_or_junction(path)` / `unlink_link_or_junction(path)` | `path.is_symlink()` (misses a Windows junction) |
 | Compare a resolved path against an unresolved one | `strip_extended_length_prefix(path)` on BOTH sides before comparing | comparing the two spellings as `Path.resolve` returns them (on Windows `ntpath.realpath` keeps the extended-length prefix when its prefix-strip re-check races a concurrent swap of the same file, so a prefixed child against an unprefixed parent reads as a path escape; the fold is LEXICAL and must not re-resolve, which would bless the redirect the caller is testing for) |
@@ -458,7 +459,25 @@ query-only handle is itself refused, or when the instant is at or after the
 root's. Absence alone
 is insufficient when that same fresh snapshot contains an entry referencing the
 observed, now-vanished unopened parent: discovery refuses even if the child and
-its descendants first appeared after the initial snapshot. This guard reports
+its descendants first appeared after the initial snapshot. The one exception is a
+referencing entry whose own creation instant predates the root: an orphan that
+already existed before the root names an earlier holder of the recycled PID, not
+the vanished candidate, so it neither blocks discovery nor joins the tree. Such
+an orphan was already listed under the same parent by the initial snapshot, so
+any other entry refuses without a query. Its children are strangers too, and
+their handles are closed with the orphan's, but only when each of its children in
+either snapshot is pinned by a termination handle opened in the same call, is
+still listed under the orphan by the fresh snapshot, and has no child of its own
+in either snapshot: an unpinned PID may hold a new process by the fresh
+snapshot, a PID reused before its handle opened shows a different parent there,
+and a grandchild's parent PID may have been recycled from a process of the tree.
+Otherwise the referencing entry refuses. A console host that exits before its
+handle opens leaves exactly this shape when its PID was recycled from a process
+whose children outlived it. This exception is deliberately narrower than the
+creation-order disproof above, which drops a disproven node's whole numeric
+subtree. Skipping this refusal is sound only one level below a process proven
+older than the root, and only for children pinned as described, so the two rules
+must not be merged. This guard reports
 only a total and at most three child/parent PID pairs, takes no extra snapshot,
 and grants no identity or termination authority. A vanished unopened child with
 no fresh descendant reference remains admissible.

@@ -100,7 +100,11 @@ function instConnected(inst: InstanceView | undefined): boolean {
  * A child whose parent is NOT in *rows* (never connected, so it has no tab) is
  * treated as a root. Dropping it instead would hide a crew that is genuinely
  * connected, and re-rooting it costs only the indent — the row still names the
- * crew it goes through in its subtitle.
+ * crew it goes through in its subtitle. That name is looked up in *all* (the
+ * full instance list, not just the tab-visible rows), falling back to the
+ * parent's id, and the row reads unreachable through it: a parent with no tab
+ * is not connected, so nothing here can reach the child through its hop.
+ * A loop member appended as a root names its parent the same way.
  *
  * Visit-guarded, so a registry holding a loop terminates and every row is
  * emitted exactly once. The tab bar itself is flat; only this ordering and the
@@ -130,10 +134,16 @@ export function rowStateLabel(entry: {
     : i18nT('components.instanceTabBar.unreachable')
 }
 
-export function chainRows(rows: InstanceView[]): ChainRow[] {
+export function chainRows(rows: InstanceView[], all: InstanceView[] = rows): ChainRow[] {
   const present = new Set(rows.map(i => i.id))
   const parentOf = (i: InstanceView): string =>
     i.via_instance_id && present.has(i.via_instance_id) ? i.via_instance_id : ''
+  // The hop a re-rooted or loop-recovered row rides, named from the full list.
+  const viaName = (i: InstanceView): string => {
+    const via = i.via_instance_id
+    if (!via) return ''
+    return all.find(p => p.id === via)?.name || rows.find(p => p.id === via)?.name || via
+  }
   const children = new Map<string, InstanceView[]>()
   for (const inst of rows) {
     const key = parentOf(inst)
@@ -153,6 +163,14 @@ export function chainRows(rows: InstanceView[]): ChainRow[] {
     for (const inst of children.get(parentId) ?? []) {
       if (seen.has(inst.id)) continue
       seen.add(inst.id)
+      // A chained crew re-rooted here because its parent has no tab: name the
+      // hop, and say it is down -- the parent is not connected.
+      const absentVia = parentId === '' ? viaName(inst) : ''
+      if (absentVia) {
+        out.push({ inst, depth, parentName: absentVia, reachable: false, brokenAt: absentVia })
+        walk(inst.id, depth + 1, inst.name, false, absentVia)
+        continue
+      }
       out.push({ inst, depth, parentName, reachable, brokenAt })
       // The FIRST break on the path wins and is carried the rest of the way down:
       // everything below it is unreachable for that one reason.
@@ -171,7 +189,7 @@ export function chainRows(rows: InstanceView[]): ChainRow[] {
   // can see and disconnect is what lets them fix the registry.
   for (const inst of rows) {
     if (!seen.has(inst.id))
-      out.push({ inst, depth: 0, parentName: '', reachable: true, brokenAt: '' })
+      out.push({ inst, depth: 0, parentName: viaName(inst), reachable: true, brokenAt: '' })
   }
   return out
 }
@@ -1287,7 +1305,7 @@ export default function InstanceTabBar({
         title: i18nT('components.instanceTabBar.local_dashboard'),
         unread: 0,
       },
-      ...chainRows(tabInstances).map(({ inst, depth, parentName, reachable, brokenAt }) => {
+      ...chainRows(tabInstances, instances).map(({ inst, depth, parentName, reachable, brokenAt }) => {
         const st = inst.status?.state
         // An SSM crew has no ssh_host: it is reached through its managed-instance
         // target, so that is what names the machine on its row.
@@ -1327,7 +1345,7 @@ export default function InstanceTabBar({
     ],
     // `tabInstances` is derived per render; depending on it directly is what
     // keeps the menu in step with a status poll.
-    [tabInstances, unread, connectMutation.isPending, connectMutation.variables],
+    [tabInstances, instances, unread, connectMutation.isPending, connectMutation.variables],
   )
 
   // Embedded panes render the parent-relayed switcher. Hooks above

@@ -1,4 +1,5 @@
 import { OverlayPortal } from '../../components/overlayRoot'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type RefObject } from 'react'
 import type { ChatSection } from '../../hooks/useChatNavigation'
 import type { MinimapSide } from './ChatSettings'
@@ -36,7 +37,7 @@ export function shortenTurnPreview(value: string, maxChars: number): string {
   const candidate = compact.slice(0, budget + 1)
   const lastSpace = candidate.lastIndexOf(' ')
   const cut = lastSpace >= Math.floor(budget * 0.6) ? lastSpace : budget
-  return `${candidate.slice(0, cut).trimEnd()}...`
+  return `${sliceCodePoints(candidate, 0, cut).trimEnd()}...`
 }
 
 export function markerPosition(index: number, count: number): number {

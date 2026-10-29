@@ -186,7 +186,9 @@ class TestApplyRefusals:
         leave no "updating" overlay behind for the user to dismiss.
         """
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "https://example.invalid/x")
+        monkeypatch.setattr(
+            updates, "resolve_remote_url", lambda _p, **_k: "https://example.invalid/x"
+        )
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "remote is not permitted")
 
         req = _request({})
@@ -202,7 +204,7 @@ class TestApplyRefusals:
     @pytest.mark.asyncio
     async def test_a_hung_status_check_answers_500_rather_than_hanging(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(monkeypatch, [_FakeProc(time_out=True, kill_raises=True)])
 
@@ -216,7 +218,7 @@ class TestApplyRefusals:
     @pytest.mark.asyncio
     async def test_a_dirty_tree_is_refused_without_starting_the_worker(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(monkeypatch, [_FakeProc(out=b" M src/kiro_crew/cli.py\n")])
 
@@ -236,7 +238,7 @@ class TestApplyRefusals:
         The count is of changed entries only: no paths leave the gateway.
         """
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(
             monkeypatch,
@@ -269,7 +271,7 @@ class TestApplyRefusals:
         from kiro_crew import dep_sync
 
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(
             monkeypatch,
@@ -310,7 +312,7 @@ class TestApplyRefusals:
         from kiro_crew import dep_sync
 
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(
             monkeypatch,
@@ -339,7 +341,7 @@ class TestApplyRefusals:
         from kiro_crew import dep_sync
 
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(
             monkeypatch,
@@ -366,7 +368,7 @@ class TestApplyRefusals:
     @pytest.mark.asyncio
     async def test_a_hung_upstream_pin_is_a_500_and_reaps_the_process(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         pin = _FakeProc(time_out=True)
         _sequence_procs(
@@ -386,7 +388,7 @@ class TestApplyRefusals:
         from kiro_crew import dep_sync
 
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         # The fabricated checkout has no commits for the floor gate to read, and
         # an unreadable floor now refuses; these tests are about the worker
@@ -574,7 +576,7 @@ class TestApplyRefusals:
         from kiro_crew.platform import wheel_apply
 
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         monkeypatch.setattr(dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
         monkeypatch.setattr(updates, "_build_frontend", AsyncMock())
@@ -705,7 +707,7 @@ class TestApplyRefusals:
         from kiro_crew import dep_sync
 
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
-        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p, **_k: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         monkeypatch.setattr(dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
         calls = {"n": 0}

@@ -1,4 +1,4 @@
-"""The agent outbox routes: ``POST /api/outbox/notify``, ``GET /api/outbox/{filename}`` and ``GET /api/outbox``, with the owner grant a flagged download passes."""
+"""The agent outbox routes: ``POST /api/outbox/notify``, ``GET /api/outbox/{filename}`` and ``GET /api/outbox``."""
 
 from __future__ import annotations
 
@@ -30,7 +30,6 @@ if TYPE_CHECKING:
         binary_content_is_flagged,
         config_loader,
         dashboard_slot_key,
-        file_delivery_consent,
         load_window_off_loop,
         logger,
         read_bounded_json,
@@ -88,12 +87,6 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             outcome="denied",
             error="sensitive_filename_rejected",
         )
-        file_delivery_consent.audit_refusal(
-            file_delivery_consent.CLASS_OWNER_DASHBOARD,
-            leg="notify",
-            name=redact(raw_filename),
-            reason="flagged name or path",
-        )
         return web.json_response(
             {"error": "filename or path contains sensitive content"}, status=400
         )
@@ -143,46 +136,11 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             error="file_not_found_or_access_denied",
         )
         return web.json_response({"error": "File not found or access denied"}, status=404)
-    # Content is scanned whichever way it decodes: UTF-8 text below, non-UTF-8
-    # bytes through the shared ``binary_content_is_flagged``. Binary must also
-    # carry an allow-listed MIME type.
+    # The card renders in the owner's own dashboard, so the content is not
+    # scanned. Binary must still carry an allow-listed MIME type.
     try:
-        text = raw.decode("utf-8")
-        # The owner's grant covers this leg: the card renders in the owner's own
-        # authenticated dashboard. No DELIVERY entry here -- that decision is
-        # already recorded by the tool leg, and the byte handover is recorded by
-        # the download route; a third entry for rendering a card would only bury
-        # the two that answer a real question.
-        #
-        # The store read goes through a thread: ``is_granted`` ends in a
-        # synchronous file read, and a coroutine that waits on storage stalls the
-        # whole gateway. Ordered after the scan so a clean file never reads it.
-        #
-        # The wide pass runs here as well as on the binary branch below: a
-        # credential written at UTF-16/UTF-32 spacing is NUL-interleaved ASCII,
-        # which is valid UTF-8, so it decodes cleanly into this branch and the
-        # contiguous-ASCII detectors in ``redact`` match none of it.
-        flagged = redact(text) != text or await asyncio.to_thread(wide_content_is_flagged, raw)
-        if flagged and not await asyncio.to_thread(
-            file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
-        ):
-            _sel().log_tool_invocation(
-                session_key="api",
-                source="api",
-                tool_name="file_send",
-                tool_kind="notify",
-                outcome="denied",
-                error="sensitive_content_detected",
-            )
-            file_delivery_consent.audit_refusal(
-                file_delivery_consent.CLASS_OWNER_DASHBOARD,
-                leg="notify",
-                name=raw_filename,
-                reason="flagged content",
-            )
-            return web.json_response({"error": "file content contains sensitive data"}, status=400)
+        raw.decode("utf-8")
     except UnicodeDecodeError:
-        # Binary file — only allow known-safe media types
         guessed_type = mimetypes.guess_type(raw_filename)[0] or ""
         if guessed_type not in BINARY_MIME_ALLOWLIST:
             _sel().log_tool_invocation(
@@ -195,34 +153,6 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             )
             return web.json_response(
                 {"error": f"Binary file type not allowed: {guessed_type or 'unknown'}"}, status=400
-            )
-        # An allow-listed media type is a container, not a guarantee about its
-        # contents, so the same grant decides here as on the text branch above.
-        # Off the event loop: the scan is CPU work over up to the read cap, and a
-        # media file is routinely orders of magnitude larger than a text one.
-        if await asyncio.to_thread(binary_content_is_flagged, raw) and not await asyncio.to_thread(
-            file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
-        ):
-            _sel().log_tool_invocation(
-                session_key="api",
-                source="api",
-                tool_name="file_send",
-                tool_kind="notify",
-                outcome="denied",
-                error="binary_credential_detected",
-            )
-            file_delivery_consent.audit_refusal(
-                file_delivery_consent.CLASS_OWNER_DASHBOARD,
-                leg="notify",
-                name=raw_filename,
-                reason="flagged binary content",
-            )
-            return web.json_response(
-                {
-                    "error": "binary file contains embedded credentials",
-                    "code": "binary_credential_detected",
-                },
-                status=400,
             )
     # Inject the file card into the caller's chat slot so it persists in the
     # correct session. This runs even when ``state._slots`` is empty: a headless
@@ -341,77 +271,18 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-async def _owner_grant_releases_flagged(request: web.Request) -> bool:
-    """Whether the owner's ``owner_dashboard`` grant releases flagged bytes to THIS caller.
+def _caller_is_owner(request: web.Request) -> bool:
+    """Whether THIS caller is the dashboard owner, who gets flagged files unscanned.
 
-    The one test every owner-facing download route applies to a file the scanner
-    flagged: ``GET /api/outbox/{filename}`` and ``GET /api/file-download`` serve the
-    same audience, so they share one gate rather than two copies of it. Call it only
-    inside a flagged-content branch, so a clean file never touches the store.
-
-    The store read goes through ``asyncio.to_thread``: ``is_granted`` ends in a
-    synchronous file read, and a coroutine that waits on storage stalls the whole
-    gateway event loop.
-
-    TWO conjuncts, and the second is not redundant. A route absent from every
-    ``token_auth`` bypass list needs AUTHENTICATION, which is not OWNER IDENTITY. A
-    Slack allow-listed non-owner running ``!dashboard`` authenticates with
-    ``app == ""`` and ``sub != owner_id``, so ordinary token auth admits them while
-    ``is_owner_dashboard_request`` does not. Without the owner conjunct the grant
-    would convert a clean 400-for-everyone into raw bytes for every authenticated
-    caller -- widening the audience as a side effect of a control meant to narrow
-    it. A route with its own front owner gate still asks here, so the grant's
-    audience never depends on each caller remembering that gate.
+    The outbox download route needs authentication, not owner identity: a Slack
+    allow-listed non-owner running ``!dashboard`` authenticates too. So the owner
+    gets the bytes as-is, and anyone else still meets the content scan.
     """
     from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
         is_owner_dashboard_request,
     )
 
-    granted = await asyncio.to_thread(
-        file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
-    )
-    return granted and is_owner_dashboard_request(request)
-
-
-def _audit_owner_grant_refusal(request: web.Request, *, name: str, what: str) -> None:
-    """Record a flagged download the grant gate refused, naming the conjunct that refused.
-
-    *what* names the scan that tripped (``"flagged content"`` or ``"flagged binary
-    content"``). The reason then says which conjunct stopped it.
-
-    Identity is the discriminator, not the grant. The conjunction short-circuits, so
-    in the default no-grant state a non-owner is refused before identity is ever
-    examined; an entry keyed off the grant would record a Slack allow-listed
-    non-owner reaching for a flagged file as an ordinary scanner hold-back,
-    byte-identical to the owner's own -- losing the attribution exactly in the
-    configuration almost every install runs. The identity read is pure attribute
-    reads, so unlike the grant it needs no thread.
-    """
-    from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
-        is_owner_dashboard_request,
-    )
-
-    cross_principal = not is_owner_dashboard_request(request)
-    file_delivery_consent.audit_refusal(
-        file_delivery_consent.CLASS_OWNER_DASHBOARD,
-        leg="download",
-        name=name,
-        reason=f"{what}, non-owner caller" if cross_principal else f"{what}, no grant",
-        caller=str(request.get("user") or "unknown") if cross_principal else "",
-    )
-
-
-def _audit_consented_download(name: str) -> None:
-    """Record that flagged bytes left for the owner's browser under the grant.
-
-    The refusal this replaces is self-evident in the 400, whereas a successful
-    consented download would otherwise leave no trace.
-    """
-    file_delivery_consent.audit_decision(
-        file_delivery_consent.CLASS_OWNER_DASHBOARD,
-        outcome="delivered",
-        detail=f"download: {name}",
-    )
+    return bool(is_owner_dashboard_request(request))
 
 
 async def api_outbox_download(request: web.Request) -> web.StreamResponse:
@@ -453,26 +324,16 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
             error=f"safe_read_file_bytes rejected: {filename}",
         )
         return web.json_response({"error": "forbidden"}, status=403)
-    # Content is scanned whichever way it decodes: UTF-8 text here, non-UTF-8
-    # bytes once the MIME allow-list below has admitted the type.
+    # The owner gets the bytes as-is. Anyone else meets the content scan, which
+    # reads UTF-8 text here and non-UTF-8 bytes once the MIME allow-list admits them.
+    owner = _caller_is_owner(request)
     is_text = True
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         is_text = False
 
-    def _audit_consented_handover() -> None:
-        _sel().log_tool_invocation(
-            session_key="api",
-            source="api",
-            tool_name="file_send",
-            tool_kind="download",
-            outcome="completed",
-            error="sensitive_content_delivered_with_consent",
-        )
-        _audit_consented_download(path.name)
-
-    if is_text:
+    if is_text and not owner:
         # Two passes on this branch, not one. ``redact`` reads the correctly
         # decoded text, which is the more accurate read of it; the wide pass reads
         # the raw bytes, because a credential at UTF-16/UTF-32 spacing is
@@ -483,20 +344,17 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         redacted = redact(text)
         narrow_flagged = redacted != text
         if narrow_flagged or await asyncio.to_thread(wide_content_is_flagged, raw):
-            if not await _owner_grant_releases_flagged(request):
-                _sel().log_tool_invocation(
-                    session_key="api",
-                    source="api",
-                    tool_name="file_send",
-                    tool_kind="download",
-                    outcome="denied",
-                    error="content_redacted" if narrow_flagged else "wide_credential_detected",
-                )
-                _audit_owner_grant_refusal(request, name=path.name, what="flagged content")
-                return web.json_response(
-                    {"error": "file content was redacted; download aborted"}, status=400
-                )
-            _audit_consented_handover()
+            _sel().log_tool_invocation(
+                session_key="api",
+                source="api",
+                tool_name="file_send",
+                tool_kind="download",
+                outcome="denied",
+                error="content_redacted" if narrow_flagged else "wide_credential_detected",
+            )
+            return web.json_response(
+                {"error": "file content was redacted; download aborted"}, status=400
+            )
     safe_name = urllib.parse.quote(path.name, safe="")
     content_type, _ = mimetypes.guess_type(path.name)
     if not content_type:
@@ -514,31 +372,28 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         return web.json_response(
             {"error": f"Binary file type not allowed: {content_type}"}, status=403
         )
-    if not is_text:
+    if not is_text and not owner:
         # An allow-listed media type says the browser can render these bytes
         # safely, not that a credential cannot be sitting inside them. Scanned
         # after the allow-list so a type this route refuses outright is never
         # scanned, and off the event loop because the scan is CPU work over up to
         # the read cap and a media file is routinely far larger than a text one.
         if await asyncio.to_thread(binary_content_is_flagged, raw):
-            if not await _owner_grant_releases_flagged(request):
-                _sel().log_tool_invocation(
-                    session_key="api",
-                    source="api",
-                    tool_name="file_send",
-                    tool_kind="download",
-                    outcome="denied",
-                    error="binary_credential_detected",
-                )
-                _audit_owner_grant_refusal(request, name=path.name, what="flagged binary content")
-                return web.json_response(
-                    {
-                        "error": "binary file contains embedded credentials; download aborted",
-                        "code": "binary_credential_detected",
-                    },
-                    status=400,
-                )
-            _audit_consented_handover()
+            _sel().log_tool_invocation(
+                session_key="api",
+                source="api",
+                tool_name="file_send",
+                tool_kind="download",
+                outcome="denied",
+                error="binary_credential_detected",
+            )
+            return web.json_response(
+                {
+                    "error": "binary file contains embedded credentials; download aborted",
+                    "code": "binary_credential_detected",
+                },
+                status=400,
+            )
     # Inline disposition for media types the browser can render
     disposition = (
         "inline"
@@ -567,7 +422,7 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         # that never advertises or answers ranges leaves the progress bar inert.
         "Accept-Ranges": "bytes",
     }
-    # The range is cut from bytes the scans above already cleared, so a partial
+    # The range is cut from bytes the checks above already cleared, so a partial
     # response never carries content the full one would refuse.
     range_header = request.headers.get("Range")
     if range_header:

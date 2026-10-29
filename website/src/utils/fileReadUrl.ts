@@ -1,7 +1,11 @@
 import { i18nT } from '../i18n/t'
 import { downloadBlob, downloadUrl } from './download'
-import { confirmUnscannedDownload } from './unscannedDownload'
 import { pathBasename } from './pathBasename'
+
+/** Largest download held in page memory: the gateway's own in-memory cap for
+ *  `/api/file-download` (`_DOWNLOAD_SCAN_MAX_BYTES`, 50 MB). Bigger files go
+ *  straight to the browser's own download. */
+const IN_MEMORY_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024
 
 /** Append resolve=1 for relative paths. The backend resolves such paths
  * against KIROCREW_PROJECT_DIR; absolute and ~-paths pass through unchanged. */
@@ -40,75 +44,60 @@ export function isAbsolutePath(filePath: string): boolean {
   return /^(?:\/|~(?:$|\/)|[A-Za-z]:[\\/]|\\\\)/.test(filePath)
 }
 
+/** `&slot=<chat>` for a read made on behalf of one chat, so the gateway can
+ *  refuse a chat that runs on a remote environment; empty otherwise. */
+export function chatSlotParam(slot?: string | null): string {
+  return slot ? '&slot=' + encodeURIComponent(slot) : ''
+}
+
 /** Build the /api/file-read URL, appending resolve=1 for relative paths. */
-export function fileReadUrl(filePath: string): string {
-  return withResolve('/api/file-read?path=' + encodeURIComponent(filePath), filePath)
+export function fileReadUrl(filePath: string, slot?: string | null): string {
+  return withResolve('/api/file-read?path=' + encodeURIComponent(filePath) + chatSlotParam(slot), filePath)
 }
 
 /** Build the /api/file-download URL — streams raw bytes for binary downloads.
  *
  * Use this instead of fileReadUrl when saving a file to disk. fileReadUrl
  * decodes content as UTF-8 with errors='replace', which corrupts binary
- * files (.docx, .pdf, images) by replacing non-text bytes with U+FFFD.
- *
- * `confirmUnscanned` adds `confirm_unscanned=1`: the owner's yes to a file over
- * the server's scan limit, which it then sends without the credential scan. */
-export function fileDownloadUrl(filePath: string, opts?: { confirmUnscanned?: boolean }): string {
-  const url = withResolve('/api/file-download?path=' + encodeURIComponent(filePath), filePath)
-  return opts?.confirmUnscanned ? url + '&confirm_unscanned=1' : url
+ * files (.docx, .pdf, images) by replacing non-text bytes with U+FFFD. */
+export function fileDownloadUrl(filePath: string): string {
+  return withResolve('/api/file-download?path=' + encodeURIComponent(filePath), filePath)
 }
 
 /** Fetch a file's raw bytes through /api/file-download and hand them to the
  * browser as a save-to-disk. THE ONE transport for retrieving a project file
- * onto the machine running the dashboard — the markdown panel's Download and
- * the file-tree row's Download both call it, so the credential gate the
- * endpoint applies (a positive scan aborts with 400) sits in front of both
- * callers, and the browser-download dance has one owner.
+ * onto the machine running the dashboard: the markdown panel's Download and
+ * the file-tree row's Download both call it, so the browser-download dance has
+ * one owner.
  *
  * The failure copy lives HERE, not in each caller: both passed the identical
- * string, so the helper owns it. A credential-scan refusal is told apart from
- * every other failure by the endpoint's machine-readable `code` field
- * (`content_redacted`, the same discriminator its file-stream and upload
- * siblings emit) -- NOT by the bare 400, which the endpoint also returns for an
- * invalid or out-of-project path. So a flagged file reads "blocked by the
- * credential scan" while a rejected path reads the generic "Download failed"
- * the user may retry. The credential copy names the Security panel's
- * flagged-file delivery setting: the endpoint honours that owner grant, so it
- * is how the owner releases a flagged file of their own. Either way the
- * refusal is surfaced through `onError`, never defeated -- the bytes are not
- * reached another way.
+ * string, so the helper owns it. Any non-2xx answer (an invalid or
+ * out-of-project path, a missing file) and any transport failure is reported
+ * through `onError` with the generic "Download failed" the user may retry,
+ * rather than saving the error body as the file.
  *
- * A file over the server's scan limit answers 409 `large_file_unscanned` and
- * sends nothing. The owner is asked (`confirmUnscannedDownload`), and only a
- * yes downloads it, as a plain browser download of the confirmed URL so a
- * multi-GB file streams to disk instead of filling page memory as a blob.
+ * A file over `IN_MEMORY_DOWNLOAD_MAX_BYTES` is not buffered in the page: the
+ * fetch only reads its status and length, then the browser downloads the same
+ * URL to disk itself, so a multi-GB file never sits in memory.
  */
 export async function downloadFileToDisk(
   filePath: string,
   onError: (message: string) => void,
 ): Promise<void> {
+  const url = fileDownloadUrl(filePath)
+  const controller = new AbortController()
   try {
-    const res = await fetch(fileDownloadUrl(filePath))
+    const res = await fetch(url, { signal: controller.signal })
+    const length = Number(res.headers?.get('content-length') ?? 0)
+    if (res.ok && length > IN_MEMORY_DOWNLOAD_MAX_BYTES) {
+      controller.abort()
+      downloadUrl(url, downloadFileName(filePath))
+      return
+    }
     if (!res.ok) {
-      let body: { code?: unknown; size?: unknown; limit?: unknown } = {}
-      try { body = (await res.clone().json()) ?? {} } catch { /* non-JSON body */ }
-      if (body.code === 'large_file_unscanned') {
-        const name = downloadFileName(filePath)
-        const yes = await confirmUnscannedDownload({ name, size: Number(body.size) || 0, limit: Number(body.limit) || 0 })
-        if (yes) downloadUrl(fileDownloadUrl(filePath, { confirmUnscanned: true }), name)
-        return
-      }
       // eslint-disable-next-line no-console -- surface download failures for diagnostics
       console.error('downloadFileToDisk failed', res.status, res.statusText)
-      // The credential gate aborts a flagged file with `code: content_redacted`
-      // (see api_file_download's redact() check). Key the credential message on
-      // that body code, not the status: the endpoint returns 400 for
-      // invalid/out-of-project paths too, and those must not read as a
-      // credential accusation. A body that will not parse falls back to generic.
-      const code = typeof body.code === 'string' ? body.code : ''
-      onError(i18nT(code === 'content_redacted'
-        ? 'components.markdownPanel.download_blocked_credentials'
-        : 'components.markdownPanel.download_failed'))
+      onError(i18nT('components.markdownPanel.download_failed'))
       return
     }
     const blob = await res.blob()

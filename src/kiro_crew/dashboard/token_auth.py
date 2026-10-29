@@ -103,6 +103,7 @@ from kiro_crew.dashboard.token_secret import (  # noqa: F401  # re-exports
     _load_or_create_secret,
 )
 from kiro_crew.sel import sel as _sel_fn
+from kiro_crew.shared_crew.identity import publish_actor
 
 
 def internal_path_matches(path: str, entries: Iterable[str]) -> bool:
@@ -475,6 +476,9 @@ def token_auth_middleware(
                         )
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
+                    await publish_actor(
+                        request, trust=tailnet_trust, serve_peer=None, internal=True
+                    )
                     return await handler(request)  # type: ignore[operator]
                 # Wrong secret → deny (don't fall through). An empty provided
                 # value means the gateway received no credential from this
@@ -568,6 +572,7 @@ def token_auth_middleware(
                     error="cookie auth (no secret header)",
                 )
             _log_auth(request, _audit_uid(_uid), "granted", f"cookie auth for {_uid}")
+            await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
             return await handler(request)  # type: ignore[operator]
         elif _matches_internal:
             if _matches_mixed:
@@ -670,6 +675,7 @@ def token_auth_middleware(
                     "granted",
                     f"mixed non-loopback cookie auth for {_uid}",
                 )
+                await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
                 return await handler(request)  # type: ignore[operator]
             else:
                 # INVARIANT: non-loopback access to strict internal paths is
@@ -1037,6 +1043,8 @@ def token_auth_middleware(
         if _scope_deny is not None:
             return _scope_deny
 
+        # Attribution only, after every decision above: publishing never denies.
+        await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
         # Proceed to handler
         resp = await handler(request)  # type: ignore[operator]
 

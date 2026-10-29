@@ -92,7 +92,7 @@ granted to whatever launched it, so a Linux VPS cannot serve it at all
 ([imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md)).
 **WhatsApp** runs anywhere, but it is not in the base install: it needs the
 optional `neonize` dependency (`pip install ".[whatsapp]"`) and a one-time device
-pairing from **Settings → Channels → WhatsApp**, so reach the remote dashboard
+pairing from **Settings → Messaging Channels → WhatsApp**, so reach the remote dashboard
 first (part 2 below) and scan the rotating code from there
 ([whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md)).
 
@@ -245,6 +245,13 @@ a bridge interface; the official Docker image sets it. Both server paths mount
 the token-auth middleware unconditionally, so a wider bind never exposes an
 unauthenticated surface beyond the three token-free liveness probes
 (`/api/health`, `/api/live`, `/api/ready`).
+
+A governance policy can narrow both: the `bind_address` list refuses a
+`KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
+and the `dashboard_origins` list drops an extra origin it does not name. An
+enterprise build allows neither until a policy names it. Tailnet access there
+follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
+on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
 
 Everything below therefore works by putting something in front of loopback.
 

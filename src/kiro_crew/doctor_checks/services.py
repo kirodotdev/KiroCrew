@@ -219,6 +219,48 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     return DashboardBinding(_host, _port, creds, _has_slack, _local)
 
 
+def _running_gateway_version(port: int) -> str | None:
+    """The version the gateway on ``port`` is running, or None when it does not say.
+
+    Read from ``GET /api/health``, not ``/api/status``: ``/api/status`` needs the
+    dashboard token, which this bare request does not carry, while ``/api/health``
+    is token-exempt and adds ``version`` for a direct-local caller that sends a
+    served ``Host`` (``handlers.core._liveness_payload``), which a
+    ``127.0.0.1:<port>`` request is. Any failure, or a payload without a string
+    ``version``, answers None so the row reads unknown rather than guessing.
+    """
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health")
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- loopback host literal plus a fixed internal path; the only interpolated value is the gateway port from config/env, so no scheme or host is reachable from input  # noqa: E501
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    if isinstance(version, str) and version.strip():
+        return version.strip()
+    return None
+
+
+def _doctor_running_version(port: int, issues: list[str]) -> None:
+    """The ``running:`` row: the gateway's own version next to the on-disk one.
+
+    The on-disk version is the code this doctor imported (``cli_doctor._mc_version``).
+    A gateway started before an update keeps serving the old code until it
+    restarts, so a mismatch is an issue whose remedy is a restart.
+    """
+    on_disk = cli_doctor._mc_version
+    running = _running_gateway_version(port)
+    if running is None:
+        print(f"  running:     ⚠️  gateway version unknown (on disk {on_disk})")
+    elif running == on_disk:
+        print(f"  running:     ✅ {running} (same as on disk)")
+    else:
+        print(f"  running:     ⚠️  {running}, on disk {on_disk} (restart needed)")
+        print(f"{render._INDENT}Fix: `kirocrew restart` (the gateway still runs the old code)")
+        issues.append("gateway restart needed (running version differs from on-disk)")
+
+
 def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str]) -> None:
     """The ``Connectivity`` rows after the kiro-cli one: is the gateway up, and does
     it enforce token auth off loopback."""
@@ -229,14 +271,17 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
     is_remote = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
 
     if _port:
+        gateway_up = False
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{_port}/api/status")
             # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- loopback host literal plus a fixed internal path; the only interpolated value is the gateway port from config/env, so no scheme or host is reachable from input  # noqa: E501
             with urllib.request.urlopen(req, timeout=2) as resp:
                 data = json.loads(resp.read())
             print(f"  gateway:     ✅ running (uptime {data.get('uptime', '?')})")
+            gateway_up = True
         except urllib.error.HTTPError as he:
             # 401/403 means gateway is running but requires token auth
+            gateway_up = True
             if he.code in (401, 403):
                 print("  gateway:     ✅ running (token auth enabled)")
             else:
@@ -255,6 +300,10 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
                 print("  gateway:     ⏹  not running")
         except Exception:
             print("  gateway:     ⚠️  running but returned unexpected response")
+            gateway_up = True
+
+        if gateway_up:
+            _doctor_running_version(_port, issues)
 
         # SSH tunnel hint for remote hosts
         if is_remote:

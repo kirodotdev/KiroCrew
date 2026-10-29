@@ -120,7 +120,7 @@ async def _await_cron_fire_time_gate(
     except CronQueueTimeout as exc:
         # Scoped exactly as _run_job_isolated's own result-less clear
         # (close_run, cron_service/execution.py). For an agent/message job ``last_result`` is the
-        # cross-run dedup context build_cron_session_context prepends as "do
+        # cross-run dedup context cron_prior_result_context carries as "do
         # NOT repeat", and a run starved here produced no result to replace it
         # -- clearing it would make the NEXT run repeat content it had already
         # sent. Command and script jobs still clear: the prompt built for them is

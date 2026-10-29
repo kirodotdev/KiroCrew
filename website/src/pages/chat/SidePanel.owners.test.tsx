@@ -53,6 +53,8 @@ describe('SidePanel module boundary', () => {
       'SidePanelAddMenu.tsx',
       'SidePanelTabBodies.tsx',
       'SidePanelTabChip.tsx',
+      'SidePanelTabIcons.tsx',
+      'SidePanelTabNav.tsx',
       'useSidePanelSize.ts',
     ])
   })

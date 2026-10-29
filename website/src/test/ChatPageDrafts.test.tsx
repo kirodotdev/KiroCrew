@@ -999,6 +999,65 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     })
   })
 
+  it('two refused paste sends landing in one batch both come back, each with its own block', async () => {
+    // Both receipts resolve inside one act, so React batches the two
+    // restores into one commit. Each must carry against the blocks and text the
+    // previous one installed, or the second drops the first's block while its
+    // token stays in the text (the ChatPane pasteSidecar scene, on ChatPage).
+    const { api } = await import('../api/client')
+    const settle: Array<(v: unknown) => void> = []
+    const pending = () => new Promise(resolve => { settle.push(resolve) }) as unknown as Promise<Response>
+    vi.mocked(api.sendChat).mockImplementationOnce(pending).mockImplementationOnce(pending)
+    // The first send leaves the slot running: Queue keeps Enter a plain send.
+    localStorage.setItem('mc-busy-send-mode:slot-a', 'queue')
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    // Only the first send carries a session reference, so the second restore
+    // must keep the chip the first one put back.
+    sessionStorage.setItem('mc-chat-session-ref-drafts', JSON.stringify({
+      'slot-a': [{ key: 'chat-ref-batch', title: 'Release notes' }],
+    }))
+    await renderAndWaitForInput(store)
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const first = 'one\ntwo\nthree\nfour\nfive'
+    const second = 'aa\nbb\ncc\ndd'
+    const paste = async (text: string) => {
+      await act(async () => {
+        fireEvent.paste(input, { clipboardData: { items: [], getData: (t: string) => (t === 'text' ? text : '') } })
+      })
+    }
+
+    await paste(first)
+    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]/))
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(input.value).toBe(''))
+    await paste(second)
+    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]/))
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(settle).toHaveLength(2))
+
+    const refused = { ok: false, json: async () => ({ ok: false, error: 'refused' }) }
+    await act(async () => { settle[0](refused); settle[1](refused) })
+
+    // Both tokens are back, re-numbered apart (two blocks cannot share #1).
+    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d lines \][\s\S]*\[ Paste #2(?:\u2063[\u200b\u200c]+\u2063)? · \d lines \]/))
+    await waitFor(() => {
+      const pasteDrafts = JSON.parse(localStorage.getItem('mc-chat-paste-drafts') || '{}')
+      expect((pasteDrafts['slot-a'] ?? []).map((b: { content: string }) => b.content).sort()).toEqual([first, second].sort())
+      const refs = JSON.parse(sessionStorage.getItem('mc-chat-session-ref-drafts') || '{}')
+      expect((refs['slot-a'] ?? []).map((r: { key: string }) => r.key)).toEqual(['chat-ref-batch'])
+    })
+
+    // The retry sends both pastes' content, and no token is left unexpanded.
+    vi.mocked(api.sendChat).mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ ok: true }) } as unknown as Response)
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(3))
+    const retryText = vi.mocked(api.sendChat).mock.calls[2][0] as string
+    expect(retryText).toContain(first)
+    expect(retryText).toContain(second)
+    expect(retryText).not.toMatch(/\[ Paste #\d/)
+  })
+
   it('slow New Chat that resolves after a slot switch does not steal the typed text', async () => {
     // Symptom A: memory is high, user clicks New Chat, the create backend call
     // hangs. User switches to slot-b and types. When the slow create finally

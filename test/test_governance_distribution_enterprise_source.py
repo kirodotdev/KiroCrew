@@ -6,8 +6,9 @@ config key or policy document field can point the build at another address, and 
 central policy is REQUIRED: a fetch that cannot complete aborts boot, whatever any local
 ``on_unavailable`` says. Every oss case here pins that an oss build behaves as before.
 
-The https transport is replaced with a fake through the shared ``transport`` fixture, so
-nothing here opens a socket; the fixture restores the scheme table afterwards.
+The enterprise transport is replaced with a fake through the shared ``transport`` fixture,
+so nothing here opens a socket; the fixture restores the scheme table afterwards. The
+transport itself is tested in ``test_enterprise_policy_fetch.py``.
 """
 
 from __future__ import annotations
@@ -44,6 +45,22 @@ _LOCAL_ENV = {
 }
 
 
+#: What the gateway records an enterprise copy against: the source plus the profile.
+_EE_CACHE_SOURCE = f"{pd.ENTERPRISE_POLICY_URL}?profile=one-profile"
+
+
+@pytest.fixture(autouse=True)
+def _one_signed_in_profile(_floor_monkeypatch):
+    """Every document and the vault name one profile, so the profile half of the source
+    identity matches. The fake transport here stands in for the control plane; the
+    profile binding itself is tested in ``test_enterprise_policy_fetch.py``."""
+    from kiro_crew.platform import enterprise_policy_fetch as epf
+
+    _floor_monkeypatch.setattr(epf, "document_scope", lambda body: "one-profile")
+    _floor_monkeypatch.setattr(epf, "signed_in_scope", lambda: "one-profile")
+    _floor_monkeypatch.setattr(epf, "pinned_scope", lambda: "one-profile")
+
+
 @pytest.fixture(name="enterprise")
 def enterprise_fixture(monkeypatch):
     monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
@@ -54,15 +71,16 @@ def _set_local_env(monkeypatch) -> None:
         monkeypatch.setenv(name, value)
 
 
-def _https(transport, fetcher) -> None:
-    """Answer every https fetch with *fetcher* (restored by the fixture)."""
-    transport(fetcher, scheme="https")
+def _enterprise_transport(transport, fetcher) -> None:
+    """Answer every enterprise-source fetch with *fetcher* (restored by the fixture)."""
+    transport(fetcher, scheme=pd.ENTERPRISE_POLICY_URL.partition(":")[0])
 
 
 class TestResolvedSettings:
-    def test_the_placeholder_is_on_a_reserved_domain(self):
-        assert pd.ENTERPRISE_POLICY_URL.startswith("https://")
-        assert ".invalid/" in pd.ENTERPRISE_POLICY_URL
+    def test_the_source_is_the_control_plane_scheme(self):
+        """No host in the URL: the address comes from the build's region table."""
+        assert pd.ENTERPRISE_POLICY_URL == "kirocps://enterprise-management"
+        assert "kirocps" in pd.registered_policy_schemes()
 
     def test_oss_honours_the_env_url(self, monkeypatch):
         monkeypatch.setenv(pd.POLICY_URL_ENV, _ELSEWHERE)
@@ -127,7 +145,9 @@ class TestBoot:
         monkeypatch.setattr(governance, "_policy_home_path", lambda: home)
         _set_local_env(monkeypatch)
         seen: list = []
-        _https(transport, _static_fetcher(pd.FetchedPolicy(body=_body("central")), seen))
+        _enterprise_transport(
+            transport, _static_fetcher(pd.FetchedPolicy(body=_body("central")), seen)
+        )
 
         ceiling = governance.load_security_policy()
 
@@ -142,14 +162,14 @@ class TestBoot:
         )
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(local))
         _set_local_env(monkeypatch)
-        _https(transport, _failing_fetcher(TimeoutError("endpoint down")))
+        _enterprise_transport(transport, _failing_fetcher(TimeoutError("endpoint down")))
 
         with pytest.raises(PlatformCompositionError, match="requires its central policy"):
             governance.load_security_policy()
 
     def test_with_nothing_configured_the_tier_still_runs(self, enterprise, transport):
         """No source anywhere does not switch the tier off in enterprise."""
-        _https(transport, _failing_fetcher(TimeoutError("endpoint down")))
+        _enterprise_transport(transport, _failing_fetcher(TimeoutError("endpoint down")))
         with pytest.raises(PlatformCompositionError, match="requires its central policy"):
             governance.load_security_policy()
 
@@ -175,7 +195,7 @@ class TestFetchedDocument:
                 "on_unavailable": "degrade",
             },
         )
-        _https(transport, _static_fetcher(pd.FetchedPolicy(body=body)))
+        _enterprise_transport(transport, _static_fetcher(pd.FetchedPolicy(body=body)))
 
         ceiling = governance.load_security_policy()
 
@@ -196,7 +216,7 @@ class TestFetchedDocument:
             distribution={"source": _ELSEWHERE, "refresh_interval_secs": 60},
         )
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(local))
-        _https(transport, _static_fetcher(pd.FetchedPolicy(body=_body("central"))))
+        _enterprise_transport(transport, _static_fetcher(pd.FetchedPolicy(body=_body("central"))))
 
         ceiling = governance.load_security_policy()
 
@@ -213,7 +233,7 @@ class TestCacheOnlyChild:
             pd.load_distributed_policy()
 
     def test_the_cache_from_the_build_source_is_adopted(self, enterprise, monkeypatch):
-        _cache("central", pd.ENTERPRISE_POLICY_URL)
+        _cache("central", _EE_CACHE_SOURCE)
         monkeypatch.setenv(pd.POLICY_CACHE_ONLY_ENV, "1")
         ceiling = pd.load_distributed_policy()
         assert ceiling is not None and ceiling.identity_issuer == "central"
@@ -251,7 +271,9 @@ class TestRunningProcess:
         self._install(install_ceiling)
         _set_local_env(monkeypatch)
         seen: list = []
-        _https(transport, _static_fetcher(pd.FetchedPolicy(body=_body("pushed")), seen))
+        _enterprise_transport(
+            transport, _static_fetcher(pd.FetchedPolicy(body=_body("pushed")), seen)
+        )
 
         assert pd.refresh_now().status == pd.REFRESH_APPLIED
         assert [request.url for request in seen] == [pd.ENTERPRISE_POLICY_URL]
@@ -269,7 +291,7 @@ class TestRunningProcess:
         _set_local_env(monkeypatch)
         posture = pd.distribution_posture()
         assert posture["configured"] is True
-        assert posture["source_scheme"] == "https"
+        assert posture["source_scheme"] == "kirocps"
         assert posture["refresh_interval_seconds"] == 900
         assert posture["on_unavailable"] == governance.UNAVAILABLE_FAIL_CLOSED
 

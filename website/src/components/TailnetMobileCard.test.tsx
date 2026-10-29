@@ -706,6 +706,14 @@ describe('TailnetMobileCard — terminal steps', () => {
     expect(screen.queryByRole('button', { name: /Set up & show QR/ })).toBeNull()
   })
 
+  it('says tailnet is off by policy and offers no action', async () => {
+    await mount(data({ step: 'policy_off' }))
+    expect(screen.getByText('Off by policy')).toBeInTheDocument()
+    expect(screen.getByText(/Tailnet is off by policy/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Re-check/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Set up & show QR/ })).toBeNull()
+  })
+
   it('links to the Tailscale DNS console from enable_magicdns', async () => {
     await mount(data({ step: 'enable_magicdns' }))
     const link = screen.getByRole('link', { name: /Open Tailscale DNS settings/ })

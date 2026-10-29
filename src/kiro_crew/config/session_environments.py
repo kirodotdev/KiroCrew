@@ -28,7 +28,7 @@ PROFILE_KEYS: tuple[str, ...] = ("id", "name", "template", "workdir")
 PROFILE_OPTIONAL_KEYS: dict[str, bool] = {"compute_survives_stop": True}
 SECTION_KEYS: tuple[str, ...] = ("coder_url", "profiles")
 #: Optional section keys; an older dashboard's omission keeps the saved value.
-SECTION_OPTIONAL_KEYS: tuple[str, ...] = ("stop_on_shutdown",)
+SECTION_OPTIONAL_KEYS: tuple[str, ...] = ("default_profile", "stop_on_shutdown")
 #: Days an archived session's stopped workspace is kept before it is deleted. Fixed,
 #: not a setting: a stopped workspace still holds its disk.
 ARCHIVED_RETENTION_DAYS = 7
@@ -105,6 +105,26 @@ def load_stop_on_shutdown(raw: object) -> bool:
         return True
 
 
+def validate_default_profile(value: object) -> str:
+    """The profile id new dashboard sessions start on ("" is this machine); shape only."""
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or not _PROFILE_ID_RE.fullmatch(value):
+        raise SessionEnvironmentsError("default_profile must be a profile id or empty")
+    return value
+
+
+def load_default_profile(raw: object) -> str:
+    """Lenient load: the saved id, or "" (this machine) when absent or invalid."""
+    if not isinstance(raw, dict) or "default_profile" not in raw:
+        return ""
+    try:
+        return validate_default_profile(raw["default_profile"])
+    except SessionEnvironmentsError as exc:
+        logger.warning("session_environments: %s; new sessions run on this machine", exc)
+        return ""
+
+
 def validate_profile(value: object, index: int = 0, *, where: str = "") -> dict[str, Any]:
     """One normalized profile; an unknown key (a credential, say) is refused, not dropped."""
     where = where or f"profiles[{index}]"
@@ -173,6 +193,15 @@ def validate_session_environments(value: object) -> dict[str, Any]:
         "coder_url": validate_coder_url(value["coder_url"]),
         "profiles": validate_profiles(value["profiles"]),
     }
+    saved_ids = {profile["id"] for profile in result["profiles"]}
+    if "default_profile" in value:
+        default = validate_default_profile(value["default_profile"])
+        # Only an id this save keeps: a removed profile cannot stay the default.
+        if default and default not in saved_ids:
+            raise SessionEnvironmentsError(
+                f"default_profile {default!r} is not one of the saved profiles"
+            )
+        result["default_profile"] = default
     if "stop_on_shutdown" in value:
         result["stop_on_shutdown"] = validate_stop_on_shutdown(value["stop_on_shutdown"])
     return result

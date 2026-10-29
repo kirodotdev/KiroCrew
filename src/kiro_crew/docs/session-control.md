@@ -177,7 +177,16 @@ every worker rather than of one: the base moved, the approach changed, stop.
 |---|---|---|
 | `message` | yes | Becomes each target's next user-role turn |
 | `mode` | yes | `queue` or `steer`. No default |
-| `targets` | no | Session keys or titles. Omit to reach every session you created |
+| `targets` | one of `targets` / `all` | Session keys or titles. Name at least one, or pass `all: true` instead. An empty list counts as no list |
+| `all` | one of `targets` / `all` | `true` reaches every session you created. Not together with `targets` |
+
+A call that selects no audience is refused and delivers nothing. The tool
+refuses it before sending a request, and the gateway refuses it too. A session
+that started before `all` existed still holds the old tool text ("omit the target
+list to reach everything"); its first fleet-wide call is refused once with a reply
+that names `all: true`. While a tool and a gateway of different versions meet,
+the tool never sends a body without a target list unless `all: true` is set, so an
+older gateway cannot read an empty audience as every session you created.
 
 `mode` is required because the two are different instructions, not two settings
 of one. `queue` lets every target finish what it is doing; `steer` cuts into
@@ -188,7 +197,7 @@ meant the other.
 
 Each delivery goes through the same checks a single `session_send` does, so a
 broadcast can reach nothing a `session_send` could not — including the ownership
-fence, which is why the default audience (what you created) is always within
+fence, which is why the `all: true` audience (what you created) is always within
 reach.
 
 **Partial delivery is normal.** Deliveries happen one at a time, and a target
@@ -990,7 +999,8 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `invalid_broadcast_mode` | `session_broadcast` needs `mode` to be `queue` or `steer`; there is no default |
 | `caller_changed_mid_broadcast` | The calling session moved workspace while a broadcast was in flight, so its per-target report is withheld. The deliveries already happened — do not re-send |
 | `too_many_targets` | A broadcast reaches at most 50 sessions. Refused, never truncated — name a subset |
-| `target_required` | A broadcast was given a target list that names no session. Omit the list to reach everything you created |
+| `target_required` | The broadcast selected no session. Name the sessions, or pass `all: true`. Leaving the target list out, or sending an empty one, reaches nobody |
+| `audience_conflict` | The broadcast named sessions and also passed `all: true`. Pass one of the two |
 | `delivery_timeout` | One target exceeded its per-delivery bound, so the broadcast cancelled that call and continued. Re-send only when the row says the steer await was never entered (the hand-over was not reached). Inside or after the steer await the outcome is unknown: do not re-send. Pending or queued text may still run: never re-send. An unavailable original slot means the outcome is unknown and the row advises neither action. No case claims delivery or certain execution |
 | `caller_unidentified` | The calling session could not be resolved from the connection, so nothing was done |
 | `caller_changed_mid_read` | session_status: the calling session moved workspace while its roster was read. Call again |

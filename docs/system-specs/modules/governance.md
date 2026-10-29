@@ -86,6 +86,14 @@ can reorder strictness or redefine matching):
   allow-mode prefix to confine writes in a directory containing untrusted
   symlinks.
 
+  **Path matcher — Windows namespace aliases.** On Windows `_norm_item` first
+  folds a namespace or default-stream alias of a local path to its plain
+  spelling with the keystone's own `_fold_windows_alias`: `\\?\C:\x`,
+  `\\.\C:\x`, `//?/C:/x`, `\??\C:\x` and `C:\x::$DATA` all open `C:\x`, so none
+  of them dodges a deny naming `C:\x`. UNC, volume GUID and named-stream
+  spellings stay as written, as they do in the keystone; off Windows nothing is
+  folded.
+
   **Path matcher — remote-workspace targets.** A remote workspace's file tools
   act on a Linux guest, so their targets are matched as the guest's POSIX paths
   on every gateway OS, a Windows one included. The flavour is chosen per call,
@@ -391,7 +399,19 @@ privilege escalation.
 cannot drift. It resolves the remote git would *actually* fetch from — reading
 `branch.<name>.remote` rather than assuming `origin`, via `ls-remote --get-url`
 so `url.<base>.insteadOf` rewriting is applied — and returns a blocking reason or
-`""`. **A pin blocks; an unresolvable pin does not:** if governance cannot be read
+`""`. Host git run through `git_command_env()` does not read the user's global
+or system config or attributes files (a sandboxed agent can write them), so a
+`~/.gitconfig` rewrite reaches some fetches and not others. Each path therefore
+judges the URL ITS OWN fetch will connect to: `resolve_remote_url(proj,
+fetch_env=...)` takes the environment that fetch runs with, and each caller passes
+one variable to both the pin check and the fetch, so the two cannot drift. The
+gateway auto-update (and the route check that decides it) passes its
+`git_command_env()` result, so an agent-planted `url.<x>.insteadOf` can neither
+redirect that fetch nor dress up an unapproved origin for it. `kirocrew update`
+and the dashboard update pass `None`: their fetch inherits the process
+environment and so applies the operator's own rewrite, and the pin judges that
+rewritten URL, as before (a pin written for the `ssh` spelling of an `https`→`ssh`
+rewrite still passes there). A URL the fetch will not use is never judged. **A pin blocks; an unresolvable pin does not:** if governance cannot be read
 at all the update proceeds, because refusing one would strand a host on a build
 that may need a patch. These are a routing constraint for a managed fleet, not a
 boundary against a local operator who could edit the checkout directly.
@@ -462,12 +482,58 @@ When `kiro_crew.edition.is_enterprise()` is true, neither channel above applies:
   document says, so a cold cache and a fetch that cannot complete abort boot. A
   last-known-good cache from the same source within its staleness bound is still served.
 - A cache-only child refuses a cache recorded against any other source.
-- `KIROCREW_POLICY_HEADERS` (the request credential) is still read: it cannot change
-  the address.
+- `KIROCREW_POLICY_HEADERS` is still read but not sent: the enterprise transport
+  carries the sign-in's own credential.
 
-The constant is a placeholder on a reserved `.invalid` domain until the real endpoint
-is chosen, so an enterprise build fails closed at boot until then. A test address needs
-its own build.
+The constant is `kirocps://enterprise-management`, served by
+`platform/enterprise_policy_fetch.py` (registered for the `kirocps` scheme; it refuses
+in an oss build). One fetch is the Kiro control plane's
+`GetEffectiveEnterpriseManagementResourceWithToken`, AWS JSON 1.0:
+
+- **Address.** `control_plane_url(profile_region(arn))` from
+  `auth/login/control_plane.py`, the region table the IdC login already uses. The URL's
+  host part is not an address, and nothing in the environment or config names one.
+- **Identity.** The Kiro sign-in in Crew's vault (`kirocrew kas login`), refreshed by
+  `KasAuthProvider` with the `KIRO_API_KEY` bypass off. `Authorization: Bearer`, plus
+  `TokenType: EXTERNAL_IDP` for an External IdP sign-in. The body names the profile
+  ARN and the client surface `CREW`.
+- **Trust.** TLS with default verification, redirects refused (`_open`), the pinned
+  host, and the reply's `manifest.hash` (SHA-256 of the body) when it carries one.
+  There is no signature layer.
+- **Answer.** `ENABLED` carries Trust V2 YAML, which
+  `platform/enterprise_policy_translate.py` turns into a Crew document (today
+  `messaging_channel` to `channels.members`), re-read every 300 s. Only a deny
+  `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
+  baseline keeps it off. `DISABLED` answers
+  a document that names no scope, so the baseline holds every control. `UNCHANGED`
+  keeps the cache. `NOT_ELIGIBLE`, an HTTP error, an unreachable service, a malformed
+  answer, a hash mismatch and an untranslatable rule each raise. With no usable cache,
+  boot then exits through `enterprise_boot.refuse_policy_boot` with the reason.
+- **One profile's cache.** Every profile shares the one source, so the document records
+  a digest of the profile it was read for in `identity.issuer`, and the cache's source
+  identity is the source plus that digest (`_source_identity`). A copy is recorded
+  against the profile it was READ for, and every read compares it with the profile in
+  the vault NOW, so the existing repoint rule refuses another profile's copy on every
+  path: the fresh-cache shortcut, the outage fallback, the concurrent-writer handoff, a
+  refresh and the posture. Every other source's identity is the source itself.
+- **Profile pinned at startup.** An enterprise process pins the profile signed in when
+  it first resolves the policy (`enterprise_policy_fetch.pinned_scope`) and reads the
+  cache as that profile for life. It hands the pin to its cache-only children in
+  `KIROCREW_POLICY_PROFILE_PIN` (internal, not a setting); a child adopts only a cache
+  with that digest, and a child with no pin adopts nothing. Every install and refresh
+  compares the live vault profile, and the document's, with the pin; each fetch checks
+  it before reading the credential, so a sign-out counts as a change. The pin lives in
+  the process, so a re-exec'd gateway pins its own sign-in. A mismatch is
+  refused with "the signed-in Kiro account changed since Kiro Crew started; restart
+  Kiro Crew", audited as a `failed_closed` incident; a running gateway then stops
+  itself (SIGTERM), and a boot exits. The owner ruled that a sign-in change while Crew
+  runs needs no other handling, so the window between a switch and the next check is
+  an accepted residual.
+- **Signing in first.** `kirocrew kas login`, `whoami`, `logout` and `route` (the
+  read-only lookup a remote sign-in runs first) run when the policy load fails, so the
+  sign-in the fetch needs can be created. Every other command still exits.
+
+A test address needs its own build.
 
 **No credentials in the document, and no provenance flag either.** `distribution`
 has no `headers` field on purpose: a document published to the whole fleet must not
@@ -1244,7 +1310,26 @@ therefore also withholds the grant while that capability restricts anything at t
 asked (off, or any scope; an enabled gate with no scopes permits every use). Every writer asks
 this one predicate, so the grant is withheld on every backend and channel alike: kiro-cli's
 own spec, the KAS wire projection, and the `permissions` block written to disk. With no such
-policy nothing changes.
+policy nothing changes. On KAS that includes a spec's `toolsSettings.subagent.trustedAgents`,
+which travels as a name-scoped `subagent` allow (#25320): it goes through the same merge as
+an authored allow, so the ceiling is asked about every ref of the sub-agent tool and one
+refusal drops the rule. Its sibling `availableAgents` travels as a `deny` with the listed
+names in `exclude`, which only narrows and so travels whatever the ceiling says.
+
+One grant is made INSIDE the gate rather than by a writer: the KAS `spec-builtin-grant`
+row (security.md § KAS spec built-in grant), which approves a built-in the spec granted
+after every deny row and governance have judged the real call. It asks
+`may_grant_builtin_at_gate(ref, ceiling)` instead of `may_skip_gate`: the same ceiling
+question (`_ceiling_has_no_say`), asked of the ceiling and of every configured profile
+(`governance_profiles.any_configured_profile_has_say`), minus the floor clause that
+refuses `fs_read`/`execute_bash`/... to a static writer because a static grant skips the
+floor. The profile half cannot reuse `any_configured_profile_governs`: that asks
+`may_skip_gate`, whose floor clause answers for every floor-gated built-in before it
+reads the profile, so any profile at all would withhold every such grant. The ceiling is
+the one in the gate's own context snapshot, so a ceiling or profile with any opinion on
+the tool's scopes keeps the call at the prompt; an unresolved profile store or an error
+withholds. The KAS projection asks `may_grant_builtin_at_gate_now` once when it records
+the grant; the gate asks again on every call.
 
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an
@@ -1506,6 +1591,18 @@ flagging that child would refuse to start an app on a host running perfectly wel
 skip the tier and drop it to a local ceiling — the failure cache-only mode exists to
 prevent.
 
+### Sandboxed processes in an enterprise build
+
+An enterprise build always enters the central tier, and that includes a Kiro Crew MCP server kiro-cli starts inside the agent sandbox (`mcp_entry.slim_server` → `boot_platform`). That process cannot reach the Kiro sign-in, so it can never fetch. It runs in cache-only mode instead, with no flag:
+
+| Part | Behaviour | Where |
+|---|---|---|
+| Child | `cache_only()` is true for any enterprise process the sandbox launcher started, so it resolves the ceiling through `_load_cache_only`: no fetch, no sign-in, and a refusal when the cache is missing, torn, for another source, unusable or past the staleness bound. `refresh_now` returns rejected without fetching. | `policy_distribution_source.cache_only` |
+| Marker | "Started by the launcher" is `KIROCREW_SANDBOX_ACTIVE`. `cli.main` and `mcp_entry` drop it at start, so they note it first. It picks where the ceiling comes from, never whether one applies: a child that clears it tries to fetch, which the sandbox denies. | `sandbox_launch_mark` |
+| Sandbox | Every sandboxed spawn of an enterprise build lifts `policy_cache` the way an app backend's spawn does, and the plan keeps a lifted cache read-only (`sandbox_plan.is_policy_cache_dir`). The vault, `kas` and every other credential path stay hidden. `policy_cache` is pre-created, so its seal has a target before the first fetch. | `sandbox_tiers.enterprise_policy_cache_view`, `sandbox_wrap.wrap_argv` |
+
+The cache holds no credential: `policy.json` is the document the agent is already governed by, `policy.meta.json` carries a digest of the build's fixed source plus the fetch validators, and `policy.lock` is empty. A long-running child keeps the ceiling it booted with until its session restarts. An oss build is unchanged: the cache stays hidden and nothing is cache-only without the flag.
+
 ## Policy authenticity (`identity.signature`)
 
 Without a signature check, a policy's integrity rests entirely on **filesystem
@@ -1689,7 +1786,7 @@ the agents dir and not yet the registry leaf.
 
 **The crewmate folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `kits/`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 
-**Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, codex `config.toml`, pi `settings.json` and `extensions/`, each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind. `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
+**Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, codex `config.toml`, pi `settings.json` and `extensions/`, copilot `mcp-config.json` and `installed-plugins/` (its `config.json`, which carries its permission settings, is already refused both ways as its credential leaf), each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind, and copilot's are not listed: a Copilot session is refused outright where one exists (`acp/harness/copilot.py`). `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
 
 That residual matters for the same reason the whole gap did. Since
 `hooks.on_tool_call` runs **only** from the `EVENT_PERMISSION_REQUEST` branch (the
@@ -1700,8 +1797,9 @@ permission requests and **Plane A never runs at all** for that tool. This affect
 every governed capability, not just computer use. So a capability whose only
 enforcement is Plane A can still be skipped by a shell-capable agent, though no
 longer by its file tools. Computer use no longer
-relies on either plane — it is not governed at all, and rests on the keystone enable
-being agent-unwritable. See [computer-use.md](computer-use.md) → "Known limitations".
+relies on either plane — its one governance key, `capabilities.computer_use`, is read at the
+keystone enable (`enable_state.is_enabled`), not at either plane, and the enable
+rests on being agent-unwritable. See [computer-use.md](computer-use.md) → "Known limitations".
 
 ## Profile resolution + binding
 
@@ -1722,8 +1820,8 @@ resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
 and `_hb` fall to deny-all. That is correct for every scope that remains.
 
 There is no feature-local unattended refusal in `computer_use.gate` and no shipped
-`cu-off` profile bound to the unattended surfaces. Computer use is
-deliberately ungoverned — no `computer_use*` row in `SCOPE_CATALOG`, no
+`cu-off` profile bound to the unattended surfaces. Computer use has
+only the one on/off `capabilities.computer_use` row (see below) — no per-surface row, no
 unattended-surface rule, and no shipped profile of that name — so cron, subagent,
 taskrunner, webhook, workflow and channel sessions all drive the desktop once the
 operator has flipped the keystone. That is the product decision recorded in
@@ -2118,7 +2216,13 @@ read-your-writes should add it deliberately, with its own tests.
   `policy_alias_split`) only for a server-less trusted identity those tables
   know, on a permission event the KAS harness built (`kas_builtin_ids`) -- an
   MCP-served call keeps exactly the targets it had, and another harness that
-  stamps the same bare id is asked under that id alone. This admits more than
+  stamps the same bare id is asked under that id alone. A Side Chat read
+  built-in whose seam states `harness_builtin_tool` is one group too when its
+  title is that harness's own name for the built-in
+  (`HARNESS_READ_POLICY_NAMES`): pi's `read` with `fs_read` once the pi seam
+  states it, so an allow list naming either admits it. claude is not grouped:
+  its permission title carries the arguments (`Read .env`) and stays its own
+  item. This admits more than
   asking the raw id by itself did: an allow-mode `tools: ["fs_write"]` now
   permits a KAS `str_replace` / `fs_append` (and `fs_read` / `grep` / `glob`
   permit the KAS read and search ids), which is the kiro-cli parity the table
@@ -2243,8 +2347,8 @@ read-your-writes should add it deliberately, with its own tests.
 
 Plane A carries **no live ordinal clamp**. The computer-use governance model —
 including a `computer_use.approval` row and its clamp — is not present; computer
-use is not governed (see [Computer use is NOT
-governed](#computer-use-is-not-governed-deliberately)). The global `approval_mode`
+use has no approval row (see [Computer use has one
+on/off row](#computer-use-has-one-onoff-row-deliberately)). The global `approval_mode`
 row's live clamp remains reserved (see "Still-reserved in v1").
 
 ### Owner capability previews
@@ -2653,15 +2757,14 @@ denials leave the same forensic trail.
   rather than a tool call, so an `mcp` deny cannot reach it at all. A fleet that
   means "no raster capture" must deny `@kirocrew-computer` via the `mcp` scope
   **and** the browser CLI via the `commands` scope.
-- **The `mcp`-scope deny is now the ONLY governance lever over computer use, and it
-  is keyed on a renameable alias.** `mcp.deny: ["@kirocrew-computer"]` works on
+- **The `mcp`-scope deny is the only per-tool governance lever over computer use, and
+  it is keyed on a renameable alias.** `mcp.deny: ["@kirocrew-computer"]` works on
   unmodified shipped code, but the server key is derived by `mcp_server_alias()` from
   an agent-mutable config: verified `mcp__kirocrew-computer2__click` and
-  `mcp__cu__click` both PERMIT under that deny. With the `capabilities.computer_use`
-  row removed there is no authoritative ban behind it — a fleet that must guarantee
-  the feature is off should not ship the keystone enable, and should treat the alias
-  deny as best-effort. See [Computer use is NOT
-  governed](#computer-use-is-not-governed-deliberately).
+  `mcp__cu__click` both PERMIT under that deny. The authoritative ban
+  is the `capabilities.computer_use` row with `enabled: false` (or, in an enterprise build, a
+  policy that does not name it); treat the alias deny as best-effort. See [Computer use has one
+  on/off row](#computer-use-has-one-onoff-row-deliberately).
 - **Cursor Motion has no governance row, and deliberately gets none.** The
   fake-cursor desktop overlay (`computer_use/overlay*.py`) grants the agent
   *nothing*: it draws an image, it does not move the pointer, it cannot deliver
@@ -3167,6 +3270,30 @@ switch off" (flippable) from "off because an administrator pinned it" (a config
 write returns 403), since offering a working-looking toggle for the second is the
 half-control this row exists to avoid.
 
+**One policy boolean in an enterprise build.** In an enterprise build tailnet access follows `capabilities.tailnet_origin` alone, asked of the policy layer (`tailnet.policy_off`, through `edition_locks.policy_permits`, RFC D3): a policy that permits it turns tailnet on; a silent or denying policy leaves it off. Local config (`dashboard.tailscale.enabled`), a local tier and the environment cannot turn it on. No tailnet list and no Tailscale daemon is read for this answer, so a policy refresh has no daemon read to race. When it is off, every publish (`tailnet_serve.publish`, used by the dashboard card, mobile publish and `kirocrew tailnet up`) is refused first with code `policy_off`, origin derivation (`resolve_tailnet_host`, used by both gateway entry points) and background recovery add no origin, and mobile configure is refused; each of those acting asks writes its answer to SEL. `kirocrew tailnet status` and the setup card (step `policy_off`, "Tailnet is off by policy") read it without auditing and read no daemon. The RFC's inner `tailnets` list (appendix row "Allowed tailnets") is not in the catalog yet; it is tracked separately. An `oss` build is unchanged.
+
+### Remote access — `bind_address`, `dashboard_origins`
+
+Two flat rulesets for the RFC appendix rows "Bind address and tunnel" (`identifier` matcher) and "Dashboard origins" (`origin` matcher: case-insensitive glob, `[` and `]` literal so an IPv6 origin matches its own entry). Both are asked through `edition_locks.policy_permits`: policy layer only (the questions are process-wide and carry no session, as for the tailnet probe), fail-closed, and in an enterprise build only a permit the policy layer gave counts. The baseline keeps both at this machine.
+
+- `bind_address`: `dashboard.urls.bind_address_for` asks the canonical IP text of any address other than `127.0.0.1` (`KIROCREW_BIND`, or `0.0.0.0` when `local_only` is false). A refused address binds `127.0.0.1` with a warning.
+- `dashboard_origins`: `dashboard.urls.build_allowed_origins` asks each origin outside the loopback origins on the bound port, by its `scheme://host[:port]` text, and drops a refused one. The `Host` barrier derives from the same set, so it narrows too. A connected tunnel's URL is asked the same way before it is trusted (`tunnel.setup._on_tunnel_connect`). The tailnet origin is not asked: it answers to `capabilities.tailnet_origin`.
+
+Every place an origin becomes trusted, and what decides it:
+
+| Path | Decided by | Audited |
+|---|---|---|
+| Loopback origins on the bound port (`127.0.0.1`, `localhost`, `[::1]`, `kirocrew.localhost`, also without `:80`) | floor, never asked | no |
+| Extra origins at startup (`dashboard.url`, configured host, env lists) | `dashboard_origins` | each one |
+| Tunnel URL on connect | `dashboard_origins` | yes |
+| Tailnet origin (startup, recovery) | `capabilities.tailnet_origin` (enterprise: policy layer only) | yes |
+| `check_origin` loopback `Origin == Host` fallback | an allowlisted origin up to case and default port, else `dashboard_origins` | each request |
+| `check_origin` with no `Origin` header (loopback or unix socket) | unchanged: not a browser | no |
+
+In an enterprise build `dashboard_origins` is an exact-origin allow list. Deny mode is refused at load (`parsing.ALLOW_ONLY_IN_ENTERPRISE`). Each entry must be a literal lower-case ASCII `scheme://host[:port]`: an entry with a wildcard (`* ? [ ]`), non-ASCII (write the `xn--` form), a path or trailing `/`, userinfo, or a written-out default port is refused at load, naming the key and the entry (`parsing._refuse_inexact_origin_entries`). So is an entry a browser would serialize differently (`parsing._browser_serialized_origin`, the WHATWG host rules): an IPv6 literal not in its shortest hex form (`[2001:0db8::0:1]`, `[::ffff:192.0.2.1]`), an IPv4 host not in four decimal parts (`10.1`), or a port above 65535. The error names the spelling to write instead (`[2001:db8::1]`, `[::ffff:c000:201]`, `10.0.0.1`). Matching is exact set membership on the origin as a browser sends it (`matching._browser_origin`: lower-case, default port dropped), with no IDNA conversion, IP rewriting or glob. An approved origin, the tunnel URL included, is stored in `allowed_origins` in that same form (`urls.stored_origin`: `urls.origin_policy_item`, the item the policy was asked), so a configured `https://Crew.Example.com:443` is trusted as the `https://crew.example.com` a browser sends, and `check_origin` compares a non-loopback `Origin` by exact membership in that set. Six review rounds found spellings that slipped past a matcher; exact membership leaves nothing to normalise. An `oss` build keeps the glob matcher and both modes (`matching._origin_form`); there an item that is not `scheme://host[:port]` is refused while a policy governs the key.
+
+The tunnel half of "Bind address and tunnel" stays an edition lock (`edition_locks.UNKEYED_LOCKS["tunnel"]`). The bind address and the origin set are decided when the gateway starts; a policy refresh that narrows either takes effect at the next restart (#24363). `capabilities.tailnet_origin` is asked at each derivation, recovery attempt and publish, the tunnel URL at each connect, and `capabilities.computer_use` at each dispatch, so a refresh applies to those from the next ask. Each acting ask writes the answer it enforced to SEL (`governance_decision`, critical on an evaluation error); a pure read such as the status card does not. No profile is read: the questions are answered from the installed ceiling alone.
+
 ### Hosted feature-video media — `capabilities.feature_videos_download`
 
 Feature-intro clips are hosted, not bundled: the gateway fetches a signed manifest
@@ -3318,6 +3445,24 @@ seam. A policy pins the seam off MACHINE-WIDE with one object -- every surface, 
 
 ```json
 {"version": 1, "capabilities": {"decisions": {"scopes": {"models": {"mode": "allow", "allow": ["jev-latest"]}, "points": {"mode": "deny", "deny": ["tool.risk"]}}}}}
+```
+
+### Extensions, app versions and developer mode — `capabilities.extension_install`, `app_versions`, `capabilities.app_dev_mode`
+
+Three keys from the RFC [crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md) appendix ("Extension install", "Extension uninstall", "Plugin sync", "App versions", "App developer mode"). `kiro_crew/extension_governance.py` is the one reader: each check asks `governance_permits` on the host key, fail-closed, and writes a SEL `governance_decision` row for a denial or a governed permit, so an ungoverned host records nothing new. In an enterprise build an unnamed key answers the baseline, where all three are off; in the `oss` edition an unnamed key permits, as before.
+
+| Key | What it governs | Item asked | Where |
+|---|---|---|---|
+| `capabilities.extension_install` | Installing MCP servers, skills and agent packages, uninstalling them, and plugin sync, through the edition's `CapabilityManager` | install: `extensions:<kind>:<id>` (`mcp`, `skill`, `agent`, `plugin`); uninstall: the gate only | `platform/capability_bound.py::BoundedCapabilityManager`, the seam every caller of `current_context().capability_manager` goes through |
+| `app_versions` (ruleset, `identifier`) | Which third-party app versions may be installed and loaded | `<app>@<version>` from the manifest, or the registration's own version when no manifest is sent, or, for an activation (boot, enable, restart) whose manifest names no version, the installed record's version (an install or update never falls back); with no readable (semver) version, such as none or a JSON `null`, any policy that governs the key refuses. The registry install's pre-clone admission skips the version (its manifest can be a stale local checkout); the clone-time admission asks it on the fetched manifest before the build or `onInstall` | `apps/admission.py::app_admission_denied`, run at install, update, boot, restart and enable; builtins stay exempt as for every admission rule |
+| `capabilities.app_dev_mode` | App developer mode: the toggle and every dev-mode read | the gate | `apps/dev_mode.py` (`set_dev_mode`, `is_dev_mode`, `is_dev_mode_cached`, `_load_dev_apps`) through `extension_governance.developer_mode_permitted`, which any other developer-mode switch reads too |
+
+The seam runs each check on `governance_executor`, off the event loop, because the profile store stats the profiles directory. The async registry install paths (`registry_pipeline/install.py`, `install_clone.py`) run `app_admission_denied` in a thread for the same reason; the self-managed registration, which stays on the loop, asks `admission.app_version_refusal` off the loop first and passes `version_checked=True` to `register_external_app`. `is_dev_mode_cached` (the UI hot path) reads only the in-memory set: `_load_dev_apps` and the off-loop cache writers filter it by the key, and the watcher re-reads it on the tick after the key's answer changes. A denial and a governed permit are audited; a permit nothing governs is not. In an enterprise build with no ceiling and no profile, where `governance_permits` answers "ungoverned" (left to the enterprise gate, see above), `extension_governance` asks `resolve` instead, so these three keys answer the baseline and stay off; other scopes are unchanged.
+
+Plugin sync asks `extensions:plugin:<package>` for each package `plugins_out_of_sync` reports, and refuses the whole sync if any is denied. A package that drifts between that read and the sync is not asked (a known gap). A refused dev-mode toggle answers `locked_by_policy` (409 over HTTP), audited as a denied `app_dev_mode` SEL row, as before.
+
+```json
+{"version": 1, "app_versions": {"mode": "allow", "allow": ["file-explorer@1.*"]}, "capabilities": {"extension_install": {"scopes": {"extensions": {"mode": "allow", "allow": ["mcp:github", "skill:*"]}}}, "app_dev_mode": {"enabled": false}}}
 ```
 
 ### "Share as image" — `capabilities.social_share`
@@ -3740,31 +3885,35 @@ config `agent.approval_mode`. Those carry their own vocabulary and are tracked
 separately from this scope — see the reserved `approval_mode` ordinal's
 still-reserved note.
 
-### Computer use is NOT governed (deliberately)
+### Computer use has one on/off row (deliberately)
 
-Computer use (see [computer-use.md](computer-use.md)) has **no scope rows in
-`SCOPE_CATALOG`** and no governance decision anywhere in its dispatch path. That is
+Computer use (see [computer-use.md](computer-use.md)) has **one on/off row,
+`capabilities.computer_use`**, and its dispatch path asks nothing else of governance. The row
+(RFC [crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md),
+appendix row "Desktop control") is ANDed with the keystone opt-in in
+`enable_state.is_enabled`, policy layer only and fail-closed; the enterprise
+baseline keeps it off. Nothing finer is governed. That is
 a product decision, not an oversight, and it is a reversal: an earlier revision
 shipped eight rows here (`capabilities.computer_use`, `computer_use.actions`,
 `.apps`, `.app_names`, `.observations`, `.targets`, `.approval`, and
 `capabilities.computer_use_pointer`) plus two custom matchers (`bundle_id`,
-`cu_action`). All of it was removed — neither matcher is registered, and naming
+`cu_action`). The eight rows and both matchers were removed — neither matcher is registered, and naming
 either one now aborts governance boot (see the `_MATCHERS` note above).
 
 **What replaced it.** One operator opt-in on the keystone `computer_use.json`,
 which `security._SENSITIVE_HOME_DIRS` fences the agent away from. The agent cannot
 read or write that file, so it cannot enable its own desktop automation — and it
 cannot drive Kiro Crew's own window either (`computer_use/policy.py`), so it cannot
-click the toggle in the UI. Those two facts are the entire boundary.
+click the toggle in the UI. Those two facts, plus the one on/off row, are the boundary.
 
 **What this costs, stated plainly.** There is no way to express "computer use is
 allowed but only for Preview", "read-only desktop access", "never type into a
 password field" (beyond the always-on floor), or "every action must be approved" as
 policy. A fleet that needs any of those should not enable the feature. The
 `mcp` scope still works as a blunt instrument: denying `@kirocrew-computer` removes
-the tools entirely, which is the one governance lever that remains.
+the tools entirely, which is the one per-tool lever beside the on/off row.
 
-**If it is ever re-governed**, the rows belong back in `SCOPE_CATALOG` (`platform/governance_parts/catalog.py`)
+**If finer rows are ever added**, they belong in `SCOPE_CATALOG` (`platform/governance_parts/catalog.py`)
 inline (never `register_scope()`d from the feature package): `load_security_policy()`
 runs at boot before any feature import, and a policy naming an unregistered scope
 raises "unknown governed key … (fail-closed)" — so a lazy registration would abort
@@ -3847,7 +3996,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `require_policy_signature` / `trust_keys` / `trust_public_keys`, and
   `read_policy_trust_root` (the side-effect-free trust-root reader).
 - `platform/update_governance.py` — the shared update seam (`resolve_remote_url`,
-  `update_blocked_reason`, `update_required`, `min_version`) called by
+  `git_command_env`, `update_blocked_reason`, `update_required`, `min_version`) called by
   the update handler owners (`dashboard/handlers/updates_verdict.py`, `updates_check.py`,
   `updates_apply.py`), `cli_server_update.py` and the gateway's update owners
   (`slack/gateway_runtime/update_schedule.py`, `slack/gateway_runtime/update_apply.py`).

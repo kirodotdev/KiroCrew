@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { agentCycleTarget } from '../../lib/crewMode'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../../store'
 import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
-import { setAgentSwitchNotice } from '../../store/chatSlice'
+import { requestSlotFolderOpen, setAgentSwitchNotice } from '../../store/chatSlice'
+import { isStaleProjectDirError } from '../../utils/folderAgent'
+import type { ChatFolder } from '../../types'
+import { newChatShortcutArgs } from './newChatArgs'
 import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
 import { focusComposerElement, queryComposerOrExpand } from '../../pages/chat/composerFocus'
-import { agentSwitchFailureMessage, modelSwitchDeferredMessage } from '../../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../../utils/agentSwitchFeedback'
 import { api } from '../../api/client'
 import { newTerminalByChord, toggleTerminalByChord } from '../../lib/terminalChordFocus'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
@@ -41,7 +45,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   terminalPoppedOut: boolean
   activeSlotProject: string | undefined
 }) {
-  const navigate = useNavigate()
+  // The new-chat create can take seconds, so its navigate asks when it runs.
+  const navigate = useAskingNavigate()
   const dispatch = useAppDispatch()
   // The Provider's store, so the create is judged against the store it was
   // dispatched to; the module singleton would bypass a test-injected store.
@@ -53,11 +58,25 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   // trigger + open state. Mounted once at the app shell (`shell/appShell.tsx`).
   const commandPalette = useCommandPalette()
   const newChatMutation = useMutation({
-    mutationFn: () => createChatForView(dispatch, appStore.getState, { defaultFolder: true }),
+    // The active chat's folder wins over the default folder (#16041).
+    mutationFn: (args: ReturnType<typeof newChatShortcutArgs>) => createChatForView(dispatch, appStore.getState, args),
+    onError: (err, args) => {
+      // The one failure a folder create adds: the folder's project directory
+      // is gone. The folder "+" says so under the folder header; the shortcut
+      // has no header, so it uses the shell's transient notice.
+      if ('project' in args && args.project && isStaleProjectDirError(err)) {
+        dispatch(setAgentSwitchNotice(i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project })))
+      }
+    },
     onSuccess: (view) => {
       // A create the user moved away from (another session, another page)
-      // leaves the user there: no navigate and no composer focus.
+      // leaves the user there: no navigate and no composer focus. So does a
+      // page that refused to be left.
       if (!showCreatedChat(view, navigate)) return
+      // A chat filed into the active chat's folder: open that folder's path in
+      // the sidebar so its row is not hidden (a default-folder create already
+      // asks from createSlot; this is a no-op for an unfiled chat).
+      if (view.slot.folder_id) dispatch(requestSlotFolderOpen({ key: view.slot.key, folder_id: view.slot.folder_id }))
       // Unguarded on purpose: this mutation only fires from the new-chat
       // keyboard shortcut, and a pressed shortcut proves a keyboard exists —
       // focusComposer()'s touch-device skip would wrongly suppress focus on a
@@ -76,7 +95,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   const provider = useProvider()
   const agentSwitchNotice = useAppSelector(s => s.chat.agentSwitchNotice)
   useEffect(() => {
-    if (!agentSwitchNotice) return
+    // A notice that offers a new chat stays until the user dismisses it or uses
+    // the offer: expiring it would unmount the banner while its create runs and
+    // hide a failed create.
+    if (!agentSwitchNotice || agentSwitchNotice.newChatAgent) return
     const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
     return () => window.clearTimeout(timer)
   }, [agentSwitchNotice, dispatch])
@@ -98,10 +120,13 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // to the rebroadcast).
       await performAgentSlotSwitch(slot, agent, store.dispatch)
     } catch (error) {
-      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
+      dispatch(setAgentSwitchNotice(agentSwitchFailureNotice(error, agent)))
     }
   }, [dispatch])
-  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
+  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => {
+    const s = appStore.getState()
+    newChatMutation.mutate(newChatShortcutArgs(s.dashboard.slots, s.chat.activeSlot, queryClient.getQueryData<ChatFolder[]>(['chat-folders'])))
+  }, disabled: shortcutsOpen,
     onToggleFocusMode: toggleFocusMode,
     onCycleAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -112,9 +137,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // onCycleModel below. Agent names are never '', so the ''-falsy
       // accessor is safe here.
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
-      const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
-      const nextIdx = (idx + 1) % installedAgents.length
-      void switchActiveSlotAgent(activeSlot, installedAgents[nextIdx].name)
+      // The picker's own conductor-free list (lib/crewMode): a chord never moves a
+      // normal chat onto a conductor, and a conductor chat does not cycle at all.
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, 1, currentSlot?.crew_mode_agent)
+      if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCyclePrevAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -123,9 +149,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
       // See onCycleAgent above.
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
-      const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
-      const prevIdx = (idx - 1 + installedAgents.length) % installedAgents.length
-      void switchActiveSlotAgent(activeSlot, installedAgents[prevIdx].name)
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, -1, currentSlot?.crew_mode_agent)
+      if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCycleReasoningEffort: async () => {
       const activeSlot = store.getState().chat.activeSlot
@@ -149,7 +174,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCycleReasoningEffort failed', e)
       }
@@ -173,7 +198,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCyclePrevReasoningEffort failed', e)
       }
@@ -225,7 +250,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCycleModel failed', e)
       }
@@ -252,7 +277,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCyclePrevModel failed', e)
       }

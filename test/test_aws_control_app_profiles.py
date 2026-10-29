@@ -453,7 +453,10 @@ class TestProfileUnregister:
         # untouched by construction rather than by a check.
         reg = {"version": 2, "profiles": [{"name": "alpha"}], "default": "alpha"}
         with mock.patch.object(routes_mod, "run_aws", create=True) as run_aws:
-            _resp, _revoke, _inv, (configure, discover) = self._run(reg, {"names": ["alpha"]})
+            resp, _revoke, _inv, (configure, discover) = self._run(reg, {"names": ["alpha"]})
+        # The unregister still completed, through the registry alone.
+        assert resp.status == 200
+        assert reg["profiles"] == []
         configure.assert_not_called()
         discover.assert_not_called()
         run_aws.assert_not_called()

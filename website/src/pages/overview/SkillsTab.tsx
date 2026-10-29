@@ -19,6 +19,7 @@ import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
 import { SKILL_SORTS, sortSkills, type SkillSort } from './skillSort'
+import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
 
 import { Trans } from 'react-i18next'
@@ -356,13 +357,21 @@ export default function SkillsTab() {
   // selectedSkill is derived from the *unfiltered* skills array, so the
   // editor stays mounted even if the skill is filtered out of the list —
   // auto-reselecting here would silently discard unsaved form changes.
+  // A row the user clicked stays open while the filter still shows it. A row
+  // this effect opened by itself is only a default, so a new filter moves it
+  // to the best match for what was typed.
+  const userPickedRef = useRef(false)
   useEffect(() => {
     if (detailEditing) return
     if (allFiltered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !allFiltered.some(s => s.key === selectedKey)) {
-      setSelectedKey(allFiltered[0].key)
+    const visible = !!selectedKey && allFiltered.some(s => s.key === selectedKey)
+    if (visible && (userPickedRef.current || !skillFilter.trim())) return
+    const best = bestFilterMatch(allFiltered, skillFilter, s => [s.name, s.key, displayName(s)])
+    if (best && best.key !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(best.key)
     }
-  }, [allFiltered, selectedKey, detailEditing])
+  }, [allFiltered, selectedKey, detailEditing, skillFilter])
 
   // Moving on to another skill also retires a delete failure — but only one
   // the user could have SEEN: the test is the banner's own render gate
@@ -388,6 +397,7 @@ export default function SkillsTab() {
     if (detailEditing && !showDetail && selectedSkill) { openDetail(); return }
     if (!(detailEditing && showDetail)) setDeleteError(null)
     setEditReadError('')
+    userPickedRef.current = true
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
   }
 

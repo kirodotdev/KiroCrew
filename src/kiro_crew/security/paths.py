@@ -561,7 +561,7 @@ def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[st
     # interpreter, since no bounded-call deadline is armed (``_outside_bounded_call``),
     # so it neither holds a resolver child nor queues ahead of the loop; the spawn
     # side bounds that wait (``_run_preflight_bounded``, 60 s) and refuses the
-    # adapter on expiry rather than starting it unmasked (found in review).
+    # adapter on expiry rather than starting it unmasked.
     resolved = _resolve_root_anchors(str(Path.home()))
     # BOTH home spellings, reusing the two anchors the read gate already keys on.
     # On a host whose home is itself a symlink (``/home/u`` -> ``/local/home/u``) the

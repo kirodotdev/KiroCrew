@@ -84,9 +84,15 @@ export async function createChatForView(
  * on instead of the session the user came from. A popout or embed frame never
  * navigates to `/chat` from any of its pages: its router would redirect that
  * out of the chat, and the frame shows the session on its own. Returns `shown`.
+ *
+ * The page the user stayed on may have started holding a draft while the
+ * create ran, so `navigate` must ask the leave guard when it is called
+ * (`useAskingNavigate`), not before the create. A `navigate` that returns
+ * `false` was refused: the created chat is kept, the user stays put, and this
+ * returns `false` so the caller stages nothing for a session not on screen.
  */
-export function showCreatedChat(view: CreatedChatView, navigate: (route: string) => void): boolean {
+export function showCreatedChat(view: CreatedChatView, navigate: (route: string) => boolean | void): boolean {
   const framed = FRAME_PREFIXES.some(p => view.from.startsWith(p))
-  if (view.shown && !framed && !isChatPath(view.from)) navigate('/chat')
-  return view.shown
+  if (!view.shown || framed || isChatPath(view.from)) return view.shown
+  return navigate('/chat') !== false
 }

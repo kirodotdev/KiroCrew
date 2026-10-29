@@ -33,7 +33,7 @@ from kiro_crew import _facade_mirror
 #   ``members_roster`` -- the roster list and the member-log attribution it is served under
 #   ``members_thread`` -- opening, binding and pinning a crewmate's DM thread
 #   ``members_thread_turns`` -- the first welcome and fresh start on that thread
-#   ``members_drawer`` -- one member's projections, activity, notes and recap
+#   ``members_drawer`` -- one member's projections, activity and notes
 #   ``members_rules`` -- reading and writing a crewmate's permanent rules
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
@@ -68,7 +68,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_member_activity,
         api_member_briefing,
         api_member_projections,
-        api_member_recap,
     )
     from kiro_crew.dashboard.handlers.members_roster import (  # noqa: F401
         _SEQ_NO_LOG,
@@ -76,8 +75,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SOURCE_BUILTIN,
         _SOURCE_KIROCREW,
         _SOURCE_PACKAGE,
+        RESERVED_DEFAULT_MEMBER,
         _absence_is_confirmed,
         _as_epoch,
+        _live_slot_has_person_rows,
         _live_slot_has_rows,
         _logged_slugs,
         _member_is_created,
@@ -87,6 +88,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_has_unflushed_rows,
         _stamp_welcome_claimed,
         _transcript_holds_message,
+        _transcript_holds_person_message,
         api_members,
         normalize_member_source,
         read_dm_thread_message_state,
@@ -126,6 +128,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.sections import (  # noqa: F401
         MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     )
+    from kiro_crew.dashboard import members_roster_goals  # noqa: F401
     from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
         pin_private_agent_store,
         rehydrate_slot_from_history_async,

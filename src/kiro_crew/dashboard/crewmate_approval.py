@@ -30,7 +30,7 @@ def crewmate_name_for(config: Any, execution: Any) -> str:
         getattr(execution, "selection_kind", "") == "template"
         and getattr(execution, "template_id", "") == MATE_WORKER_AGENT
     )
-    if not (is_worker or is_conductor_execution(execution)):
+    if not (is_worker or is_conductor_execution(execution, config)):
         return ""
     member_id = getattr(execution, "member_id", None)
     if member_id:

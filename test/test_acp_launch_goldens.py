@@ -640,6 +640,7 @@ class _Recording:
         self.factory_kwargs: dict = {}
         self.socket_env_arg: dict | None = None
         self.forward_args: tuple | None = None
+        self.pod_internal_sandbox: bool | None = None
 
 
 def _launch_tools(
@@ -666,8 +667,9 @@ def _launch_tools(
 
     platform.create_windows_cleanup_owned_process = _owned_process
 
-    def _pod_bundle(argv, *, backend):
+    def _pod_bundle(argv, *, backend, internal_sandbox=None):
         rec.calls.append("apply_pod_bundle_spawn")
+        rec.pod_internal_sandbox = internal_sandbox
         return list(argv), delegate
 
     def _forward(mode, hidden_dirs):
@@ -998,6 +1000,9 @@ def test_a_host_with_its_own_sandbox_enters_a_verified_workspace(monkeypatch, tm
         )
         assert ("bind_voice_safe_agent_workspace_async" in rec.calls) is internal
         assert rec.factory_kwargs["chdir_fd"] == (7 if internal else None)
+        # The pod step receives the driver's verdict instead of re-deriving it
+        # from the backend, so a per-route answer reaches the sandbox wrap.
+        assert rec.pod_internal_sandbox is internal
 
 
 def test_the_driver_names_the_scope_and_the_launch_reports_it(monkeypatch, tmp_path) -> None:

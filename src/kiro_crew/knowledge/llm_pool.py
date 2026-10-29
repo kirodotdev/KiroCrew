@@ -93,8 +93,7 @@ DEFAULT_IDLE_TTL_SECS = 300.0
 #
 # Pool workers are long-lived sessions, but every prompt they serve is
 # self-contained: ``extractor.EXTRACTION_PROMPT`` inlines the whole chunk between
-# per-call nonce markers, and ``agent_fetch`` inlines the whole URL, so no call
-# depends on anything an earlier call said. The accumulating transcript is
+# per-call nonce markers, so no call depends on anything an earlier call said. The accumulating transcript is
 # therefore pure cost — and once it reaches the backend's own ceiling the backend
 # auto-compacts, which is a BILLED summarization turn over the entire transcript,
 # repeated every few minutes for the rest of a large ingestion.

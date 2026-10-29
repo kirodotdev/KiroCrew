@@ -28,6 +28,7 @@ import {
 } from './subagentCompletion'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { normalizeModelKey } from '../../lib/model'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 
 function outcomeLabel(outcome: SubagentOutcome): string {
   if (outcome === 'failed') return i18nT('pages.chat.subagentCompletionCard.failed')
@@ -44,7 +45,7 @@ export function headline(parsed: ParsedSubagentCompletion): string {
     // text overflows its box, and a 120-character slice usually fits — so the
     // ellipsis has to be added when the slice actually shortened the task.
     const task = sanitizeLlmOutput(parsed.task)
-    if (task) return task.length > 120 ? `${task.slice(0, 120)}…` : task
+    if (task) return task.length > 120 ? `${sliceCodePoints(task, 0, 120)}…` : task
     return i18nT('pages.chat.subagentCompletionCard.agent_id', { id: parsed.agentId })
   }
   // Only the final chunk knows the wave's outcome; earlier chunks report

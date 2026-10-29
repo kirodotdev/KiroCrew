@@ -68,6 +68,10 @@ def _busy(slot):
 
 
 def _broadcast(state, caller, message="rebase first", mode="queue", targets=None, **kw):
+    # A call that names no targets means "every session I created" in these tests,
+    # which now takes the explicit `all_created=True`. A test about the refusal
+    # passes `all_created` itself.
+    kw.setdefault("all_created", targets is None)
     return asyncio.run(
         sc.broadcast_to_targets(
             state,
@@ -253,6 +257,65 @@ class TestDefaultAudience:
         assert out["requested"] == MAX_SLOTS_PER_CREATOR
         assert out["delivered"] == MAX_SLOTS_PER_CREATOR
         assert len(sends.calls) == MAX_SLOTS_PER_CREATOR
+
+
+class TestTheAudienceMustBeChosen:
+    """A broadcast reaches the sessions it names, or every created session when it
+    says `all`. An omitted `targets` is never read as "everyone", because Kiro CLI
+    delivers `targets: []` as an omission. These pin that nothing is delivered
+    unless the call says who."""
+
+    @pytest.mark.parametrize("targets", [None, []])
+    def test_no_targets_and_no_all_delivers_nothing(self, tmp_path, targets):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        _child(state, "chat-3", caller)
+        sends = _Sends()
+        with pytest.raises(sc.SessionControlError) as exc:
+            _patched(state, caller, sends, mode="steer", targets=targets, all_created=False)
+        assert exc.value.code == "target_required"
+        assert "all: true" in str(exc.value)
+        assert sends.calls == []
+
+    @pytest.mark.parametrize("targets", [None, []])
+    def test_all_created_reaches_every_created_session(self, tmp_path, targets):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        _child(state, "chat-3", caller)
+        sends = _Sends()
+        out = _patched(state, caller, sends, targets=targets, all_created=True)
+        assert sends.targets() == ["chat-2", "chat-3"]
+        assert out["delivered"] == 2
+
+    def test_all_created_with_nothing_open_is_an_empty_audience_not_an_error(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        sends = _Sends()
+        out = _patched(state, caller, sends, all_created=True)
+        assert out["audience_empty"] is True
+        assert sends.calls == []
+
+    def test_targets_beside_all_created_is_refused_and_delivers_nothing(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        _child(state, "chat-3", caller)
+        sends = _Sends()
+        with pytest.raises(sc.SessionControlError) as exc:
+            _patched(state, caller, sends, targets=["chat-2"], all_created=True)
+        assert exc.value.code == "audience_conflict"
+        assert sends.calls == []
+
+    def test_naming_targets_still_reaches_only_those(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        _child(state, "chat-3", caller)
+        sends = _Sends()
+        _patched(state, caller, sends, targets=["chat-3"])
+        assert sends.targets() == ["chat-3"]
 
 
 class TestExplicitTargets:
@@ -476,6 +539,7 @@ class TestModes:
                 caller_session_key=_key(caller),
                 message="the base moved",
                 mode="queue",
+                all_created=True,
             )
             # Let the turn `enqueue_or_run_prompt` started actually run.
             await asyncio.sleep(0)
@@ -663,6 +727,7 @@ class TestATargetThatNeverAnswers:
             caller_session_key=_key(caller),
             message="stop, the issue was already fixed",
             mode="steer",
+            all_created=True,
         )
 
         # The shield absorbed it: the delivery was never interrupted, while the
@@ -711,6 +776,7 @@ class TestATargetThatNeverAnswers:
             caller_session_key=_key(caller),
             message="run exactly once",
             mode="steer",
+            all_created=True,
         )
 
         error = out["results"][0]["error"]
@@ -1074,6 +1140,7 @@ class TestTheShieldedSteerDelivery:
             caller_session_key=_key(caller),
             message="stop, the issue was already fixed",
             mode="steer",
+            all_created=True,
         )
 
         # The broadcast reported on schedule rather than waiting for the wedged RPC.
@@ -1145,6 +1212,7 @@ class TestTheShieldedSteerDelivery:
             caller_session_key=_key(caller),
             message=text,
             mode="steer",
+            all_created=True,
         )
 
         assert [row["code"] for row in out["results"]] == ["delivery_timeout"]
@@ -1197,6 +1265,7 @@ class TestTheShieldedSteerDelivery:
             caller_session_key=_key(caller),
             message=text,
             mode="steer",
+            all_created=True,
         )
         release.set()
         for task in list(sc._ORPHANED_STEER_DELIVERIES):
@@ -1257,7 +1326,7 @@ class TestCallerGate:
             with pytest.raises(sc.SessionControlError) as exc:
                 asyncio.run(
                     sc.broadcast_to_targets(
-                        state, caller_session_key="", message="hi", mode="queue"
+                        state, caller_session_key="", message="hi", mode="queue", all_created=True
                     )
                 )
         assert exc.value.code == "caller_unidentified"
@@ -1338,12 +1407,73 @@ class TestTheRoute:
         caller = _slot(state, "chat-1")
         _child(state, "chat-2", caller)
         sends = _Sends()
-        req = self._request(state, caller, {"message": "rebase", "mode": "queue"})
+        req = self._request(state, caller, {"message": "rebase", "mode": "queue", "all": True})
         with patch.object(sc, "send_to_target", new=sends):
             resp = asyncio.run(handlers_sc.api_session_control_broadcast(req))
         assert resp.status == 200
         body = self._body(resp)
         assert body["delivered"] == 1 and body["results"][0]["target"] == "chat-2"
+
+    @pytest.mark.parametrize(
+        "extra", [{}, {"targets": []}, {"targets": None}, {"all": False}, {"all": None}]
+    )
+    def test_a_body_that_selects_no_audience_is_refused_and_sends_nothing(self, tmp_path, extra):
+        """The route is reachable by an in-sandbox shell with a body of its own, so
+        the rule cannot live only in the tool schema."""
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        sends = _Sends()
+        req = self._request(state, caller, {"message": "stop", "mode": "steer", **extra})
+        with patch.object(sc, "send_to_target", new=sends):
+            resp = asyncio.run(handlers_sc.api_session_control_broadcast(req))
+        assert resp.status == 400
+        assert self._body(resp)["code"] == "target_required"
+        assert sends.calls == []
+
+    def test_targets_beside_all_is_refused_and_sends_nothing(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        sends = _Sends()
+        req = self._request(
+            state,
+            caller,
+            {"message": "stop", "mode": "steer", "all": True, "targets": ["chat-2"]},
+        )
+        with patch.object(sc, "send_to_target", new=sends):
+            resp = asyncio.run(handlers_sc.api_session_control_broadcast(req))
+        assert resp.status == 400
+        assert self._body(resp)["code"] == "audience_conflict"
+        assert sends.calls == []
+
+    @pytest.mark.parametrize("value", ["true", "false", "", 1, 0, [], {}])
+    def test_a_non_boolean_all_is_refused_and_sends_nothing(self, tmp_path, value):
+        """`"false"` is truthy in Python. Only a JSON boolean may select the fleet."""
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        sends = _Sends()
+        req = self._request(state, caller, {"message": "stop", "mode": "steer", "all": value})
+        with patch.object(sc, "send_to_target", new=sends):
+            resp = asyncio.run(handlers_sc.api_session_control_broadcast(req))
+        assert resp.status == 400
+        assert self._body(resp)["code"] == "invalid_field_type"
+        assert sends.calls == []
+
+    def test_an_empty_targets_list_beside_all_true_reaches_the_created_sessions(self, tmp_path):
+        """Same bytes the Kiro CLI sends once it has dropped the empty list."""
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        sends = _Sends()
+        req = self._request(
+            state, caller, {"message": "go", "mode": "queue", "all": True, "targets": []}
+        )
+        with patch.object(sc, "send_to_target", new=sends):
+            resp = asyncio.run(handlers_sc.api_session_control_broadcast(req))
+        assert resp.status == 200
+        assert sends.targets() == ["chat-2"]
 
     def test_a_missing_mode_is_refused_at_the_route(self, tmp_path):
         state = _make_state(tmp_path)
@@ -1580,7 +1710,9 @@ class TestEndToEnd:
         b = _busy(_child(state, "chat-3", caller))
         ctx = self._wire(state, caller)
 
-        out = TABLE.call("session_broadcast", {"message": "the base moved", "mode": "queue"}, ctx)
+        out = TABLE.call(
+            "session_broadcast", {"message": "the base moved", "mode": "queue", "all": True}, ctx
+        )
 
         assert "2/2" in out and "chat-2" in out and "chat-3" in out
         # Busy targets, so the message is QUEUED on each rather than run — which is
@@ -1592,10 +1724,14 @@ class TestEndToEnd:
                 for text in queued
             ), f"{slot.key} did not receive the broadcast"
 
-    def test_an_explicitly_empty_target_list_is_refused_without_delivery(
-        self, tmp_path, monkeypatch
+    @pytest.mark.parametrize("args", [{"targets": []}, {}])
+    def test_a_call_that_names_no_audience_is_refused_without_delivery(
+        self, tmp_path, monkeypatch, args
     ):
-        """Filtering to no targets must not widen into the default audience."""
+        """Filtering to no targets must not widen into every created session.
+
+        Both spellings are tried, because Kiro CLI delivers `targets: []` as the
+        second one."""
         from kiro_crew.mcp_dashboard import TABLE
 
         state = _make_state(tmp_path)
@@ -1605,13 +1741,34 @@ class TestEndToEnd:
 
         out = TABLE.call(
             "session_broadcast",
-            {"message": "stand down", "mode": "queue", "targets": []},
+            {"message": "stand down", "mode": "queue", **args},
             ctx,
         )
 
         assert out.startswith("Error:")
-        assert "names no session" in out
+        assert "all: true" in out
         assert target._queue == []
+
+    def test_all_true_reaches_real_queues_even_when_the_client_drops_the_empty_list(
+        self, tmp_path, monkeypatch
+    ):
+        """The wire body `{"all": true}` is what Kiro CLI sends for
+        `{"all": true, "targets": []}`; it must deliver."""
+        from kiro_crew.mcp_dashboard import TABLE
+
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        target = _busy(_child(state, "chat-2", caller))
+        ctx = self._wire(state, caller)
+
+        out = TABLE.call(
+            "session_broadcast",
+            {"message": "stand down", "mode": "queue", "all": True, "targets": []},
+            ctx,
+        )
+
+        assert "1/1" in out
+        assert any("stand down" in str(e.get("content", "")) for e in target._queue)
 
     def test_one_dead_target_does_not_cost_the_live_one_its_message(self, tmp_path, monkeypatch):
         """The partial-delivery contract, through every layer: the refused row
@@ -1644,7 +1801,7 @@ class TestEndToEnd:
         _busy(_child(state, "chat-2", caller))
         ctx = self._wire(state, caller)
 
-        TABLE.call("session_broadcast", {"message": "rebase", "mode": "queue"}, ctx)
+        TABLE.call("session_broadcast", {"message": "rebase", "mode": "queue", "all": True}, ctx)
         out = TABLE.call("session_status", {}, ctx)
 
         assert "chat-2" in out

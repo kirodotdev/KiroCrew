@@ -433,6 +433,11 @@ class SttProvider(Protocol):
     :meth:`check`, and ``/api/ws/stt`` calls :meth:`open_stream` when
     ``streaming`` is true. A built-in name never reaches any of them.
 
+    A provider that identifies languages among ``stt.transcribe_languages`` may
+    also set an optional ``identifies_languages = True``. Core then offers the
+    mixed-language picker for it; the provider reads the candidates from
+    ``stt_config.transcribe_language_identification`` itself.
+
     Core may call any method from any event loop. A provider must not keep a
     loop-bound client (an aiohttp or httpx session) across calls: it creates one
     per call or keeps one per loop.

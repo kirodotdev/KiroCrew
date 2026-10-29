@@ -5,9 +5,9 @@
  * kind refetches only its own caches, plus any listed cache whose last read
  * failed; a rare, unknown or missing kind refetches every listed cache.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
-import { invalidateRefreshQueries } from './serverState'
+import { invalidateRefreshQueries, TURN_END_CRON_REFRESH_MS, __resetTurnEndCronRefreshForTests } from './serverState'
 
 const KEYS = [
   ['cron-jobs'], ['crons', 'crew-wake', 'ada'], ['cron-history-all'],
@@ -20,6 +20,8 @@ let qc: QueryClient
 let unsubscribe: Array<() => void> = []
 
 afterEach(() => {
+  __resetTurnEndCronRefreshForTests()
+  vi.useRealTimers()
   for (const u of unsubscribe) u()
   unsubscribe = []
   qc.clear()
@@ -70,7 +72,6 @@ describe('invalidateRefreshQueries', () => {
 
   it.each([
     ['a rare kind', ['agents']],
-    ['a turn-end history frame', ['history']],
     ['an unknown kind', ['something-new']],
     ['a narrow kind beside a rare one', ['crons', 'config']],
     ['a cron frame beside a history frame', ['crons', 'history']],
@@ -81,5 +82,75 @@ describe('invalidateRefreshQueries', () => {
     invalidateRefreshQueries(qc, kinds)
     await settle()
     expect(refetched(fetches)).toEqual(KEYS.map(k => k.join('/')).sort())
+  })
+
+  it.each([
+    ['a cron frame', ['crons']],
+    ['a rare kind', ['agents']],
+    ['no kinds', undefined],
+  ])('tells the caller the cron caches moved at once for %s', async (_label, kinds) => {
+    await observeAll()
+    const stale = vi.fn()
+    invalidateRefreshQueries(qc, kinds, stale)
+    expect(stale).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a turn-end history frame', () => {
+  const CRON_IDS = ['cron-history-all', 'cron-jobs', 'crons/crew-wake/ada']
+
+  it('refetches everything but the cron caches at once', async () => {
+    const fetches = await observeAll()
+    const stale = vi.fn()
+    invalidateRefreshQueries(qc, ['history'], stale)
+    await settle()
+    expect(refetched(fetches)).toEqual(KEYS.map(k => k.join('/')).filter(id => !CRON_IDS.includes(id)).sort())
+    expect(stale).not.toHaveBeenCalled()
+  })
+
+  it('re-reads the cron caches once per window however many turns end in it', async () => {
+    const fetches = await observeAll()
+    vi.useFakeTimers()
+    const stale = vi.fn()
+    for (let i = 0; i < 5; i++) {
+      invalidateRefreshQueries(qc, ['history'], stale)
+      vi.advanceTimersByTime(TURN_END_CRON_REFRESH_MS / 10)
+    }
+    expect(fetches['cron-jobs']).toBe(0)
+    vi.advanceTimersByTime(TURN_END_CRON_REFRESH_MS)
+    vi.useRealTimers()
+    await settle()
+    for (const id of CRON_IDS) expect(fetches[id]).toBe(1)
+    expect(stale).toHaveBeenCalledTimes(1)
+  })
+
+  it('cannot be held off by a steady stream of turns', async () => {
+    const fetches = await observeAll()
+    vi.useFakeTimers()
+    for (let t = 0; t < TURN_END_CRON_REFRESH_MS * 3; t += 1_000) {
+      invalidateRefreshQueries(qc, ['history'])
+      vi.advanceTimersByTime(1_000)
+    }
+    vi.useRealTimers()
+    await settle()
+    expect(fetches['cron-jobs']).toBe(3)
+  })
+
+  it('still refetches a cron cache whose last read failed at once', async () => {
+    const fetches = await observeAll(['cron-jobs'])
+    invalidateRefreshQueries(qc, ['history'])
+    await settle()
+    expect(fetches['cron-jobs']).toBe(1)
+    expect(fetches['cron-history-all']).toBe(0)
+  })
+
+  it('does not delay a cron frame that arrives inside the window', async () => {
+    const fetches = await observeAll()
+    vi.useFakeTimers()
+    invalidateRefreshQueries(qc, ['history'])
+    invalidateRefreshQueries(qc, ['crons'])
+    vi.useRealTimers()
+    await settle()
+    expect(fetches['cron-jobs']).toBe(1)
   })
 })

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -123,6 +123,7 @@ async def reload_slot_session(
     denied: Callable[[str], web.Response | None],
     busy: Callable[[str], bool],
     notice: str,
+    after_reset_in_lock: Callable[[str], Awaitable[None]] | None = None,
 ) -> web.Response:
     """Tear down *slot*'s agent process and re-arm its resume spawn.
 
@@ -314,6 +315,34 @@ async def reload_slot_session(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
             )
+        # Optional work that must run while the agent process is DOWN and both
+        # locks are held -- the image-repair route rewrites the on-disk
+        # transcript here, which ``session_image_repair`` refuses to touch while
+        # a kiro-cli holds it. It runs AFTER the teardown (the process is gone,
+        # the transcript lock released) and BEFORE the respawn below re-reads
+        # that transcript via ``session/load``. A failure propagates so the
+        # route maps it to a response instead of respawning onto an unrepaired
+        # transcript; the teardown has already happened, so the next message
+        # cold-starts and loads the conversation either way.
+        if after_reset_in_lock is not None:
+            await after_reset_in_lock(session_key)
+            # ``after_reset_in_lock`` can itself await (the image-repair hook
+            # rewrites the transcript off the event loop via
+            # ``asyncio.to_thread``), and the lock-free slot swap above can land
+            # during THAT await just as it can during the earlier ones. Re-check
+            # once more so the notice and respawn below fire under this slot's
+            # identity, not a same-name slot recreated for a different app
+            # mid-hook. A mismatch is indistinguishable from a missing slot.
+            if not still_ours(True):
+                return slot_not_found()
+            if effective_session_key(slot) != session_key:
+                return web.json_response(
+                    {
+                        "error": "slot session was rebound during the switch",
+                        "code": "session_rebound",
+                    },
+                    status=409,
+                )
     logger.info("Slot %s session reloaded (had_live_session=%s)", name, reloaded)
     # Feed notice: the visible confirmation (and the durable record) that the
     # relaunch happened. Tagged so the last-real-message scans skip it on both

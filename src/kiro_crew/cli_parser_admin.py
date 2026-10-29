@@ -2,7 +2,7 @@
 ``Develop Kiro Crew itself`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: secrets,
-security, file-delivery, policy, telemetry, cloud, tailnet, snapshot, restore, pod and
+security, policy, telemetry, cloud, tailnet, snapshot, restore, pod and
 eval (``bench``, ``perf`` and ``desktop`` register from their own modules).
 ``kiro_crew.cli.main`` builds the top-level parser and calls every registrar in the command
 line's registration order, so a new command of these sections gets a registrar here and a
@@ -492,18 +492,6 @@ def register_pod_parser(sub: _Commands) -> None:
     pod_run.add_argument("name")
     pod_cleanup = pod_sub.add_parser("_cleanup")
     pod_cleanup.add_argument("name")
-
-
-def register_file_delivery_parser(sub: _Commands) -> None:
-    file_delivery_parser = cli_help.add_command(sub, "file-delivery")
-    file_delivery_parser.add_argument(
-        "action",
-        choices=["approve"],
-        help=(
-            "approve: finish a flagged-file delivery consent armed from the "
-            "dashboard's Security panel (proves you are at the host)"
-        ),
-    )
 
 
 def register_cloud_parser(sub: _Commands) -> None:

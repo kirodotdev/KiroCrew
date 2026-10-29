@@ -51,8 +51,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from kiro_crew.dashboard.tailnet import (
+    POLICY_OFF_DETAIL,
     _cli_path,
     is_governance_pinned_off,
+    policy_off,
     refused_cli_detail,
 )
 from kiro_crew.sandbox import scrub_env
@@ -92,6 +94,7 @@ SERVE_MOUNT = "/"
 
 ResultCode = Literal[
     "ok",
+    "policy_off",
     "governance_pinned",
     "no_cli",
     "no_permission",
@@ -467,14 +470,14 @@ def serve_state(port: int) -> ServeState:
     if doc in (None, {}, []):
         return ServeState(False, False, "No serve configuration is active.", port_free=True)
     needles = (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
-    # Two narrowings, and each closes a way the previous predicate was wrong.
+    # Two narrowings, and each closes a way a broader predicate goes wrong.
     #
-    # Port: "is the dashboard served anywhere" answered yes for a dashboard on
-    # 8443 while something else held 443, and the withdrawal then removed the
+    # Port: "is the dashboard served anywhere" answers yes for a dashboard on
+    # 8443 while something else holds 443, and the withdrawal then removes the
     # other thing.
     #
-    # Mount: within 443, "is our target somewhere under here" answered yes when
-    # ours was at `/foo` and a stranger's handler was at `/` — the mount we
+    # Mount: within 443, "is our target somewhere under here" answers yes when
+    # ours is at `/foo` and a stranger's handler is at `/` — the mount we
     # actually remove. So the question is narrowed to exactly what withdrawal
     # touches: is the handler at SERVE_MOUNT, on SERVE_HTTPS_PORT, ours?
     scoped = _port_scoped_subtrees(doc, SERVE_HTTPS_PORT)
@@ -562,6 +565,20 @@ def _no_cli_result(port: int) -> ServeResult:
     )
 
 
+def policy_refusal(*, audit_tool: str) -> ServeResult | None:
+    """The refusal an enterprise build gives a publish its policy does not permit.
+
+    ``None`` when publishing may go on: an ``oss`` build, or an enterprise policy
+    that permits ``capabilities.tailnet_origin``. Decided by ``tailnet.policy_off``,
+    the one policy boolean, with no tailnet list and no daemon read, and written to
+    SEL under *audit_tool*. Every publish path (the dashboard card, mobile,
+    ``kirocrew tailnet up``) reaches it through :func:`publish`.
+    """
+    if not policy_off(audit_tool=audit_tool):
+        return None
+    return ServeResult(False, "policy_off", f"{POLICY_OFF_DETAIL} Nothing was published.")
+
+
 def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     """Publish the dashboard on this machine's tailnet over HTTPS.
 
@@ -575,7 +592,13 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     and the two config write paths. A ceiling pinning ``capabilities.tailnet_origin``
     off means the fleet forbids putting this host's dashboard on a tailnet, so the
     CLI is not spawned at all — refusing after publishing would be theatre.
+
+    In an enterprise build publishing is refused before anything else unless the
+    policy turns ``capabilities.tailnet_origin`` on (:func:`policy_refusal`).
     """
+    refused = policy_refusal(audit_tool=audit_tool)
+    if refused is not None:
+        return refused
     if is_governance_pinned_off(audit_tool=audit_tool):
         return ServeResult(
             False,

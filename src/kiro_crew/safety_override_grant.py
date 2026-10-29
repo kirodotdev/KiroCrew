@@ -1226,7 +1226,7 @@ class SafetyOverride:
         # Wrapped for the same reason the write itself is: the grant is ALREADY
         # committed by the time this runs, so an exception escaping here would
         # report a failed activation while tools are in fact auto-approved
-        # (found in review). Starting the worker can fail on its own -- a thread
+        # Starting the worker can fail on its own -- a thread
         # quota is a real limit -- so the enqueue is inside the guard, not just
         # the file I/O.
         try:

@@ -1107,6 +1107,35 @@
       ]
     },
     {
+      "name": "custom",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/custom_value"
+      ],
+      "answers": "The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it",
+      "fields": [
+        {
+          "name": "latest",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "types_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "wrote",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
       "name": "workers",
       "mode": "slot",
       "advertised": true,

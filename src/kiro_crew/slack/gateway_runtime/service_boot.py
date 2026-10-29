@@ -889,11 +889,38 @@ async def run(self: GatewayOrchestrator) -> None:
     self._init_mcp_discovery()
     self._init_subagents()
     self._init_task_runner()
-    if not self._no_dashboard:
-        await self._init_dashboard()
-        self._announce_cron_quarantine()
-    else:
-        await self._init_api_server()
+
+    async def _release_orphan_notices_once_rebuilt(tabs_rebuilt: asyncio.Event) -> None:
+        await tabs_rebuilt.wait()
+        if self.subagent_mgr is not None:
+            self.subagent_mgr.release_orphan_notices()
+
+    try:
+        if not self._no_dashboard:
+            await self._init_dashboard()
+            self._announce_cron_quarantine()
+        else:
+            await self._init_api_server()
+    finally:
+        # The boot orphan sweep's notices go to the tabs that show their parents.
+        # A started dashboard has restored its own chats, but a channel
+        # conversation's tab comes back with the channel reconciler's first
+        # complete pass, which runs in the background: the release waits for it
+        # on a tracked task, so the boot does not (``startup_tabs_rebuilt`` is
+        # already set when channel surfacing is off). The API-only server has no
+        # tabs, and a start that failed before the dashboard state existed
+        # releases at once too, so the sweep can still send the owner DM digest;
+        # if the process exits first, the runs stay untombstoned and the next
+        # start announces them.
+        state = None if self._no_dashboard else self.dashboard_state
+        if state is not None and not state.startup_tabs_rebuilt.is_set():
+            _release_task = asyncio.create_task(
+                _release_orphan_notices_once_rebuilt(state.startup_tabs_rebuilt)
+            )
+            self._background_tasks.add(_release_task)
+            _release_task.add_done_callback(self._background_tasks.discard)
+        elif self.subagent_mgr is not None:
+            self.subagent_mgr.release_orphan_notices()
     # The socket is bound. Move the boot heap into the permanent generation so
     # later full collections stop re-scanning it (~150k objects, a 50 ms
     # stop-the-world pass on the event loop), then turn cyclic GC back on:
@@ -1404,8 +1431,6 @@ async def run(self: GatewayOrchestrator) -> None:
     # event loop.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), check_bundle_freshness)
 
-    print("👻 Kiro Crew gateway starting…")
-
     connected = await self._connect_slack()
     # Record the real socket outcome so status surfaces (e.g. the Slack
     # settings badge) can distinguish "connected" from "tokens present
@@ -1431,6 +1456,10 @@ async def run(self: GatewayOrchestrator) -> None:
         _scope_task.add_done_callback(self._background_tasks.discard)
         _scope_task.add_done_callback(log_probe_failure)
 
+    # Boot is finished here: the dashboard is bound and the process serves until
+    # it is stopped. This is the last line a foreground gateway prints, so it
+    # must not read as a step still in progress.
+    print("👻 Kiro Crew gateway running — press Ctrl+C to stop")
     await shutdown_event.wait()
     await self._shutdown_and_exit(_watchdog)
 

@@ -774,13 +774,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _managed_tools_in_process,
         _resolved_managed_invocation,
         managed_server_is_session_bound,
+        managed_tool_names_for_policy,
     )
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
         _MAX_BANNER_LINES,
         _probe_on_private_loop,
         _read_stdio_jsonrpc_response,
         _redact_temp_refusal_text,
+        _served_by_gateway,
         _temp_refusal_records,
+        secret_reference_refusal,
     )
     from kiro_crew.mcp_discovery_probe_state import (  # noqa: F401
         _ISO_DATE,

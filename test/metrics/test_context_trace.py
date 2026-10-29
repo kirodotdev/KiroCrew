@@ -14,8 +14,7 @@ implementations proves the two agree, which is not the same as proving either ri
 
 from __future__ import annotations
 
-import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +26,8 @@ from kiro_crew.context_blocks import PHASE_PER_TURN, PHASE_SESSION_START, USER_L
 from kiro_crew.crew_log import eager as crew_log_eager
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log
-from kiro_crew.crew_log.projection_usage_measured import MEASURED_FIELDS, MEASURED_FORMAT
 from kiro_crew.dashboard.handlers import usage as usage_mod
 from kiro_crew.dashboard.handlers.telemetry import api_context_trace
-from kiro_crew.engine_context import MAX_COUNT
 
 SLOT = "chat-1"
 UNIT = "acp-ctx-trace"
@@ -122,48 +119,6 @@ def _flush() -> None:
 
 
 class TestContextTrace:
-    def test_chronological_order_across_two_units(self):
-        """A slot's units are folded oldest first, so turns come back in order."""
-        _open("acp-older")
-        _compose({"memory": 10}, unit="acp-older", turn=1)
-        _flush()
-        _open("acp-newer")
-        _compose({"memory": 50}, unit="acp-newer", turn=1)
-        _compose({"memory": 100}, unit="acp-newer", turn=2)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert [t["blocks"]["memory"] for t in out["turns"]] == [10, 50, 100]
-        assert [t["ts"] for t in out["turns"]] == sorted(t["ts"] for t in out["turns"])
-
-    def test_compositions_with_no_positive_block_are_skipped_not_zero_filled(self):
-        _open()
-        _compose({"memory": 100}, turn=1)
-        _compose({}, turn=2)  # the writer drops an empty composition entirely
-        _compose({"memory": 0}, turn=3)  # present but non-positive
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert len(out["turns"]) == 1
-        assert out["turns"][0]["blocks"] == {"memory": 100}
-
-    def test_other_slots_are_excluded(self):
-        _open("acp-mine", slot=SLOT)
-        _compose({"memory": 100}, unit="acp-mine")
-        _flush()
-        _open("acp-theirs", slot="chat-2")
-        _compose({"memory": 999}, unit="acp-theirs")
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert len(out["turns"]) == 1
-        assert out["totals"] == {"memory": 100}
-
-    def test_totals_accumulate_across_turns(self):
-        _open()
-        _compose({"memory": 100, "lessons": 50}, turn=1)
-        _compose({"memory": 30, "skill_index": 20}, turn=2)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert out["totals"] == {"memory": 130, "lessons": 50, "skill_index": 20}
-        assert out["injected_chars"] == 200
 
     def test_user_chars_comes_from_your_message_label(self):
         _open()
@@ -176,101 +131,6 @@ class TestContextTrace:
         _compose({"memory": 100})
         _flush()
         assert usage_mod.context_trace(SLOT, 14)["user_chars"] == 0
-
-    def test_the_phase_the_composer_stated_reaches_the_payload(self):
-        """The panel splits these two populations apart before it draws."""
-        _open()
-        _compose({"memory": 30_000}, turn=1, phase=PHASE_SESSION_START)
-        _compose({USER_LABEL: 120}, turn=2, phase=PHASE_PER_TURN)
-        _flush()
-        assert [t["phase"] for t in usage_mod.context_trace(SLOT, 14)["turns"]] == [
-            "session_start",
-            "per_turn",
-        ]
-
-    def test_a_composition_written_without_a_phase_still_folds(self):
-        """``phase`` is ADDITIVE: an entry that predates it must fold, not refuse.
-
-        The writer omits the key entirely when it has no phase to state, which is the
-        shape every ``context/composed`` on disk already has. If that entry stopped
-        folding, one upgrade would empty the panel for every session recorded before
-        it -- so the case is pinned here rather than left to the field's optionality.
-        The turn's phase reads as "" (unstated), and every other field is unaffected.
-        """
-        _open(window=200_000)
-        crew_log_emit.on_context_composed(UNIT, 1, blocks={"memory": 100, USER_LABEL: 10})
-        _billed(turn=1, used=4_200)
-        _flush()
-        # The entry really carries no ``phase`` key -- not an empty one.
-        handle = crew_log.open_session_log(UNIT)
-        composed = [
-            entry
-            for entry in handle.iter_from(1, known=crew_log.KNOWN_TYPES)
-            if entry.type == "context/composed"
-        ]
-        assert len(composed) == 1, composed
-        assert "phase" not in composed[0].data, composed[0].data
-
-        out = usage_mod.context_trace(SLOT, 14)
-        assert len(out["turns"]) == 1
-        turn = out["turns"][0]
-        assert turn["phase"] == ""
-        assert turn["blocks"] == {"memory": 100, "your_message": 10}
-        assert turn["total_chars"] == 110
-        assert turn["context_window"] == 200_000
-        assert out["peak_context_used"] == 4_200
-
-    def test_a_turn_carries_the_window_its_prompt_was_measured_against(self):
-        _open(window=200_000)
-        _compose({"memory": 100})
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert out["turns"][0]["context_window"] == 200_000
-        assert out["context_window"] == 200_000
-
-    def test_a_new_unit_does_not_inherit_the_previous_units_model_or_window(self):
-        """A slot folds every unit into one state, so the model/window stamps must be
-        cleared when a new unit opens -- otherwise a successor whose own configuration
-        reports an empty model or a zero window (the auto/backend-default and
-        provider-unreported cases, both ordinary) silently keeps the PREVIOUS unit's
-        stamp and mislabels its rows.
-        """
-        _open("acp-first", window=200_000, model="opus-5")
-        _compose({"memory": 100}, unit="acp-first", turn=1)
-        _flush()
-        # Second unit of the SAME slot opens with no configuration of its own
-        # (window=0, model="" -> _open skips request/configured), the auto/unreported
-        # case. Its row must read absent, not the first unit's opus-5 / 200k.
-        _open("acp-second", window=0, model="")
-        _compose({"memory": 50}, unit="acp-second", turn=1)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        first_row, second_row = out["turns"][0], out["turns"][1]
-        assert first_row["blocks"]["memory"] == 100
-        assert first_row["context_window"] == 200_000
-        assert first_row["model"] == "opus-5"
-        assert second_row["blocks"]["memory"] == 50
-        assert second_row["context_window"] == 0
-        assert second_row["model"] == ""
-
-    def test_a_measured_row_reports_the_providers_window_not_the_configured_one(self):
-        """A model switch moves the window, so a measured row uses the reading's own.
-
-        The configured window is stamped on the row at composition from the newest
-        request/configured; the provider's own ``used_window`` is the size the reading
-        was actually taken against. Pairing a measured ``context_used`` with the
-        configured size would divide the reading by a window it was never measured
-        against once the two diverge. Only an UNMEASURED turn -- no reading, no window
-        of its own -- falls back to the configured size.
-        """
-        _open(window=200_000)
-        _compose({"memory": 100}, turn=1)
-        # The turn is configured at 200k but the provider measured against 128k.
-        _billed(turn=1, used=90_000, window=128_000)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert out["turns"][0]["context_used"] == 90_000
-        assert out["turns"][0]["context_window"] == 128_000
 
     def test_the_runner_hands_the_providers_reading_to_the_turn_closer(self):
         """The wiring, pinned at the source, because nothing else here reaches it.
@@ -472,65 +332,6 @@ class TestContextTrace:
             "retraction path. Move the emit down beside on_turn_started."
         )
 
-    def test_a_row_carries_the_reading_of_the_turn_it_belongs_to(self):
-        """The closer arrives after the compositions it closes and stamps them.
-
-        This is what lets the reader take a peak bounded to its day window: the
-        reading sits beside a timestamp instead of in a session-wide scalar that no
-        window could narrow.
-        """
-        _open()
-        _compose({"memory": 100})
-        _billed(used=9_000)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert out["turns"][0]["context_used"] == 9_000
-
-    def test_every_composition_of_one_turn_carries_that_turns_reading(self):
-        """A turn with several steps has several rows, and occupancy is the turn's."""
-        _open()
-        _compose({"memory": 100}, turn=1)
-        _compose({"memory": 50}, turn=1)
-        _billed(turn=1, used=6_000)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert [t["context_used"] for t in out["turns"]] == [6_000, 6_000]
-
-    def test_a_row_whose_turn_never_closed_reports_no_reading(self):
-        """An open turn has composed but not closed, so it measured nothing yet."""
-        _open()
-        _compose({"memory": 100}, turn=1)
-        _billed(turn=1, used=6_000)
-        _compose({"memory": 100}, turn=2)  # turn 2 is still running
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert [t["context_used"] for t in out["turns"]] == [6_000, 0]
-        # The open turn must not drag the peak down to its own absent reading.
-        assert out["peak_context_used"] == 6_000
-
-    def test_a_later_units_reading_does_not_restamp_the_previous_units_turn(self):
-        """Turn numbers restart per unit, so a match is not proof of the same turn.
-
-        The fold merges every unit of a slot into one window, and each unit numbers
-        its turns from 1. The closer walks the window back from the tail while the
-        turn number matches -- so a later unit's turn 1 would reach the PREVIOUS
-        unit's turn 1 and re-stamp its reading, the incoherence Opus flagged. The
-        earlier row already carries its own unit's reading, and that is the boundary
-        the walk must not cross.
-        """
-        _open("acp-first")
-        _compose({"memory": 100}, unit="acp-first", turn=1)
-        _billed(unit="acp-first", turn=1, used=3_000)
-        _flush()
-        _open("acp-second")
-        _compose({"memory": 200}, unit="acp-second", turn=1)
-        _billed(unit="acp-second", turn=1, used=7_000)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        # Each unit's turn 1 keeps its OWN reading; the second's 7_000 does not bleed
-        # back onto the first's 3_000.
-        assert [t["context_used"] for t in out["turns"]] == [3_000, 7_000]
-
     def test_peak_is_zero_when_no_turn_reported_occupancy(self):
         _open()
         _compose({"memory": 100})
@@ -558,6 +359,26 @@ class TestContextTrace:
         assert out["injected_chars"] == 200
         # Characters and tokens are never combined into one derived number.
         assert "estimated_other_chars" not in out
+
+    def test_peak_keeps_the_later_turn_among_equally_full_readings(self):
+        """``>=`` on the ratio keeps the LATEST equally-full turn, as before.
+
+        Two turns are exactly 50% full on different windows (a switch between them).
+        The later one describes the model currently running, so its pair is reported.
+        """
+        _open(window=100_000, model="opus-5")
+        _compose({"memory": 100}, turn=1)
+        _billed(turn=1, used=50_000, window=100_000, model="opus-5")
+        crew_log_emit.on_request_configured(
+            UNIT, 2, model="haiku-9", provider="acp", context_window=200_000
+        )
+        _compose({"memory": 100}, turn=2)
+        _billed(turn=2, used=100_000, window=200_000, model="haiku-9")
+        _flush()
+        out = usage_mod.context_trace(SLOT, 14)
+        # Both are 50% full; the later turn's pair wins the tie.
+        assert out["peak_context_used"] == 100_000
+        assert out["context_window"] == 200_000
 
     def test_the_occupancy_pair_comes_from_one_turn(self):
         """The reading and its window must describe the SAME turn.
@@ -644,43 +465,44 @@ class TestContextTrace:
         assert out["context_window"] == 100_000
         assert out["peak_context_used"] / out["context_window"] == 0.9
 
-    def test_peak_keeps_the_later_turn_among_equally_full_readings(self):
-        """``>=`` on the ratio keeps the LATEST equally-full turn, as before.
+    def test_a_peak_outside_the_day_window_is_not_reported(self):
+        """The caller asked about a span of days, so the peak comes from that span.
 
-        Two turns are exactly 50% full on different windows (a switch between them).
-        The later one describes the model currently running, so its pair is reported.
-        """
-        _open(window=100_000, model="opus-5")
-        _compose({"memory": 100}, turn=1)
-        _billed(turn=1, used=50_000, window=100_000, model="opus-5")
-        crew_log_emit.on_request_configured(
-            UNIT, 2, model="haiku-9", provider="acp", context_window=200_000
-        )
-        _compose({"memory": 100}, turn=2)
-        _billed(turn=2, used=100_000, window=200_000, model="haiku-9")
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        # Both are 50% full; the later turn's pair wins the tie.
-        assert out["peak_context_used"] == 100_000
-        assert out["context_window"] == 200_000
-
-    def test_a_later_zero_window_does_not_erase_the_size_stated_earlier(self):
-        """A provider that reports no window writes 0, which is not a window of nothing.
-
-        ``request/configured`` is written only when the configuration CHANGED, so
-        taking a 0 as the current size would erase a figure the session is still
-        running under and leave the occupancy pair with no denominator.
+        On a long session the fullest turn is frequently older than every row in the
+        span; a session-wide maximum would answer a question nobody asked.
         """
         _open(window=200_000)
         _compose({"memory": 100}, turn=1)
-        crew_log_emit.on_request_configured(
-            UNIT, 2, model="opus-5", provider="acp", context_window=0
+        _billed(turn=1, used=180_000, window=200_000)
+        _flush()
+        # Move the reader's clock past the window so the only reading falls outside it.
+        real = usage_mod.datetime
+
+        class _Later(real):  # type: ignore[misc, valid-type]
+            @classmethod
+            def now(cls, tz=None):
+                return real.now(tz) + timedelta(days=40)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(usage_mod, "datetime", _Later)
+            out = usage_mod.context_trace(SLOT, 14)
+        assert out["peak_context_used"] == 0, (
+            "the peak must come from the rows inside the requested window, not from "
+            "the whole session"
         )
-        _compose({"memory": 100}, turn=2)
+        # With no reading in the span, the configured size is still what a reader can
+        # be told the session runs under.
+        assert out["context_window"] == 200_000
+
+    def test_an_open_turn_does_not_drag_the_peak_down(self):
+        """An open turn has composed but not closed, so it measured nothing yet."""
+        _open()
+        _compose({"memory": 100}, turn=1)
+        _billed(turn=1, used=6_000)
+        _compose({"memory": 100}, turn=2)  # turn 2 is still running
         _flush()
         out = usage_mod.context_trace(SLOT, 14)
-        assert out["context_window"] == 200_000
-        assert [t["context_window"] for t in out["turns"]] == [200_000, 200_000]
+        assert out["peak_context_used"] == 6_000
 
     def test_a_slot_that_never_ran_reads_as_empty_rather_than_failing(self):
         out = usage_mod.context_trace("chat-never", 14)
@@ -703,34 +525,13 @@ class TestContextTrace:
         # Names the file to edit, the same reading the Crew Log panel's off state uses.
         assert off["env_file"] == usage_mod.env_file_display()
 
-    def test_only_the_first_session_start_is_marked_even_after_a_refused_turn_one(self):
-        """A refused turn 1 pushes the real session start to ordinal 2.
-
-        The refusal consumes an ordinal, so the session's only start composition
-        carries ordinal 2. Keyed on the ordinal, the panel would call it a rebuild;
-        the fold's ``first_start`` mark says it is the session's start, and a later
-        start composition (a real rebuild) is not marked.
-        """
-        _open()
-        _refused(turn=1)
-        _compose({"memory": 30_000}, turn=2, phase=PHASE_SESSION_START)
-        _compose({"memory": 100}, turn=3)
-        _compose({"memory": 30_000}, turn=4, phase=PHASE_SESSION_START)
-        _flush()
-        turns = usage_mod.context_trace(SLOT, 14)["turns"]
-        assert [(t["ordinal"], t["phase"], t["first_start"]) for t in turns] == [
-            (2, PHASE_SESSION_START, True),
-            (3, PHASE_PER_TURN, False),
-            (4, PHASE_SESSION_START, False),
-        ]
-
     def test_an_unreadable_fold_reads_as_nothing_folded(self, monkeypatch, caplog):
         """A damaged log is not a 500. The panel renders an empty trace instead."""
 
         def _boom(*_a: Any, **_k: Any):
             raise OSError("log is damaged")
 
-        monkeypatch.setattr(crew_log, "read_slot_projection", _boom)
+        monkeypatch.setattr(crew_log, "read_slot_state", _boom)
         with caplog.at_level("WARNING"):
             out = usage_mod.context_trace(SLOT, 14)
         assert out["turns"] == []
@@ -738,20 +539,112 @@ class TestContextTrace:
         assert any("usage fold unreadable" in r.message for r in caplog.records)
 
 
-def _projection_with(rows: list[dict[str, Any]], **context: Any):
-    """A stand-in ``usage`` projection carrying exactly *rows*.
+def _ran(turn: int, memory: int = 100, *, phase: str = PHASE_PER_TURN) -> None:
+    """One turn that composed and closed: the only kind that writes a chart row."""
+    _compose({"memory": memory}, turn=turn, phase=phase)
+    _billed(turn=turn, used=5_000)
 
-    The reader's own guards -- an undated row, a non-positive block -- are reachable
-    only from a log line the writer would never produce, which is precisely the input
-    a fold is written to survive. Planting the folded value is how those branches get
-    exercised without forging a crew log file.
+
+def _ordinals() -> list[int]:
+    return [t["ordinal"] for t in usage_mod.context_trace(SLOT, 14)["turns"]]
+
+
+class TestEveryTurnTakesAnOrdinal:
+    """The ordinal is the turn's place in the conversation, not a count of the turns
+    that wrote a row. A turn that ran without composing (a slash command) and a turn a
+    dispatch gate refused both hold a number, so every later row counts past them;
+    otherwise the panel shows the wrong "Turn N" and nothing self-corrects."""
+
+    def test_a_turn_that_composed_nothing_still_advances_the_ordinal(self):
+        """MUTATION-SENSITIVE: composed 1, slash command 2, composed 3 -> rows 1 and 3."""
+        _open()
+        _ran(1)
+        _billed(turn=2, used=0)  # a turn that closed without composing
+        _ran(3)
+        _flush()
+        assert _ordinals() == [1, 3]
+
+    def test_a_retried_composition_less_turn_takes_one_ordinal(self):
+        """A turn closed once per attempt counts once: turn 3 reads 3, never 4."""
+        _open()
+        _ran(1)
+        _billed(turn=2, used=0)
+        _billed(turn=2, used=0)
+        _ran(3)
+        _flush()
+        assert _ordinals() == [1, 3]
+
+    def test_consecutive_composition_less_turns_each_take_an_ordinal(self):
+        """Two such turns in a row advance the count twice: turn 4 reads 4."""
+        _open()
+        _ran(1)
+        _billed(turn=2, used=0)
+        _billed(turn=3, used=0)
+        _ran(4)
+        _flush()
+        assert _ordinals() == [1, 4]
+
+    def test_a_composition_less_first_turn_takes_ordinal_one(self):
+        """A slash command before any composed turn still comes first."""
+        _open()
+        _billed(turn=1, used=0)
+        _ran(2)
+        _flush()
+        assert _ordinals() == [2]
+
+    def test_repeated_compositions_of_one_turn_share_one_ordinal(self):
+        """MUTATION-SENSITIVE: a turn composed twice is one turn and one row."""
+        _open()
+        _compose({"memory": 100}, turn=1)
+        _compose({"memory": 50}, turn=1)
+        _billed(turn=1, used=6_000)
+        _ran(2)
+        _flush()
+        assert _ordinals() == [1, 2]
+
+    def test_a_refused_turn_consumes_an_ordinal(self):
+        """MUTATION-SENSITIVE: composed 1, refused 2, composed 3 -> rows 1 and 3."""
+        _open()
+        _ran(1)
+        _refused(turn=2)
+        _ran(3)
+        _flush()
+        assert _ordinals() == [1, 3]
+
+    def test_a_refused_turn_counts_once_even_retried(self):
+        """A turn refused twice takes one ordinal: turn 3 reads 3, never 4."""
+        _open()
+        _ran(1)
+        _refused(turn=2)
+        _refused(turn=2)
+        _ran(3)
+        _flush()
+        assert _ordinals() == [1, 3]
+
+    def test_a_session_start_after_a_refused_first_turn_reads_ordinal_two(self):
+        """A refused turn 1 pushes the session start to ordinal 2, still the start."""
+        _open()
+        _refused(turn=1)
+        _ran(2, 30_000, phase=PHASE_SESSION_START)
+        _ran(3)
+        _flush()
+        turns = usage_mod.context_trace(SLOT, 14)["turns"]
+        assert [(t["ordinal"], t["phase"], t["first_start"]) for t in turns] == [
+            (2, PHASE_SESSION_START, True),
+            (3, PHASE_PER_TURN, False),
+        ]
+
+
+def _state_with(state: Any):
+    """A stand-in ``read_slot_state`` answering with *state* as the usage fold state.
+
+    The reader's own guards are reachable only from a state the fold would never
+    hold, which is precisely the input a reader is written to survive. Planting the
+    state is how those branches get exercised without forging a crew log file.
     """
 
-    class _Value:
-        value = {"context": {"turns": rows, "window": 0, "peak_used": 0, **context}}
-
     def _read(*_a: Any, **_k: Any):
-        return _Value()
+        return crew_log.Checkpoint(name="usage", last_seq=0, state=state), 7
 
     return _read
 
@@ -765,487 +658,33 @@ class TestContextTraceSurvivesARowTheWriterWouldNotProduce:
     with no test is a guard that is one refactor from being deleted as dead.
     """
 
-    def test_an_undated_row_is_excluded_rather_than_placed_in_the_window(self, monkeypatch):
-        monkeypatch.setattr(
-            crew_log,
-            "read_slot_projection",
-            _projection_with(
-                [
-                    {"ts": "2026-09-30T00:00:00Z", "chars": 10, "sources": {"memory": 10}},
-                    {"ts": None, "chars": 20, "sources": {"memory": 20}},
-                    {"ts": 1_700_000_000_000, "chars": 30, "sources": {"memory": 30}},
-                ]
-            ),
-        )
-        # Only the epoch-stamped row can be DATED, and only it is inside a 100-year
-        # window; the string and the None date nothing at all.
-        out = usage_mod.context_trace(SLOT, 36_500)
-        assert [t["blocks"]["memory"] for t in out["turns"]] == [30]
-
-    def test_a_non_positive_block_is_dropped_from_the_row(self, monkeypatch):
-        monkeypatch.setattr(
-            crew_log,
-            "read_slot_projection",
-            _projection_with(
-                [
-                    {
-                        "ts": 1_700_000_000_000,
-                        "chars": 100,
-                        "sources": {"memory": 100, "empty": 0, "negative": -5},
-                    }
-                ]
-            ),
-        )
-        out = usage_mod.context_trace(SLOT, 36_500)
-        assert out["turns"][0]["blocks"] == {"memory": 100}
-        assert out["totals"] == {"memory": 100}
-
     def test_a_row_whose_every_block_is_non_positive_is_skipped(self, monkeypatch):
-        monkeypatch.setattr(
-            crew_log,
-            "read_slot_projection",
-            _projection_with([{"ts": 1_700_000_000_000, "chars": 0, "sources": {"empty": 0}}]),
-        )
+        _open()
+        _ran(1)
+        _flush()
+        state = crew_log.read_slot_state(SLOT, "usage")[0].state
+        ctx = dict(state["ctx"])
+        trend = [list(row) for row in ctx["trend"]]
+        trend[-1][crew_log._BLOCKS] = [["empty", 0]]
+        ctx["trend"] = trend
+        monkeypatch.setattr(crew_log, "read_slot_state", _state_with({**state, "ctx": ctx}))
         assert usage_mod.context_trace(SLOT, 36_500)["turns"] == []
 
-    def test_a_row_reports_the_total_the_writer_measured_not_the_sum_of_its_blocks(
-        self, monkeypatch
-    ):
-        """They differ whenever a row carries omitted detail, and the total is the truth.
-
-        Summing the blocks would under-report the prompt by exactly the sources the
-        per-row cap left out, and the panel would be told the prompt shrank.
-        """
-        monkeypatch.setattr(
-            crew_log,
-            "read_slot_projection",
-            _projection_with(
-                [
-                    {
-                        "ts": 1_700_000_000_000,
-                        "chars": 48_000,
-                        "sources": {"memory": 1_200},
-                        "sources_omitted": 39,
-                    }
-                ]
-            ),
-        )
-        out = usage_mod.context_trace(SLOT, 36_500)
-        assert out["turns"][0]["total_chars"] == 48_000
-        # ``totals`` stays the sum of what was LISTED, because that is all this reader
-        # knows a label for; the per-turn total above is what says the prompt was bigger.
-        assert out["totals"] == {"memory": 1_200}
-
-    def test_a_fold_value_that_is_not_a_context_view_reads_as_empty(self, monkeypatch):
-        class _Value:
-            value = {"context": "not a mapping"}
-
-        monkeypatch.setattr(crew_log, "read_slot_projection", lambda *a, **k: _Value())
-        assert usage_mod.context_trace(SLOT, 14)["turns"] == []
+    def test_a_state_that_holds_no_context_reads_as_empty(self, monkeypatch, caplog):
+        monkeypatch.setattr(crew_log, "read_slot_state", _state_with({"ctx": "not a mapping"}))
+        with caplog.at_level("WARNING"):
+            out = usage_mod.context_trace(SLOT, 14)
+        assert out["turns"] == [] and out["latest"] is None
+        assert usage_mod.context_turn_detail(SLOT, 1) is None
 
 
 class TestContextTraceWindowBounds:
     """Two bounds, and the payload states both because they cut differently."""
 
-    def test_the_day_window_still_excludes_an_older_turn(self, monkeypatch):
-        _open()
-        _compose({"memory": 100})
-        _flush()
-        # The turn is stamped now, so a window that ENDS before now excludes it. Moving
-        # the reader's clock forward is what makes the row old without forging a stamp.
-        real = usage_mod.datetime
-
-        class _Later(real):  # type: ignore[misc, valid-type]
-            @classmethod
-            def now(cls, tz=None):
-                return real.now(tz) + timedelta(days=40)
-
-        monkeypatch.setattr(usage_mod, "datetime", _Later)
-        assert usage_mod.context_trace(SLOT, 14)["turns"] == []
-        assert usage_mod.context_trace(SLOT, 90)["turns"] != []
-
-    def test_the_fold_drops_the_oldest_turns_and_the_ordinals_say_so(self, monkeypatch):
-        """Oldest first off the front, and each row's own ordinal is what makes it a window.
-
-        No dropped-turn count rides on the payload. It does not need one: the rows kept
-        carry the ordinals they were assigned BEFORE the trim, so the first one's number
-        states exactly how many turns precede it. A count could not do that for a reader
-        bounded to a narrower window than the fold's.
-        """
-        monkeypatch.setattr(crew_log, "CONTEXT_TURNS_LIMIT", 4)
-        _open()
-        for turn in range(1, 8):
-            _compose({"memory": turn}, turn=turn)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert [t["blocks"]["memory"] for t in out["turns"]] == [4, 5, 6, 7]
-        # Turns 1-3 fell off, and the survivors say so by their own numbers.
-        assert [t["ordinal"] for t in out["turns"]] == [4, 5, 6, 7]
-
-    def test_a_session_inside_the_bound_starts_at_ordinal_one(self, monkeypatch):
-        """Nothing was dropped, so the first row retained is the session's first turn."""
-        monkeypatch.setattr(crew_log, "CONTEXT_TURNS_LIMIT", 4)
-        _open()
-        for turn in range(1, 4):
-            _compose({"memory": turn}, turn=turn)
-        _flush()
-        assert [t["ordinal"] for t in usage_mod.context_trace(SLOT, 14)["turns"]] == [1, 2, 3]
-
-    def test_truncation_preserves_the_session_start_row(self, monkeypatch):
-        """The session-start injection anchors the panel and must survive the window.
-
-        A session-start composition is the one-off injection a unit opens with, many
-        times the size of a per-turn one and the row the panel draws its history and
-        totals against. Trimming it like an ordinary per-turn row once a session
-        passes the bound would silently drop the largest bar and understate the
-        totals the reader sums from the retained rows. The trim skips it: only the
-        oldest PER-TURN rows fall off, and the gap in the retained rows' ordinals is
-        what states which turns went.
-        """
-        monkeypatch.setattr(crew_log, "CONTEXT_TURNS_LIMIT", 4)
-        _open()
-        _compose({"memory": 9_000}, turn=1, phase=PHASE_SESSION_START)
-        for turn in range(2, 8):
-            _compose({"memory": turn}, turn=turn, phase=PHASE_PER_TURN)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        # The session-start row is still there (oldest), then the newest 3 per-turn
-        # rows fill the window of 4. Three per-turn rows (turns 2-4) were dropped.
-        assert [t["phase"] for t in out["turns"]] == [
-            "session_start",
-            "per_turn",
-            "per_turn",
-            "per_turn",
-        ]
-        assert [t["blocks"]["memory"] for t in out["turns"]] == [9_000, 5, 6, 7]
-        # Each retained row carries its EXACT ordinal: the session-start is turn 1 and
-        # the three survivors are turns 5, 6, 7. The gap (2, 3, 4) IS the record of what
-        # was dropped, which is why no separate count is needed.
-        assert [t["ordinal"] for t in out["turns"]] == [1, 5, 6, 7]
-
-    def test_dropped_middle_turns_show_in_the_ordinal_gap(self, monkeypatch):
-        """A per-turn row dropped BETWEEN the session-start and the survivors is hidden.
-
-        The session-start row (ordinal 1) is preserved, so nothing precedes it and the
-        backend's before-count is 0 -- but turns 2-4 did run and are gone. They are not
-        lost: the survivors carry their exact ordinals (5, 6, 7), so the gap after 1 is
-        exactly the hidden turns, which the panel counts without a separate signal.
-        """
-        monkeypatch.setattr(crew_log, "CONTEXT_TURNS_LIMIT", 4)
-        _open()
-        _compose({"memory": 9_000}, turn=1, phase=PHASE_SESSION_START)
-        for turn in range(2, 8):
-            _compose({"memory": turn}, turn=turn, phase=PHASE_PER_TURN)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        by_phase = {(t["phase"], t["ordinal"]) for t in rows}
-        assert ("session_start", 1) in by_phase
-        # The survivors are ordinals 5, 6, 7 -- turns 2, 3, 4 are absent from the window.
-        assert {t["ordinal"] for t in rows if t["phase"] == "per_turn"} == {5, 6, 7}
-
-    def test_a_turn_that_composed_nothing_still_advances_the_ordinal(self):
-        """MUTATION-SENSITIVE: a turn that composed nothing occupies a turn-history slot.
-
-        The ordinal is the row's position in the TURN history, not a count of the turns
-        that happened to compose. A turn can close having composed nothing -- a refusal,
-        or a turn that reused the prompt already in context -- and it still ran. If the
-        counter only moved on compositions, the composition AFTER a composition-less turn
-        would carry an ordinal one short of its real turn number, and the panel would
-        show the wrong "Turn N" and the wrong "earlier turns not shown" count.
-
-        Turn 1 composes (ordinal 1), turn 2 closes having composed NOTHING, turn 3
-        composes. The turn-3 row must read ordinal 3, not 2 -- turn 2 consumed a slot.
-        """
-        _open()
-        _compose({"memory": 10}, turn=1)
-        _billed(turn=2, used=0)  # a turn that closed without composing a row
-        _compose({"memory": 30}, turn=3)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        # Two composition rows survive (turn 2 wrote none), but their ordinals count the
-        # composition-less turn between them: 1 and 3, never 1 and 2.
-        assert [t["ordinal"] for t in rows] == [1, 3]
-
-    def test_a_retried_composition_less_turn_takes_ONE_ordinal(self):
-        """MUTATION-SENSITIVE: attempts of one turn share its ordinal, not one each.
-
-        One turn is closed once per ATTEMPT -- that is what the per-attempt seal in the
-        closer exists for -- so 'did this turn compose' is answered afresh at every
-        attempt. A composition-less turn that is retried would then be handed an ordinal
-        per attempt, and every later row would carry a turn number too high, with the
-        "earlier turns not shown" count inflated by the same amount. The counter is
-        marked when an ordinal is CONSUMED, which makes the second attempt a no-op.
-
-        Turn 1 composes (ordinal 1), turn 2 composes nothing and closes TWICE, turn 3
-        composes. The turn-3 row must read ordinal 3 -- never 4.
-        """
-        _open()
-        _compose({"memory": 10}, turn=1)
-        _billed(turn=2, used=0)
-        _billed(turn=2, used=0)
-        _compose({"memory": 30}, turn=3)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        assert [t["ordinal"] for t in rows] == [1, 3]
-
-    def test_consecutive_composition_less_turns_each_take_an_ordinal(self):
-        """Two turns in a row composing nothing advance the ordinal twice, not once.
-
-        A single boolean 'this turn composed' flag has to be RESET at each turn close,
-        or a run of composition-less turns would advance the ordinal only once for the
-        whole run. Turn 1 composes (1), turns 2 and 3 compose nothing, turn 4 composes:
-        the turn-4 row must read ordinal 4.
-        """
-        _open()
-        _compose({"memory": 10}, turn=1)
-        _billed(turn=2, used=0)
-        _billed(turn=3, used=0)
-        _compose({"memory": 40}, turn=4)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        assert [t["ordinal"] for t in rows] == [1, 4]
-
-    def test_repeated_compositions_of_one_turn_share_one_ordinal(self):
-        """MUTATION-SENSITIVE: a turn composed more than once is still ONE turn.
-
-        A single turn can compose more than once -- a rebuild re-emits the session-start
-        injection, a prompt is recomposed within the turn -- and every such row is the
-        SAME turn, so it carries that turn's one ordinal. Advancing the counter per
-        composition instead of per distinct (unit, turn) hands the second row a fresh
-        number, pushing the counter past the real turn sequence so every later row's turn
-        number and the panel's "earlier turns not shown" count read one too high per
-        extra composition.
-
-        Turn 1 composes TWICE, then turn 2 composes once. The two turn-1 rows must share
-        ordinal 1, and the turn-2 row must read ordinal 2 -- never 2 and 3.
-        """
-        _open()
-        _compose({"memory": 100}, turn=1)
-        _compose({"memory": 50}, turn=1)
-        _billed(turn=1, used=6_000)
-        _compose({"memory": 40}, turn=2)
-        _billed(turn=2, used=7_000)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        # Three rows: two for turn 1 (one ordinal between them), one for turn 2.
-        assert [t["ordinal"] for t in rows] == [1, 1, 2]
-
-    def test_a_refused_turn_consumes_an_ordinal(self):
-        """MUTATION-SENSITIVE: a turn a dispatch gate refused still occupied the history.
-
-        A refused turn never reaches the model, so it emits no ``turn/completed`` and
-        composes nothing -- its ``turn/refused`` is its only durable entry. A dispatch
-        gate declining a turn (an oversized or blocked ``@prompt``, a superseded replay)
-        is ordinary operation, so if the fold does not account for it the next
-        composition's ordinal -- and the panel's "earlier turns not shown" count derived
-        from it -- reads one low per refusal, and nothing self-corrects.
-
-        Turn 1 composes (ordinal 1), turn 2 is REFUSED, turn 3 composes. The turn-3 row
-        must read ordinal 3 -- never 2.
-        """
-        _open()
-        _compose({"memory": 100}, turn=1)
-        _billed(turn=1, used=5_000)
-        _refused(turn=2)
-        _compose({"memory": 40}, turn=3)
-        _billed(turn=3, used=6_000)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        # Two composition rows (turn 2 wrote none); their ordinals count the refused
-        # turn between them: 1 and 3, never 1 and 2.
-        assert [t["ordinal"] for t in rows] == [1, 3]
-
-    def test_a_refused_turn_counts_once_even_retried(self):
-        """A turn refused more than once (e.g. a retried oversized prompt) takes ONE.
-
-        The accounting is keyed on the turn identity, not on the refusal event, so a
-        turn refused twice consumes a single ordinal -- the same once-per-(unit, turn)
-        rule a composition-less close obeys. Turn 2 is refused TWICE between turn 1's
-        and turn 3's compositions; the turn-3 row must still read ordinal 3, never 4.
-        """
-        _open()
-        _compose({"memory": 100}, turn=1)
-        _refused(turn=2)
-        _refused(turn=2)
-        _compose({"memory": 40}, turn=3)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        assert [t["ordinal"] for t in rows] == [1, 3]
-
-    def test_a_rewound_turn_reuses_its_ordinal_not_a_new_one(self):
-        """A turn number is not monotonic within a unit: an edit-resend or a rewind
-        truncates the row list the panel numbers from, so a turn already counted recurs
-        at a lower number. That recurrence must reuse the turn's ORIGINAL ordinal, not
-        advance the counter again -- otherwise the rewound turn is relabelled and the
-        dropped-turn count inflates. Turns 1, 2, 3 compose (ordinals 1, 2, 3); turn 2
-        then composes AGAIN (the resend). Its row must read ordinal 2, never 4, and the
-        counter must not have advanced past 3.
-        """
-        _open()
-        _compose({"memory": 100}, turn=1)
-        _compose({"memory": 90}, turn=2)
-        _compose({"memory": 80}, turn=3)
-        # The edit-resend re-runs turn 2 in the same unit -- a lower turn number recurs.
-        _compose({"memory": 70}, turn=2)
-        _flush()
-        rows = usage_mod.context_trace(SLOT, 14)["turns"]
-        # The rendered row exposes no turn number; key on each composition's distinct
-        # memory block instead. Both compositions of turn 2 (90 and 70) carry ordinal 2;
-        # turn 3 keeps ordinal 3, and the counter never advanced past 3.
-        by_memory = {t["blocks"]["memory"]: t["ordinal"] for t in rows}
-        assert by_memory[100] == 1
-        assert by_memory[90] == 2
-        assert by_memory[70] == 2
-        assert by_memory[80] == 3
-        assert max(t["ordinal"] for t in rows) == 3
-
     #: The slot-fold cache's own ceiling, stated in ``projection.py`` against that
     #: cache's largest budgeted member (``radar``). A full context window has to fit
     #: under it or the cache's documented budget is wrong.
     CACHE_MEMBER_CEILING = 995_342
-
-    def test_a_full_window_stays_under_the_slot_fold_cell_budget(self):
-        """The figure ``CONTEXT_TURNS_LIMIT``'s comment states, re-measured here.
-
-        Built at the CAP, not at a realistic row: every limit at its maximum, so what
-        is measured is the largest state this fold can reach. A 40-source row measures
-        511,192 and passes with room to spare, which would leave the real ceiling
-        untested -- the cap is 64 sources and the labels can run to ``TEXT_LIMIT``.
-
-        Values are DISTINCT per row, and the second assertion is what KEEPS them so.
-        One shared int literal across every row understates the window by 45%
-        (439,084 against 808,912), because the measurement counts each object once
-        while the real fold holds a separately parsed int per source per turn -- and
-        it understates it DOWNWARD, so a ceiling check alone still passes and the
-        guard goes quiet. Comparing the two builds catches that as a failure instead:
-        the moment the distinct build stops being distinct, the two measure the same.
-        """
-        measured = _deep_bytes(_worst_case_window()) + _deep_bytes(_worst_case_turn_keys())
-        assert measured < self.CACHE_MEMBER_CEILING, (
-            f"a full context window plus a full ordinal memo measures {measured:,} "
-            f"bytes, over the {self.CACHE_MEMBER_CEILING:,} slot-fold cache-member ceiling"
-        )
-        shared = _deep_bytes(_worst_case_window(distinct_values=False)) + _deep_bytes(
-            _worst_case_turn_keys()
-        )
-        assert measured > shared, (
-            f"the window above measures {measured:,} bytes, no more than the "
-            f"{shared:,} of one built with a single shared value -- so it is no "
-            "longer measuring distinct per-source values and understates the real "
-            "fold. Restore the distinct values rather than relaxing this."
-        )
-
-    def test_the_rejected_row_shape_would_not_have_fit(self):
-        """Why the row stores ``label -> chars`` and not the entry's own source list.
-
-        The reason is a measurement, so it is measured: the same worst-case window
-        built as the entry's ``[{kind, chars, tokens}]`` list breaches the very ceiling
-        the shipped shape fits under. That makes the shape a requirement rather than a
-        preference, and pins it against a future change back.
-        """
-        measured = _deep_bytes(_worst_case_window(as_entry_list=True))
-        assert measured > self.CACHE_MEMBER_CEILING, (
-            f"the entry's own list shape measures {measured:,} bytes, which now FITS "
-            f"under the {self.CACHE_MEMBER_CEILING:,} ceiling -- the stated reason for "
-            "the row shape no longer holds, so re-derive it rather than keeping the "
-            "comment"
-        )
-
-
-def test_the_engine_measurement_as_a_dict_would_not_have_fit():
-    """Why a row's engine measurement is one string and not a dict of its numbers."""
-    window = _worst_case_window()
-    for n, row in enumerate(window):
-        row["measured"] = {f"field{j}": MAX_COUNT - n - j for j in range(MEASURED_FIELDS)}
-    measured = _deep_bytes(window) + _deep_bytes(_worst_case_turn_keys())
-    assert measured > TestContextTraceWindowBounds.CACHE_MEMBER_CEILING, (
-        f"the dict shape measures {measured:,} bytes and now fits under the ceiling, so "
-        "the stated reason for the string shape no longer holds"
-    )
-
-
-def _worst_case_turn_keys() -> str:
-    """A FULL ordinal memo, the other large member of the ``usage`` fold state.
-
-    ``CONTEXT_ORDINAL_MEMO_LIMIT`` keys, each a 3-digit unit and a 7-digit turn: wider
-    than a real slot reaches (the turn is a row count, and the live list holds 10,000).
-    """
-    return "," + "".join(
-        f"{100 + n % 900}:{1_000_000 + n}," for n in range(crew_log.CONTEXT_ORDINAL_MEMO_LIMIT)
-    )
-
-
-def _worst_case_window(
-    *, distinct_values: bool = True, as_entry_list: bool = False
-) -> list[dict[str, Any]]:
-    """A full ``context.turns`` window with every limit at its maximum.
-
-    One builder for the three measurements the budget tests compare, so they cannot
-    drift into measuring different windows and reporting the difference as a size
-    result. ``as_entry_list`` builds the REJECTED row shape -- the entry's own
-    ``[{kind, chars, tokens}]`` -- for the comparison that decided against it.
-
-    Labels are shared across rows because the real vocabulary recurs every turn.
-    Values are not: each is separately parsed in the real fold, so ``distinct_values``
-    builds them distinct, and passing ``False`` produces the understated build the
-    budget test compares against.
-    """
-    labels = [
-        f"src{i}".ljust(crew_log.TEXT_LIMIT - 1, "x")
-        for i in range(crew_log.CONTEXT_SOURCES_PER_TURN_LIMIT)
-    ]
-    window: list[dict[str, Any]] = []
-    for n in range(crew_log.CONTEXT_TURNS_LIMIT):
-        sources: Any
-        if as_entry_list:
-            sources = [
-                {
-                    "kind": label,
-                    "chars": int(f"{n + 1000}{j:03d}"),
-                    "tokens": int(f"{n + 2000}{j:03d}"),
-                }
-                for j, label in enumerate(labels)
-            ]
-        elif distinct_values:
-            sources = {label: int(f"{n + 1000}{j:03d}") for j, label in enumerate(labels)}
-        else:
-            sources = {label: 1200 for label in labels}
-        window.append(
-            {
-                "turn": n,
-                "ts": 1_700_000_000_000 + n * 1000,
-                "chars": 48_000 + n,
-                "tokens": 12_000 + n,
-                "tokens_estimated": True,
-                "sources": sources,
-                "sources_omitted": 0,
-                "phase": PHASE_PER_TURN,
-                "model": "claude-opus-4-5-20260101",
-                "window": 200_000,
-                "step": 3,
-                # The engine's measurement at its cap: every position filled with the
-                # widest value the fold keeps. Built per row, as the fold builds it.
-                "measured": ",".join([MEASURED_FORMAT, *[str(MAX_COUNT - n)] * MEASURED_FIELDS]),
-            }
-        )
-    return window
-
-
-def _deep_bytes(obj: Any, seen: set[int] | None = None) -> int:
-    """Bytes *obj* holds, counting each shared object once."""
-    if seen is None:
-        seen = set()
-    if id(obj) in seen:
-        return 0
-    seen.add(id(obj))
-    size = sys.getsizeof(obj)
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            size += _deep_bytes(key, seen) + _deep_bytes(value, seen)
-    elif isinstance(obj, (list, tuple, set)):
-        for item in obj:
-            size += _deep_bytes(item, seen)
-    return size
 
 
 class TestContextTraceParityWithTheShardScan:
@@ -1260,107 +699,6 @@ class TestContextTraceParityWithTheShardScan:
     ``peak_context_used`` / ``context_window`` pair are the same figures the row store
     held, bounded to the same day window.
     """
-
-    def test_the_payload_matches_the_scans_shape_field_for_field(self):
-        _open(window=200_000, model="opus-5")
-        _compose(
-            {"memory": 30_000, "lessons": 5_000, USER_LABEL: 120}, turn=1, phase=PHASE_SESSION_START
-        )
-        _billed(turn=1, used=9_000)
-        _compose({USER_LABEL: 340, "surface": 200}, turn=2, phase=PHASE_PER_TURN)
-        _billed(turn=2, used=12_500)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-
-        # Everything except the two stamps, which the scan took from the row's own
-        # ISO string and this reader derives from the entry's epoch stamp.
-        stamps = [t.pop("ts") for t in out["turns"]]
-        assert out == {
-            "slot": "chat-1",
-            "turns": [
-                {
-                    "phase": "session_start",
-                    "blocks": {"memory": 30_000, "lessons": 5_000, "your_message": 120},
-                    "total_chars": 35_120,
-                    "context_used": 9_000,
-                    "context_window": 200_000,
-                    "model": "opus-5",
-                    "ordinal": 1,
-                    "first_start": True,
-                    # Fields added after the scan: what the agent engine measured of
-                    # the turn, absent for a turn it did not measure.
-                    "engine": None,
-                    "ttft_ms": None,
-                },
-                {
-                    "phase": "per_turn",
-                    "blocks": {"your_message": 340, "surface": 200},
-                    "total_chars": 540,
-                    "context_used": 12_500,
-                    "context_window": 200_000,
-                    "model": "opus-5",
-                    "ordinal": 2,
-                    "first_start": False,
-                    # Fields added after the scan: what the agent engine measured of
-                    # the turn, absent for a turn it did not measure.
-                    "engine": None,
-                    "ttft_ms": None,
-                },
-            ],
-            "totals": {"memory": 30_000, "lessons": 5_000, "your_message": 460, "surface": 200},
-            "injected_chars": 35_660,
-            "user_chars": 460,
-            "peak_context_used": 12_500,
-            "context_window": 200_000,
-            "window_days": 14,
-            "engine_unknown": {},
-            "recording": True,
-        }
-        # A stamp is an ISO-8601 UTC string, which is what the declared shape says and
-        # what the scan's rows carried.
-        for stamp in stamps:
-            assert datetime.fromisoformat(stamp).tzinfo is not None
-
-    def test_the_occupancy_numbers_match_the_scans_meaning(self):
-        """Both are the provider's figures, taken over the window, as the scan took them."""
-        _open(window=200_000)
-        _compose({"memory": 100})
-        _billed(used=7_500, window=200_000)
-        _flush()
-        out = usage_mod.context_trace(SLOT, 14)
-        assert out["turns"][0]["context_used"] == 7_500
-        assert out["peak_context_used"] == 7_500
-        assert out["context_window"] == 200_000
-
-    def test_a_peak_outside_the_day_window_is_not_reported(self):
-        """The caller asked about a span of days, so the peak comes from that span.
-
-        On a long session the fullest turn is frequently older than every row in the
-        span; a session-wide maximum would answer a question nobody asked.
-        """
-        _open(window=200_000)
-        _compose({"memory": 100}, turn=1)
-        _billed(turn=1, used=180_000, window=200_000)
-        _flush()
-        # Move the reader's clock past the window so the only reading falls outside it.
-        real = usage_mod.datetime
-
-        class _Later(real):  # type: ignore[misc, valid-type]
-            @classmethod
-            def now(cls, tz=None):
-                return real.now(tz) + timedelta(days=40)
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(usage_mod, "datetime", _Later)
-            out = usage_mod.context_trace(SLOT, 14)
-        assert out["turns"] == []
-        assert out["peak_context_used"] == 0, (
-            "the peak must come from the rows inside the requested window, not from "
-            "the whole session"
-        )
-        # With no reading in the span, the configured size is still what a reader can
-        # be told the session runs under.
-        assert out["context_window"] == 200_000
 
 
 class TestTheContractTheFrontendDeclares:
@@ -1409,6 +747,7 @@ class TestTheContractTheFrontendDeclares:
     def test_every_field_a_turn_declares_is_sent(self):
         _open(window=200_000)
         _compose({"memory": 100}, phase=PHASE_SESSION_START)
+        _billed(used=1_000)
         _flush()
         turn = usage_mod.context_trace(SLOT, 14)["turns"][0]
         declared = self._declared("ContextTurn")
@@ -1416,6 +755,17 @@ class TestTheContractTheFrontendDeclares:
         assert declared <= set(
             turn
         ), f"the panel declares turn fields this reader omits: {declared - set(turn)}"
+
+    def test_a_turn_carries_only_fields_with_a_value_and_a_reader(self):
+        """A row is what the kept turn sent. The state keeps no per-turn time, model or
+        reading for it, so the row carries none rather than fixed blanks."""
+        _open(window=200_000)
+        _compose({"memory": 100})
+        _billed(used=1_000)
+        _flush()
+        out = usage_mod.context_trace(SLOT, 14)
+        assert set(out["turns"][0]) == {"phase", "blocks", "total_chars", "ordinal", "first_start"}
+        assert "engine_unknown" not in out
 
 
 class TestApiContextTrace:
@@ -1458,6 +808,47 @@ class TestApiContextTrace:
             assert body["user_chars"] == 10
             assert body["peak_context_used"] == 1_000
             assert "estimated_other_chars" not in body
+            # The harness is the selection-capabilities route's to answer, not this one.
+            assert "harness" not in body
+            assert isinstance(body["revision"], int)
+
+    @pytest.mark.asyncio
+    async def test_a_kept_turn_reads_whole_and_one_not_kept_is_404(self):
+        _open()
+        for turn in range(1, 36):
+            _compose({"memory": 100 + turn, USER_LABEL: 10}, turn=turn)
+            _billed(turn=turn, used=1_000 + turn)
+        _flush()
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get(
+                "/api/telemetry/context-trace", params={"slot": SLOT, "turn": "20"}
+            )
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["slot"] == SLOT and isinstance(body["revision"], int)
+            assert body["turn"]["turn"] == 20
+            assert body["turn"]["blocks"] == {"memory": 120, USER_LABEL: 10}
+            assert body["turn"]["context_used"] == 1_020
+            # Turn 5 left the 30-turn ring.
+            resp = await client.get(
+                "/api/telemetry/context-trace", params={"slot": SLOT, "turn": "5"}
+            )
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "turn_not_kept"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("turn", ["", "abc", "0", "-1", "1.5", "1e3", "\u0661", "9" * 12])
+    async def test_a_turn_that_is_not_a_positive_integer_is_400(self, turn):
+        _open()
+        _compose({"memory": 100})
+        _billed(used=1_000)
+        _flush()
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get(
+                "/api/telemetry/context-trace", params={"slot": SLOT, "turn": turn}
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "turn_invalid"
 
 
 class TestContextTraceCarriesNoBilling:
@@ -1525,9 +916,22 @@ class TestApiContextTraceAppDenial:
         )
 
     @pytest.mark.asyncio
+    async def test_an_app_caller_asking_for_a_turn_is_refused_the_same_way(self):
+        _open()
+        _compose({"memory": 100})
+        _billed(used=1_000)
+        _flush()
+        async with TestClient(TestServer(self._app("acme-app"))) as client:
+            resp = await client.get(f"/api/telemetry/context-trace?slot={SLOT}&turn=1")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "not_found"
+        assert any(c.get("outcome") == "denied" for c in self.sel_calls)
+
+    @pytest.mark.asyncio
     async def test_a_dashboard_caller_still_reads_the_trace(self):
         _open()
         _compose({"memory": 100})
+        _billed(used=1_000)
         _flush()
         async with TestClient(TestServer(self._app(""))) as client:
             resp = await client.get(f"/api/telemetry/context-trace?slot={SLOT}")

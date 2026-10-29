@@ -154,13 +154,15 @@ def _kirocrew_bin_subpath(root: Path) -> Path:
     .../bin/kirocrew``). Branch on the platform so both layouts resolve.
 
     On Windows a relocatable ``bin\\kirocrew.cmd`` shim is preferred over the
-    pip-generated ``Scripts\\kirocrew.exe`` when it exists. The desktop bundle
-    (``packaging/build-desktop.sh``) ships BOTH: pip drops a console-script
-    ``.exe`` in ``Scripts\\``, but distlib embeds the ABSOLUTE interpreter path
-    of the machine that built it, so inside a shipped bundle that ``.exe``
-    points at a build-agent path that does not exist on the user's machine.
-    The ``.cmd`` shim resolves the interpreter via ``%~dp0`` and is the only
-    relocatable launcher of the two. The Electron resolver
+    pip-generated ``Scripts\\kirocrew.exe`` when it exists. pip drops a
+    console-script ``.exe`` in ``Scripts\\``, but distlib embeds the ABSOLUTE
+    interpreter path of the machine that built it, so inside a shipped bundle
+    that ``.exe`` points at a build-agent path that does not exist on the
+    user's machine. The ``.cmd`` shim resolves the interpreter via ``%~dp0``
+    and is the only relocatable launcher of the two. The desktop bundle
+    (``packaging/build-desktop.sh``) deletes that ``.exe`` and writes a
+    ``Scripts\\kirocrew.cmd`` copy of the shim instead; a bundle built
+    without that step still carries it. The Electron resolver
     (``website/electron/find-bin.js``) ranks them the same way — keep the two
     in sync. Plain pip installs ship no ``bin\\kirocrew.cmd``, so they keep
     resolving ``Scripts\\kirocrew.exe`` via the fallback.

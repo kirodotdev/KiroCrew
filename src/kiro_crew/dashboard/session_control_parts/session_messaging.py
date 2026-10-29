@@ -831,6 +831,7 @@ async def broadcast_to_targets(
     message: str,
     mode: str,
     targets: "list[str] | None" = None,
+    all_created: bool = False,
     caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Deliver *message* to several sessions at once, one at a time.
@@ -842,10 +843,17 @@ async def broadcast_to_targets(
     the first; one telling them "stop, the issue was already fixed" wants the
     second, and the difference is worth eight turns of latency.
 
-    ``targets`` omitted means :func:`broadcast_audience` — the sessions this caller
-    created. Naming them explicitly is for the subset case, and every named target
-    goes through the same :func:`authorize_target` gate, so an explicit list can
-    only ever be as permissive as one send at a time.
+    A call selects its audience in exactly one of two ways. ``targets`` names the
+    sessions, or ``all_created=True`` means :func:`broadcast_audience` — every
+    session this caller created. ``targets`` that is absent, ``None`` or empty
+    selects nobody, so a call with neither is refused ``target_required`` and a call
+    with both is refused ``audience_conflict``; nothing is sent in either case.
+    The default is deliberately NOT the whole fleet: some clients drop an empty
+    list from a tool call, so ``targets=[]`` reaches this function as an omission,
+    and an omission that meant "everyone" would turn a caller's empty audience into
+    a fleet-wide send. Every named target goes through the same
+    :func:`authorize_target` gate, so an explicit list can only ever be as
+    permissive as one send at a time.
 
     PARTIAL DELIVERY IS THE NORMAL OUTCOME and the return shape says so per
     target. A target closed between the audience read and its own delivery, one
@@ -916,7 +924,23 @@ async def broadcast_to_targets(
         ownership_fenced=ownership_fenced,
     )
 
-    explicit = targets is not None
+    # An empty list and an absent one are the same thing here: the bytes a client
+    # that drops empty containers sends are identical for both, so the answer must
+    # not depend on telling them apart.
+    explicit = bool(targets)
+    if explicit and all_created:
+        raise SessionControlError(
+            "pass targets or all: true, not both",
+            code="audience_conflict",
+            status=400,
+        )
+    if not explicit and not all_created:
+        raise SessionControlError(
+            "no audience selected: name the sessions in targets, or pass "
+            "all: true to reach every session you created",
+            code="target_required",
+            status=400,
+        )
     if explicit:
         # THE CAP, CHECKED BEFORE ANYTHING RESOLVES. Below the resolution loop this
         # check is correct and useless: reaching it costs one `_resolve_slot` per
@@ -960,13 +984,14 @@ async def broadcast_to_targets(
                 seen.add(identity)
                 audience.append(slot.key if slot is not None else name)
         if not audience:
-            # The caller named targets and not one of them is usable. Both silent
-            # answers are wrong here: falling back to the default audience turns a
-            # malformed argument into an accidental fleet-wide send, and reporting
-            # "delivered 0 of 0" hides a call that never had a chance of working.
+            # The caller named targets and not one of them is usable (every name was
+            # blank). Both silent answers are wrong here: falling back to the
+            # all-created audience turns a malformed argument into an accidental
+            # fleet-wide send, and reporting "delivered 0 of 0" hides a call that
+            # never had a chance of working.
             raise SessionControlError(
-                "targets was given but names no session; omit it to reach every "
-                "session you created",
+                "targets was given but names no session; name the sessions, or "
+                "pass all: true to reach every session you created",
                 code="target_required",
                 status=400,
             )

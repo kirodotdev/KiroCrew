@@ -1324,14 +1324,13 @@ def _seed_pod_os_home(os_home: Path) -> None:
         # NOTHING host-derived is staged into `<os-home>/.aws/sso/cache`. The
         # directory is created (above, pinned and 0o700) because the pod's own
         # kiro-cli writes its MCP OAuth grants there, and that is ALL it ever
-        # holds. An earlier revision copied the host's SSO tokens in, which a
-        # security review correctly flagged: the corridor that keeps the grant
-        # store writable also made those copied HOST bearer tokens readable to any
-        # agent shell in the pod. Live acceptance settled that the copy was never
+        # holds. Copying the host's SSO tokens in is unsafe: the corridor that
+        # keeps the grant store writable would also make those copied HOST bearer
+        # tokens readable to any agent shell in the pod. The copy is not
         # load-bearing -- sign-in comes from the runtime's own data store staged
-        # just above, not from this cache -- so the copy is deleted rather than
-        # hidden. Deleting the material beats masking it from the process that has
-        # to write beside it.
+        # just above, not from this cache -- so there is no copy rather than a
+        # hidden one. Not staging the material beats masking it from the process
+        # that has to write beside it.
     finally:
         pinned_fs.close_all(fds)
 

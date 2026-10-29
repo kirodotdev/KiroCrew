@@ -9,7 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state
+from kiro_crew import agent_state, crew_mode
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -270,5 +270,17 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
             "markdown_spec_backends": sorted(
                 backend_to_stored(b) for b in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
             ),
+            # Crew Mode: the conductor a chat switches to when it is turned on
+            # (`agent.crew_mode_agent`), and the whole conductor family, which a
+            # normal chat's agent picker leaves out so Crew Mode is the way in.
+            "crew_mode_agent": (
+                _roster_mask(crew_mode.crew_mode_agent(config))
+                if redact
+                else crew_mode.crew_mode_agent(config)
+            ),
+            "conductor_agents": [
+                _roster_mask(agent) if redact else agent
+                for agent in sorted(crew_mode.conductor_agents(config))
+            ],
         }
     )

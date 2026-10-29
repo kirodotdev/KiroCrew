@@ -70,10 +70,17 @@ class FakeOrch:
 
 @pytest.fixture(autouse=True)
 def _clean_state():
-    """Reset module state between tests."""
+    """Start each test with an empty registry, then put back the import-time handlers.
+
+    The modal handlers register themselves when their modules are imported, so a
+    registry left empty here would refuse their submissions in every later test
+    that shares this process.
+    """
+    registered = dict(VIEW_REGISTRY)
     VIEW_REGISTRY.clear()
     yield
     VIEW_REGISTRY.clear()
+    VIEW_REGISTRY.update(registered)
 
 
 @pytest.fixture

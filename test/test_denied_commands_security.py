@@ -51,9 +51,7 @@ class TestCatalog:
         # file tools, so a text regex over the command added refusals of read-only
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
-        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112). The
-        # flagged-file delivery self-protection floor added no row: it is an
-        # ungated argv-floor subcommand (see ``_UNGATED_TEMPLATES``), not a catalog rule.
+        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
         assert len(BUILTIN_DENIED_RULES) == 113
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
@@ -268,7 +266,6 @@ class TestSelfProtectionFlagInterposition:
     _UNGATED_TEMPLATES = {
         "self-protection-restart": "kirocrew {flags} restart",
         "self-protection-update": "kirocrew {flags} update",
-        "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
         "self-protection-skills-authority-retire": "kirocrew {flags} skills authority-retire",
@@ -418,7 +415,6 @@ class TestSelfProtectionFlagInterposition:
     _SUBCOMMANDS = {
         "self-protection-restart": ["restart"],
         "self-protection-update": ["update"],
-        "self-protection-file-delivery": ["file-delivery", "approve"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
         "self-protection-skills-authority-retire": ["skills", "authority-retire"],
@@ -467,85 +463,6 @@ class TestSelfProtectionFlagInterposition:
                 assert security.is_denied(
                     cmd, denied_regexes=effective
                 ), f"{rule_id} not denied under {label}: {cmd!r}"
-
-    # ``file-delivery``'s ``action`` positional is REQUIRED, so neither form below
-    # dispatches: the bare one exits 2 and the help one prints usage and exits 0.
-    # The help form is a GOLDEN PATH -- the deny reason a blocked ``file_send``
-    # hands the model points at this command family, so quoting its usage is the
-    # documented next step -- and the floor refused it while it keyed on the
-    # subcommand word alone. Anything argparse would dispatch carries ``approve``.
-    _FILE_DELIVERY_NON_DISPATCHING = (
-        "kirocrew file-delivery",
-        "kirocrew file-delivery --help",
-        "kirocrew file-delivery -h",
-        "kirocrew -v file-delivery --help",
-        "python -m kiro_crew file-delivery --help",
-    )
-
-    def test_the_file_delivery_floor_allows_the_forms_that_dispatch_nothing(self):
-        from kiro_crew import security
-
-        effective = self._effective()
-        for cmd in self._FILE_DELIVERY_NON_DISPATCHING:
-            assert not security.is_denied(cmd, denied_regexes=effective), (
-                "the read-only help form of the new verb is a golden path and must not "
-                f"be refused: {cmd!r}"
-            )
-
-    def test_the_file_delivery_floor_covers_every_dispatchable_verb(self):
-        """The floor's verb set IS the parser's ``choices``, derived not restated.
-
-        A verb added to the CLI without a decision here would otherwise walk past
-        the floor silently, which is the failure mode the enumeration invites.
-
-        Read by AST rather than by calling a builder, because ``cli.main()`` builds
-        its parser inline from the ``cli_parser_*`` registrars; and by AST rather
-        than by grepping the source, because a substring assertion stays green when
-        the construct it names moves or is wrapped.
-        """
-        import ast
-        import inspect
-
-        from kiro_crew import cli, cli_parser_admin, cli_parser_agent, cli_parser_gateway
-        from kiro_crew.security import argv_floor
-
-        parser_modules = (cli, cli_parser_gateway, cli_parser_agent, cli_parser_admin)
-        tree = ast.parse("\n".join(inspect.getsource(module) for module in parser_modules))
-        choices: "list[str] | None" = None
-        required = None
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            fn = node.func
-            if not (
-                isinstance(fn, ast.Attribute)
-                and fn.attr == "add_argument"
-                and isinstance(fn.value, ast.Name)
-                and fn.value.id == "file_delivery_parser"
-            ):
-                continue
-            if not (node.args and isinstance(node.args[0], ast.Constant)):
-                continue
-            if node.args[0].value != "action":
-                continue
-            kwargs = {kw.arg: kw.value for kw in node.keywords}
-            listed = kwargs.get("choices")
-            assert isinstance(listed, (ast.List, ast.Tuple, ast.Set)), (
-                "the file-delivery action's choices must stay a literal this test can "
-                "read; a computed value would make the floor's set unverifiable here"
-            )
-            choices = [e.value for e in listed.elts if isinstance(e, ast.Constant)]
-            required = "nargs" not in kwargs
-
-        assert choices, "the file-delivery action positional was not found in cli.py"
-        assert argv_floor._SELF_FILE_DELIVERY_VERBS == frozenset(choices), (
-            "the file-delivery floor's verb set must equal the CLI's own choices; a new "
-            "verb needs a deliberate decision here, not a silent pass"
-        )
-        assert required, (
-            "the action positional must stay REQUIRED -- an optional one would make a "
-            "bare 'kirocrew file-delivery' dispatch, and this floor allows that form"
-        )
 
     _QUOTES = ('"', "'")  # Single-token global options. ``-v --no-jail`` from ``_FLAGS`` is two
     # tokens and cannot be quoted as one flag, so it has no quoted cell.

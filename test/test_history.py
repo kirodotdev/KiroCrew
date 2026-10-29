@@ -97,6 +97,19 @@ class TestConversationLog:
         log.append("t1", "user", "reply", source_thread="t1")
         assert [p["snippet"] for p in log.recent_with_provenance("t1")] == ["reply"]
 
+    def test_provenance_cites_only_what_was_said(self, tmp_path):
+        # A channel turn's tool steps carry its provenance too; citing them
+        # would fill the few slots and push the question out.
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("t1", "user", "the ask", source_thread="t1")
+        for n in range(3):
+            log.append("t1", "tool", f"🔧 step {n}", cls="msg msg-tool", source_thread="t1")
+        log.append("t1", "assistant", "the answer", source_thread="t1")
+        assert [p["snippet"] for p in log.recent_with_provenance("t1")] == [
+            "the ask",
+            "the answer",
+        ]
+
     def test_unconsolidated_count(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
         for i in range(10):

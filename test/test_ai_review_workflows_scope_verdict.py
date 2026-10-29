@@ -25,9 +25,11 @@ from ai_review_workflows_helpers import (
     _child_env,
     _proc_log,
     _prompt,
+    _script_file,
     _step_by_name,
     _step_script,
     _workflow,
+    _write_stub,
 )
 from git_maintenance_helpers import git_maintenance_off_entries
 from named_cases_helpers import named_cases
@@ -1520,3 +1522,161 @@ class TestPerHeadMonotonicFloor:
             )
             == 1
         )
+
+
+class TestTheForkScopeCommentGetsTheFinalScrub:
+    """The fork lane scrubs its WHOLE composed comment before posting, as the same-repo
+    lane does, and a missing or failing scrubber stops the post.
+
+    Each input the fork lane folds into its comment is scrubbed on its own, but the
+    composed body is fork-derived text bound for a public PR comment. The same-repo
+    lane runs one last ``--mode text`` pass over its composed body; these pins hold
+    the fork lane to the same pass, ahead of the post, and fail closed.
+    """
+
+    FORK = "fork-security-scope-review.yml"
+    STEP = "Scrub the comment body"
+    KEY_ID = "AKIAIOSFODNN7EXAMPLE"
+
+    def test_the_scrub_sits_between_assembly_and_the_post(self) -> None:
+        publish = yaml.safe_load(_workflow(self.FORK))["jobs"]["publish"]["steps"]
+        names = [s.get("name") for s in publish]
+        assemble = names.index("Assemble the comment body")
+        scrub = names.index(self.STEP)
+        post = names.index("Post/update the scope review comment")
+        assert assemble < scrub < post, names
+        assert publish[scrub]["id"] == "scrub"
+        assert publish[scrub]["if"] == publish[assemble]["if"]
+        assert publish[scrub]["env"]["OUT"] == publish[assemble]["env"]["OUT"]
+        # The post runs only on a scrub that succeeded, so a skipped, cancelled or
+        # failed scrub never reaches the slot.
+        assert "steps.scrub.outcome == 'success'" in publish[post]["if"]
+
+    def test_the_scrub_is_the_same_text_pass_the_same_repo_lane_runs(self) -> None:
+        run = _step_script(_workflow(self.FORK), self.STEP)
+        assert 'python3 scripts/scope_redact.py --mode text "$OUT"' in run
+        assert 'python "$REDACTOR" --mode text "$OUT"' in _workflow("security-scope-review.yml")
+
+    def test_the_check_run_reads_the_scrub_outcome(self) -> None:
+        step = _step_by_name(self.FORK, "publish", "Publish check-run")
+        assert step["env"]["SCRUB_OUTCOME"] == "${{ steps.scrub.outcome }}"
+
+    def _post_check_run(self, tmp_path: Path, *, conclusion: str, scrub: str) -> list[str]:
+        """Run the real "Publish check-run" script and return the POSTed fields."""
+        bash = _bash()
+        if bash is None:
+            pytest.skip("bash is not available")
+        stub = tmp_path / "stub"
+        stub.mkdir()
+        args = tmp_path / "gh-args"
+        _write_stub(stub / "gh", f'printf "%s\\n" "$@" > "{args.as_posix()}"\nexit 0\n')
+        script = _script_file(tmp_path, _step_script(_workflow(self.FORK), "Publish check-run"))
+        env = {
+            **os.environ,
+            "PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}",
+            "REPO": "o/r",
+            "HEAD": "cafe1234cafe1234cafe1234cafe1234cafe1234",
+            "PR": "7",
+            "WR_RUN_ID": "11",
+            "WR_RUN_ATTEMPT": "1",
+            "CONCLUSION": conclusion,
+            "TITLE": "decided title",
+            "REMEDY": "",
+            "SETTLED": "yes",
+            "FOLD_RC": "",
+            "BODY": str(tmp_path / "absent.md"),
+            "HUMAN_OVERRIDE": "false",
+            "SCRUB_OUTCOME": scrub,
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_RUN_ID": "42",
+        }
+        result = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env=_child_env(env),
+        )
+        assert result.returncode == 0, _proc_log(result)
+        return args.read_text(encoding="utf-8").splitlines()
+
+    def test_a_failed_scrub_reds_a_passing_run_as_unsettled(self, tmp_path: Path) -> None:
+        posted = self._post_check_run(tmp_path, conclusion="success", scrub="failure")
+        assert "conclusion=failure" in posted
+        title = next(a for a in posted if a.startswith("output[title]="))
+        assert title.startswith("output[title]=[scope-floor:unsettled] "), title
+        assert "could not be scrubbed" in title
+
+    def test_a_failed_scrub_keeps_a_decided_block_settled(self, tmp_path: Path) -> None:
+        # A block the lane already measured must stay on the per-head floor: an
+        # unsettled mark would let a later clean run pass the same head.
+        posted = self._post_check_run(tmp_path, conclusion="failure", scrub="failure")
+        assert "conclusion=failure" in posted
+        title = next(a for a in posted if a.startswith("output[title]="))
+        assert "[scope-floor:unsettled]" not in title, title
+        assert "decided title" in title and "could not be scrubbed" in title
+
+    def test_a_clean_scrub_leaves_the_verdict_alone(self, tmp_path: Path) -> None:
+        posted = self._post_check_run(tmp_path, conclusion="success", scrub="success")
+        assert "conclusion=success" in posted
+        assert not any("could not be scrubbed" in a for a in posted)
+
+    def _run(self, tmp_path: Path, *, scrubber: str | None, body: str | None):
+        bash = _bash()
+        if bash is None:
+            pytest.skip("bash is not available")
+        (tmp_path / "scripts").mkdir()
+        if scrubber == "real":
+            shutil.copy(ROOT / "scripts" / "scope_redact.py", tmp_path / "scripts")
+        elif scrubber == "broken":
+            (tmp_path / "scripts" / "scope_redact.py").write_text(
+                "import sys\nsys.exit(3)\n", encoding="utf-8"
+            )
+        stub = tmp_path / "stub"
+        stub.mkdir()
+        _write_stub(stub / "python3", f'exec "{Path(sys.executable).as_posix()}" "$@"\n')
+        out = tmp_path / "scope-comment.md"
+        if body is not None:
+            out.write_text(body, encoding="utf-8", newline="\n")
+        script = _script_file(tmp_path, _step_script(_workflow(self.FORK), self.STEP))
+        env = {
+            **os.environ,
+            "PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}",
+            "OUT": str(out),
+        }
+        result = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env=_child_env(env),
+        )
+        return result, out
+
+    def test_the_composed_body_is_scrubbed_in_place(self, tmp_path: Path) -> None:
+        result, out = self._run(
+            tmp_path, scrubber="real", body=f"## Security Scope Review\n\nquoted: {self.KEY_ID}\n"
+        )
+        assert result.returncode == 0, _proc_log(result)
+        text = out.read_text(encoding="utf-8")
+        assert self.KEY_ID not in text
+        assert "[REDACTED-AWS-KEY-ID]" in text
+
+    @pytest.mark.parametrize(
+        ("scrubber", "body"),
+        [
+            pytest.param(None, "## body\n", id="scrubber-missing"),
+            pytest.param("broken", "## body\n", id="scrubber-fails"),
+            pytest.param("real", None, id="no-body-assembled"),
+        ],
+    )
+    def test_no_scrub_means_no_post(
+        self, tmp_path: Path, scrubber: str | None, body: str | None
+    ) -> None:
+        result, _ = self._run(tmp_path, scrubber=scrubber, body=body)
+        assert result.returncode == 1, _proc_log(result)
+        assert "::error::" in result.stdout

@@ -38,6 +38,7 @@ import { isSystemNoticeRow } from '../../pages/chat/CompactionCard'
 import { isWorkflowCompletionMessage } from '../../pages/chat/WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from '../../pages/chat/subagentCompletion'
 import { REASONING_ROLES } from '../../pages/chat/groupDisplayItems'
+import { isPendingTransientNotice } from '../../pages/chat/transientNotice'
 import type { ChatMessage } from '../../types'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
@@ -114,6 +115,14 @@ export function isCrewmateChatRow(m: ChatMessage): boolean {
   // Runtime notices belong to Sessions, not the conversation with a person
   // (docs/decisions/2026-10-09-crewmate-chat-draws-messages-only.md).
   if (m.role === 'notice') return false
+  // The transient-5xx ladder writes its progress under the `error` role
+  // (`meta.notice = transient_retrying | transient_resuming`). A pending link
+  // is a runtime notice in all but role — the gateway has already re-queued
+  // the turn — so the same decision drops it; on a patroller it otherwise
+  // stacks one "Connection restored" card per retried wake. The terminal
+  // give-up keeps drawing: it is the one shape the person must act on (the red
+  // ErrorCard with its Continue affordance). Every other error row stays.
+  if (m.role === 'error') return !isPendingTransientNotice(m)
   // A pending approval is the approval surface and stays; a RESOLVED one draws
   // nothing (its renderer returns null) and must not count as content — kept,
   // it would hide the quiet hint behind a blank chat. Same rule `isRunTransparent`
@@ -171,7 +180,11 @@ function isInjectedQueued(m: ChatMessage): boolean {
  *  row (sent, queued or drained) is in `all` (the slot's rows in store order),
  *  its delivery is not in doubt, and nothing has answered it yet -- no
  *  assistant row after it (speech, or the say-nothing row a quiet turn ends
- *  on), no error, no stop card, no pending approval and no change card. While
+ *  on), no error, no stop card, no pending approval and no change card. A
+ *  PENDING link of the transient-5xx ladder (`isPendingTransientNotice`) is
+ *  not an answer: the turn is already re-queued and `isCrewmateChatRow` hides
+ *  the card, so the typing bubble is the one sign the crewmate is still
+ *  working; only the ladder's give-up (a drawn error) ends the wait. While
  *  this holds the chat shows its typing bubble even before the turn that will
  *  answer is running: a live turn alone starts seconds after the send when the
  *  send was queued or interrupted and requeued. A refused send's bubble is
@@ -186,6 +199,7 @@ export function awaitingCrewmateReply(all: ChatMessage[], sendId: string | undef
   if (i < 0 || all[i].meta?.deliveryUnconfirmed) return false
   for (let j = i + 1; j < all.length; j += 1) {
     const m = all[j]
+    if (isPendingTransientNotice(m)) continue
     if (m.role === 'assistant' || m.role === 'error' || m.role === CARD_ROW_ROLE || isStopCard(m)) return false
     if (m.role === 'permission' && !m.meta?.resolved) return false
   }

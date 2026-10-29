@@ -47,8 +47,10 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     assert "mcp sharing: ⚠ not shared, one copy per chat:" in out
     assert "alpha-mcp (not approved yet)" in out
     assert "beta-mcp (command changed since it was approved)" in out
-    assert "/developer?tab=mcp-pool" in out
-    assert "Developer Mode does not need" in out
+    assert "/settings/developer/mcp-pool" in out
+    flat = " ".join(out.split())
+    assert "Settings > Developer > MCP Management" in flat
+    assert "Developer Mode" not in flat
     assert "kirocrew restart" in out
     assert issues == ["2 MCP server(s) set to share are not shared: launch not approved"]
 

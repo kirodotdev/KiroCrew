@@ -59,7 +59,6 @@ _log = logging.getLogger("auto_improvement.spine.gate")
 #: candidate's edit on the HOST (gateway user) in the very worktree the sandboxed agent wrote to,
 #: so a repo-planted hook (`core.hooksPath`) or fsmonitor program would execute host-side, outside
 #: the sandbox, on the next `git add`/`commit`. `-c` overrides on OUR argv beat the repo config.
-#: Raised by the GPT review.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
@@ -356,7 +355,7 @@ class Gate:
             # (`symlinks=False`) would copy the TARGET's contents into `base_tree`, where the
             # repo's own `conftest.py`/tests run against the RED tree and could read and
             # exfiltrate the secret. Copying the link verbatim leaves a dangling/out-of-tree
-            # link with no secret content behind it. Raised by the GPT review.
+            # link with no secret content behind it.
             shutil.copytree(wt, base_tree, symlinks=True)
             # Git-isolate the snapshot: a linked worktree's ``.git`` is a FILE pointing
             # at the shared git dir — git commands in the snapshot would read/write the

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { ScrollText, Pencil, Trash2, MessageSquare } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { bestFilterMatch } from '../../utils/filterSelection'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { setPendingInput, switchSlot } from '../../store/chatSlice'
 import { api, ApiError } from '../../api/client'
@@ -196,6 +197,8 @@ export default function PromptsTab() {
 
   const promptKey = (p: Prompt) => `${p.source}:${p.package}/${p.name}`
   const pendingRef = useRef('')
+  // True once the user opened a row; the auto-pick below leaves that row alone.
+  const userPickedRef = useRef(false)
   // Which prompt a save was started for, and which is selected right now. Refs
   // rather than state because a mutation callback closes over the render that
   // fired it and would otherwise compare against a stale selection.
@@ -403,6 +406,7 @@ export default function PromptsTab() {
     // hash beneath the old text, and the next Save would present a base it was
     // not written against, silently overwriting the very edit that conflicted.
     if (key === selectedKey) {
+      userPickedRef.current = true
       openDetail()
       if (!detailEditing && (readOnlyReason === 'failed' || conflictRef.current)) void load(p)
       return
@@ -417,6 +421,7 @@ export default function PromptsTab() {
     setEditForm(EMPTY_FORM)
     setMutationError('')
     setPickerOpen(false)
+    userPickedRef.current = true
     setSelectedKey(key)
     openDetail()
     void load(p)
@@ -425,15 +430,20 @@ export default function PromptsTab() {
   // Keep a desktop detail pane populated: with both panes always on screen, an
   // empty right-hand side on first paint reads as a broken tab. Skipped while
   // editing so a re-render cannot yank the pane out from under a draft.
+  // A prompt the user opened stays open while the filter still shows it; one
+  // this effect opened by itself moves to the best match for what was typed.
   useEffect(() => {
     if (detailEditing) return
     if (allFiltered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !allFiltered.some(p => promptKey(p) === selectedKey)) {
-      const first = allFiltered[0]
-      setSelectedKey(promptKey(first))
-      void load(first)
+    const visible = !!selectedKey && allFiltered.some(p => promptKey(p) === selectedKey)
+    if (visible && (userPickedRef.current || !filter.trim())) return
+    const best = bestFilterMatch(allFiltered, filter, p => [p.name, p.fullName])
+    if (best && promptKey(best) !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(promptKey(best))
+      void load(best)
     }
-  }, [allFiltered, selectedKey, detailEditing, load])
+  }, [allFiltered, selectedKey, detailEditing, load, filter])
 
   const renderRow = (p: Prompt) => {
     const pk = promptKey(p)

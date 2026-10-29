@@ -204,6 +204,8 @@ describe('phase order (source guard)', () => {
       ],
       'windowRange.ts': [
         [L, 'committedRef.current = next'], // tail-append mount's committed-tail mirror
+        [P, 'recomputeRef.current = recomputeWindow'], // landing stages read the live recompute
+        [P, 'leadingCapRef.current = null'], // landing stages cleanup
         [P, 'window.setInterval('], // coverage watchdog
         [P, 'prevWindowStartRef.current = windowRange.start'], // older-history crossing
         [P, 'new IntersectionObserver('], // sentinels

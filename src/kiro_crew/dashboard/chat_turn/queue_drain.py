@@ -60,6 +60,10 @@ if TYPE_CHECKING:
         shutdown_event,
         spawn_guarded_turn,
     )
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        MIRROR_ECHO_OWED_META_KEY,
+        _batch_recovery_echo_owed,
+    )
     from kiro_crew.dashboard.chat_turn.recovery import (
         _drop_revoked_replays,
         _forget_swept_replays,
@@ -409,6 +413,41 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
     return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
 
 
+def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> None:
+    """Record the person's queued steers into a Crew Mode worker as they are delivered.
+
+    A send the person typed into a busy worker is queued with ``(root, worker)``
+    on its entry (``chat_send.mark_crew_steer``). The ``steer`` event is written
+    HERE, when the drain hands the entry to the worker, from the entry's text as it
+    is now (an edit while queued is what the worker gets), so a cancelled entry
+    records nothing. Off the drain's path: a tracked task, and a fault never
+    blocks the turn. The marker is in memory only, so an entry a restart restores
+    is delivered and never recorded.
+    """
+    from kiro_crew.dashboard.chat_handlers import CREW_STEER_QUEUE_KEY
+
+    for item in consumed:
+        marker = item.pop(CREW_STEER_QUEUE_KEY, None)
+        if not (isinstance(marker, tuple) and len(marker) == 2):
+            continue
+        root, worker = marker
+        text = item.get("content")
+        if not isinstance(text, str) or not text:
+            continue
+        try:
+            from kiro_crew.dashboard.handlers import crew_workers
+
+            task = asyncio.get_running_loop().create_task(
+                crew_workers.person_steer(state, root, worker, text)
+            )
+            tasks = getattr(state, "_background_tasks", None)
+            if isinstance(tasks, set):
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+        except Exception:
+            logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -602,6 +641,7 @@ async def _start_next_queued_turn(
         )
     if next_msg is None:
         return False
+    _record_queued_crew_steers(state, consumed)
 
     # A successor turn is now certain to dispatch (every no-successor path above
     # already returned False), so the predecessor turn's assistant bubble must be
@@ -907,6 +947,9 @@ async def _start_next_queued_turn(
     _drained_meta.pop(AUTOMATION_STEER_META, None)
     if automation_nudge is not None:
         _drained_meta["nudge"] = dict(automation_nudge)
+    # Read off the consumed entries (``_batch_recovery_echo_owed``); the merged
+    # row's union says nothing about each entry, so it does not ride along.
+    _drained_meta.pop(MIRROR_ECHO_OWED_META_KEY, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
@@ -1057,6 +1100,10 @@ async def _start_next_queued_turn(
         )
     if _commands_off:
         _run_kwargs["_commands_off"] = True
+    # A verbatim replay of a dashboard prompt that died before its mirror echo:
+    # set only when every consumed entry carries the stamp, so it is echoed once.
+    if _batch_recovery_echo_owed(consumed):
+        _run_kwargs["_recovery_echo_owed"] = True
     # Provenance for the session's log, from the enqueue-time ``kind`` tag — the
     # same unforgeable source ``is_system_injection_item`` classifies on, and for
     # the same reason: the banner these injections wrap their text in is something

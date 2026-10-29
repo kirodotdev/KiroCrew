@@ -1057,11 +1057,18 @@ async def revive_own_archived_worker(
             return target
     except Exception:  # noqa: BLE001 - an unresolvable target keeps its own answer
         return target
+
+    def _caller_is_conductor() -> bool:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        execution = read_session_execution(caller_session_key)
+        return is_conductor_execution(execution, KiroCrewConfig.load())
+
     try:
-        execution = await asyncio.to_thread(read_session_execution, caller_session_key)
+        is_conductor = await asyncio.to_thread(_caller_is_conductor)
     except Exception:  # noqa: BLE001 - an unreadable caller record revives nothing
         return target
-    if not is_conductor_execution(execution):
+    if not is_conductor:
         return target
     try:
         revived = await revive_session(

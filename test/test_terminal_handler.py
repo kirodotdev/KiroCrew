@@ -643,13 +643,14 @@ class TestResolveCwd:
 class TestKillSession:
     @pytest.mark.asyncio
     async def test_cancels_reader_task(self):
-        task = AsyncMock()
-        task.cancel = MagicMock()
+        # flake-ok: a never-set Event parks the stand-in reader until teardown cancels it
+        task = asyncio.ensure_future(asyncio.Event().wait())
         sess = _make_session()
         sess.reader_task = task
         with patch("os.close"), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
-        task.cancel.assert_called_once()
+        assert task.cancelled()
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_closes_master_fd(self):
@@ -678,6 +679,7 @@ class TestKillSession:
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         mock_kill.assert_any_call(UNALLOCATABLE_PID, platform_compat.SIGTERM)
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_the_process_tree_is_hung_up_and_ended_before_the_pty_is_closed(self):
@@ -716,6 +718,8 @@ class TestKillSession:
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         mock_kill.assert_not_called()
+        # An exited child still leaves a PTY descriptor to close.
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_handles_process_lookup_error_on_sigterm(self):
@@ -724,7 +728,9 @@ class TestKillSession:
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree",
                       side_effect=ProcessLookupError):
             await terminal._kill_session(sess)
-        # Should not raise
+        # A child that vanished between the liveness check and the signal must not
+        # stop the rest of teardown.
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_sigkill_on_timeout(self):

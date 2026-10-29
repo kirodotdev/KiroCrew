@@ -56,6 +56,12 @@ export interface ChatPaneProps {
    *  long transcripts keep the same user-configured measure as the main
    *  chat. */
   followContentWidth?: boolean
+  /** This pane's composer owns the document-wide "Start Dictation with a Key"
+   *  binding. Defaults to false: the key listens on the whole document, so
+   *  only a host that shows ONE composer may set it (N armed panes would
+   *  open N captures on one keystroke). The Members page's DM pane sets it;
+   *  split-view panes leave it off and ChatPage keeps its own. */
+  pushToTalk?: boolean
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
@@ -101,12 +107,6 @@ export interface ChatPaneProps {
    *  (components/chat/crewmateBubbles). Undefined = an ordinary transcript;
    *  decided by the host, never inferred from the slot. */
   crewmate?: CrewmateIdentity
-  /** A message from the crewmate the HOST draws after the last row (the
-   *  Members page's warm resume / cold welcome, `mateGreeting.ts`). It sits in
-   *  the transcript like a reply but is not one: never a slot row, never sent,
-   *  so it costs no model call and the model never reads it back. Only
-   *  meaningful with `crewmate`. */
-  crewmateGreeting?: React.ReactNode
   /** Whether a person can see this crewmate's thread right now: the window is
    *  visible AND focused and nothing covers the chat. The unread landing marks
    *  a message read only while this is true; a reply landing in a parked or

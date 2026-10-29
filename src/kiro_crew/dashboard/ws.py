@@ -861,6 +861,8 @@ async def _serve_ws(
     )
     # ``fold_delta.1``: send this tab only the boards it watches (dashboard users only).
     state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
+    # ``fold_delta.2`` beside it: this tab applies ``slot_fold`` deltas for ``work``.
+    state.set_fold_apply_capable(ws, _ws_hub.FOLD_APPLY_CAPABILITY in declared_caps)
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
@@ -878,9 +880,9 @@ async def _serve_ws(
     # ceiling, because it is not ceiling-only.
     initial_answer_generation = governance_answer_generation()
     # The slots an app socket may receive subagent cards for, read at each
-    # subscribe: its replay covers these when it names none, and a name outside
-    # them is not kept. A dashboard user's replay follows the slots it names and
-    # focuses instead.
+    # subscribe: its replay covers these when its subscribe names no list, and a
+    # name outside them is not kept. A dashboard user's replay follows the slots
+    # it names instead, and on the owner's socket the slots it focuses.
     _app_replay_slots: list[str] = []
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
@@ -924,6 +926,9 @@ async def _serve_ws(
             # never receives the tree, so its generation would describe data the
             # app does not have.
             envelope_extras["foldersGeneration"] = state.folders_generation()
+            # The tag vocabulary / board columns' baseline, gated the same way:
+            # an app token is not sent the sidebar's tag stores.
+            envelope_extras["tagsGeneration"] = state.tags_generation()
         if "yolo" in envelope_extras:
             # Handing a socket the live blanket-approval override is a grant
             # of operator security posture, not slot data, and this initial
@@ -965,7 +970,7 @@ async def _serve_ws(
         await ws.send_str(snapshot_payload)
         # After the snapshot (the first frame by contract): ask a capable tab for its watch.
         if ws.get(_ws_hub.FOLD_DELTA_WS_FLAG, False):
-            hello = {"type": _ws_hub.FOLD_HELLO_FRAME, "data": _ws_hub.fold_hello_payload()}
+            hello = {"type": _ws_hub.FOLD_HELLO_FRAME, "data": _ws_hub.fold_hello_payload(ws)}
             await ws.send_str(json.dumps(hello))
         # One-shot per-member event-log baseline, to THIS socket only, right
         # after the connect snapshot and before any later broadcast can reach
@@ -1698,16 +1703,22 @@ async def _serve_ws(
                             )
                         else:
                             _replay_queue.reset(_durable_replay)
-                        # The slots the client names; a client that names none
-                        # gets the slots it later focuses (an app socket: the
-                        # slots it was shown on connect). The folder fallback
-                        # has no per-slot index, so it runs once per subscribe.
+                        # With the crew log off, the folder fallback: it has no
+                        # per-slot index, so it runs once per subscribe. Otherwise
+                        # the slots the client names, none for an empty list. A
+                        # frame with no list asks, on an app socket, for the slots
+                        # whose subagent cards it may see (read above at this
+                        # subscribe), and on a dashboard-user socket for none.
+                        # While the crew log is on, later subagent_replay frames,
+                        # and an owner's slot_focused frames, ask for more.
                         _scope = requested_slots(data.get("slots"))
-                        _replay_queue.request(
-                            (_scope if _scope is not None else _app_replay_slots)
-                            if crew_log_enabled()
-                            else [_FOLDER_REPLAY]
-                        )
+                        if not crew_log_enabled():
+                            _replay_slots = [_FOLDER_REPLAY]
+                        elif _scope is not None:
+                            _replay_slots = _scope
+                        else:
+                            _replay_slots = _app_replay_slots
+                        _replay_queue.request(_replay_slots)
                     elif msg_type == "subagent_replay":
                         # A view that starts showing more slots (a split pane, a
                         # session's children) asks for their finished runs. Each

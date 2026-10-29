@@ -274,6 +274,9 @@ class TestTheFlagAlsoReachesOpenClients:
 
         await _drive(state, slot, _events(""))
 
+        rows = _tool_rows(slot)
+        assert rows, "the ordinary call still left its tool row"
+        assert not [r for r in rows if (r.get("meta") or {}).get(META_KEY)]
         assert not [
             c
             for c in state.broadcast_ws.call_args_list

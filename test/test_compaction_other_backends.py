@@ -51,6 +51,7 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -142,6 +143,21 @@ class TestTheHarnessThatWasDrivenAndProved:
         assert ACP_BACKEND_PI in ACP_BACKENDS_INLINE_COMPACTION
         assert capabilities_for(ACP_BACKEND_PI).compacts_inline is True
         provider = AcpProvider(acp_backend=ACP_BACKEND_PI)
+        assert messaging_commands.compact_unsupported_backend(provider) is None
+
+    def test_copilot_can_serve_a_manual_compact(self) -> None:
+        """Copilot CLI joins on the same bar: a driven session whose
+        ``usage_update.used`` fell after ``/compact``. The capture is
+        ``test/fixtures/acp_frames/copilot/compact-live.jsonl``."""
+        assert ACP_BACKEND_COPILOT in ACP_BACKENDS_COMPACT
+
+    def test_copilot_finishes_inside_the_prompt_turn(self) -> None:
+        """Its ``/compact`` turn carries the ``Compacted conversation history`` chunk
+        and ends with ``end_turn`` and nothing after it, so the turn's terminal is the
+        done signal."""
+        assert ACP_BACKEND_COPILOT in ACP_BACKENDS_INLINE_COMPACTION
+        assert capabilities_for(ACP_BACKEND_COPILOT).compacts_inline is True
+        provider = AcpProvider(acp_backend=ACP_BACKEND_COPILOT)
         assert messaging_commands.compact_unsupported_backend(provider) is None
 
     def test_kiro_stays_on_the_waiting_arm(self) -> None:

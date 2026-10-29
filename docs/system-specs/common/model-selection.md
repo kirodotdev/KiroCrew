@@ -131,8 +131,48 @@ KAS sends no `models` object; its list is only the `configOptions` `model`
 select, and it defaults a new session to `auto`. The pooled check asks that select
 one question: is the session on an `auto` the select does not list? If so it moves
 to a listed id. The select never becomes the session's advertised list, so the
-picker and the explicit-pick guard are unchanged for KAS, and a concrete current
-model is never judged against a list that may be incomplete.
+picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
+and a concrete current model is never judged against a list that may be incomplete.
+
+The same select IS the engine's catalog, and the shared-runtime driver records it
+as one (`agent_sdk/kas_model_catalog.py`, `record_catalog`, on a positive KAS
+identity, from `AcpSessionHandle.store_session_config`; KAS runs on `AcpRuntime`
+only):
+rows in the `chat --list-models` shape — `model_id` / `model_name` / `display_name`
+/ `description`, and `rate_multiplier` from each option's `_meta.kiro.rateMultiplier`
+— measured on the bundled engine
+(`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`: no `models` object, the
+select alone, no structured context-window field on any option). The recording is
+process-wide and in memory, like the catalog's prices; a response with no select
+clears nothing. A select is what ONE account is served, so the next account must
+see `auto` alone until its own first session: every `session/new` and
+`session/load` notes the vault identity fingerprint it WENT OUT under
+(`kas_model_catalog.vault_identity`, `auth/bridge.vault_identity_fingerprint`, read
+off the loop by the KAS harness as it builds the session payload --
+`SessionExtras.vault_identity`, `""` on every other host, so the Kiro construction
+path gains no step -- and carried on the handle as `request_vault_identity`),
+`record_catalog` keeps it with the rows and refuses a response that carries none,
+and `recorded_catalog_snapshot(identity)` yields the rows only to the fingerprint
+they were recorded for. The engine answers for the account in the vault when it
+was asked (it takes its credential per call through `_kiro/auth/getAccessToken`),
+so the stamp is per request, never per process: a long-lived runtime records for
+whoever is in the vault at its next session. The picker's handler reads the
+vault's fingerprint on every request and again after its one await (the
+advertised-store persist), so after an account switch made anywhere on the host
+-- the dashboard's sign-in card, or `kirocrew kas login` / `kas logout` in a
+shell, which writes the same vault from another process -- it answers cold, and
+the rows serve again if the vault comes back to that account. No in-process
+notice from the vault's writer is needed, so there is none. Only the **bundle route** reads
+it — `agent.acp_backend == "kas"`
+AND `agent.kas_bundle`, the positive two-fact test `agent_sdk.kas_bundle.kas_bundle_route`
+— because that route has no kiro-cli to print a catalog; the relay route's picker
+keeps reading `--list-models` exactly as below. The bundle route runs no
+entitlement narrowing on the recording: the select already lists what the
+signed-in account is served, and `_entitled_kiro_models` reads the newest live
+`acp`-namespace provider, which can be a retained kiro-cli session after a
+backend switch. A route is not a harness, which is
+why this is not a capability-set branch: the same `kas` backend answers from
+kiro-cli's catalog on one route and from the engine's select on the other.
 
 The claude backend has a different gap on the same exits: the model it reports is
 not always the model Claude Code runs. claude-agent-acp resolves an inheriting
@@ -197,8 +237,11 @@ own:
   sometimes the only source; the wire sites pass theirs for exactly that reason.
 - the cross-session advertised cache for that namespace. `kiro` and `kas` are NOT
   members of `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, so no `session/new` payload
-  fills the `acp` bucket; `GET /api/models` fills it from the `chat --list-models`
-  catalog instead, the same rows that seed the window authority.
+  fills the `acp` bucket as an advertised list; `GET /api/models` fills it from the
+  `chat --list-models` catalog instead, the same rows that seed the window
+  authority — or, on the KAS bundle route, from the engine's recorded `model`
+  select through the same `refresh_kiro_catalog` admission (ids and prices; no
+  windows, the select carries none).
 - the static index, but ONLY where the id round-trips through `to_provider_id` to
   itself. An entry can be an ALIAS folding onto a different model — kiro serves
   `claude-haiku-4.5` while the `claude_code` index maps that spelling to Sonnet —
@@ -250,7 +293,9 @@ backend in `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` the client captures the
 `GET /api/models` from the `chat --list-models` catalog — the UNFILTERED rows,
 before the deprecation and entitlement narrowing, because a deprecated or
 unentitled id is still a kiro id and dropping it would make a native pin read as
-foreign. That source is kiro's own ground truth and is deliberately NOT a
+foreign. On the KAS bundle route the same endpoint fills it from the engine's
+recorded `model` select (`dashboard/handlers/models_kas_bundle.py`), the rows
+`kas_model_catalog` shaped like that catalog, through the same admission. That source is kiro's own ground truth and is deliberately NOT a
 `session/new` payload: the registry attributes that payload to `claude-agent-acp`,
 and a kiro session's list is scoped to the agent that session started. With the
 bucket warm, the chip and the provider factory reach the same foreign-pin verdict
@@ -362,6 +407,12 @@ is accepted. Versioned aliases never qualify: an entry also lists substitution
 aliases (`claude-haiku-4.5` under Sonnet), and an adapter advertising one is
 serving that other model.
 
+On the `claude_code` provider, `to_provider_id` sends a bare family alias (`opus`,
+`sonnet`, `haiku`, `fable`; `CLAUDE_CODE_PASSTHROUGH_ALIASES`) unchanged only when
+the claude backend advertised that alias, so the adapter resolves its own current
+model rather than the registry's versioned id. With a cold cache, or a backend that
+advertises only versioned ids, the registry fold applies.
+
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in
 `providers/acp_runtime_start.py`, the warm-pool post-claim switch in `session_allocation.py`
@@ -425,12 +476,16 @@ its own once the cache refreshes with a list that carries it.
 - Backends with `resolves_model_from_advertised_list` use their own advertised
   model namespace: their live session's model ids, then their persisted
   namespace cache (`_advertised_cc_models`), so "no session is up" is never read
-  as "nothing advertised". Claude retains its registry display-name
-  reconciliation over that list, and shows the registry unfiltered only when
-  the cache is empty too. Other advertised-selection backends preserve exact
-  wire ids (including Pi provider/model ids) without substituting the Kiro CLI
-  catalog. A cold cache offers `auto` and a scoped configured default until
-  that backend advertises its choices.
+  as "nothing advertised". Claude labels each advertised row with the backend's
+  own name; a row the backend sent without a name of its own shows the
+  registry's display name or, for a bare family alias such as `opus`, its own
+  id. Live and cached rows pass the same admission: an id over 256 characters,
+  or past the 512th, is refused, and a label's name and description are cut to
+  400 characters (`ADVERTISED_LABEL_MAX_CHARS`). Claude shows the registry
+  unfiltered only when the cache is empty too. Other advertised-selection
+  backends preserve exact wire ids (including Pi provider/model ids) without
+  substituting the Kiro CLI catalog. A cold cache offers `auto` and a scoped
+  configured default until that backend advertises its choices.
 - Whether a canonical registry key is a display-only spelling is the backend's
   `model_id_namespace` question, the same field `_wire_model_id` translates
   through: a provider namespace whose registry row carries an id for the key

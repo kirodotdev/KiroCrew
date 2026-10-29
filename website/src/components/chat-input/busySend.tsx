@@ -11,6 +11,7 @@ import type { SendMode } from '../../pages/chat/ChatSettings'
 import { i18nT } from '../../i18n/t'
 import { StopControls } from './StopControls'
 import type { ComposerBusyMode } from './props'
+import { slotRowByKey } from '../../store/slotIndex'
 
 /* The composer's send path: `fireComposer` is every Enter and Send, idle or
    busy (it holds the send while a batch dictation transcribes, and holds an
@@ -82,7 +83,7 @@ export function busySteerFlag({ slotKey, busy, turnRunning, stopState, jevAutoCo
  *  its composer reads; any other slot may have no live run state yet after a
  *  reload, so its slots-stream row counts as running too. */
 export function slotBusySteer(state: RootState, slot: string, jevAutoConsented: boolean): true | 'auto' | undefined {
-  const row = state.dashboard.slots.find(s => s.key === slot)
+  const row = slotRowByKey(state.dashboard.slots, slot)
   const active = slot === state.chat.activeSlot
   const rowRunning = !active && !!row?.running
   return busySteerFlag({

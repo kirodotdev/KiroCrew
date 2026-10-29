@@ -133,6 +133,27 @@ def account_type_for(identity: str, provider: str) -> str:
     return _ACCOUNT_TYPE_BY_SLOT.get(identity, "")
 
 
+def recorded_start_url(token: KasToken) -> str:
+    """The start URL *token*'s sign-in recorded, or ``""`` when it recorded none."""
+    start_url = token.extra.get(START_URL_EXTRA_KEY) if isinstance(token.extra, dict) else None
+    return start_url if isinstance(start_url, str) else ""
+
+
+def whoami_document_for(identity: str, provider: str, start_url: object) -> dict[str, str]:
+    """The ``kiro-cli whoami --format json`` document for a slot, provider and start URL.
+
+    THE one writer of the vault's ``accountType`` and ``startUrl``: ``kirocrew kas
+    whoami``, the cloud login target and the dashboard's account modal
+    (``kiro_crew.dashboard.handlers.kiro_vault_identity``) all render from it, so
+    the card and the CLI cannot describe one sign-in differently. ``startUrl`` is
+    present only when *start_url* is a non-empty string.
+    """
+    doc = {"accountType": account_type_for(identity, provider)}
+    if isinstance(start_url, str) and start_url:
+        doc["startUrl"] = start_url
+    return doc
+
+
 def whoami_document(token: KasToken) -> dict[str, str]:
     """The ``kiro-cli whoami --format json`` document the stored *token* stands for.
 
@@ -140,11 +161,7 @@ def whoami_document(token: KasToken) -> dict[str, str]:
     ``accountType`` always, ``startUrl`` when the sign-in recorded one. Never the
     token itself, never the refresh token, never the profile ARN.
     """
-    doc = {"accountType": account_type_for(token.identity, token.provider)}
-    start_url = token.extra.get(START_URL_EXTRA_KEY) if isinstance(token.extra, dict) else None
-    if isinstance(start_url, str) and start_url:
-        doc["startUrl"] = start_url
-    return doc
+    return whoami_document_for(token.identity, token.provider, recorded_start_url(token))
 
 
 def resolve_signed_in(store: TokenStore) -> KasToken | None:

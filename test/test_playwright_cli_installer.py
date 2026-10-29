@@ -391,7 +391,9 @@ def test_the_posix_installer_stages_node_for_gateway_execution() -> None:
     assert 'mktemp "$PREFIX/.gateway-node.XXXXXX"' in body
     assert 'mv "$_gateway_node_incoming" "$GATEWAY_NODE"' in body
     wrapper = body[body.index("# ── gateway Node + wrapper") : body.index("# ── verify")]
-    assert 'exec $(_shell_quote "$GATEWAY_NODE") $(_shell_quote "$TARGET")' in wrapper
+    assert 'KIROCREW_NODE="$(_shell_quote "$GATEWAY_NODE")"' in wrapper
+    assert 'KIROCREW_ENTRY="$(_shell_quote "$TARGET")"' in wrapper
+    assert 'exec @KIROCREW_NODE@ @KIROCREW_ENTRY@ "$@"' in wrapper
     assert 'PATH=$(_shell_quote "$NODE_BIN_DIR")' not in wrapper
 
 

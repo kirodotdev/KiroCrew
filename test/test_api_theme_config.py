@@ -22,6 +22,7 @@ def _make_cfg(
     language: str = "",
     privacy_acked: bool = False,
     crewmates_onboarded: bool = False,
+    translucent_panels: str = "",
 ):
     """Build a mock KiroCrewConfig with dashboard display fields.
 
@@ -38,6 +39,7 @@ def _make_cfg(
     cfg.dashboard.language = language
     cfg.dashboard.privacy_acked = privacy_acked
     cfg.dashboard.crewmates_onboarded = crewmates_onboarded
+    cfg.dashboard.translucent_panels = translucent_panels
     return cfg
 
 
@@ -67,6 +69,7 @@ async def test_theme_boot_returns_defaults() -> None:
         "mode": "",
         "color": "",
         "language": "",
+        "translucent_panels": "",
         "onboarded": False,
         "import_onboarded": False,
         "privacy_acked": False,
@@ -82,6 +85,7 @@ async def test_theme_boot_returns_configured_values() -> None:
         theme_color="kiro",
         onboarded=True,
         import_onboarded=True,
+        translucent_panels="on",
     )
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
@@ -92,6 +96,7 @@ async def test_theme_boot_returns_configured_values() -> None:
         "mode": "dark",
         "color": "kiro",
         "language": "",
+        "translucent_panels": "on",
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": False,
@@ -118,6 +123,7 @@ async def test_theme_config_get() -> None:
         "mode": "light",
         "color": "emerald",
         "language": "",
+        "translucent_panels": "",
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": False,
@@ -184,6 +190,7 @@ async def test_theme_config_put_updates_and_persists(cfg_file: Path) -> None:
         "mode": "dark",
         "color": "monokai",
         "language": "",
+        "translucent_panels": "",
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": True,  # falls back to `onboarded` when never written
@@ -270,10 +277,36 @@ async def test_theme_config_put_persists_crewmates_onboarded(cfg_file: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_theme_config_put_persists_translucent_panels(cfg_file: Path) -> None:
+    """The Translucent panels switch is workspace-backed like the theme mode.
+
+    A browser-only store is per origin, so a new gateway port or a second browser
+    read as "the glass turned itself off"; the browser copy is only the render
+    cache. Both non-empty values round-trip, and '' (never chosen here) is
+    writable so a workspace can be returned to "the browser decides".
+    """
+    _write(cfg_file, {})
+    resp = await _put({"translucent_panels": "on"})
+    assert resp.status == 200
+    assert _read(cfg_file)["dashboard"]["translucent_panels"] == "on"
+    assert json.loads(resp.body)["translucent_panels"] == "on"
+    resp = await _put({"translucent_panels": "off"})
+    assert _read(cfg_file)["dashboard"]["translucent_panels"] == "off"
+    assert json.loads(resp.body)["translucent_panels"] == "off"
+    resp = await _put({"translucent_panels": ""})
+    assert _read(cfg_file)["dashboard"]["translucent_panels"] == ""
+    assert json.loads(resp.body)["translucent_panels"] == ""
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body",
     [
         {"mode": "invalid"},
+        # A bool is the shape a client would reach for first; it is refused so
+        # the stored value is always one of the three strings the loader reads.
+        {"translucent_panels": True},
+        {"translucent_panels": "yes"},
         # ``bool("false")`` is True: coercing instead of rejecting would persist
         # the inverse of what the client asked for.
         {"onboarded": "false"},
@@ -286,6 +319,8 @@ async def test_theme_config_put_persists_crewmates_onboarded(cfg_file: Path) -> 
     ],
     ids=[
         "mode",
+        "translucent_panels_bool",
+        "translucent_panels_word",
         "onboarded",
         "onboarded_int",
         "import_onboarded",

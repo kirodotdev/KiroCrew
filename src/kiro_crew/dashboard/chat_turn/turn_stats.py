@@ -19,6 +19,7 @@ from kiro_crew.llm_helpers import (
     usage_has_billing,
 )
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
+from kiro_crew.metrics.harness import HARNESS_UNKNOWN, harness_of
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
 from kiro_crew.monitoring.completion import (
     disposition_for_stop_reason,
@@ -49,7 +50,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
     from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
-    from kiro_crew.dashboard.chat_turn.native_cards import _native_subagent_close_all
+    from kiro_crew.dashboard.chat_turn.native_cards import (
+        NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        _native_subagent_close_all,
+    )
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed, _wt_collect
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
@@ -263,8 +267,13 @@ def _emit_turn_metric(
     usage: object = None,
     model: str = "",
     provider: str = "",
+    harness: str = HARNESS_UNKNOWN,
 ) -> None:
     """Emit this turn's OTEL samples (best-effort).
+
+    ``harness`` labels the duration sample only (see
+    :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
+    from the turn's live client.
 
     Thin delegate to :func:`kiro_crew.metrics.turns.emit_turn_duration` and
     :func:`~kiro_crew.metrics.turns.emit_turn_usage`. The family is emitted for
@@ -296,6 +305,7 @@ def _emit_turn_metric(
         elapsed_ms=elapsed_ms,
         model=model,
         provider=provider,
+        harness=harness,
     )
     emit_turn_usage(
         input_tokens=getattr(usage, "input_tokens", 0),
@@ -516,8 +526,17 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     _children_unfinished = any(not _i.get("done") for _i in _native_tracker.values())
     # Safety net: complete any native subagent cards still marked
     # running at turn end (in case a terminal status was missed),
-    # so cards don't stay stuck "running".
-    _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+    # so cards don't stay stuck "running". Only a raw end_turn counts
+    # as a normal landing; a cancel, refusal or synthesized completion
+    # cut its children off, so their cards close as interrupted.
+    _landed_normally = event.stop_reason == STOP_REASON_END_TURN and not event.synthetic_completion
+    _native_subagent_close_all(
+        state,
+        slot,
+        _native_tracker,
+        _native_card_output,
+        error=None if _landed_normally else NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+    )
     _u = event.usage
     if monitor_completion is not None and is_monitor_completion_evidence(
         event.stop_reason,
@@ -715,6 +734,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         usage=event.usage,
         model=_turn_model or _record_model,
         provider=_provider_name,
+        # The EFFECTIVE harness, read off the client that ran the
+        # turn (a per-session acp_backend override included).
+        harness=harness_of(client),
     )
     if usage_has_billing(_u):
         # Claim the turn's single usage row BEFORE the persist await

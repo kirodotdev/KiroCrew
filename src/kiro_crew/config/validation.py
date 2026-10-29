@@ -647,6 +647,14 @@ def validate_config_data(data: dict) -> dict:
     agent = data.get("agent")
     if isinstance(agent, dict) and isinstance(agent.get("log_level"), str):
         agent["log_level"] = agent["log_level"].upper()
+    # These two loaders fold case (and, for the heartbeat key, spaces) before
+    # matching, so a stored "Dashboard" or "WAL" is a valid value; spelled the
+    # loader's way here, the enum check keeps it instead of popping it.
+    if isinstance(agent, dict) and isinstance(agent.get("task_store_journal_mode"), str):
+        agent["task_store_journal_mode"] = agent["task_store_journal_mode"].lower()
+    heartbeat = data.get("heartbeat")
+    if isinstance(heartbeat, dict) and isinstance(heartbeat.get("default_deliver"), str):
+        heartbeat["default_deliver"] = heartbeat["default_deliver"].strip().lower()
 
     # 3b. ``auto_update`` decides whether an unattended installer runs, and its
     # two wrong answers are not symmetric, so a type mismatch must not be

@@ -79,13 +79,14 @@ class TestSecretFileValidation:
             self.mod._validate_secret_file_path(Path("relative/path"))
         assert exc.value.code == 2
 
-    def test_valid_0600_file_accepted(self, tmp_path: Path):
+    def test_valid_0600_file_accepted(self, tmp_path: Path, capsys):
         """A valid absolute, regular, 0o600, owned file should pass."""
         secret = tmp_path / "good_secret"
         secret.write_text("s3cr3t")
         os.chmod(secret, 0o600)
-        # Should not raise
-        self.mod._validate_secret_file_path(secret)
+        assert self.mod._validate_secret_file_path(secret) is None
+        assert capsys.readouterr().err == ""
+        assert secret.read_text() == "s3cr3t"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -1156,6 +1156,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CustomVocabulary,
         CustomVocabularyListing,
         VocabularyListError,
+        _boto3_importable,
+        _DeferredBoto3,
         _load_aws_transcribe_components,
         _make_temp_ogg,
         _ProfileCredentialResolver,

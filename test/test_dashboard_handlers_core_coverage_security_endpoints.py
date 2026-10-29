@@ -504,6 +504,11 @@ class TestLocalToken:
         assert json.loads(resp.body)["code"] == "member_owner_token_refused"
         assert fake_sel.log_api_access.call_args.kwargs["resources"] == "unverified-owner-process"
         minted.assert_not_called()
+        # The remedy must not be the command that was just refused: that command
+        # is the CLI sign-in link, and it reaches this same gate.
+        error = json.loads(resp.body)["error"]
+        assert "login link" not in error
+        assert "not from an agent's shell or a sandbox" in error
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("shares_namespaces,status", [(False, 403), (True, 200)])

@@ -4,6 +4,7 @@ import { useAppSelector } from '../store'
 import { ChannelBrandIcon } from './ChannelBrandIcon'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from './ui/dropdown-menu'
+import { slotRowByKey } from '../store/slotIndex'
 
 /**
  * Header chip for a session that is being DRIVEN from another channel.
@@ -57,7 +58,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from './ui/dro
  * state and inert in the other is the dead click again, on the other state.
  */
 export default function InboundLinkChip({ slotKey }: { slotKey?: string }) {
-  const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
+  const slot = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))
   const inbound = slot?.links?.find(link => link.direction === 'both')
 
   if (!slotKey || !inbound) return null

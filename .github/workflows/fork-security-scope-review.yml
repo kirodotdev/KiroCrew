@@ -1190,7 +1190,23 @@ jobs:
     # and an omitted name resolves to the empty string rather than erroring -- so a
     # missing entry here would skip this lane while reporting success.
     needs: [generate, validate]
-    runs-on: ${{ matrix.os }}
+    # Keep matrix.os stable: the job name uses it and so do the per-leg artifact
+    # names, so neither the rendered check names nor the fold's report lookup
+    # change. In THIS repository the Linux and Windows legs take the
+    # `kirocrew-linux-4-core` / `kirocrew-windows-4-core` larger-runner groups
+    # instead of the shared standard pool, whose concurrency is shared
+    # enterprise-wide. Targeted by LABEL, not `group:` as the three credentialed
+    # jobs here do: a group belongs to the kirodotdev organization, so a fork
+    # running this workflow in its own repository cannot reach one, and a job
+    # dispatched to a group that does not admit the repository queues until the
+    # 24-hour auto-cancel. The `if` below already skips the common fork-internal
+    # case -- a pull request whose head repository IS the fork -- but the
+    # conditional label is what keeps the remaining paths on a runner they can
+    # actually get. The macOS leg stays hosted; see
+    # docs/ci/ci-and-reviews.md for why its definition is not a like-for-like
+    # swap. A larger runner changes nothing about this job's posture: still a
+    # GitHub-hosted ephemeral VM, still `contents: read` and nothing else.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
     timeout-minutes: 20
     # `contents: read` and NOTHING else. This is the job that materializes and
     # executes the fork's own matcher, so it must have nothing worth reaching:
@@ -1978,9 +1994,35 @@ jobs:
             } >> "$OUT"
           fi
 
+      # One last scrub over the WHOLE composed body, as the same-repo lane does
+      # before it posts. Each input above was scrubbed on its own, but this body
+      # is fork-derived text bound for a public PR comment, so the final file is
+      # scrubbed too. The scrubber is the trusted harness copy the fold step uses.
+      # No scrubber, or a failed scrub, means the comment is NOT posted: the post
+      # step below runs only on this step's success, and the check-run reds.
+      - name: Scrub the comment body
+        id: scrub
+        if: always() && needs.generate.outputs.in_scope != 'false'
+        env:
+          OUT: ${{ runner.temp }}/scope-comment.md
+        run: |
+          set -uo pipefail
+          if [ ! -s scripts/scope_redact.py ]; then
+            echo "::error::scripts/scope_redact.py is missing or empty on the trusted harness branch, so the comment body cannot be scrubbed. Refusing to post it raw."
+            exit 1
+          fi
+          if [ ! -s "$OUT" ]; then
+            echo "::error::no comment body was assembled, so there is nothing scrubbed to post."
+            exit 1
+          fi
+          python3 scripts/scope_redact.py --mode text "$OUT" || {
+            echo "::error::scrubbing the comment body failed, so it cannot be posted safely."
+            exit 1
+          }
+
       - name: Post/update the scope review comment
         id: post
-        if: always() && needs.generate.outputs.in_scope != 'false'
+        if: always() && needs.generate.outputs.in_scope != 'false' && steps.scrub.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -2727,12 +2769,14 @@ jobs:
           FOLD_RC: ${{ steps.fold.outputs.rc }}
           BODY: ${{ runner.temp }}/scope-verdict.md
           HUMAN_OVERRIDE: ${{ needs.generate.outputs.override == 'true' || steps.human_override.outputs.active == 'true' }}
+          SCRUB_OUTCOME: ${{ steps.scrub.outcome }}
         run: |
           set -uo pipefail
           if [ -z "${HEAD:-}" ]; then
             echo "::warning::no head sha to key a check-run to"
             exit 0
           fi
+
           # The GENERIC arm, reached when no deterministic body was folded: no leg
           # produced rows, so there are none to read in a PR comment or anywhere
           # else -- and on the `validate`-refusal path that comment is not posted
@@ -2757,6 +2801,21 @@ jobs:
           elif [ -s "$BODY" ]; then
             digest="$(cat "$BODY")"
             summary="$(printf '%s\n\n_%s_\n' "${digest:0:4000}" "Full review in the PR comment for $HEAD.")"
+          fi
+          # A body the final scrub refused was never posted, so no verdict reached
+          # the PR, and the run reds. A run that already decided a block keeps its
+          # title and settled flag, so the per-head floor still holds that block.
+          # Any other run is marked unsettled, so a later clean run clears it.
+          if [ "${SCRUB_OUTCOME:-}" = "failure" ]; then
+            unposted="the comment body could not be scrubbed, so it was not posted"
+            if [ "${CONCLUSION:-}" = "failure" ]; then
+              TITLE="$TITLE ($unposted)"
+            else
+              CONCLUSION="failure"
+              TITLE="$unposted"
+              SETTLED="no"
+            fi
+            summary="Security scope review for $HEAD — $TITLE. This run's logs are linked from this check."
           fi
           # A run that could not measure marks its own check-run so the per-head
           # floor does not stand behind it: it still reds THIS run (conclusion=failure),

@@ -1198,11 +1198,28 @@ class TestGitCoord:
         """revert_step with no commits → no-op."""
         from kiro_crew import git_coord
 
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "tracked.txt").write_text("v1")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
+
         run = TaskRun(spec_path="/t.md", spec_content="s")
-        run.work_dir = str(tmp_path)
+        run.task_id = "revert_none"
+        run.work_dir = str(work_dir)
+        await git_coord.init_workspace(run)
+        (Path(run.work_dir) / "tracked.txt").write_text("v2")
+        assert await git_coord.commit_step(run, Step(index=1, title="change", description="d"))
+        # The run recorded no step commit, so there is nothing for it to revert.
         run.commit_hashes = []
 
-        await git_coord.revert_step(run)  # should not raise
+        await git_coord.revert_step(run)
+
+        assert run.commit_hashes == []
+        assert (Path(run.work_dir) / "tracked.txt").read_text() == "v2"
+
+        await git_coord.finalize(run)
 
     @pytest.mark.asyncio
     async def test_revert_success_pops_one_and_reverts_worktree(

@@ -32,10 +32,14 @@ from kiro_crew.dashboard.handlers.knowledge_access import (
     _track_scan_task,
 )
 from kiro_crew.dashboard.handlers.knowledge_sync import (
+    DocIngestHostsUnavailable,
     _add_source_unique,
+    _doc_ingest_hosts,
+    _hosts_unavailable_response,
     _ingest_local_file_task,
     _is_syncable,
     _source_row,
+    _url_refusal_response,
 )
 from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.knowledge.folder_watcher import (
@@ -48,6 +52,7 @@ from kiro_crew.knowledge.ingestion import _redact
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import AUTO_REGISTRATION_RETIRED_PROP
+from kiro_crew.knowledge.url_fetch import url_fetch_refusal
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
@@ -379,10 +384,16 @@ async def add_source(request: web.Request) -> web.Response:
             return web.json_response({"error": "file not found"}, status=404)
         uri = probe.resolved
     elif not (sync_scheduler and sync_scheduler.get_connector(source_type)):
-        if not uri.startswith("https://"):
-            return web.json_response({"error": "URI must start with https://"}, status=400)
-        if len(uri) > 2048:
-            return web.json_response({"error": "URI too long (max 2048)"}, status=400)
+        # A source with no connector is synced by the URL-fetch pool, so it is
+        # held to the same rule as the fetch: https, and a listed host.
+        try:
+            allowed_hosts = await asyncio.to_thread(_doc_ingest_hosts)
+        except DocIngestHostsUnavailable:
+            return _hosts_unavailable_response()
+        refusal = url_fetch_refusal(uri, allowed_hosts)
+        if refusal is not None:
+            _sel_log("source.add_denied", reason=refusal[0], uri=uri, outcome="denied")
+            return _url_refusal_response(*refusal)
 
     # Check for existing source with same URI
     existing = await asyncio.to_thread(store.get_source_by_uri, uri)
@@ -790,6 +801,14 @@ async def skip_file(request: web.Request) -> web.Response:
 # ---------- Config ----------
 
 
+async def _url_allowed_hosts_or_none() -> list[str] | None:
+    """The host list for ``GET /config``, or ``None`` when it cannot be read."""
+    try:
+        return await asyncio.to_thread(_doc_ingest_hosts)
+    except DocIngestHostsUnavailable:
+        return None
+
+
 async def get_config(request: web.Request) -> web.Response:
     """GET /api/knowledge/config -- returns supported formats and status."""
     owner_denied = await _require_knowledge_owner(request, "knowledge.config.read")
@@ -808,5 +827,9 @@ async def get_config(request: web.Request) -> web.Response:
             "supported_formats": sorted(FileReader.SUPPORTED - {""}),
             "accepts_no_extension": "" in FileReader.SUPPORTED,
             "folder_picker": _folder_picker_available(request),
+            # The hosts a web-page source may name; empty on a default config,
+            # where the add form says that nothing can be fetched yet. None when
+            # the list cannot be read, which the form shows as an error.
+            "url_allowed_hosts": await _url_allowed_hosts_or_none(),
         }
     )

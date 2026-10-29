@@ -24,7 +24,6 @@ import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { i18nT } from '../i18n/t'
-import { PREVIEW_CREW } from '../utils/previewFlags'
 
 /* Render framer-motion elements as plain DOM. The side sheet is an
    AnimatePresence child with a 240ms x-translate exit, so a real
@@ -636,9 +635,6 @@ describe('crew editor — save', () => {
 })
 
 describe('crew editor — Mate identity', () => {
-  // Mate is listed only with the Crewmates preview on (hideMateWithoutPreview).
-  beforeEach(() => { localStorage.setItem('mc-preview-crew', '1') })
-  afterEach(() => { localStorage.removeItem('mc-preview-crew') })
   it('renaming Mate writes display_name under its unchanged key', async () => {
     const mate = { name: 'mate', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }
     mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, mate] })
@@ -739,19 +735,14 @@ describe('crew editor — delete', () => {
     expect(within(sheet).queryByTestId('next-rail-danger')).not.toBeInTheDocument()
   })
 
-  it.each(['kirocrew', 'my-template'])('lets the first mate on %s be deleted like any other crew (Mates preview on)', async (template) => {
-    localStorage.setItem('mc-preview-crew', '1')
-    try {
-      const first = { name: 'mate', kiro_agent: template, workspace: 'default', memory_store: 'default' }
-      mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, first] })
-      await renderRoster(3)
-      const sheet = await openEditor('Mate')
-      expect(within(sheet).getByTestId('next-rail-danger')).toBeEnabled()
-      gotoPane(sheet, 'danger')
-      expect(within(sheet).getByRole('button', { name: 'Delete mate' })).toBeInTheDocument()
-    } finally {
-      localStorage.removeItem('mc-preview-crew')
-    }
+  it.each(['kirocrew', 'my-template'])('lets the first mate on %s be deleted like any other crew', async (template) => {
+    const first = { name: 'mate', kiro_agent: template, workspace: 'default', memory_store: 'default' }
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, first] })
+    await renderRoster(3)
+    const sheet = await openEditor('Mate')
+    expect(within(sheet).getByTestId('next-rail-danger')).toBeEnabled()
+    gotoPane(sheet, 'danger')
+    expect(within(sheet).getByRole('button', { name: 'Delete mate' })).toBeInTheDocument()
   })
 })
 
@@ -1376,14 +1367,8 @@ describe('crew roster — Mate', () => {
   })
   afterEach(() => localStorage.clear())
 
-  it('lists a fresh-install Mate with the Crewmates preview on', async () => {
-    localStorage.setItem(PREVIEW_CREW, '1')
+  it('lists a fresh-install Mate with no opt-in', async () => {
     await renderRoster(2)
     expect(crewCard('Mate')).toBeInTheDocument()
-  })
-
-  it('leaves Mate out while the Crewmates preview is off', async () => {
-    await renderRoster(1)
-    expect(screen.queryByRole('button', { name: 'Edit crewmate Mate' })).not.toBeInTheDocument()
   })
 })

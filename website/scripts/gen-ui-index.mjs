@@ -306,10 +306,9 @@ const settingsTabs = adapter('src/pages/SettingsPage.tsx', { container: 'buildTa
 const capabilityTabs = adapter('src/pages/CapabilitiesPage.tsx', { container: 'tabs' })
 // Other SidePanelLayout pages whose tabs are a literal list, keyed by the
 // surface (rail page) they belong to: `tab.<surface>.<key>` at `/<surface>?tab=<key>`.
-const pageTabs = {
-  developer: adapter('src/pages/DeveloperPage.tsx', { container: 'buildTabs' }),
-}
+const pageTabs = {}
 const settingsSubs = {
+  developer: adapter('src/pages/settings/DeveloperPanel.tsx', { container: 'railItems' }),
   chat: adapter('src/pages/settings/ChatPanel.tsx', { container: 'railItems' }),
   display: adapter('src/pages/settings/DisplayPanel.tsx', { container: 'railItems' }),
   notifications: adapter('src/pages/settings/NotificationsPanel.tsx', { container: 'railItems' }),

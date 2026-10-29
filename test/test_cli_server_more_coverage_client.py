@@ -123,7 +123,8 @@ class TestTokenRefusal:
 
         reason = (
             "The gateway could not verify this process as the local owner. "
-            "Open the dashboard using its CLI login link."
+            "Make this request inside the gateway's own host or container, not "
+            "from an agent's shell or a sandbox."
         )
         body = json.dumps({"error": reason, "code": "member_owner_token_refused"}).encode()
 
@@ -145,6 +146,85 @@ class TestTokenRefusal:
         assert "HTTP 403" in err and "could not verify this process as the local owner" in err
         assert "Could not reach gateway" not in err
         assert "kirocrew service install" not in err
+
+    @pytest.mark.parametrize(
+        "code,remedy",
+        [
+            ("loopback_only", "as the user that runs the gateway"),
+            ("invalid_secret", "second gateway"),
+            ("member_owner_token_refused", "not from an agent's shell or a sandbox"),
+        ],
+    )
+    def test_403_names_the_refusing_code_and_its_remedy(
+        self, monkeypatch, capsys, code, remedy
+    ) -> None:
+        """The three gates refuse for unrelated reasons, so the line under the
+        gateway's reason names which code refused and the step that answers it."""
+        import io
+        import json
+
+        body = json.dumps({"error": "refused", "code": code}).encode()
+
+        def refused(req, port, timeout, *, operation=""):
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
+            )
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", refused)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        first, _, rest = err.partition("\n")
+        assert first == "❌ Gateway refused the token request (HTTP 403): refused"
+        assert f"code {code}:" in rest and remedy in rest
+        # Each remedy is its own gate's: no line names another gate's code.
+        for other in cli_server._TOKEN_REFUSAL_REMEDIES:
+            if other != code:
+                assert other not in err
+        assert out == ""
+        if code != "member_owner_token_refused":
+            # A remote mint keeps only the first 300 characters of stderr; these
+            # two gates' server text names no remedy, so the remedy line must fit.
+            # (The owner-process gate's own text carries the remedy on line one.)
+            assert len(err.rstrip("\n")) <= 300
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"error": "refused", "code": "some_future_gate"}',
+            b'{"error": "refused", "code": ["loopback_only"]}',
+            b'{"error": "refused"}',
+            b"not json",
+            b"[]",
+        ],
+        ids=["unknown-code", "non-string-code", "no-code", "not-json", "not-object"],
+    )
+    def test_403_without_a_known_code_prints_only_the_reason(
+        self, monkeypatch, capsys, body
+    ) -> None:
+        """A code the CLI does not know, or none at all, gets no remedy line: the
+        CLI does not guess which gate refused."""
+        import io
+
+        def refused(req, port, timeout, *, operation=""):
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
+            )
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", refused)
+        with pytest.raises(SystemExit):
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        err = capsys.readouterr().err
+        assert err.startswith("❌ Gateway refused the token request (HTTP 403): ")
+        assert err.count("\n") == 1
+        assert "code " not in err
 
     def test_connection_refused_still_reports_unreachable(self, monkeypatch, capsys) -> None:
         def boom(req, port, timeout, *, operation=""):

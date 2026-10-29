@@ -115,6 +115,24 @@ describe('NotificationDetailPanel session-page navigation', () => {
     await userEvent.click(screen.getByRole('button', { name: /Go to chat/i }))
 
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/chat'))
-    expect(switchSlot).toHaveBeenCalledWith({ key: 'chat-2-200', announceOnMissing: true })
+    expect(switchSlot).toHaveBeenCalledWith({ key: 'chat-2-200', announceOnMissing: true, gesture: true })
+  })
+
+  // #23564: the bell's sheet closes on a pathname change only, so a jump to
+  // /chat made from /chat must close it through onLeave, or the sheet stays
+  // over the chat the gesture just opened and that open reads nothing.
+  it.each([
+    ['an ordinary chat link', note(), [slot()]],
+    ['a cron run\'s Go to chat', note({ kind: 'cron', slot: 'chat-2-200', job_id: 'job-a' }), [slot()]],
+  ] as const)('tells its host it is leaving on %s, also when the page is already /chat', async (_label, n, slots) => {
+    const onLeave = vi.fn()
+    const store = createTestStore()
+    store.dispatch(sseSlots([...slots]))
+    renderWithProviders(<><NotificationDetailPanel n={n} onClose={() => {}} onLeave={onLeave} /><LocationProbe /></>, { store, route: '/chat' })
+
+    await userEvent.click(screen.getByRole('button', { name: /Go to chat/i }))
+
+    await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1))
+    expect(switchSlot).toHaveBeenCalledWith({ key: 'chat-2-200', announceOnMissing: true, gesture: true })
   })
 })

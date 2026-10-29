@@ -750,8 +750,10 @@ class TestKiroInPlaceCompaction:
         provider.send_command = AsyncMock()
         mgr.release("dashboard:chat-1")
 
-        await mgr._compact_session("dashboard:chat-1", 92.0)
+        outcome = await mgr._compact_session("dashboard:chat-1", 92.0)
 
+        assert outcome == "ok"
+        assert mgr._sessions["dashboard:chat-1"].provider is provider
         provider.stream_command.assert_called_once_with("/compact")
         provider.send_command.assert_not_awaited()
         await mgr.close_all()

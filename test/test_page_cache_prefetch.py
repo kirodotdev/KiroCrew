@@ -66,6 +66,53 @@ def test_an_unreadable_file_never_raises(tmp_path):
     _wait_for(before, "kc-test-dir")
 
 
+def test_read_now_reads_on_the_calling_thread_and_skips_none(tmp_path, monkeypatch):
+    db = tmp_path / "now.db"
+    db.write_bytes(b"x" * 10)
+    read: list[tuple[str, str]] = []
+    real_open = open
+
+    def recording_open(path, *args, **kwargs):
+        if str(path).startswith(str(tmp_path)):
+            read.append((Path(path).name, threading.current_thread().name))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", recording_open)
+    page_cache.read_now([None, str(db)])
+    assert read == [("now.db", threading.current_thread().name)]
+
+
+def test_a_read_error_skips_that_file_and_continues(tmp_path, monkeypatch):
+    bad = tmp_path / "bad.db"
+    bad.write_bytes(b"x")
+    good = tmp_path / "good.db"
+    good.write_bytes(b"y")
+    opened: list[str] = []
+    real_open = open
+
+    def denying_open(path, *args, **kwargs):
+        if str(path).startswith(str(tmp_path)):
+            opened.append(Path(path).name)
+            if Path(path).name == "bad.db":
+                raise PermissionError(13, "denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", denying_open)
+    page_cache.read_now([bad, good])  # must not raise
+    assert opened == ["bad.db", "good.db"]
+
+
+def test_prefetch_during_interpreter_shutdown_never_raises(tmp_path, monkeypatch):
+    db = tmp_path / "a.db"
+    db.write_bytes(b"x")
+
+    def _refuse(self):
+        raise RuntimeError("can't create new thread at interpreter shutdown")
+
+    monkeypatch.setattr(threading.Thread, "start", _refuse)
+    page_cache.prefetch([db])  # returns quietly; the read is only a hint
+
+
 def test_knowledge_maintenance_reads_the_library_only_while_a_rebuild_is_pending(
     tmp_path, monkeypatch
 ):

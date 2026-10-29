@@ -710,6 +710,15 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "exact must be a boolean", "code": "exact_not_bool"}, status=400
         )
+    # Optional keep-one mode: delete only the extra copies of identical lessons
+    # among the matches, keeping the oldest of each, so duplicates can be
+    # collapsed without deleting the lesson and re-adding it. JSON boolean only,
+    # for the same reason as ``exact``.
+    keep_one = body.get("keep_one", False)
+    if not isinstance(keep_one, bool):
+        return web.json_response(
+            {"error": "keep_one must be a boolean", "code": "keep_one_not_bool"}, status=400
+        )
     # Delete from the vector store if active; fall through to JSONL (V1) below.
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -735,7 +744,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     # arriving untyped from the global getter.
     ok = False
     if vs and (vs_lessons or vs.algorithm_version == "v2"):
-        ok = await asyncio.to_thread(vs.delete_lesson, rule_sub, repo_scope, exact=exact)
+        ok = await asyncio.to_thread(
+            vs.delete_lesson, rule_sub, repo_scope, exact=exact, keep_one=keep_one
+        )
     # V1 only: when the vector store matched nothing, try the JSONL tier, as
     # ``kirocrew learn remove`` does. Injection falls back to that file when every
     # vector row is withheld, so a lesson active in every turn must stay
@@ -746,7 +757,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         # thread can be holding across file I/O for a concurrent save_or_enrich --
         # so calling it inline would let one lessons write stall every task on the
         # event loop. Same reason api_lessons_create offloads its write.
-        ok = await asyncio.to_thread(store.remove, rule_sub, repo_scope, exact=exact)
+        ok = await asyncio.to_thread(
+            store.remove, rule_sub, repo_scope, exact=exact, keep_one=keep_one
+        )
     if ok:
         state.push_refresh("lessons")
     return web.json_response({"ok": ok})

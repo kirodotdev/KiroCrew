@@ -166,17 +166,29 @@ class TestCodeFingerprint:
         monkeypatch.setattr(cf.subprocess, "run", fake_run)
         monkeypatch.setenv("GIT_EXTERNAL_DIFF", "/tmp/evil")
         monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'diff.external=/tmp/evil'")
+        # The repo-driver preflight has its own real-repo tests; here it is clean.
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_driver_reason", lambda *_a, **_k: ""
+        )
         assert cf._git_fingerprint(tmp_path) == "abc"
         assert len(seen) == 2
         for argv, env in seen:
             assert argv[0] == "/usr/bin/git"
             assert env["GIT_CONFIG_GLOBAL"] == os.devnull
             assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+            # Beside those three, only the shared exec-key pins (GIT_CONFIG_COUNT/KEY_n/VALUE_n).
             assert not any(
                 k.startswith("GIT_")
                 and k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT")
+                and k != "GIT_CONFIG_COUNT"
+                and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
                 for k in env
             )
+            pins = {
+                env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                for i in range(int(env["GIT_CONFIG_COUNT"]))
+            }
+            assert pins["diff.external"] == "" and pins["core.fsmonitor"] == "false"
             assert "core.pager=cat" in argv
         diff_argv = seen[1][0]
         assert "--no-ext-diff" in diff_argv and "--no-textconv" in diff_argv

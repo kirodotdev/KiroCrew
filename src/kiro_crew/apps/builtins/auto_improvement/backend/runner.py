@@ -47,7 +47,7 @@ from typing import Any
 
 from kiro_crew.dashboard.crash_dump_store import current_process_identity, pid_identity_alive
 
-from . import clone_setup, store
+from . import clone_setup, deps, store
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +239,17 @@ def _unsandboxed_agent_accepted() -> bool:
     """
     config = store.read_json(store.config_path(), {}) or {}
     return bool(config.get("acceptUnsandboxedAgentRisk") is True)
+
+
+def _refuse_without_gate_pytest() -> None:
+    """Refuse a run or calibration when the gate interpreter cannot run pytest.
+
+    Otherwise every candidate is recorded as the agent's invalid test while no test
+    ever ran. ``RuntimeError`` so the start route answers 409 with the message.
+    """
+    problem = deps.gate_pytest_problem()
+    if problem:
+        raise RuntimeError(f"refusing to start: {problem}")
 
 
 def _terminal_record_path() -> Path:
@@ -713,6 +724,7 @@ class RunSupervisor:
         """The body of :meth:`_build_driver`, which owns the clone lock. Split out so the
         lock acquisition is a single visible statement rather than an indent over 100
         lines — and so a future edit cannot add an early ``return`` that skips it."""
+        _refuse_without_gate_pytest()
 
         # Put the clone on the CONFIGURED branch BEFORE building the profile. A fresh
         # clone sits on the repo default (main); a run targeting another branch would
@@ -976,11 +988,16 @@ class RunSupervisor:
         with self._lock:
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            admitted_at = self._stop_seq
+        _refuse_without_gate_pytest()
 
         run_id = f"cal-{int(time.time())}"
         with self._lock:
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            if self._stop_seq != admitted_at:
+                # A stop (or the app being disabled) landed during the pytest probe.
+                raise RuntimeError("the calibration was stopped before it started")
             self._stop_requested = False
             self._state = RunState(
                 status=STATUS_CALIBRATING, run_id=run_id, started_at=time.time(), stage="calibrate"

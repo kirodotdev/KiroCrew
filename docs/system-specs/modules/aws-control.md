@@ -125,6 +125,8 @@ bucket is left untagged rather than becoming a usable drive without versioning.
 `test_aws_control_storage.py::TestCreateDrive.test_versioning_is_enabled_before_hardening_tags_land`
 pins the sequence.
 
+Before the discovery tags, `storage.ensure_tls_only_policy` merges a `KiroCrewDenyInsecureTransport` statement (`aws:SecureTransport=false`) into the bucket policy. It rewrites only a statement under its own Sid and keeps every other statement as written, so an owner's own transport rule, however strict, is never removed. It runs in `create_drive` rather than in the shared `_harden_bucket`, because deploy-web later replaces its bucket policy with `put_oac_bucket_policy`. It is best effort: the recommended drive IAM tier deliberately has no `s3:PutBucketPolicy`, since with it the same principal could grant itself reads of the write-only `backup/` prefix, so a denied call is logged and the drive is still created (`TestCreateDrive.test_a_failed_tls_policy_still_creates_the_drive`). A drive created before this statement existed gets it on its first upload in each gateway process; that check runs once per process, is best effort, and never fails the upload. `TestCreateDrive.test_a_new_drive_gets_a_tls_only_bucket_policy_before_its_tags`, `TestEnsureTlsOnlyPolicy` and `test_aws_control_routes.py::TestDriveUpload.test_an_upload_confirms_the_tls_only_policy_once_per_drive` pin this.
+
 Drive objects live beneath the `artifacts/`, `drive/`, and `backup/` prefixes.
 `storage.validate_key` rejects paths that could escape a section. Folder deletion
 uses a validated, slash-anchored prefix, so it cannot target an empty section,
@@ -151,6 +153,7 @@ a failed copy leaves the drive unchanged. Two invariants are load-bearing: a
 move never silently overwrites (an existing destination refuses with 409,
 pinned by
 `test_aws_control_routes.py::TestDriveMove.test_move_existing_destination_answers_409_and_deletes_nothing`),
+a destination key that still has an unexpired share link refuses with 409 `destination_share_active`, because that link would start serving the moved file (`TestDriveMove.test_move_onto_a_key_with_an_unexpired_share_is_refused`),
 and the section is restricted to `drive` (the `library` and `backup` sections
 are managed surfaces whose objects carry ledger state a move would orphan;
 pinned by
@@ -288,7 +291,7 @@ and `delete_prefix`, `object_exists`, `head_object_meta`, `presign`, `usage` and
 
 | Owner | Holds |
 |---|---|
-| `backend/storage_drive.py` | the bucket naming scheme and tags, `SECTION_PREFIXES` and `section_key`, `find_drive`, `_assert_owned_by` and `create_drive` |
+| `backend/storage_drive.py` | the bucket naming scheme and tags, `SECTION_PREFIXES` and `section_key`, `find_drive`, `_assert_owned_by`, `create_drive` and `ensure_tls_only_policy` |
 | `backend/storage_staging.py` | `STAGING_DIR_LEAF`, `staging_root`, `pinned_staging` and `get_object_head_bytes` |
 | `backend/storage_versions.py` | `validate_version_id`, the batched delete helpers, `DeleteObjectsPartialFailure`, `list_object_versions`, `PartialVersionDelete` and `delete_object_versions` |
 

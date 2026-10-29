@@ -217,12 +217,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_service import (  # noqa: F401
         _FORCED_PROBE_FLOOR_SECS,
-        _OWNER_PREFIX,
+        _MEMBER_OWNERS,
         _SETUP_COMPLETE_FILENAME,
         _WARM_UP_DELAY_SECS,
         KiroPrerequisiteService,
         _established_installation,
-        _own_methods,
         _resolve_config_set_hints,
         _turn_auth_service,
         kiro_signed_out_confirmed,
@@ -310,6 +309,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         identity_stores,
         platform_compat,
         sandbox,
+    )
+    from kiro_crew._facade_bindings import (  # noqa: F401
+        own_methods,
     )
     from kiro_crew._sqlite_compat import (  # noqa: F401
         sqlite3,

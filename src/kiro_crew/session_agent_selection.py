@@ -11,7 +11,6 @@ from typing import Any, NamedTuple
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.loader import (
     ResolvedBindings,
-    dispatch_kiro_agent,
     resolve_agent_bindings,
 )
 from kiro_crew.execution_context import (
@@ -103,6 +102,28 @@ def _source_of_view(name: str) -> str:
     return name if source is None else source
 
 
+def _member_record_agent(bound_kiro_agent: str, template_id: str) -> str:
+    """The agent a ``member`` record's chat runs.
+
+    The conductor when the member's CURRENT bound ``kiro_agent`` from config owns a
+    crewmate file (``mate_worker.member_record_template``), whatever older template
+    the record kept (a pre-conductor ``kirocrew-conductor``). Any other member runs
+    its recorded *template_id* through ``mate_worker.member_chat_agent``, so a
+    record naming the crewmate's own file still chats on the conductor and a
+    shared-agent crewmate keeps the agent its thread recorded. No record is
+    rewritten.
+    """
+    from kiro_crew.mate_worker import (
+        MATE_CONDUCTOR_AGENT,
+        member_chat_agent,
+        member_record_template,
+    )
+
+    if member_record_template(template_id, bound_kiro_agent) == MATE_CONDUCTOR_AGENT:
+        return MATE_CONDUCTOR_AGENT
+    return member_chat_agent(template_id)
+
+
 def resolve_session_agent_bindings(
     resolver,
     config,
@@ -132,11 +153,14 @@ def resolve_session_agent_bindings(
     # No name and no record is the default TEMPLATE, not the default crewmate
     # alias: the resolver answers an empty name with that session.
     selected = agent_name or ""
+    # The member's CURRENT bound ``kiro_agent`` from config, when its record names one.
+    bound_kiro_agent = ""
     if execution is not None:
         # Member display labels may change; the durable ID and store do not.
         if execution.member_id is not None and execution.selection_kind == "member":
             try:
-                selected, _ = member_config_for_id(config, execution.member_id)
+                selected, member_cfg = member_config_for_id(config, execution.member_id)
+                bound_kiro_agent = getattr(member_cfg, "kiro_agent", "") or ""
             except UnknownMemoryStore:
                 selected = execution.selection_name or execution.member_id
         else:
@@ -165,12 +189,11 @@ def resolve_session_agent_bindings(
         raise UnknownMemoryStore("Conversation agent selection is unavailable") from exc
     if execution is not None:
         bindings.memory_store_name = execution.store.store_id
-        # Both recorded kinds can need a skill-view repair. Only a MEMBER's
-        # template id came from a crewmate row that may hold a package filename;
-        # a template id is already the provider selection and must stay exact.
+        # Both recorded kinds can need a skill-view repair. A template id is
+        # already the provider selection and must stay exact.
         kiro_agent = _source_of_view(execution.template_id)
         if execution.selection_kind == "member":
-            kiro_agent = dispatch_kiro_agent(kiro_agent)
+            kiro_agent = _member_record_agent(bound_kiro_agent, kiro_agent)
         bindings.kiro_agent = kiro_agent
         bindings.execution_context = execution
     bindings.selection_revision = _revision(execution)

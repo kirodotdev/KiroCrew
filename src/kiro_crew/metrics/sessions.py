@@ -261,8 +261,16 @@ def _session_source(session_key: str) -> str:
     return telemetry_channel_of(session_key)
 
 
-async def record_session_started(session_key: str) -> None:
+async def record_session_started(session_key: str, provider: object = None) -> None:
     """Record one session start; never raises.
+
+    *provider* is the provider the registry entry was just built around. It
+    labels the counter with that session's EFFECTIVE ``harness``
+    (:func:`kiro_crew.metrics.harness.harness_of`), so a per-session or
+    per-agent ``acp_backend`` override shows up as its own harness rather than
+    the install default the ``kirocrew.harness`` resource attribute carries.
+    ``None`` labels it ``unknown``. Only the counter carries it: the duration
+    histogram does not, yet.
 
     The start time goes into an in-memory table keyed by session key. The crumb on
     disk is written on a worker thread, awaited before returning. The table is
@@ -335,8 +343,15 @@ async def record_session_started(session_key: str) -> None:
     # denominator every session-scoped rate is read against.
     try:
         from kiro_crew.metrics.events import emit_counter
+        from kiro_crew.metrics.harness import ATTR_HARNESS, harness_of
 
-        emit_counter(SESSION_STARTED_COUNTER, {"session_source": _session_source(session_key)})
+        emit_counter(
+            SESSION_STARTED_COUNTER,
+            {
+                "session_source": _session_source(session_key),
+                ATTR_HARNESS: harness_of(provider),
+            },
+        )
     except Exception:
         logger.debug("session started counter failed", exc_info=True)
 

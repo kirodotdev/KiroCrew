@@ -36,6 +36,36 @@ describe('remeasureAndFit', () => {
     expect(fit.fit).toHaveBeenCalledTimes(1)
   })
 
+  it('re-measures only when the font, its size or its load state changed since the last measure', () => {
+    // Every toggle empties xterm's glyph-width cache, and the DOM renderer then
+    // forces a layout per glyph: re-showing an unchanged terminal must just fit.
+    let loaded = false
+    const original = Object.getOwnPropertyDescriptor(document, 'fonts')
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { check: () => loaded } })
+    try {
+      const term = makeTerm({ offsetParent: {} })
+      const fit = { fit: vi.fn() }
+      const call = () => remeasureAndFit(term as unknown as Terminal, fit as unknown as FitAddon)
+      call()
+      expect(term._sets).toHaveLength(2)
+      call() // shown again, nothing changed
+      expect(term._sets).toHaveLength(2)
+      expect(fit.fit).toHaveBeenCalledTimes(2)
+      loaded = true // the web font arrived meanwhile
+      call()
+      expect(term._sets).toHaveLength(4)
+      call()
+      expect(term._sets).toHaveLength(4)
+      term.options.fontFamily = 'OpenDyslexicMono, monospace' // the user picked another font
+      term._sets.length = 0
+      call()
+      expect(term._sets).toEqual(['monospace', 'OpenDyslexicMono, monospace'])
+    } finally {
+      if (original) Object.defineProperty(document, 'fonts', original)
+      else delete (document as { fonts?: unknown }).fonts
+    }
+  })
+
   it('skips a display:none / detached pane (offsetParent === null) — matches the sibling refit guards', () => {
     const term = makeTerm({ offsetParent: null })
     const fit = { fit: vi.fn() }

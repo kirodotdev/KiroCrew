@@ -18,6 +18,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, toggleActivity } from '../store/chatSlice'
+import { paneCovered } from '../hooks/paneVisibility'
 
 // --- Stub child components (same scaffold as ChatPage.embedded test) ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -296,6 +297,8 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     renderWithSlot()
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '')
+    // #23564: beside the chat, the transcript stays on screen.
+    expect(paneCovered(document)).toBe(false)
   })
 
   it('opens FILLING the chat column when the rail + sidebar leave too little', async () => {
@@ -303,6 +306,10 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     resizeTo(800) // 800 - 236 - 260 = 304 < 640
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '320')
+    // #23564: filling needs no mark. It squeezes the transcript to zero width,
+    // which the on-screen backstop sees (its matrix covers that box), and a
+    // bottom-docked panel leaves the transcript on screen.
+    expect(paneCovered(document)).toBe(false)
   })
 
   it('switches an already-open panel from beside to fill on resize, without remounting it', async () => {
@@ -348,6 +355,9 @@ describe('ChatPage — activity toggle on mobile', () => {
     expect(store.getState().chat.activityOpen).toBe(true)
     // Mobile has no actbar grid column, so the panel renders inline.
     expect(await screen.findByTestId('side-panel')).toBeInTheDocument()
+    // #23564: open, it is an opaque overlay over the whole content area, so
+    // the transcript under it does not count as on screen.
+    await waitFor(() => expect(paneCovered(document)).toBe(true))
   })
 
   it('does not disable the toggle at widths below the desktop space threshold', async () => {

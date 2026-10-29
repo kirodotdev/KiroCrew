@@ -405,7 +405,6 @@ already-running app record -- restart it.
 | `kirocrew security events` | Show recent security event log entries (last 20) |
 | `kirocrew security events -n 50` | Show N entries |
 | `kirocrew security verify` | Verify security event log HMAC integrity |
-| `kirocrew file-delivery approve` | Finish a flagged-file delivery consent armed in the dashboard's Security panel (proves you are at the host) |
 | `kirocrew eval` | Run smoke test evaluation (~30s) |
 | `kirocrew eval memory_recall_basic` | Run specific scenario by name |
 | `kirocrew eval --all` | Run all scenarios (slow) |

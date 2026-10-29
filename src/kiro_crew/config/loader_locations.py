@@ -6,6 +6,7 @@ The pure primitives live in the leaf :mod:`kiro_crew.config.paths`. An owner of 
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -67,8 +68,46 @@ def _resolve_workspace_root(root: Path, *, create: bool = True) -> Path:
         logger.warning("workspace root %r is not absolute; using the default", str(root))
         root = _default_workspace_base() / _WORKSPACE_DIR_NAME
     if create:
-        root.mkdir(parents=True, exist_ok=True)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, NotADirectoryError) as exc:
+            blocker = _first_non_directory_on_path(root)
+            if blocker is None:
+                raise
+            raise NotADirectoryError(
+                errno.ENOTDIR, _workspace_blocker_message(root, blocker), str(blocker)
+            ) from exc
     return Path(os.path.realpath(str(root)))
+
+
+def _first_non_directory_on_path(root: Path) -> Path | None:
+    """The outermost component of *root* that exists but is not a directory.
+
+    A dangling link (``~/workplace`` pointing at a volume that is not mounted yet)
+    or a plain file anywhere on the chain makes ``mkdir(parents=True)`` fail with
+    an error that names a pathlib internal. This finds the component to name.
+    """
+    for candidate in (*reversed(root.parents), root):
+        if os.path.lexists(candidate) and not candidate.is_dir():
+            return candidate
+    return None
+
+
+def _workspace_blocker_message(root: Path, blocker: Path) -> str:
+    """Name what blocks creating the workspace *root* and how to fix it."""
+    if os.path.islink(blocker) and not os.path.exists(blocker):
+        what = f"{blocker} is a link to {os.readlink(blocker)}, which does not exist"
+        fix = "mount or create the link's target, or repair the link"
+    elif os.path.islink(blocker):
+        what = f"{blocker} is a link to {os.readlink(blocker)}, which is not a directory"
+        fix = "repair the link"
+    else:
+        what = f"{blocker} exists but is not a directory"
+        fix = "move that file aside"
+    return (
+        f"cannot create the workspace root {root}: {what}. Fix: {fix}, or set "
+        "KIROCREW_WORKSPACE to another directory"
+    )
 
 
 def workspace_root(*, create: bool = True) -> Path:
@@ -287,34 +326,10 @@ def decisions_consent_path() -> Path:
     return config_dir() / "decisions_consent.json"
 
 
-def file_delivery_consent_path() -> Path:
-    """Return path to file_delivery_consent.json -- flagged-file delivery consent.
-
-    Same KEYSTONE reasoning as :func:`aws_consent_path`, and the leaf is on
-    ``security._CREW_SECRET_LEAVES`` for the same reason: a recorded consent to
-    deliver a file the credential scanner flagged is an authorization, not a
-    preference. Storing it in ``config.json`` would leave it writable by any
-    auto-approved agent shell, so a prompt-injected agent could mint the grant and
-    consent, on the owner's behalf, to shipping the owner's secrets -- the exact
-    shape ``CredentialPolicy.exempt_exact_hosts`` refuses when it says such a set
-    is "NEVER sourced from ``config.json``". ``is_sensitive_path`` blocks the tool
-    path and the OS sandbox mounts the keystone read-only for the shell.
-
-    Holds ``{"<destination_class>": {destination_class, granted_at}}``; every read
-    fails soft to NO CONSENT (see ``file_delivery_consent.read_grant``). The only
-    writer is the authenticated, OWNER-gated dashboard
-    ``/api/file-delivery/consent`` handler, which opens the path directly rather
-    than through this gate. There is deliberately NO CLI verb -- a terminal
-    command that records a grant on request is a grant an automated caller can
-    take. Respects ``KIROCREW_HOME``.
-    """
-    return config_dir() / "file_delivery_consent.json"
-
-
 def credential_redaction_path() -> Path:
     """Return path to credential_redaction.json -- the credential-redaction switch.
 
-    Same KEYSTONE reasoning as :func:`file_delivery_consent_path`, and the leaf
+    Same KEYSTONE reasoning as :func:`aws_consent_path`, and the leaf
     is on ``security._CREW_SECRET_LEAVES`` for the same reason: turning the
     credential scrubber OFF is an authorization, not a preference. Stored in the
     agent-readable ``config.json`` it would be writable by any auto-approved agent
@@ -335,8 +350,7 @@ def credential_redaction_path() -> Path:
 def ssh_auth_sock_consent_path() -> Path:
     """Return path to ssh_auth_sock_consent.json -- the SSH-agent forward consent.
 
-    Same KEYSTONE reasoning as :func:`aws_consent_path` and
-    :func:`file_delivery_consent_path`, and the leaf is on
+    Same KEYSTONE reasoning as :func:`aws_consent_path`, and the leaf is on
     ``security._CREW_SECRET_LEAVES`` for the same reason: keeping
     ``SSH_AUTH_SOCK`` in the agent subprocess environment grants USE of the
     operator's ssh-agent keys -- signing, git-over-SSH, and any authentication

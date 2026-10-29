@@ -1047,7 +1047,10 @@ deliberately does NOT delegate to `delete()`: re-checking under the lock and the
 calling a method that re-acquires it reopens the same window between the two
 acquisitions, so the removal is inlined.
 
-**Star semantics in `WidgetFrame`.** `exists` and `pinned` are separate states:
+**Star semantics in `WidgetFrame`** (the slug, probe and star live in the
+`useWidgetArtifact` hook of `website/src/components/WidgetArtifact.tsx`, which the
+HTML frame and the markdown-bodied widget, `MarkdownWidget`, both draw from, so a
+widget without an iframe keeps the same link and star). `exists` and `pinned` are separate states:
 `{exists: true, pinned: false}` is the normal steady state, so the star renders
 hollow (offering to save) while the title still links to `/artifacts/<slug>`.
 Starring pins; if the artifact is absent (a pre-feature widget, a failed
@@ -1661,7 +1664,8 @@ to this kind would store content no reader can parse.
   as a crewmate's Dashboard frame. A link in the page opens through the host:
   `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
   and `window.open`, into a `kirocrew-dashboard:open` message, and
-  `useFrameLinkBridge` opens an absolute `http(s)` URL only on a real click in
+  `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
+  against its origin, only on a real click in
   that frame, once per click, with no dialog. The shim decides a click after
   the page's own handlers, so a click the page cancels posts nothing. The host
   opens at once only when it can tie the click to the asking frame

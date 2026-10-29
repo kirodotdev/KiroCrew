@@ -1617,7 +1617,9 @@ class TestModuleContract:
     def test_filter_regex_only_matches_driver_keys(self):
         assert wt._FILTER_KEY_RE.match("filter.a.process")
         assert wt._FILTER_KEY_RE.match("filter.a.b.clean")
-        assert not wt._FILTER_KEY_RE.match("filter..process")
+        # Git accepts an empty filter name (`[filter ""]`, bound by `filter=`) and
+        # runs its driver, so the empty subsection is a driver key too.
+        assert wt._FILTER_KEY_RE.match("filter..process")
         assert not wt._FILTER_KEY_RE.match("filter.a.required")
 
     def test_probe_failure_sentinel_is_not_a_plausible_key(self):

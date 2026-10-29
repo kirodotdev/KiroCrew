@@ -1,4 +1,5 @@
 import { createElement, useMemo } from 'react'
+import { selectPersonSlots } from '../../../store/dashboardSlice'
 import { MessageSquare, Clock } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -10,6 +11,7 @@ import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { selectSlotsWithLiveLastTs } from '../../../store/slotLastTs'
 import { resumeFromHistory, switchSlot } from '../../../store/chatSlice'
 import { createChatForView, showCreatedChat } from '../../../lib/createdChatView'
+import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { focusComposerForOpenedSession, focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
 import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
@@ -249,8 +251,13 @@ export function useRecentsProvider(): ResourceProvider {
   // which slot is active. Read, never subscribed.
   const store = useAppStore()
   const navigate = useNavigate()
+  const askingNavigate = useAskingNavigate()
   const queryClient = useQueryClient()
-  const slots = useAppSelector(selectSlotsWithLiveLastTs)
+  // The person's list: a Crew Mode root's workers are its side panel's to show.
+  const slots = useAppSelector(selectPersonSlots)
+  // Every live row, workers included: a worker is left out of Current, and must
+  // not come back as an Older history row either.
+  const liveSlots = useAppSelector(selectSlotsWithLiveLastTs)
   const unread = useAppSelector((s) => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
   const simplifiedToolNames = useSimplifiedToolNames()
@@ -259,7 +266,7 @@ export function useRecentsProvider(): ResourceProvider {
     const { ordered: orderedSlots, hasEmptyNew } = prepareCurrentSlots(slots)
     // Dedupe Older against ALL live slots (not just rendered ones) so a
     // filtered-out empty duplicate can't resurface as a history row.
-    const currentKeys = new Set(slots.map((s) => normalizeKey(s.key)))
+    const currentKeys = new Set(liveSlots.map((s) => normalizeKey(s.key)))
 
     return {
       id: 'recents',
@@ -270,6 +277,10 @@ export function useRecentsProvider(): ResourceProvider {
           queryClient
             .fetchQuery<HistoryResponse>({
               queryKey: ['palette', 'recents', 'history'],
+              // The full inventory this list always read: closed channel conversations
+              // and subagent transcripts belong in Older. `/api/sessions` carries no
+              // crew signal yet, so a CLOSED Crew Mode worker is still an Older row
+              // until the history rows carry one; a live one is dropped above.
               queryFn: () => api.sessions(HISTORY_LIMIT, 0, true),
               staleTime: RECENTS_STALE_MS,
             })
@@ -326,7 +337,7 @@ export function useRecentsProvider(): ResourceProvider {
               // focused once the switch has LANDED (#15732), never while the gateway
               // round trip is still in flight -- a caret placed before that would
               // file the keystrokes typed meanwhile under a slot a 404 then evicts.
-              const switched = dispatch(switchSlot({ key: s.key, announceOnMissing: true })).unwrap()
+              const switched = dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })).unwrap()
               navigate('/chat')
               focusComposerForOpenedSession(switched, s.key, store)
             },
@@ -353,7 +364,7 @@ export function useRecentsProvider(): ResourceProvider {
               // this thunk into a duplicate session. A failed create, or one
               // the user moved away from, leaves the user where they are.
               void createChatForView(dispatch, store.getState, { defaultFolder: true })
-                .then((view) => { showCreatedChat(view, navigate) })
+                .then((view) => { showCreatedChat(view, askingNavigate) })
                 .catch(() => {})
             },
           })
@@ -415,5 +426,5 @@ export function useRecentsProvider(): ResourceProvider {
         return [...current, ...planned, ...older]
       },
     }
-  }, [dispatch, store, navigate, queryClient, slots, unread, slotStatusDetail, simplifiedToolNames])
+  }, [dispatch, store, navigate, askingNavigate, queryClient, slots, liveSlots, unread, slotStatusDetail, simplifiedToolNames])
 }

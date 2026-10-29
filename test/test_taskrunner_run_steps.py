@@ -163,16 +163,19 @@ class TestWatchdog:
             f"{passed:.0f} s after the last progress, with a {step:+.0f} s wall-clock step, "
             f"the watchdog reset the step's session {sessions.reset.await_count} time(s)"
         )
+        assert (run.task_id in runner._stall_cancelled_ids) is cancelled
 
     @pytest.mark.asyncio
-    async def test_watchdog_exits_when_not_running(self) -> None:
+    async def test_watchdog_exits_when_not_running(self, tmp_path: Path) -> None:
         """Watchdog exits when run status changes from running."""
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
         run = TaskRun(spec_path="/t.md", spec_content="s", status="completed")
 
-        # Should exit immediately
-        await runner._watchdog_loop(run)
+        # Exits before its first heartbeat sleep, so the bound is never reached.
+        assert await asyncio.wait_for(runner._watchdog_loop(run), _GENEROUS_DEADLINE) is None
+        assert run.status == "completed"
+        assert runner._stall_cancelled_ids == set()
 
     @pytest.mark.asyncio
     async def test_watchdog_no_stall_when_recent_progress(self) -> None:
@@ -206,7 +209,12 @@ class TestWatchdog:
         import time
 
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=AsyncMock())
+        notifications: list[tuple[str, str]] = []
+
+        async def _on_notify(title: str, body: str, task_id: str = "") -> None:
+            notifications.append((title, body))
+
+        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=_on_notify)
         run = TaskRun(spec_path="/t.md", spec_content="s", status="running")
         run.task_id = "plan_123"
         run.current_task = 3
@@ -221,6 +229,8 @@ class TestWatchdog:
             except asyncio.CancelledError:
                 pass
 
+        assert runner._stall_cancelled_ids == {"plan_123"}
+        assert [t for t, _ in notifications] == ["[t] \U0001f527 Watchdog: cancelling stalled task"]
         sessions.reset.assert_called_with("taskrunner:plan_123:task3")
 
     @pytest.mark.asyncio
@@ -457,8 +467,12 @@ class TestActiveStallRecovery:
         sessions = _make_mock_sessions()
         # Always report dead
         sessions.is_provider_alive = AsyncMock(return_value=False)
+        notifications: list[tuple[str, str]] = []
 
-        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=AsyncMock())
+        async def _on_notify(title: str, body: str, task_id: str = "") -> None:
+            notifications.append((title, body))
+
+        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=_on_notify)
         run = TaskRun(spec_path="/t.md", spec_content="s", status="running")
         run.task_id = "plan_99"
         run.current_task = 1
@@ -483,7 +497,8 @@ class TestActiveStallRecovery:
             except asyncio.CancelledError:
                 pass
 
-        # Should NOT have triggered reset — each task only got 1 dead check (< threshold of 2)
+        # Each task got one dead check, under the threshold of 2: no notice, no reset.
+        assert notifications == []
         sessions.reset.assert_not_called()
 
 

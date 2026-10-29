@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { isAssistantMember } from '../../lib/assistantMember'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { hasNoCrewmates } from './rosterFilter'
 import { useMobileRosterBar, type MobileRosterBarState } from '../../components/MobileNavRailContext'
@@ -31,6 +32,11 @@ const PANEL_OPEN_KEY = 'mc-members-panel-open'
  *  the conversation alone; opening the panel there is remembered here without
  *  moving the choice every other crewmate reads from `PANEL_OPEN_KEY`. */
 const ASSISTANT_PANEL_OPEN_KEY = 'mc-members-assistant-panel-open'
+
+/** Whether "Show the full roster" pinned the roster beside the thread. Per tab
+ *  (sessionStorage), so it survives leaving the page and coming back, not a
+ *  new window. */
+const ROSTER_PINNED_KEY = 'mc-members-roster-pinned'
 
 interface MembersPageLayoutOptions {
   rosterRead: MembersPageRosterRead
@@ -66,14 +72,15 @@ export function useMembersPageLayout({ rosterRead, teamsRead, activeName }: Memb
   // full roster" action. The switcher lists crewmates only; team headers, New
   // team, the star, the filters and the sort live on the roster column, and on
   // desktop (where the thread's back control is hidden and a bare /members
-  // reopens a crewmate) this pin is the one way to reach them. It is page
-  // state, not persisted: the folded roster is the desktop norm and a pin is a
-  // detour from it. Picking a row keeps the pin; the roster header's close
+  // reopens a crewmate) this pin is the one way to reach them. It lives in
+  // sessionStorage (ROSTER_PINNED_KEY): leaving the page and coming back keeps
+  // it (issue #19464), but a new tab or window starts folded, the desktop norm,
+  // and it is not a saved setting. Picking a row keeps the pin; the roster header's close
   // control or the switcher action (now "Hide the roster") lifts it. A TEAM
   // view is not folded: it draws no switcher and its Back is `md:hidden`, so on
   // desktop the roster column is the only way out of `/members?team=<id>` and
   // stays beside the pane there, pinned or not.
-  const [rosterPinned, setRosterPinned] = useState(false)
+  const [rosterPinned, setRosterPinned] = useState(() => safeGetSessionItem(ROSTER_PINNED_KEY) === '1')
   // A desktop landing that has not opened its crewmate YET. The URL sync
   // effect (useMembersPageNavigation.ts) opens one on every desktop visit that names no team (the
   // URL's member, else the remembered or last-chatted one), but an effect runs
@@ -118,6 +125,7 @@ export function useMembersPageLayout({ rosterRead, teamsRead, activeName }: Memb
   const pinFocusRef = useRef<'roster' | 'chip' | null>(null)
   const setRosterPin = useCallback((pinned: boolean) => {
     pinFocusRef.current = pinned ? 'roster' : 'chip'
+    safeSetSessionItem(ROSTER_PINNED_KEY, pinned ? '1' : '0')
     setRosterPinned(pinned)
   }, [])
   useEffect(() => {

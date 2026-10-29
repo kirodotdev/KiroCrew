@@ -124,12 +124,14 @@ class TestLockReleaseFailures:
     def test_release_lock_swallows_a_failed_windows_unlock(self, monkeypatch, tmp_path):
         monkeypatch.setattr(pc, "IS_POSIX", False)
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "msvcrt", _UnlockRefusingMsvcrt([True]), raising=False)
+        fake = _UnlockRefusingMsvcrt([True])
+        monkeypatch.setattr(pc, "msvcrt", fake, raising=False)
         fd = _lock_fd(tmp_path, "release4.lock")
         try:
             pc.release_lock(fd)  # must not raise
         finally:
             os.close(fd)
+        assert fake.calls == [_FakeMsvcrt.LK_UNLCK], "the unlock was attempted once"
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +186,16 @@ class TestEnsureUtf8ConsoleRewrapFailure:
         # re-wrapped is left as it is, because raising here would kill the
         # gateway before it binds -- the very failure this function prevents.
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(sys, "stdout", _StubbornStream())
-        monkeypatch.setattr(sys, "stderr", _StubbornStream())
+        stubborn_out, stubborn_err = _StubbornStream(), _StubbornStream()
+        monkeypatch.setattr(sys, "stdout", stubborn_out)
+        monkeypatch.setattr(sys, "stderr", stubborn_err)
 
         def _boom(*_args: Any, **_kwargs: Any) -> Any:
             raise ValueError("cannot wrap this buffer")
 
         monkeypatch.setattr(pc.io, "TextIOWrapper", _boom)
         pc.ensure_utf8_console()  # must not raise
+        assert sys.stdout is stubborn_out and sys.stderr is stubborn_err
 
 
 class TestTrustedSystemBinWindowsSuffixes:

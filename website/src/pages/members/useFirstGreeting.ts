@@ -19,8 +19,8 @@ export function resetFirstGreetingRequests(): void {
 /**
  * Ask the gateway for a crewmate's first greeting once its pinned thread is open.
  *
- * `enabled` is true only for a crewmate that can be owed one (Mate, with the
- * Crewmates preview on, and a crewmate created on the dashboard), and
+ * `enabled` is true only for a crewmate that can be owed one (Mate, and a
+ * crewmate created on the dashboard), and
  * `slotKey` only once the thread endpoint has confirmed it, so the request
  * never races the thread's creation. The server decides: it starts a real turn
  * only for a crewmate whose creation recorded the welcome it owes (Mate's

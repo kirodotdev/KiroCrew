@@ -131,8 +131,9 @@ def test_the_kickoff_hands_the_research_to_a_worker_then_proposes() -> None:
     assert "set_key_results" in text and "goal_ids" in text
     # Guidance toward a small set, not a cap.
     assert "easier to track" in text and "merging" in text
-    # Check-ins wait for the milestones to be confirmed (milestones_prompt).
-    assert "set_check_ins" not in text
+    # Only the Heartbeat is asked about now; the reminders wait for the milestones
+    # to be confirmed (milestones_prompt).
+    assert "Daily Goal Reminder" not in text and "other check-ins yet" in text
 
 
 def test_the_kickoff_names_the_goal_that_changed_and_lists_them_all() -> None:
@@ -187,20 +188,40 @@ def test_the_milestones_nudge_offers_check_ins_only_when_none_is_on() -> None:
 
 
 @pytest.mark.parametrize("has_mate_tools", [True, False])
-def test_the_milestones_nudge_offers_the_heartbeat_too(has_mate_tools: bool) -> None:
-    """The Heartbeat is off by default and only a check-ins card turns it on, so the
-    offer after the milestones are confirmed names it beside the three reminders."""
+def test_a_saved_goal_asks_about_the_heartbeat_in_plain_words(has_mate_tools: bool) -> None:
+    """The Heartbeat is the switch that makes a mate work on its own and is off by
+    default, so the turn after a goal is saved asks about it, in plain words before
+    its name, and asks nothing once it is on."""
+    rec = {"goals": [GOAL_A], "key_results": [], "schedules": {}}
+    text = goal_setup.kickoff_prompt(rec, GOAL_A["id"], has_mate_tools=has_mate_tools)
+    assert text is not None
+    step1 = text.split("\n1. ", 1)[1].split("\n2. ", 1)[0]
+    ask = step1.index("keep track of this goal on your own")
+    assert ask < step1.index("Heartbeat")
+    assert "spends credits" in step1 and "keeps the work moving while they are away" in step1
+    assert ("set_check_ins" in step1) is has_mate_tools
+    on = goal_setup.kickoff_prompt(
+        {**rec, "schedules": {"heartbeat": True}}, GOAL_A["id"], has_mate_tools=has_mate_tools
+    )
+    assert on is not None and "Heartbeat" not in on and "Ask nothing else yet." in on
+
+
+@pytest.mark.parametrize("has_mate_tools", [True, False])
+def test_the_milestones_nudge_offers_the_reminders_not_the_heartbeat(
+    has_mate_tools: bool,
+) -> None:
+    """The Heartbeat was asked about when the goal was saved, once; the offer after
+    the milestones are confirmed names the three reminders, even with it on."""
     rec = {
         "goals": [GOAL_A],
         "key_results": [{"id": "k1", "text": "notes out", "target": "yes"}],
-        "schedules": {},
+        "schedules": {"heartbeat": True},
     }
     text = goal_setup.milestones_prompt(rec, has_mate_tools=has_mate_tools)
     assert text is not None
-    for name in ("Daily Goal Reminder", "Weekly report", "Monthly review", "Heartbeat"):
+    for name in ("Daily Goal Reminder", "Weekly report", "Monthly review"):
         assert name in text
-    assert "keeps the work moving while they are away" in text
-    assert "Dashboard tab" in text
+    assert "Heartbeat" not in text
 
 
 def test_the_removed_nudge_names_the_goal_and_its_orphaned_milestones() -> None:

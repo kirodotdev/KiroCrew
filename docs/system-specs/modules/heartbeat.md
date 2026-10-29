@@ -184,7 +184,7 @@ A `slack:` tag with an empty channel id (`<!-- deliver:slack: -->`) falls back t
 owner's DM: posting to channel `""` would raise inside the swallowed Slack error
 handler and lose the report.
 
-The deliver tag is agent-writable — `config/prompt.md` tells the agent to append
+The deliver tag is agent-writable — the `kirocrew-dev/babysit` skill tells the agent to append
 HEARTBEAT.md entries itself, and HEARTBEAT.md is not a fenced path — so the channel
 id on a `slack:<channel_id>` tag is untrusted input. Both channel forms therefore
 require the id to be a well-formed Slack channel id (`validation.CHANNEL_ID_RE`, so

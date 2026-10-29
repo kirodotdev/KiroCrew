@@ -105,8 +105,6 @@ _KNOWN: dict[str, str] = {
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_kirocrew_entry": _UNAUDITED,
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_scope_entry": _UNAUDITED,
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_tool_overrides": _UNAUDITED,
-    "kiro_crew/file_delivery_consent.py::record_grant": _PRESERVES,
-    "kiro_crew/file_delivery_consent.py::revoke": _PRESERVES,
     "kiro_crew/irq.py::run.persist": "load_state documents a lost state as one duplicate wake",
     "kiro_crew/ledger_wake.py::forget_items": "_read_rate documents a lost map as one extra wake",
     "kiro_crew/ledger_wake.py::note_wake": "_read_rate documents a lost map as one extra wake",

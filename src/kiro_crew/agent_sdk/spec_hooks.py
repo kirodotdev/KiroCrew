@@ -29,10 +29,11 @@ and KAS names its tools differently. On a PreToolUse permission request the turn
 loop therefore matches these hooks against
 :func:`spec_hook_tool_names` of the id KAS states for the call, not against the
 call's title; a call KAS names no tool for is matched on
-its title, as a Hooks-page hook is. A PostToolUse still sees the
-title, because KAS's tool-call frames carry no tool id. A PreToolUse matcher the
-table does not know is kept, matched against KAS's id as written, and warned about
-once.
+its title, as a Hooks-page hook is. A PostToolUse is matched the same way, on the id
+:func:`post_tool_hook_tool_id` gives the finished call: KAS's tool-call frame names no
+built-in tool, so that is the id the call's permission request stated, else KAS's
+shell tool for a call classified as a shell command. A tool matcher the table does
+not know is kept, matched against KAS's id as written, and warned about once.
 
 The result is cached by the field's content, so a spec that stays the same costs
 one conversion and logs its warnings once, not once per turn.
@@ -181,6 +182,74 @@ def spec_hook_tool_names(tool_id: str) -> tuple[str, ...] | None:
     return kas_tool_match_names(tool_id)
 
 
+def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: bool) -> str:
+    """The tool id a finished call's PostToolUse spec hooks match on, or "".
+
+    kiro-cli matches a postToolUse hook against its own tool name. KAS's tool-call
+    frame names no built-in tool (its ``_meta.kiro.toolId`` is set for a few
+    non-built-in ones only) and titles the call in prose, so the title alone
+    meets no tool matcher a spec writes. The call is named by what the turn
+    learned of it instead: the id its permission request stated
+    (*harness_tool_id*), else, for a call the frame classified as a shell
+    command, KAS's shell tool, which :func:`spec_hook_tool_names` reads as
+    kiro-cli's ``execute_bash`` -- the one tool kiro-cli runs a command with.
+
+    "" on a backend whose harness runs the spec's hooks itself, and for a call
+    nothing names, which keeps the title matching it had.
+    """
+    if not capabilities_of(provider).crew_fires_spec_hooks:
+        return ""
+    if harness_tool_id:
+        return harness_tool_id
+    if not is_shell:
+        return ""
+    # circular import: see spec_hook_tool_names.
+    from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
+
+    shell_ids = KAS_TOOL_IDS_BY_KIRO_TOOL.get("execute_bash") or ()
+    return shell_ids[0] if shell_ids else ""
+
+
+class PostToolIdentity(NamedTuple):
+    """What a finished call's PostToolUse hooks are matched on, kept per call.
+
+    The harness id (:func:`post_tool_hook_tool_id`), and the call's canonical tool
+    name and trusted MCP server, so a spec matcher written ``@server/tool`` meets an
+    MCP call by those forms as it does on PreToolUse
+    (``hooks.pre_tool_match_names``).
+    """
+
+    tool_id: str = ""
+    tool_identity: str = ""
+    mcp_server: str = ""
+
+
+def post_tool_identity(
+    provider: object,
+    event: object,
+    *,
+    is_shell: bool,
+    earlier: PostToolIdentity | None = None,
+) -> PostToolIdentity | None:
+    """*event*'s :class:`PostToolIdentity`, or ``None`` where Crew fires no spec hooks.
+
+    *event* is the call's ``tool_call`` frame or its permission request; a field
+    the event leaves empty keeps what *earlier* recorded for the same call.
+    """
+    if not capabilities_of(provider).crew_fires_spec_hooks:
+        return None
+    base = earlier or PostToolIdentity()
+    stated = getattr(event, "harness_tool_id", "") or ""
+    tool_id = post_tool_hook_tool_id(provider, harness_tool_id=stated, is_shell=is_shell)
+    identity = getattr(event, "tool_name", "") or ""
+    server = getattr(event, "mcp_server_name", "") or ""
+    return PostToolIdentity(
+        tool_id=tool_id or base.tool_id,
+        tool_identity=identity if isinstance(identity, str) and identity else base.tool_identity,
+        mcp_server=server if isinstance(server, str) and server else base.mcp_server,
+    )
+
+
 def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
     """Warn about, and SEL-audit, a spec hook that will not run.
 
@@ -213,7 +282,7 @@ def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> S
         _reject(agent_id, event, command, "invalid matcher")
         return None
     if (
-        event == HOOK_EVENT_PRE_TOOL_USE
+        event in _TOOL_EVENTS
         and isinstance(matcher, str)
         and matcher
         and not _matcher_names_a_kas_tool(matcher)
@@ -228,16 +297,6 @@ def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> S
             agent_id,
             _diagnostic(matcher),
             _diagnostic(event),
-        )
-    if event == HOOK_EVENT_POST_TOOL_USE and isinstance(matcher, str) and matcher not in ("", "*"):
-        # A finished call reaches the turn loop with no harness tool id, so a
-        # PostToolUse is matched on the call's title, which a kiro-cli tool name
-        # rarely matches. Said once here rather than left to miss silently.
-        logger.warning(
-            "agent %r: spec postToolUse matcher %s is compared with the call's "
-            "title, since the harness names no tool on a finished call",
-            agent_id,
-            _diagnostic(matcher),
         )
     return ScriptHook(
         id=f"spec:{agent_id}:{event}:{index}",

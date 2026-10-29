@@ -122,7 +122,7 @@ function FolderBlockRig({
     renameCommit,
     setEditingId,
     setEditScope: () => {},
-    suppressMenuRestoreRef: { current: false },
+    suppressMenuRestore: () => {},
     onMenuCloseAutoFocus: () => {},
 
     // Folder list (no children)

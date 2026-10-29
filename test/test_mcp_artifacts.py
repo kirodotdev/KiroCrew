@@ -598,8 +598,10 @@ class TestArtifactGet:
             "kiro_crew.mcp_core._get",
             return_value={"slug": "x", "name": "X", "version": 1, "content": "v1"},
         ) as get:
-            _call_tool_inner("artifact_get", {"slug": "x", "version": 1})
+            result = _call_tool_inner("artifact_get", {"slug": "x", "version": 1})
         assert get.call_args.args[0] == "/api/artifacts/x/versions/1"
+        assert "version: 1" in result
+        assert "v1" in result
 
     def test_redacts_credentials_in_content(self) -> None:
         with patch(
@@ -995,9 +997,10 @@ class TestArtifactGetCommentsEdgeCases:
             "kiro_crew.mcp_core._get",
             return_value={"comments": []},
         ) as get:
-            _call_tool_inner(
+            result = _call_tool_inner(
                 "artifact_get_comments", {"slug": "empty", "exclude_resolved": True}
             )
+        assert "No comments" in result
         assert get.call_args.args[0] == "/api/artifacts/empty/comments?exclude_resolved=true"
 
     def test_error_response(self) -> None:
@@ -1260,8 +1263,7 @@ class TestArtifactReplyCommentTool:
         ) as post:
             _call_tool_inner(
                 "artifact_reply_comment",
-                {"slug": "doc", "parent_id": "c1",
-                 "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
+                {"slug": "doc", "parent_id": "c1", "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
             )
         _, payload = post.call_args.args
         assert "AKIAIOSFODNN7EXAMPLE" not in payload["text"]

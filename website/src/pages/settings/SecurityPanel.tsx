@@ -4,7 +4,7 @@
  * summaries, the panel) and the Documentation section. Each other section lives in
  * a sibling owner, and every name callers import from here is re-exported:
  * - `SecurityPanelPosture.tsx`: Live security posture
- * - `SecurityPanelApprovals.tsx`: Auto-approve, Flagged-file delivery
+ * - `SecurityPanelApprovals.tsx`: Auto-approve
  * - `SecurityPanelDeniedCommands.tsx`: Denied commands
  * - `SecurityPanelTailnet.tsx`: Tailnet
  * - `SecurityPanelTrust.tsx`: Third-party apps, Registry trust
@@ -16,7 +16,7 @@
 import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  ShieldCheck, EyeOff, FileWarning, Terminal, Layers, ExternalLink, Gavel, Gauge, Boxes, BookOpen,
+  ShieldCheck, EyeOff, Terminal, Layers, ExternalLink, Gavel, Gauge, Boxes, BookOpen,
   Network, GitBranch,
 } from 'lucide-react'
 import { useAppSelector } from '../../store'
@@ -27,9 +27,7 @@ import { api, type DeniedCommandsData, type TailnetStatusData } from '../../api/
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtTime, toDate } from '../../i18n/format'
 import { CODE_BASE, PostureSection } from './SecurityPanelPosture'
-import {
-  type KirocrewCfgShape, YoloDurationCard, FileDeliveryConsentCard,
-} from './SecurityPanelApprovals'
+import { type KirocrewCfgShape, YoloDurationCard } from './SecurityPanelApprovals'
 import { DeniedCommandsSection } from './SecurityPanelDeniedCommands'
 import { TAILNET_STATE_KEY, TailnetOriginCard } from './SecurityPanelTailnet'
 import { ThirdPartyAppsCard, TrustedRegistriesCard } from './SecurityPanelTrust'
@@ -71,7 +69,7 @@ function DocsSection() {
  * The rail states which is which before any row is read, and the two large
  * tables (137 rules, ~20 governed scopes) get a pane instead of a fold.
  */
-type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'delivery' | 'layers' | 'governance' | 'docs'
+type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'layers' | 'governance' | 'docs'
 type SecuritySectionGroup = 'status' | 'yours' | 'enforced' | 'reference'
 
 interface SecuritySectionDef {
@@ -107,7 +105,6 @@ export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
   apps: 'pages.settings.securityPanel.third_party_apps_section',
   registries: 'pages.settings.securityPanel.trustedRegistries.section_title_rail',
   redaction: 'pages.settings.securityPanel.redaction_section',
-  delivery: 'pages.settings.securityPanel.file_delivery_section',
   layers: 'pages.settings.securityPanel.defense_in_depth_architecture',
   governance: 'pages.settings.securityPanel.governance_policy',
   docs: 'pages.settings.securityPanel.documentation',
@@ -131,7 +128,6 @@ const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
   { key: 'apps', icon: <Boxes size={15} />, group: 'yours' },
   { key: 'registries', icon: <GitBranch size={15} />, group: 'yours' },
   { key: 'redaction', icon: <EyeOff size={15} />, group: 'yours' },
-  { key: 'delivery', icon: <FileWarning size={15} />, group: 'yours' },
   { key: 'layers', icon: <Layers size={15} />, group: 'enforced' },
   { key: 'governance', icon: <Gavel size={15} />, group: 'enforced' },
   { key: 'docs', icon: <BookOpen size={15} />, group: 'reference' },
@@ -203,23 +199,18 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
     staleTime: 300_000,
   })
 
-  // NO rail summary for the flagged-file-delivery row, deliberately, and this is a
+  // NO rail summary for the credential-redaction row, deliberately, and this is a
   // gate decision rather than a design preference. `SettingsSubNav` renders a
   // label and a summary as two adjacent catalog keys, which the render-time i18n
   // gate counts as one `fragment/multi-unit` finding per site
   // (SettingsSubNav.tsx:241 and :264). The YOLO and third-party-apps rows already
   // carry exactly that finding on this surface, and `[vs-base]` fails on ANY
-  // per-surface increase against a goal of zero -- so giving this row a summary
-  // adds four findings to a surface that is trying to reach none. The state is one
-  // click away in the card, which shows it prominently. The real remedy is the one
-  // the gate prints ("merge the adjacent catalog keys into one key with {{vars}}"),
-  // and it belongs to `SettingsSubNav` for every panel at once rather than to this
-  // row: doing it here alone would also break SECTION_LABEL_KEY's rule that a rail
-  // label REUSES its section's heading key.
-  //
-  // The credential-redaction row follows the same decision, for the same reason:
-  // a summary there was measured at +4 `fragment/multi-unit` findings on this
-  // surface and failed `[vs-base]`. A rail-level read would also hit the
+  // per-surface increase against a goal of zero -- a summary on this row was
+  // measured at +4 findings. The real remedy is the one the gate prints ("merge
+  // the adjacent catalog keys into one key with {{vars}}"), and it belongs to
+  // `SettingsSubNav` for every panel at once rather than to this row: doing it
+  // here alone would also break SECTION_LABEL_KEY's rule that a rail label
+  // REUSES its section's heading key. A rail-level read would also hit the
   // owner-gated GET for every allow-listed non-owner who merely opens Security,
   // writing an audited refusal per mount. The OFF state is one click away, where
   // the card shows it with a warning and the time it was turned off.
@@ -315,11 +306,6 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
               </SettingsSection>
             )}
             {key === 'redaction' && <RedactionSection />}
-            {key === 'delivery' && (
-              <SettingsSection title={i18nT('pages.settings.securityPanel.file_delivery_section')}>
-                <FileDeliveryConsentCard />
-              </SettingsSection>
-            )}
             {key === 'layers' && <LayersSection />}
             {key === 'governance' && <GovernancePolicyViewer />}
             {key === 'docs' && <DocsSection />}

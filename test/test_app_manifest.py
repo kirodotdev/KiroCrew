@@ -1253,6 +1253,122 @@ def test_overlay_non_list_value_parses_to_empty(value):
     assert m.validate() == []
 
 
+# (field, manifest block carrying the bad value, reader of the parsed field, the
+# value a non-list degrades to). ``platform.os`` restricts where an app runs, so
+# it is not a plain degrade-to-empty field and is pinned separately below.
+_NON_LIST_FIELDS = [
+    ("ui.pages", lambda v: {"ui": {"pages": v}}, lambda m: m.ui.pages, []),
+    (
+        "dependencies.capabilities.mcp",
+        lambda v: {"dependencies": {"capabilities": {"mcp": v}}},
+        lambda m: m.dependencies.capabilities.mcp,
+        [],
+    ),
+    (
+        "dependencies.capabilities.skills",
+        lambda v: {"dependencies": {"capabilities": {"skills": v}}},
+        lambda m: m.dependencies.capabilities.skills,
+        [],
+    ),
+    (
+        "dependencies.capabilities.agents",
+        lambda v: {"dependencies": {"capabilities": {"agents": v}}},
+        lambda m: m.dependencies.capabilities.agents,
+        [],
+    ),
+    ("platform.arch", lambda v: {"platform": {"arch": v}}, lambda m: m.platform.arch, []),
+    (
+        "publishProvider.kinds",
+        lambda v: {"publishProvider": {"kinds": v}},
+        lambda m: m.publishProvider.kinds,
+        [],
+    ),
+    (
+        "notifications.channels",
+        lambda v: {"notifications": {"channels": v}},
+        lambda m: m.notifications.channels,
+        [],
+    ),
+    ("crons", lambda v: {"crons": v}, lambda m: m.crons, []),
+    ("agents", lambda v: {"agents": v}, lambda m: m.agents, []),
+    ("skills", lambda v: {"skills": v}, lambda m: m.skills, []),
+    ("sops", lambda v: {"sops": v}, lambda m: m.sops, []),
+    ("tags", lambda v: {"tags": v}, lambda m: m.tags, []),
+    ("jobFamilies", lambda v: {"jobFamilies": v}, lambda m: m.jobFamilies, []),
+]
+
+
+@pytest.mark.parametrize("value", [None, 7, True, "abc", {"id": "x"}])
+@pytest.mark.parametrize(
+    "name,block,read,expected", _NON_LIST_FIELDS, ids=[f[0] for f in _NON_LIST_FIELDS]
+)
+def test_non_list_value_for_a_list_field_degrades(name, block, read, expected, value):
+    """A present-but-not-a-list value for a list field must not raise or be split.
+
+    Same hazard as ``ui.overlays``: ``"pages": null`` is returned by ``get``
+    instead of the default, and iterating it raised a TypeError out of
+    ``AppManifest.from_dict``, failing the parse instead of degrading. A string
+    or an object must not be iterated either, which would turn ``"abc"`` into
+    ``["a", "b", "c"]``.
+    """
+    try:
+        m = AppManifest.from_dict(_valid_manifest(**block(value)))
+    except TypeError as exc:
+        pytest.fail(f"{name}={value!r} raised instead of degrading: {exc}")
+    assert read(m) == expected
+
+
+@pytest.mark.parametrize("value", [7, True, "windows", {"id": "x"}])
+def test_a_non_list_platform_os_fails_closed_and_is_refused(value):
+    """``os`` restricts where an app runs, so a wrong type must never widen it.
+
+    It parses to no platforms, so a reader that skips validate() (the enable
+    path's ``supports_platform`` check) refuses it everywhere, and validate()
+    reports it: ``"os": "windows"`` must not quietly become macOS + Linux.
+    """
+    try:
+        m = AppManifest.from_dict(_valid_manifest(platform={"os": value}))
+    except TypeError as exc:
+        pytest.fail(f"platform.os={value!r} raised instead of degrading: {exc}")
+    assert m.platform.os == []
+    assert not any(m.platform.supports_platform(p) for p in ("darwin", "linux", "win32"))
+    # The enable path reparses the serialized manifest and never calls validate().
+    reparsed = AppManifest.from_dict(m.to_dict()).platform
+    assert not any(reparsed.supports_platform(p) for p in ("darwin", "linux", "win32"))
+    errors = m.validate()
+    assert any(e.startswith("platform.os: unknown value") for e in errors), errors
+
+
+@pytest.mark.parametrize("value", [7, True, "html", {"id": "x"}])
+def test_a_non_list_publish_provider_kinds_offers_the_provider_for_no_kind(value):
+    """``kinds`` restricts which artifacts a provider publishes, and an empty list
+    means every kind, so a wrong type must not degrade to "all".
+
+    The artifact page lists providers from the serialized manifest
+    (``collect_publish_providers`` over ``to_dict()``), and a self-managed app's
+    ``app.json`` never passes install validation, so the parse itself has to
+    fail closed: a provider whose restriction cannot be read is not offered.
+    """
+    from kiro_crew.apps.routes import collect_publish_providers
+
+    provider = {"id": "p", "endpoint": "/api/apps/test-app/deploy", "kinds": value}
+    try:
+        m = AppManifest.from_dict(_valid_manifest(publishProvider=provider))
+    except TypeError as exc:
+        pytest.fail(f"publishProvider.kinds={value!r} raised instead of degrading: {exc}")
+    app = {"name": "test-app", "enabled": True, "manifest": m.to_dict()}
+    assert collect_publish_providers([app], configured_resolver=lambda n, pp: True) == []
+
+
+def test_a_null_platform_os_reads_as_unset():
+    try:
+        m = AppManifest.from_dict(_valid_manifest(platform={"os": None}))
+    except TypeError as exc:
+        pytest.fail(f"platform.os=None raised instead of reading as unset: {exc}")
+    assert m.platform.os == ["macos", "linux"]
+    assert m.validate() == []
+
+
 @pytest.mark.parametrize(
     "decl,expected",
     [

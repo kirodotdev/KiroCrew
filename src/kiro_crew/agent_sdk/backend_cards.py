@@ -335,7 +335,14 @@ DETAIL_LINES: Tuple[_LineSpec, ...] = (
 #: of the four (the sandbox stand-down, and Crew handing over its credential)
 #: describe a boundary moving, and the sandbox one fails OPEN by design.
 SECURITY_LINES: Tuple[_LineSpec, ...] = (
-    _LineSpec(NOTE_CREW_SANDBOX_STANDS_DOWN, ("ACP_BACKENDS_INTERNAL_SANDBOX",)),
+    # A union: KAS's default relay route is the kiro-cli process and stands Crew's
+    # sandbox down exactly as kiro-cli does. Its bundle route does not, and a card
+    # cannot show a per-route fact, so the line errs toward naming the boundary
+    # that can move rather than hiding it on the route most KAS sessions take.
+    _LineSpec(
+        NOTE_CREW_SANDBOX_STANDS_DOWN,
+        ("ACP_BACKENDS_INTERNAL_SANDBOX", "ACP_BACKENDS_RELAY_INTERNAL_SANDBOX"),
+    ),
     _LineSpec(NOTE_REFUSES_UNCLASSIFIED_TOOLS, ("ACP_BACKENDS_META_IDENTITY",)),
     _LineSpec(NOTE_HOST_CREDENTIAL_TO_CHILD, ("ACP_BACKENDS_HOST_AUTH_CALLBACK",)),
     _LineSpec(NOTE_POD_HOME_RELOCATED, ("ACP_BACKENDS_POD_HOME_REMAP",)),
@@ -360,6 +367,12 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
+        "whether a server the user approved for a template Crew does not own reaches "
+        "that template's sessions here. The approval card asks the same question for "
+        "the session it is raised in and refuses with its own reason, so a card line "
+        "would repeat a refusal the user already meets where it applies"
+    ),
     "ACP_BACKENDS_MATE_WORKER_KIT": (
         "whether a crewmate's worker may run here with its kit. A worker always runs "
         "on its crewmate's backend, so the choice it depends on is the member "
@@ -415,6 +428,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "choosing a harness loses nothing. A wrong membership either sends /clear "
         "to the model as text, or answers a harness that would have run it, which "
         "is a defect"
+    ),
+    "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": (
+        "whether the dashboard answers every harness command itself and leaves the "
+        "ones it cannot serve out of the / menu. It names a harness with no command "
+        "channel rather than a feature a reader gains, and the commands that matter "
+        "for choosing a harness already have lines of their own. A wrong membership "
+        "either hides commands a harness would have run, or offers rows that only "
+        "ever reach the model as text, which is a defect"
     ),
     "ACP_BACKENDS_HOOKS_LIST": (
         "which backend's agent may ask its client for the hooks matching a trigger, and "

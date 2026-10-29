@@ -670,6 +670,34 @@ async def _consolidate(
                 if private_policy
                 else '"delete": false}. '
             )
+            from kiro_crew.memory_kind_routing import (
+                MODE_ENFORCE,
+                MODE_OFF,
+                configured_kind_routing_mode,
+            )
+
+            routing_mode = configured_kind_routing_mode()
+            # Under off (the default) the prompt is today's, word for word.
+            kind_field = '"kind": "fact" | "event" | "state", ' if routing_mode != MODE_OFF else ""
+            kind_rules = (
+                "Tag every item with kind. Ask two questions: Will this still be true in a month? "
+                "Can this be looked up somewhere else? "
+                'kind "fact" = still true in a month and not looked up elsewhere '
+                "(a decision, a root cause, how something works). "
+                'kind "event" = something that happened, worth a dated record. '
+                'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
+                "which GitHub, git or the work ledger already holds. "
+                "pref.* and user.* items are always facts. "
+                if routing_mode != MODE_OFF
+                else ""
+            )
+            # Only under enforce: in shadow the keys the model writes must stay
+            # what they are today, or the shadow log would not measure today.
+            key_naming = (
+                "Name keys by topic, never by PR, issue or round number. "
+                if routing_mode == MODE_ENFORCE
+                else ""
+            )
             deletion_policy = (
                 'To propose removal of a stale/invalidated key, set "delete": true. '
                 "Changes to existing values and deletions require owner review; confidence does not authorize overwrites. "
@@ -680,6 +708,7 @@ async def _consolidate(
             keys.append(
                 '"semantic": Array of structured facts to remember long-term. '
                 'Each: {"key": "<dotted.key>", "value": <json_value>, "confidence": 0.0-1.0, '
+                + kind_field
                 + semantic_fields
                 + "Rules: keys must start with pref.*, project.*, or user.* "
                 "(e.g. pref.color, user.favorite_language, project.name). "
@@ -688,6 +717,8 @@ async def _consolidate(
                 "IMPORTANT: Check existing semantic memory above. If a key already covers "
                 "the same topic, UPDATE that key instead of creating a new one. "
                 "Do NOT create near-duplicate keys (e.g. project.x.approach AND project.x.refined). "
+                + key_naming
+                + kind_rules
                 + deletion_policy
                 + f"Max {_MAX_SEMANTIC_PER_CONSOLIDATION} items."
             )
@@ -880,6 +911,12 @@ async def _consolidate(
             # the model never read is withheld here, the same fence the V1
             # writer applies, so the two paths cannot drift.
             consolidation, _ = _withhold_unseen_deletes(result, semantic_visible, self._logger)
+            # The same kind routing the V1 writer applies, on the same fenced answer;
+            # the member store writes its log inside the span's transaction.
+            from kiro_crew.memory_kind_routing import route_consolidation_by_kind
+
+            kind_routing = route_consolidation_by_kind(consolidation, self._logger)
+            consolidation = kind_routing.result
             # memory.lesson_extraction_enabled covers the member store too:
             # its extracted lessons are dropped from the payload, and every
             # other update still applies.
@@ -922,6 +959,7 @@ async def _consolidate(
                         snapshot={row["key"]: row for row in current_semantic},
                         messages=receipt_messages,
                         facets=facets,
+                        kind_routing=kind_routing,
                     )
                     publication.mark_committed()
                     return applied

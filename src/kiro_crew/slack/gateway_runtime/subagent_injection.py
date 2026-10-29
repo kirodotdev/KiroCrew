@@ -694,7 +694,10 @@ async def _inject_subagent_into_channel_parent(
                         exc_info=True,
                     )
                 try:
-                    self.sessions.release(parent_key)
+                    # A person who writes during this hidden turn is queued by
+                    # the channel's busy path, and that channel drains only at
+                    # the tail of its own turns. Wake it here instead.
+                    self.sessions.release(parent_key, wake_queue=True)
                 except Exception:
                     logger.exception("Failed to release session %s", parent_key)
 

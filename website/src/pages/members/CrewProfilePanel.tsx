@@ -476,9 +476,15 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               ariaLabel={t('pages.membersPage.profile_card')}
               layoutId="crew-profile-tab-indicator"
               labels="active"
-              // The Profile tab is a find_ui location: a guide to the Settings
-              // row (which lives on it) selects this tab first.
-              segments={[{ key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') }]}
+              // find_ui locations: Schedules and Goals are where a mate shows
+              // the user what wakes it and what it is after; the Profile tab
+              // is also the step a guide to the Settings row (which lives on
+              // it) selects first.
+              segments={[
+                { key: 'schedule', label: t('pages.membersPage.schedules_tab'), ...uiLocation('members.schedule-tab') },
+                { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), ...uiLocation('members.goals-tab') },
+                { key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') },
+              ]}
             />
           </div>
 
@@ -576,7 +582,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               {pushed === 'about' ? (
                 <div className="px-4 py-4">
                   <div className="rounded-2xl border border-border bg-bg px-4 py-4 text-[14px] leading-relaxed text-text whitespace-pre-wrap" data-testid="crew-profile-about-full">{p.description}</div>
-                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-white text-[13px] font-semibold cursor-pointer">
+                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-accent-fg text-[13px] font-semibold cursor-pointer">
                     <Pencil size={14} aria-hidden="true" />
                     {t('pages.membersPage.edit_member')}
                   </button>

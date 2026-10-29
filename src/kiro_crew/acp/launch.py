@@ -51,7 +51,7 @@ from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import describe_search_path, mise_data_dir
-from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST
+from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
 
 # The client's logger name, because the helpers below were the client's and every
 # log line they emit has always been filed there. The launch tail itself logs under
@@ -828,6 +828,12 @@ class LaunchTools:
     retrying_spawn_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None
     #: ``agent.env`` (``acp.agent_env.agent_env_overlay``); blocking, run off-loop.
     agent_env_overlay: Callable[[], dict[str, str]] = field(default=dict)
+    #: ``sandbox.ssh_auth_sock_consent_notice``; blocking (tier floor + consent
+    #: leaf), run off-loop. Diagnostic only: the forward verdict is
+    #: ``forward_ssh_auth_sock``'s.
+    ssh_auth_sock_consent_notice: Callable[[str, str, tuple[str, ...]], str] = field(
+        default=ssh_auth_sock_consent_notice
+    )
     #: ``sandbox.remember_namespace_launcher``; non-blocking ``/proc`` reads, never raises.
     remember_namespace_launcher: Callable[[int, Sequence[str], str | None], None] = field(
         default_factory=lambda: _remember_namespace_launcher
@@ -897,6 +903,49 @@ class LaunchedProcess:
 
     process: asyncio.subprocess.Process
     scope_unit: str = ""
+
+
+#: Harnesses this process has already named in the ssh-agent consent notice. The
+#: notice is a remedy, not an event log: one line per harness per gateway run is
+#: enough for an operator to find it, and a respawn loop must not flood the log.
+_SSH_AUTH_SOCK_NOTICE_LOGGED: set[str] = set()
+
+
+async def _note_ssh_auth_sock_withheld(
+    host: LaunchHost, tools: LaunchTools, request: LaunchRequest
+) -> None:
+    """Log, once per harness, why this child starts without the ssh-agent socket.
+
+    Called only when the parent had a socket and the forward verdict scrubbed it.
+    The notice says something only when the verdict came from the consent route
+    with consent not granted (see ``sandbox.ssh_auth_sock_consent_notice``), and
+    then names the consent and how to grant it. It never changes the verdict, the
+    child's environment or its sandbox, and a failure to compute it is ignored:
+    the spawn proceeds exactly as it would have without it.
+    """
+    if request.backend in _SSH_AUTH_SOCK_NOTICE_LOGGED:
+        return
+    # Claimed BEFORE the hop: two spawns of one harness in flight cannot both
+    # log, and a harness whose notice cannot be computed is not re-read on every
+    # respawn. One attempt per harness per gateway process.
+    _SSH_AUTH_SOCK_NOTICE_LOGGED.add(request.backend)
+
+    def _compute() -> str:
+        # Swallowed INSIDE the thread: the guarded hop discards the sandbox
+        # launcher on any exception it sees, and this spawn still needs it.
+        try:
+            return tools.ssh_auth_sock_consent_notice(
+                request.backend, request.sandbox_mode, tuple(request.extra_hidden_dirs)
+            )
+        except Exception:
+            tools.logger.debug("ssh-agent consent notice could not be computed", exc_info=True)
+            return ""
+
+    # Guarded so a cancellation here still reclaims the launcher the wrap wrote.
+    notice = await host._to_thread_guarding_sandbox(_compute)
+    if not notice:
+        return
+    tools.logger.warning("%s", notice)
 
 
 def _well_formed_port(value: str) -> bool:
@@ -989,9 +1038,10 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # OS-level sandbox: wrap the command to hide sensitive paths.
     # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
     # foreign MCP subprocesses (which bundle their own interpreter + deps).
-    # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
-    # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
-    # Crew's seatbelt on macOS and grants Windows's Kiro-only delegation in
+    # is_kiro_cli is the driver's request.internal_sandbox, the positive verdict
+    # of spawn_delegates_to_internal_sandbox (harness-parity H7), not "not
+    # claude": the flag makes wrap_argv SKIP Crew's seatbelt on macOS and
+    # grants Windows's Kiro-only delegation in
     # favour of the harness's own internal sandbox, so a harness without one
     # must never be granted it by the absence of another harness.
     #
@@ -1000,7 +1050,12 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # own sandbox, so the child runs the bundle binary and Crew's launcher
     # wraps it. Off-loop because the resolution stats the candidate path.
     argv, delegate_internal_sandbox = await asyncio.to_thread(
-        tools.apply_pod_bundle_spawn, request.argv, backend=request.backend
+        functools.partial(
+            tools.apply_pod_bundle_spawn,
+            request.argv,
+            backend=request.backend,
+            internal_sandbox=request.internal_sandbox,
+        )
     )
     spawned_binary = argv[0] if argv else None
     # Per-process scratch containment. Allocated BEFORE the sandbox is built:
@@ -1115,12 +1170,17 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         env.update(request.extra_env)
     env["PATH"] = tools.augmented_path(env.get("PATH", ""))
     env = await request.env_before_scrub(env, spawned_binary)
+    # Whether the child would have had an agent socket before the scrub, read
+    # here because the driver's credential repair above may have just found one.
+    had_ssh_auth_sock = bool(env.get("SSH_AUTH_SOCK"))
     # Match the OS launchers' sensitive + Python env scrub in the parent. Windows
     # Kiro delegation has no POSIX `env -u` wrapper, so this is the enforcement
     # point there. Kept after the driver's credential repair so no resolver can
     # reintroduce a denied variable. forward_ssh_auth_sock is the opt-in resolved
     # off-loop above and reused here.
     env = tools.scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
+    if had_ssh_auth_sock and not forward_ssh_auth_sock:
+        await _note_ssh_auth_sock_withheld(host, tools, request)
     # Bundled skill scripts must not depend on a system ``python`` name. The
     # desktop bundles carry their interpreter outside the user's PATH, while this
     # path is already running under the exact environment that can import

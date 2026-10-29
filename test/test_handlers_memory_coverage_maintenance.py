@@ -413,6 +413,10 @@ class TestConsolidate:
         """Pin the seeding helper above to the retrying path.
 
         A seed run on the loop thread re-raises the first simulated violation.
+        The seed replaces the transcript twice: once when ``append`` creates it
+        through ``atomic_write`` and once when the header is rewritten. The one
+        simulated violation lands on the first replace and is retried, so the
+        count is that violation, its retry, and the header rewrite.
         """
         from windows_sim import replace_sharing_violation
 
@@ -424,7 +428,7 @@ class TestConsolidate:
         log = ConversationLog(base_dir=tmp_path / "sessions")
         with replace_sharing_violation(match="dashboard_ghost-1.jsonl", times=1) as sim:
             await _seed_incognito_transcript(log, "dashboard:ghost-1")
-        assert sim["n"] == 2
+        assert sim["n"] == 3
         assert log.get_metadata("dashboard:ghost-1")["memory_mode"] == "incognito"
 
     @pytest.mark.asyncio

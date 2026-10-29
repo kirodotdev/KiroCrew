@@ -686,7 +686,7 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # An opt-out that only SOME paths honour is worse than no opt-out. This
         # check exists because the two can now disagree: a record stored with a
         # monitor but no ``gate`` key -- one armed while the default was True,
-        # or upgraded from an earlier build of this branch -- decodes to
+        # or written by an earlier build -- decodes to
         # ``gate=False`` with its monitor intact. Reading only the monitor would
         # poll such a loop anyway and let a terminal verdict DEACTIVATE it,
         # which is exactly the harm the opt-out exists to prevent. The stored
@@ -1005,13 +1005,13 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # revivable again: a loop that cannot be told apart from a working
         # one. Reaching the end of the thing you were watching is a SUCCESS,
         # so the outcome says so rather than borrowing a bound's vocabulary.
-        # ONE transition, committed once. Four rounds of review landed on this
-        # hunk and each earlier shape had a gap: announcing before the write
-        # promised a finish the record did not have; announcing after it was
-        # swallowed by ``update``'s cancel reaching this very task; and doing
-        # both left TWO await points, so a write failure killed the timer with
-        # the loop still active, and a retarget landing between them let an old
-        # verdict deactivate a subject that had never been observed.
+        # ONE transition, committed once. Every other shape has a gap:
+        # announcing before the write promises a finish the record does not
+        # have; announcing after it is swallowed by ``update``'s cancel reaching
+        # this very task; and doing both leaves TWO await points, so a write
+        # failure kills the timer with the loop still active, and a retarget
+        # landing between them lets an old verdict deactivate a subject that
+        # has never been observed.
         #
         # So there is no ``update`` call here at all. The marks go on in memory
         # with no await between them, one durable write commits them, and the

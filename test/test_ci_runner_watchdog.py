@@ -51,6 +51,7 @@ from ci_runner_watchdog_helpers import (
     _posts,
     _run,
     _sweep,
+    _ts,
     _verdict_of,
     wd,
 )
@@ -600,7 +601,9 @@ def test_a_rate_limit_on_the_fresh_evidence_read_has_an_accurate_outcome() -> No
             r"[?&]page=1(?![0-9])", path
         ):
             reads["in_progress"] += 1
-            if reads["in_progress"] > 1:
+            # Two first pages per gather: the bounded listing and its young-band
+            # evidence page, so the third is the re-read's.
+            if reads["in_progress"] > 2:
                 raise wd.ApiError(
                     403,
                     "API rate limit exceeded for installation ID 12345",
@@ -987,7 +990,7 @@ def test_the_candidate_listing_is_repo_wide_and_paginated() -> None:
     and never the repo-wide `/actions/runs?status=` call this asserts."""
     runs = [_run(i, minutes_ago=200 - i) for i in range(1, 131)]
     api = FakeApi({"in_progress": list(reversed(runs))}, {})
-    listed = wd.list_all_candidate_runs(api, REPO)
+    listed, _aborted, _truncated = wd.gather_all_candidate_runs(api, REPO)
     # Every watched run is examined -- all 130, not the newest 50 -- so the oldest
     # (the orphans) are never truncated away.
     assert sorted(int(r["id"]) for r in listed) == list(range(1, 131))
@@ -1207,25 +1210,35 @@ def test_a_truncated_live_listing_fails_the_tick_instead_of_only_warning() -> No
     assert not (wd.FAILED_OUTCOMES & set(control_outcomes.values()))
 
 
-def _ceilinged_listing(queued: list[dict[str, Any]]) -> tuple[FakeApi, list[str]]:
+def _ceilinged_listing(
+    queued: list[dict[str, Any]], api: FakeApi | None = None
+) -> tuple[FakeApi, list[str]]:
     """A runs index that serves ``queued`` the way GitHub does past its ceiling.
 
-    Newest first, filtered by ``created=<=…`` when given, ``total_count`` for the
-    filtered set, and an EMPTY page past result ``REPO_LISTING_RESULT_CEILING``.
+    Newest first, filtered by ``created=<=…`` or ``created=>…`` when given,
+    ``total_count`` for the filtered set, and an EMPTY page past result
+    ``REPO_LISTING_RESULT_CEILING``. Given an ``api``, only its repo-wide queued
+    listing is replaced and every other read goes to it as before.
     """
-    api = FakeApi({}, {})
+    fallback = api.get if api is not None else None
+    api = api or FakeApi({}, {})
     queries: list[str] = []
 
     def serve(path: str) -> Any:
         queries.append(path)
-        params = dict(urllib.parse.parse_qsl(path.partition("?")[2]))
-        if params.get("status") != "queued":
+        base, _, query = path.partition("?")
+        params = dict(urllib.parse.parse_qsl(query))
+        if not base.endswith("/actions/runs") or params.get("status") != "queued":
+            if fallback is not None:
+                return fallback(path)
             return {"total_count": 0, "workflow_runs": []}
         rows = sorted(queued, key=lambda run: run["created_at"], reverse=True)
         created = params.get("created")
-        if created is not None:
-            assert created.startswith("<="), created
+        if created is not None and created.startswith("<="):
             rows = [run for run in rows if run["created_at"] <= created[2:]]
+        elif created is not None:
+            assert created.startswith(">"), created
+            rows = [run for run in rows if run["created_at"] > created[1:]]
         page, size = int(params["page"]), int(params["per_page"])
         start = (page - 1) * size
         if start >= wd.REPO_LISTING_RESULT_CEILING:
@@ -1284,6 +1297,216 @@ def test_the_window_cap_bounds_the_quota_and_reports_what_it_could_not_read() ->
     assert truncated[0].endswith(f"after {windows} created window(s)")
     queued_reads = [query for query in queries if "status=queued" in query]
     assert len(queued_reads) <= windows * (wd.REPO_LISTING_MAX_PAGES + 1)
+
+
+def test_candidate_threshold_puts_orphan_aged_runs_on_page_one() -> None:
+    """With ``created=<=<threshold>``, an orphan-aged run is on page one however many
+    younger runs fill the head of the unfiltered listing.
+
+    1,200 runs created in one second three minutes ago sit between the orphan and
+    page one. Unbounded, windowing cannot narrow past them (pinned by
+    ``test_a_window_that_cannot_narrow_still_fails_the_tick``). Bounded at
+    ``now - saturation_wait`` they are excluded and the orphan is read with no
+    truncation; one best-effort page of them comes back for evidence.
+    """
+    recent = [_run(i, minutes_ago=3, status="queued") for i in range(1, 1201)]
+    orphan = _run(9999, minutes_ago=20, status="queued")
+    api, queries = _ceilinged_listing(recent + [orphan])
+    logged: list[str] = []
+    runs, aborted, truncated = wd.gather_all_candidate_runs(
+        api, REPO, candidate_threshold=_ts(5), log=logged.append
+    )
+    assert aborted is None
+    assert truncated == []
+    ids = {int(run["id"]) for run in runs}
+    assert 9999 in ids
+    # The evidence page: exactly one page of the young band, no deeper.
+    assert len(ids - {9999}) == wd.PAGE_SIZE * wd.EVIDENCE_LISTING_PAGES
+    assert any("created=%3E" in query for query in queries)
+    # Its shortfall is a plain note, so it cannot bury a real truncation warning.
+    assert not any(line.startswith("::warning::") for line in logged)
+
+
+def test_candidate_threshold_includes_saturation_capable_band() -> None:
+    """The bound is ``now - saturation_wait``, not ``now - orphan_after``: the 5-to-15
+    minute band can carry a slow start (``_can_carry_a_slow_start``), so it stays in
+    the bounded listing. Runs under five minutes come back through the evidence page.
+    """
+    too_young = [_run(i, minutes_ago=3, status="queued") for i in range(1, 6)]
+    capable = [_run(100 + i, minutes_ago=10, status="queued") for i in range(1, 6)]
+    orphan = _run(9999, minutes_ago=20, status="queued")
+    api, _ = _ceilinged_listing(too_young + capable + [orphan])
+    runs, aborted, truncated = wd.gather_all_candidate_runs(
+        api, REPO, candidate_threshold=_ts(5), log=lambda _l: None
+    )
+    assert aborted is None
+    assert truncated == []
+    assert {int(run["id"]) for run in runs} == {9999, *range(1, 6), *range(101, 106)}
+
+
+def test_an_orphan_behind_young_runs_is_healed_on_a_bounded_reread() -> None:
+    """Sweep and pre-cancel re-read are both bounded at ``now - saturation_wait``, and
+    a young band that fits within YOUNG_BAND_MAX_PAGES leaves nothing unread: the
+    orphan is cancelled and re-run."""
+    young = [_run(20_000 + i, minutes_ago=3, status="queued") for i in range(80)]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, queries = _ceilinged_listing(young, api)
+    _verdicts, outcomes = _sweep(api)
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+    queued = [query for query in queries if "status=queued" in query]
+    # Sweep: one bounded pass + one evidence page (EVIDENCE_LISTING_PAGES=1, stops at cap).
+    # Re-read: one bounded pass + two evidence queries (page 1 = 80 runs, page 2 = empty,
+    # confirms exhaustion before stopping; YOUNG_BAND_MAX_PAGES allows up to 5 pages).
+    assert sum("created=%3C%3D" in query for query in queued) == 2
+    assert sum("created=%3E" in query for query in queued) == 3
+
+
+def test_young_runs_past_the_evidence_page_hold_the_cancel() -> None:
+    """The issue's repro: 1,200 runs three minutes old ahead of an orphan. Bounded,
+    neither listing is truncated, so the tick is not failed for reach. But the
+    re-read's young-band pass lists only the newest 500 (YOUNG_BAND_MAX_PAGES pages),
+    and the unlisted 700 sit just under the line and cross it while the cancels are
+    judged. They stand as one unread candidate, so the partial-evidence hold holds
+    the cancel, as it would for any unread run old enough to hold a slow start.
+    Negative control: without that candidate the run is cancelled and re-run."""
+    burst = [_run(20_000 + i, minutes_ago=3, status="queued") for i in range(1200)]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(burst, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        # Each read takes 50 ms, as real reads take time: the cancel is judged
+        # after the re-read, not at the instant it was taken. Short enough that the
+        # listed young runs (three minutes old) stay under the line all tick.
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert not _posts(api, "/cancel")
+    assert wd.LISTING_TRUNCATED_MARKER_ID not in outcomes
+    assert not (wd.FAILED_OUTCOMES & set(outcomes.values()))
+
+
+def test_young_burst_from_unwatched_workflow_does_not_hold_the_cancel() -> None:
+    """An exhausted young band of unwatched-workflow runs does not hold the cancel:
+    all runs were read, none are watched, nothing can hold a slow start.
+    The burst is small enough to fit within YOUNG_BAND_MAX_PAGES so the band is
+    fully exhausted and the exhausted-with-no-watched path is exercised."""
+    burst = [
+        _run(20_000 + i, minutes_ago=3, status="queued", workflow="not-watched.yml")
+        for i in range(100)
+    ]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(burst, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    # Band exhausted with no watched runs: no hold, cancel fires.
+    assert _verdict_of(verdicts, 1).verdict != wd.SKIPPED_PARTIAL_EVIDENCE
+    assert len(_posts(api, "/cancel")) == 1
+
+
+def test_watched_run_at_position_101_is_held() -> None:
+    """A watched run past the first young-band page is found when the pre-cancel
+    re-read uses YOUNG_BAND_MAX_PAGES. The band overflows the cap (501 total), so
+    the cancel is held fail-closed: we read the watched run at page 2 but there is
+    still one unlisted run, and we cannot know whether that unlisted run could hold
+    a slow start."""
+    # 100 unwatched young runs (page 1, newest) + 1 watched young run (page 2,
+    # position 101) + 400 more unwatched (pages 2-5) = 501 total. Cap at 5 pages
+    # lists 500; 1 unlisted run triggers the hold.
+    unwatched_newest = [
+        _run(20_000 + i, minutes_ago=1, status="queued", workflow="not-watched.yml")
+        for i in range(100)
+    ]
+    watched_101 = [_run(21_000, minutes_ago=2, status="queued")]
+    unwatched_rest = [
+        _run(22_000 + i, minutes_ago=3, status="queued", workflow="not-watched.yml")
+        for i in range(400)
+    ]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(unwatched_newest + watched_101 + unwatched_rest, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    # Cap hit: fail closed, cancel held even though the watched run at position 101
+    # IS listed within the 5-page cap.
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert not _posts(api, "/cancel")
+
+
+def test_young_band_page_cap_holds_the_cancel() -> None:
+    """When the young band overflows YOUNG_BAND_MAX_PAGES the pre-cancel re-read
+    cannot see the full band; the cancel is held fail-closed regardless of the
+    workflows in the listed portion."""
+    # PAGE_SIZE * YOUNG_BAND_MAX_PAGES + 1 young runs to guarantee the cap is hit.
+    cap_overflow = [
+        _run(20_000 + i, minutes_ago=3, status="queued", workflow="not-watched.yml")
+        for i in range(wd.PAGE_SIZE * wd.YOUNG_BAND_MAX_PAGES + 1)
+    ]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(cap_overflow, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    # Cap hit: fail closed, cancel held even though all listed runs are unwatched.
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert not _posts(api, "/cancel")
+
+
+def test_a_short_pre_cancel_reread_fails_closed_rather_than_cancelling() -> None:
+    """Runs past the line that the re-read could not list may hold the slow start the
+    hold exists to see, so a truncated re-read cancels nothing and reds the tick.
+    The burst arrives between the sweep and the re-read: 1,200 runs created in one
+    second ten minutes ago, past the line, so the bound cannot exclude them and the
+    window cannot narrow past them. Negative control: dropping the truncation (as
+    ``gather_all_candidate_runs`` without the truncation check cancels and re-runs the run here."""
+    queued: list[dict[str, Any]] = []
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(queued, api)
+    listing = api.get
+
+    def get(path: str) -> Any:
+        if "/actions/runs/1/jobs" in path and not queued:
+            queued.extend(_run(20_000 + i, minutes_ago=10, status="queued") for i in range(1200))
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = _sweep(api)
+    assert outcomes[1] == wd.OUTCOME_LISTING_TRUNCATED
+    assert wd.OUTCOME_LISTING_TRUNCATED in wd.FAILED_OUTCOMES
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_NO_DISPATCH_EVIDENCE
+    assert not _posts(api, "/cancel")
+    assert not _posts(api, "/force-cancel")
 
 
 def test_the_repo_wide_paging_respects_its_page_cap() -> None:

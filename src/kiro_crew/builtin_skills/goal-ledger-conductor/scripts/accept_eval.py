@@ -17,10 +17,21 @@ stdin (JSON):
     {"items": [
         {"id": "item-1", "accept": {"kind": "pr_checks", "pr": 123,
                                      "repo": "owner/name"}},
-        {"id": "item-2", "accept": {"kind": "file", "path": "/abs/path",
+        {"id": "item-2", "accept": {"kind": "pr_merged", "pr": 123,
+                                     "repo": "owner/name"}},
+        {"id": "item-3", "accept": {"kind": "file", "path": "/abs/path",
                                      "exists": true}},
-        {"id": "item-3", "accept": {"kind": "human_approval"}}
+        {"id": "item-4", "accept": {"kind": "human_approval"}}
     ]}
+
+Kinds:
+    pr_checks       every check on a GitHub pull request is green
+                    (``gh pr checks``).
+    pr_merged       a GitHub pull request is merged (``gh pr view``; an open
+                    one is pending, a closed-unmerged one fails). ``repo`` is
+                    required here.
+    file            a path exists (or, with ``"exists": false``, does not).
+    human_approval  never machine-evaluated; always ``pending``.
 
 stdout (JSON):
     {"results": [{"id": "...", "verdict": "pass|fail|pending|refused|error",
@@ -86,6 +97,7 @@ Stdlib-only, Python 3.8+.
 """
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -94,8 +106,9 @@ from pathlib import Path
 #: allowlist - nothing in a spec can name a command at all. This exists so a
 #: handler that ever passes spec input into `_exec` fails closed instead of
 #: executing it, which is the regression the `cmd` kind's removal prevents.
-#: Both invocations here are `gh` (`pr checks` and the `pr view` draft probe),
-#: so a second entry would widen the surface for nothing.
+#: All three invocations here are `gh` (`pr checks`, the `pr view` draft probe
+#: and `pr_merged`'s `pr view`), so a second entry would widen the surface for
+#: nothing.
 _SELF_BUILT_COMMANDS = {"gh"}
 
 TIMEOUT_SECS = 300
@@ -103,6 +116,11 @@ EVIDENCE_TAIL_CHARS = 500
 
 #: gh pr checks exits 8 when checks are still running (gh >= 2.30).
 _GH_PENDING_EXIT = 8
+
+#: The GitHub ``owner/name`` ``pr_merged`` accepts. Applied with ``fullmatch``:
+#: a ``$`` anchor also matches before a trailing newline. ASCII classes only,
+#: and an owner cannot start with ``-``, so the value can never read as a flag.
+_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
 
 
 def _tail(text: str) -> str:
@@ -191,6 +209,41 @@ def _pr_is_draft(pr, repo=None):
     return proc.stdout.strip().lower() == "true"
 
 
+def _pr_merged(accept):
+    """Has this GitHub pull request merged? ``MERGED`` passes.
+
+    ``OPEN`` is ``pending``, because it can still merge; ``CLOSED`` fails,
+    because a closed pull request that did not merge carries no merged code. A
+    ``gh`` that cannot answer (no such PR, no auth) is an ``error``, never a
+    ``fail``: it says nothing about the work.
+
+    ``repo`` is required, unlike ``pr_checks``: without it ``gh`` resolves the
+    number against whatever checkout the evaluator runs in.
+    """
+    pr = accept.get("pr")
+    # bool is an int subclass; a non-positive number would reach gh as a flag.
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        return ("error", "pr_merged spec needs a positive integer pr")
+    repo = accept.get("repo")
+    if not isinstance(repo, str) or not _GH_REPO.fullmatch(repo):
+        return ("error", "pr_merged spec needs a repo of the form owner/name")
+    argv = ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "-q", ".state"]
+    problem, proc = _exec(argv)
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode != 0:
+        return ("error", f"could not read PR #{pr} in {repo}: exit {proc.returncode}: {output}")
+    state = proc.stdout.strip().upper()
+    if state == "MERGED":
+        return ("pass", f"PR #{pr} in {repo} is merged")
+    if state == "OPEN":
+        return ("pending", f"PR #{pr} in {repo} is open and not merged yet")
+    if state == "CLOSED":
+        return ("fail", f"PR #{pr} in {repo} was closed without merging")
+    return ("error", f"PR #{pr} in {repo} reported an unknown state: {output}")
+
+
 def _evaluate(item):
     accept = item.get("accept") or {}
     kind = accept.get("kind")
@@ -234,6 +287,8 @@ def _evaluate(item):
                 "review or change the acceptance kind",
             )
         return (verdict, evidence)
+    if kind == "pr_merged":
+        return _pr_merged(accept)
     if kind == "file":
         path = accept.get("path")
         if not isinstance(path, str) or not path:

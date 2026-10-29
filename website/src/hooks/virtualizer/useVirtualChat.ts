@@ -343,7 +343,7 @@ export function useVirtualChat<T>(
   useResizeObserver({ scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef, measurement, compensation, sync, pinning, ops })
   useWindowEdgeTriggers({
     windowRange, itemCount, overscan, prefetchStartIndex, sessionId, scrollerRef, scrollerEl,
-    topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange,
+    topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange, ops,
   })
 
   // The slot-entry placement: the last layout effect that can place the reader,

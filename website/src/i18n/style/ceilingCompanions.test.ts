@@ -25,7 +25,6 @@ const DIR = __dirname
 const COMPANIONS: Record<string, Record<string, string>> = {
   'bnStyle.test.ts': {
     'uses dari (।) not Latin period for sentence-final': '[changed-values] ends a Bengali sentence with dari at zero tolerance',
-    'uses Western digits (0-9) not Bengali digits (০-৯)': '[changed-values] uses Western digits at zero tolerance',
   },
   'deStyle.test.ts': {
     'uses du (informal), not Sie (formal)': '[changed-values] addresses the reader as du, never Sie',

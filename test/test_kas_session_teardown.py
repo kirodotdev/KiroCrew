@@ -62,11 +62,22 @@ class TestTeardownIsStillBestEffort:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend", [ACP_BACKEND_KAS, ""])
-    async def test_a_dead_runtime_skips_the_round_trip(self, tmp_path, backend):
+    async def test_a_dead_runtime_skips_the_round_trip(self, tmp_path, backend, monkeypatch):
         runtime = _runtime(tmp_path, backend)
+        runtime._session_queues["sess-1"] = asyncio.Queue()
+        # A process is set, so being dead is the only reason to skip the send.
+        runtime._process = object()  # type: ignore[assignment]
         runtime._dead = True
-        # Never spawned, so a round-trip would raise rather than no-op.
+        sent: list[tuple] = []
+
+        async def record(*args, **_k):
+            sent.append(args)
+
+        monkeypatch.setattr(runtime, "_send_and_await", record)
+        monkeypatch.setattr(runtime, "send_notification", record)
         await runtime.terminate_session("sess-1")
+        assert sent == []
+        assert "sess-1" not in runtime._session_queues
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend", [ACP_BACKEND_KAS, ""])

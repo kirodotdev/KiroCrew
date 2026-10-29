@@ -7,21 +7,6 @@ import { inUntrustedContent } from '../guide/guideMarkers'
 import type { SettingEntry } from '../components/commandPalette/settingsTypes'
 
 /**
- * Deep-link target for the "Crewmates" card in Settings → Developer →
- * Feature Previews — the switch that reveals the `/members` page.
- *
- * The sidebar's create-menu "Crewmates" entry navigates here while the
- * page is still preview-gated, so the user lands on the switch that holds the
- * page rather than on a toast about it. Same shape and same reason as
- * {@link SETTINGS_DEFAULT_MODEL_ID} below: registry ids derive from the
- * LABEL, so a rename would silently break an inlined string, and
- * `ChatSidebar.createMenu.test.tsx` asserts this one resolves in
- * SETTINGS_REGISTRY. Declared above `LEGACY_ID_EXACT` because that table
- * maps the card's previous id onto it.
- */
-export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.mates'
-
-/**
  * Legacy highlight-id migrations. Registry ids are `<tab>.<kebab-label>`, so
  * they shift when a tab or label is renamed; bookmarks and palette history
  * keep the old ids. Map old → new here instead of letting the link silently
@@ -48,14 +33,6 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // The pin toggle's label moved from "prompt" to "turn" vocabulary, shifting
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
-  // The Feature Previews crew card was relabeled from "Crew Members and Crew
-  // Mode" to "Crew Members" when Crew Mode retired, then to "Crewmates" to match
-  // the page title (`pages.membersPage.title`), then to "Mates" with the page;
-  // the flag and the card are the same ones throughout, only the label (and so
-  // the derived id) changed. Every prior id lands on the current one.
-  'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
-  'developer.crew-members': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
-  'developer.crewmates': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
   // The reply-threads switch sits under the same page title and moved with it.
   'developer.reply-threads-on-crewmate-chat-messages': 'developer.reply-threads-on-mate-chat-messages',
   // The peer-session card ("Remote instance sessions", then "Remote crew
@@ -205,9 +182,6 @@ function settingAnchorSelector(
  *   page that also mounts this hook while REDIRECTING legacy links to Settings
  *   passes a route check here, so it does not read the Settings-bound
  *   highlight, find no anchor, and strip it before SettingsPage ever mounts.
- *   (DeveloperPage mounts this hook for the default-crewmate deep link on its
- *   Config tab, and gates it off so that its legacy `agent-backend` redirect
- *   forwards `highlight` to Settings untouched.)
  */
 export function useSettingHighlight(owns: boolean = true): void {
   const [params, setParams] = useSearchParams()

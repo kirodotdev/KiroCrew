@@ -1739,7 +1739,10 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
 
         try:
             profile = cfg.stt.transcribe_profile or None
-            resolver = _ProfileCredentialResolver(profile) if profile else None
+            # Off the loop, as the batch path does: its Session is the first boto3 use (~200 ms).
+            resolver = (
+                await asyncio.to_thread(_ProfileCredentialResolver, profile) if profile else None
+            )
             client = TranscribeStreamingClient(
                 region=cfg.stt.transcribe_region,
                 credential_resolver=resolver,

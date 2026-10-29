@@ -370,8 +370,8 @@ async def _on_permission_prompt(
             # Any failure before the future is resolved (ImportError,
             # post_linked_approval raising, slot.append/push raising in
             # the delivery-failure branch) would otherwise fall through
-            # to the approval wait_for with an unresolved future — the exact
-            # wedge this fix prevents. Auto-reject so the turn unblocks,
+            # to the approval wait_for with an unresolved future and wedge
+            # the turn. Auto-reject so the turn unblocks,
             # mirroring the _slack_approval_ts is None branch.
             logger.warning("Error mirroring approval prompt to Slack", exc_info=True)
             if not fut.done():

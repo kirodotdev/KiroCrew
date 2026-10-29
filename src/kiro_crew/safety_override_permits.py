@@ -154,8 +154,10 @@ def approval_mode_permitted(mode: str) -> bool:
             governance_permits,
         )
     except Exception:
-        logger.debug("governance layer unavailable; permitting mode %s", mode, exc_info=True)
-        return True
+        # Fail closed, like the evaluation below: a deniable mode is the riskier
+        # auto-approve one, and a broken governance layer cannot vouch for it.
+        logger.warning("governance layer unavailable; refusing mode %s", mode, exc_info=True)
+        return False
     decision = governance_permits(
         _APPROVAL_MODES_SCOPE,
         mode,

@@ -44,6 +44,7 @@ from kiro_crew.acp.session_mcp import agent_spec_snapshot  # noqa: F401
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -471,6 +472,13 @@ class AcpProvider(LLMProvider):
         )
 
     @property
+    def agent_prompt_upgrade_notice(self) -> str:
+        """The upgrade notice when the KAS this session runs drops its agent's prompt,
+        else ``""``. Recorded when the session registered its ``customAgents``."""
+        notice = getattr(self._client, "kas_agent_prompt_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 
@@ -559,6 +567,11 @@ class AcpProvider(LLMProvider):
     def is_deepseek_backend(self) -> bool:
         """True when this ACP provider talks to DeepSeek Harness (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_DEEPSEEK
+
+    @property
+    def is_copilot_backend(self) -> bool:
+        """True when this ACP provider talks to GitHub Copilot CLI (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_COPILOT
 
     @property
     def is_kas_backend(self) -> bool:
@@ -1115,6 +1128,57 @@ def is_claude_backend(provider: Any) -> bool:
     return isinstance(provider, AcpProvider) and provider.is_claude_backend
 
 
+def _provider_backend(provider: Any) -> Any:
+    """The backend id *provider* talks to, or ``None`` for a shape that carries none.
+
+    Private on purpose: ``llm_helpers.provider_backend`` is the public reader
+    and answers ``""`` for a miss, while this one must keep a miss (``None``)
+    apart from kiro-cli's ``""``. Its only caller is the ``harness`` metric
+    attribute, through the driver delegate.
+
+    For the two provider shapes this is the check :func:`provider_label`
+    resolves through, so a caller that needs the raw id (the ``harness`` metric
+    attribute) reads the same answer the session map persists. It also reads a
+    bare ``AcpSessionHandle`` and an ``AcpRuntime``, which the background
+    one-liner path passes in place of a provider. ``None`` keeps "not a provider" apart from
+    kiro-cli, whose own id is the empty string (see
+    ``agent_sdk.backend_identity`` for why a blind ``getattr`` default of
+    ``""`` would conflate them). The value is returned as found, so a caller
+    decides what a non-string means.
+    """
+    backend = _provider_shape_backend(provider)
+    if backend is not None:
+        return backend
+    # The two shapes a background one-liner hands out as its turn's
+    # ``model_source``: a runtime-owned session handle, and the runtime itself.
+    # Neither is a provider, so ``provider_label`` (which keys the session map)
+    # deliberately does not read them; only this attribution read does.
+    if isinstance(provider, AcpSessionHandle):
+        runtime = getattr(provider, "_runtime", None)
+        return None if runtime is None else getattr(runtime, "acp_backend", None)
+    if isinstance(provider, AcpRuntime):
+        return provider.acp_backend
+    return None
+
+
+def _provider_shape_backend(provider: Any) -> Any:
+    """The backend of the two PROVIDER shapes, or ``None``.
+
+    The shape check :func:`provider_label` resolves through. An ``AcpProvider``
+    with no client yet carries no backend, so it is ``None`` here rather than
+    kiro-cli's ``""``; the label maps both to the default, so its answer is
+    unchanged.
+    """
+    if isinstance(provider, AcpSessionProvider):
+        return provider.backend
+    if isinstance(provider, AcpProvider):
+        client = getattr(provider, "client", None)
+        if client is None:
+            return None
+        return getattr(client, "backend", "")
+    return None
+
+
 def provider_label(provider: Any) -> str:
     """Backend identity key for *provider*.
 
@@ -1134,11 +1198,8 @@ def provider_label(provider: Any) -> str:
     the kiro label, and the map then prunes its id for want of a kiro
     transcript.
     """
-    if isinstance(provider, AcpSessionProvider):
-        backend = provider.backend
-    elif isinstance(provider, AcpProvider):
-        backend = getattr(getattr(provider, "client", None), "backend", "")
-    else:
+    backend = _provider_shape_backend(provider)
+    if backend is None:
         return PROVIDER_LABEL_DEFAULT
     # The claude test stays a NAME check ahead of the mapping rather than folding
     # into it: ``is_claude_backend_name`` accepts every spelling this build treats

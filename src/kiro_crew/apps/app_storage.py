@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.sel import sel
 
@@ -307,7 +307,7 @@ class AppStorage:
         every :meth:`list_keys` call until somebody deleted it.
         """
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(read_bytes_with_retry(path).decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             payload = None
         if isinstance(payload, dict) and isinstance(payload.get("key"), str):

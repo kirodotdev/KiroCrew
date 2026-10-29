@@ -191,8 +191,8 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px]" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             <div className="text-text mb-2">{task.force_approval ? i18nT('pages.aidlc.taskDetailPanel.this_gate_blocks_force_approval_true') : i18nT('pages.aidlc.taskDetailPanel.requires_approval_before_execution_2')}</div>
             <div className="flex gap-2">
-              <button className="px-3 py-1.5 rounded-md bg-ok text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('approve')}><Check className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.approve')}</button>
-              <button className="px-3 py-1.5 rounded-md bg-danger text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('reject')}><XIcon className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.deny')}</button>
+              <button className="px-3 py-1.5 rounded-md bg-ok text-ok-fg text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('approve')}><Check className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.approve')}</button>
+              <button className="px-3 py-1.5 rounded-md bg-danger text-danger-fg text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('reject')}><XIcon className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.deny')}</button>
             </div>
           </div>
         )}

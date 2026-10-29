@@ -7,6 +7,7 @@ import SketchDialog from './SketchDialog'
 import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
+import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
 import RejectDropdown from './RejectDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
@@ -70,6 +71,7 @@ import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } fro
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
 import { useComposerStopKey } from './chat-input/stopKey'
+import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
 import { INPUT_DRAG_MIN_H, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
@@ -87,6 +89,9 @@ import { ComposerAttach } from '../chat-core/composer/Attach'
    skeleton, and the constructs other gates read in this file by path. */
 
 const SessionAutomationPopover = lazy(() => import('./SessionAutomationPopover'))
+// Only gateways with Session Environments profiles render it (it returns null
+// otherwise), so it stays out of the chat bundle.
+const SessionEnvironmentChip = lazy(() => import('./SessionEnvironmentChip'))
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
@@ -133,7 +138,7 @@ const ONE_ROW_TEXT_PULL_PX = 10
 // would get half the rim of a two-row one, so the rim is sized from the
 // two-row height (one wrapped line of text plus the toolbar) in both shapes.
 const COMPOSER_RIM_FROM_PX = 102
-const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
@@ -157,7 +162,10 @@ const NO_VOICE: Partial<ComposerVoiceInputProps> = {}
  * natural height) and springs between the two shapes when `animate` is set;
  * the inner box keeps its natural height (`shrink-0`), so while the sizer is
  * still shorter it clips the TOP of the text column and the buttons at the
- * bottom never move. Disabled -- every host that does not opt in -- it renders
+ * bottom never move. The clip is `overflow: clip`, never `hidden`: a `hidden`
+ * box keeps a scroll position, and WebKit scrolls it to bring a caret in that
+ * clipped top band into view, so the text jumps while the box opens.
+ * Disabled -- every host that does not opt in -- it renders
  * its children bare, so the ordinary composer's tree is exactly what it was.
  */
 function ComposerSizer({ enabled, height, animate, className, children }: {
@@ -227,6 +235,7 @@ function ChatInput({
   onAgentClick,
   onModelClick,
   onProjectClick,
+  environmentSlot,
   sessionControls,
   onSessionControlClick,
   contextPct,
@@ -419,6 +428,10 @@ function ChatInput({
   // `chat-input/pickerFocus.ts` for the contract (why it reports where focus
   // LANDED, and why touch and a disabled box return false).
   const focusComposerAfterPick = useCallback(() => pickerFocusAfterPick(composerControl()), [composerControl])
+  // A remote session works in its guest directory, so the gateway project and
+  // branch this chip names are not its working tree; the environment chip says
+  // where it runs instead.
+  const remoteEnvironment = useSlotRemoteEnvironment(environmentSlot)
   // Attribute the Lexical editor's own growth to the composer (see
   // composerResize.ts). The textarea path attributes inside `applyHeight`, which
   // the contenteditable never runs — its box grows through CSS min/max-height as
@@ -696,7 +709,30 @@ function ChatInput({
   // Escape command, so the binding holds with "Style Markdown While Typing" on.
   const stopTurnOnEscape = useComposerStopKey({
     isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
+    optimizingRef, onCancelOptimize: cancelOptimize,
   })
+  // While an optimize runs the rich-text editor is not editable, so Lexical
+  // drops key events and its Escape command never fires (issue #22470). This
+  // composer then answers Escape through the shared Escape stack, on the same
+  // gate, where it can only cancel the optimize. It owns a press aimed inside
+  // it, or at the page body (where focus lands once the locked editor drops
+  // it) while it was the last composer to hold focus. The textarea keeps its
+  // own keydown path, so a press aimed at it is passed on.
+  const ownsFocusRef = useRef(false)
+  useEffect(() => {
+    ownsFocusRef.current = !!wrapperRef.current?.contains(document.activeElement)
+    const onFocusIn = (e: FocusEvent) => { ownsFocusRef.current = !!wrapperRef.current?.contains(e.target as Node) }
+    document.addEventListener('focusin', onFocusIn)
+    return () => document.removeEventListener('focusin', onFocusIn)
+  }, [])
+  useEscapeLayer(optimizing, e => {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !optimizingRef.current) return 'pass'
+    const target = e.target as Element | null
+    const inside = !!target && !!wrapperRef.current?.contains(target)
+    if (!inside && !(target === document.body && ownsFocusRef.current)) return 'pass'
+    if (target?.tagName === 'TEXTAREA') return 'pass'
+    return stopTurnOnEscape(e, { native: e, composing: e.isComposing || e.keyCode === 229 }) ? 'take' : 'yield'
+  }, ESCAPE_PRIORITY.composer)
   const handleKeyDown = useComposerKeyDown({
     rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, valueFromUserRef, optimizingRef,
     fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
@@ -743,7 +779,7 @@ function ChatInput({
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
   const micHeldElsewhereAction = micOwnerTitle && voiceBusyElsewhereSession
-    ? { label: micOwnerTitle, onClick: () => { void dispatch(switchSlot({ key: voiceBusyElsewhereSession, announceOnMissing: true })) } }
+    ? { label: micOwnerTitle, onClick: () => { void dispatch(switchSlot({ key: voiceBusyElsewhereSession, announceOnMissing: true, gesture: true })) } }
     : undefined
   // One-row shape (`inlineToolbarWhileFits`): the text still fits on the single
   // line, nothing but text is staged, and no mode owns the box's shape itself.
@@ -1262,7 +1298,7 @@ function ChatInput({
         enabled={inlineToolbarWhileFits}
         height={sizerPinned ? box.height : null}
         animate={!!(sizerPinned && box.animate && !reduceMotion)}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} overflow-hidden flex flex-col justify-end transition-[border-radius] duration-200`}
+        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} overflow-clip flex flex-col justify-end transition-[border-radius] duration-200`}
       >
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
       <div
@@ -1753,8 +1789,17 @@ function ChatInput({
           // An app-contributed chip is reason enough to draw the shelf. Without
           // this the chip is silently invisible whenever no other pill happens
           // to be present — the control is declared, mounted and unreachable.
-          !!sessionControls?.length) && (
+          !!sessionControls?.length ||
+          !!environmentSlot) && (
         <div ref={shelfRef} data-testid="composer-context-shelf" className="glass-shelf pt-1 flex items-center gap-2 min-w-0" style={{ ['--glass-shelf-h' as string]: `${shelfHeight}px` }}>
+          {/* Where the session's files and commands live. Its own separated
+              group, like the app session controls below, so neither crowds the
+              agent/project chip group past `max-two-buttons-per-row`. */}
+          {environmentSlot && (
+            <Suspense fallback={null}>
+              <SessionEnvironmentChip slot={environmentSlot} disabled={isRunning} compact={shelfCompact} />
+            </Suspense>
+          )}
           {/* App-contributed session controls live in their OWN group, not
               beside the agent/project chips. `max-two-buttons-per-row`
               (AUTOSDE.yaml, blocking) caps a horizontal group at 2 action
@@ -1780,7 +1825,7 @@ function ChatInput({
               <span className={shelfCompact ? 'sr-only' : 'truncate max-w-[160px]'}>{projectProp.split('/').filter(Boolean).pop() || projectProp}</span>
             </span>
           )}
-          {onProjectClick && (
+          {onProjectClick && !remoteEnvironment && (
           /* Two sibling buttons inside one visual pill, NOT a nested button:
              the folder segment opens the project picker and the branch segment
              copies. A <button> inside a <button> is invalid HTML and browsers

@@ -186,7 +186,15 @@ class TestGhSetupClassification(unittest.TestCase):
 
     def test_unrelated_failures_are_not_setup_errors(self):
         for tail in ("HTTP 404: Not Found", "connection reset by peer", ""):
-            gh._raise_if_auth_failure(tail)  # must not raise
+            with self.subTest(tail=tail):
+                gh._raise_if_auth_failure(tail)  # must not raise
+                # Through a real caller: the plain GhCliError survives, unclassified.
+                proc = mock.Mock(returncode=1, stdout="", stderr=tail)
+                with mock.patch.object(gh, "_gh_run", return_value=proc):
+                    with self.assertRaises(gh.GhCliError) as ctx:
+                        gh.get_current_login()
+                self.assertNotIsInstance(ctx.exception, gh.GhSetupError)
+                self.assertIn("gh api user failed (exit 1)", str(ctx.exception))
 
     def test_setup_error_is_a_gh_cli_error(self):
         # Existing `except GhCliError` handlers must keep catching it.
@@ -315,19 +323,31 @@ class TestRecentReposRoute(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(_body(resp)["repos"][0]["connected"])
 
+    def _feed_for(self, login: str, events: list[dict]):
+        """The real list_contributed_repos over a fake feed that answers only
+        ``login``'s event path, so the rows show which login was forwarded."""
+
+        def _run(path, *_a, **_kw):
+            return events if path.startswith(f"users/{login}/events") else []
+
+        return mock.patch.object(gh, "_run_gh_api", side_effect=_run)
+
     async def test_default_window_and_login_are_forwarded(self):
+        events = [_ev("o/inside", 20), _ev("o/outside", 40)]
         with mock.patch.object(routes.github_client, "get_current_login", return_value="octocat"), \
-             mock.patch.object(routes.github_client, "list_contributed_repos", return_value=([], False)) as lcr, \
+             self._feed_for("octocat", events), \
              mock.patch.object(routes.store, "list_connected_repos", return_value=[]):
-            await routes._handle_recent_repos(_req())
-        lcr.assert_called_once_with("octocat", within_days=30)
+            resp = await routes._handle_recent_repos(_req())
+        # 20 days is inside the default 30-day window, 40 days is not.
+        self.assertEqual([r["full_name"] for r in _body(resp)["repos"]], ["o/inside"])
 
     async def test_days_param_is_forwarded(self):
+        events = [_ev("o/inside", 5), _ev("o/outside", 10)]
         with mock.patch.object(routes.github_client, "get_current_login", return_value="octocat"), \
-             mock.patch.object(routes.github_client, "list_contributed_repos", return_value=([], False)) as lcr, \
+             self._feed_for("octocat", events), \
              mock.patch.object(routes.store, "list_connected_repos", return_value=[]):
-            await routes._handle_recent_repos(_req({"days": "7"}))
-        lcr.assert_called_once_with("octocat", within_days=7)
+            resp = await routes._handle_recent_repos(_req({"days": "7"}))
+        self.assertEqual([r["full_name"] for r in _body(resp)["repos"]], ["o/inside"])
 
     async def test_truncated_flag_is_surfaced(self):
         with mock.patch.object(routes.github_client, "get_current_login", return_value="octocat"), \

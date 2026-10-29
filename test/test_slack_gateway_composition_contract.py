@@ -342,7 +342,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, update_task: \"'asyncio.Task[None] | None'\") -> 'None'",
         ),
         ("_run_update_checks", "async method", "(self) -> 'None'"),
-        ("_retry_pending_update_restart", "async method", "(self) -> 'None'"),
+        ("_retry_pending_update_restart", "async method", "(self) -> 'bool'"),
         ("_check_for_updates", "async method", "(self) -> 'None'"),
         (
             "_auto_update_effect",

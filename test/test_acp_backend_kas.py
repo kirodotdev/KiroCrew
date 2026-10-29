@@ -105,6 +105,7 @@ class TestBackendPredicates:
             provider.is_pi_backend,
             provider.is_goose_backend,
             provider.is_deepseek_backend,
+            provider.is_copilot_backend,
         ]
         assert sum(held) == 1
 

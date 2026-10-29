@@ -37,6 +37,25 @@
     "env_removed": [],
     "served_by": "AcpRuntime"
   },
+  "copilot": {
+    "argv": [
+      "/opt/bin/copilot",
+      "--acp",
+      "--stdio",
+      "--no-auto-update",
+      "--disable-builtin-mcps",
+      "--disallow-temp-dir"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "copilot --acp --stdio --no-auto-update --disable-builtin-mcps --disallow-temp-dir",
+    "stderr_label": "copilot"
+  },
   "deepseek": {
     "argv": [
       "/opt/bin/dsh",

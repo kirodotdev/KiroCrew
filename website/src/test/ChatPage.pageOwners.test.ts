@@ -148,6 +148,7 @@ describe('pages/chat/page owners', () => {
       'useTranscriptPaging',
       'useBusyTurnControls',
       'useTranscriptPins',
+      'useTranscriptReactions',
       'useTranscriptJumps',
       'useTranscriptRendering',
       'useSessionsDrawer',

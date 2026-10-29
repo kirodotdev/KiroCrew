@@ -166,6 +166,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _bundled_kas_targets_cached
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
         crew_home_visible_spellings carveout_chain_has_planted_link
+        enterprise_policy_cache_view _caller_mask_contains _POLICY_CACHE_META_LEAF
+        _policy_cache_meta_names_its_source
         carveout_shadowed_by_foreign_mask _STRICT_DIRS _STANDARD_DIRS _CC_DIRS _resolves_to
         _crew_home_alias_roots _relocated_crew_targets _POD_OS_HOME_GRANT_STORE_LEAVES
         _POD_OS_HOME_MASKED_SUBLEAVES _pod_os_home_targets _relocated_policy_cache_dirs
@@ -270,7 +272,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _allow_no_isolation UNSANDBOXED_BY_OPERATOR UNSANDBOXED_BY_PLATFORM
         _allow_unsandboxed_exec _unsandboxed_grant_source _unsandboxed_exec_key_declared
         _SSH_VISIBLE_TIERS _ssh_dir_masked _tier_lists_ssh _forward_ssh_auth_sock
-        _forward_for_effective_tier unsandboxed_exec_permitted_by _bundled_cli_invocation
+        _forward_for_effective_tier _forwards_without_consent ssh_auth_sock_consent_notice
+        unsandboxed_exec_permitted_by _bundled_cli_invocation
         _apparmor_userns_restricted _no_backend_guidance _classify_unavailable
         agent_confinement_evidence agent_confinement_is_kirocrew_own _warn_mode_off_unconfined
         _warn_first_party_unconfined_once _first_party_no_backend_passthrough
@@ -290,11 +293,13 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _agents_slice_name _default_max_memory_mb _CGROUP_SCOPE_PROBE
         _CGROUP_SCOPE_PROBE_SESSION _CGROUP_SCOPE_PROBE_AT _CGROUP_SCOPE_PROBE_TTL_SECONDS
         _CGROUP_SCOPE_PROBE_LOCK _CGROUP_WARNED _CGROUP_LINGER_REMEDY
-        _warn_cgroup_unavailable _user_slice_controllers_path _user_bus_socket_paths
+        _warn_cgroup_unavailable _cgroup_unavailable_effect _user_slice_controllers_path
+        _user_bus_socket_paths
         _stat_identity _cgroup_scope_session_fingerprint _user_bus_reachable
         _probe_cgroup_scope _log_cgroup_scope_transition _compute_cgroup_scope_probe
         _CPU_DELEGATED _cpu_controller_delegated _cgroup_limits_from_config
         _CGROUP_DEFAULT_SCOPE_MEMORY_HIGH_PCT _scope_memory_high_mb _read_resource_limits
+        _CGROUP_SCOPE_EPOCH _cgroup_scope_epoch
         """.split()),
     "kiro_crew.sandbox_slice": tuple("""
         _SLICE_MEMORY_HIGH_FRACTION _SLICE_FALLBACK_MEMORY_HIGH_MB _SLICE_MEMHIGH_APPLIED
@@ -312,7 +317,19 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _USER_MANAGER_CGROUP_BASE _agents_slice_cgroup_dir _read_cgroup_counters
         read_cgroup_int _SLICE_THROTTLE_PROBE_SEEN _SLICE_THROTTLE_EDGE_AT
         _SLICE_THROTTLE_EDGE_HOLD_SECS agents_slice_throttling _SLICE_OOM_SEEN
-        check_agents_slice_pressure
+        check_agents_slice_pressure _SLICE_RECLAIM_DEFAULT_TRIGGER_PCT
+        _SLICE_RECLAIM_MIN_TRIGGER_PCT _SLICE_RECLAIM_MAX_TRIGGER_PCT
+        _SLICE_RECLAIM_TARGET_FRACTION _SLICE_RECLAIM_TARGET_GAP_PCT
+        _SLICE_RECLAIM_FILE_SHARE_MIN _SLICE_RECLAIM_CHUNK_BYTES
+        _SLICE_RECLAIM_EPISODE_BUDGET_SECS _SLICE_RECLAIM_MIN_INTERVAL_SECS
+        _SLICE_RECLAIM_MIN_BYTES _PROC_MEMINFO _SLICE_RECLAIM_DISARMED
+        _SLICE_RECLAIM_LAST_AT _SLICE_RECLAIM_LOCK _SLICE_RECLAIM_SKIP_LOGGED
+        _slice_reclaim_trigger_pct _slice_reclaimable_file _plan_slice_reclaim
+        _host_swap_total_kb _slice_reclaim_cannot_swap _write_memory_reclaim
+        _disarm_slice_reclaim _log_slice_reclaim_skip_once _run_slice_reclaim_episode
+        reclaim_agents_slice_page_cache
+        _SLICE_MEMHIGH_EPOCH _slice_memory_high_is_stale _forget_stale_slice_memory_high
+        _SLICE_LIMITS_EPOCH _reapply_slice_limits_for_new_session
         """.split()),
     "kiro_crew.sandbox_rlimit": tuple("""
         _UNSET _RESOURCE_PREEXEC resource_limit_preexec _EXTRACTOR_PREEXEC

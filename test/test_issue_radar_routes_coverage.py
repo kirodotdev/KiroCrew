@@ -576,8 +576,14 @@ class TestRegisterRoutes(unittest.TestCase):
         app = web.Application()
         with mock.patch.object(
             type(app.on_startup), "append", side_effect=RuntimeError("frozen")
-        ):
+        ), self.assertLogs(routes.logger, "WARNING") as logs:
             routes.register_routes(app)  # must not raise
+        registered = {(r.method, r.get_info().get("path")) for r in app.router.routes()}
+        self.assertIn(("GET", f"{BASE}/issues"), registered)
+        self.assertIn(
+            "issue-radar: could not register watcher lifecycle hooks",
+            [r.getMessage() for r in logs.records],
+        )
 
 
 # ── /connect ─────────────────────────────────────────────────────────────────

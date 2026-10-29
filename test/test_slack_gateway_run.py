@@ -11,6 +11,7 @@ import asyncio
 import logging
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -528,6 +529,298 @@ class TestRunFreezesBootHeap:
         orch = _make_orchestrator(no_dashboard=True)
         freezes = await self._run_and_record_freezes(orch, monkeypatch)
         assert freezes == [(0, 1, False)]
+
+
+class _BootStopsHere(BaseException):
+    """Ends ``run()`` at the release, so no boot step after it needs a fake."""
+
+
+class _BootMovedOn(BaseException):
+    """Ends ``run()`` at its first step after the release point (``gc.freeze``)."""
+
+
+def _restore_cfg(*, surface_channel_sessions: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        dashboard=SimpleNamespace(
+            restore_window_minutes=30,
+            restore_sessions=True,
+            idle_slot_sweep_days=0,
+            surface_channel_sessions=surface_channel_sessions,
+        )
+    )
+
+
+class TestOrphanNoticeRelease:
+    """``run()`` releases the boot orphan sweep's held notices once the tabs are back.
+
+    The sweep starts with the subagent manager, before the dashboard has restored
+    the tabs its notices go to, and a channel conversation's tab comes back only
+    with the channel reconciler's first complete pass, after the dashboard start
+    has returned. The release follows that pass (at once when channel surfacing
+    is off), and runs at once for the API-only server and when the start raises,
+    so the owner DM digest still goes out.
+    """
+
+    @staticmethod
+    def _booting(*, no_dashboard: bool, start_raises: bool = False):
+        orch = _make_orchestrator(no_dashboard=no_dashboard)
+        events: list[str] = []
+
+        def _release() -> None:
+            events.append("release")
+            raise _BootStopsHere()
+
+        def _init_subagents() -> None:
+            orch.subagent_mgr = SimpleNamespace(release_orphan_notices=_release)
+            events.append("subagents")
+
+        async def _start_surface() -> None:
+            events.append("surface")
+            if start_raises:
+                raise RuntimeError("the dashboard port is taken")
+
+        orch._init_services = AsyncMock()
+        orch._start_embeddings = AsyncMock()
+        orch._auto_migrate_memory = AsyncMock()
+        orch._init_cron = AsyncMock()
+        orch._init_heartbeat = AsyncMock()
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = _init_subagents
+        orch._init_task_runner = MagicMock()
+        orch._init_dashboard = _start_surface
+        orch._init_api_server = _start_surface
+        orch._announce_cron_quarantine = MagicMock()
+        orch._init_autonudge = AsyncMock()
+        orch._check_for_updates = AsyncMock()
+        orch._shutdown = AsyncMock()
+        return orch, events
+
+    @staticmethod
+    async def _run_until(orch, stop: type[BaseException]) -> BaseException:
+        """Drive ``run()`` until *stop* ends it: the release, or the step after it."""
+        import kiro_crew
+
+        # Set like the other boot tests: a run() that never reaches the release
+        # leaves at the shutdown wait instead of blocking there.
+        kiro_crew.shutdown_event.set()
+        loop = asyncio.get_running_loop()
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(loop, "add_signal_handler"))
+                for target in (
+                    "kiro_crew.platform_compat.raise_nofile_soft_limit",
+                    "kiro_crew.slack.events.init_socket_mode",
+                    "kiro_crew.slack.interactions.init",
+                    "kiro_crew.slack.events.SeenCache",
+                    "kiro_crew.session.cleanup_orphaned_sessions",
+                    "os._exit",
+                ):
+                    stack.enter_context(patch(target))
+                stack.enter_context(
+                    patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+                )
+                # A spy, not the real freeze: freezing would park this worker's heap.
+                stack.enter_context(patch("gc.freeze", side_effect=_BootMovedOn()))
+                with pytest.raises(stop) as stopped:
+                    await orch.run()
+        finally:
+            kiro_crew.shutdown_event.clear()
+        return stopped.value
+
+    @staticmethod
+    def _dashboard_state(tmp_path, monkeypatch):
+        """A real ``DashboardState`` whose restores find nothing, and a fresh registry."""
+        from kiro_crew import session_surface
+        from kiro_crew.dashboard import channel_slots
+        from kiro_crew.dashboard import server as srv
+        from kiro_crew.dashboard.state import DashboardState
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv.cautious_boot, "pause_before", AsyncMock(return_value=None))
+        monkeypatch.setattr(srv.chat, "restore_open_slots_async", AsyncMock(return_value=0))
+        monkeypatch.setattr(srv.chat, "restore_recent_sessions_async", AsyncMock(return_value=0))
+        monkeypatch.setattr(channel_slots, "RECONCILE_INTERVAL_SECS", 3600)
+        monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset())
+        return DashboardState(
+            sessions=MagicMock(count=0), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+        )
+
+    @staticmethod
+    async def _stop_dashboard_tasks(state) -> None:
+        import contextlib
+
+        task = state._channel_slot_reconciler
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if state._slot_list_rebuild_deadline is not None:
+            state._slot_list_rebuild_deadline.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("no_dashboard", [False, True], ids=["dashboard", "api-only"])
+    @pytest.mark.parametrize("start_raises", [False, True], ids=["started", "start-raised"])
+    async def test_the_release_follows_the_surface_start(self, no_dashboard, start_raises):
+        orch, events = self._booting(no_dashboard=no_dashboard, start_raises=start_raises)
+
+        stopped = await self._run_until(orch, _BootStopsHere)
+
+        assert events == ["subagents", "surface", "release"]
+        if start_raises:
+            # The release ran while the start's own error was propagating.
+            assert isinstance(stopped.__context__, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_an_api_only_gateway_releases_at_once_beside_its_state(
+        self, tmp_path, monkeypatch
+    ):
+        # ``start_api_server`` builds a DashboardState too, but it restores no
+        # tabs, so its ``startup_tabs_rebuilt`` is never set.
+        orch, events = self._booting(no_dashboard=True)
+        state = self._dashboard_state(tmp_path, monkeypatch)
+
+        async def _start_api_server() -> None:
+            orch.dashboard_state = state
+            events.append("surface")
+
+        orch._init_api_server = _start_api_server
+
+        await self._run_until(orch, _BootStopsHere)
+
+        assert events == ["subagents", "surface", "release"]
+        assert not state.startup_tabs_rebuilt.is_set()
+
+    @pytest.mark.asyncio
+    async def test_without_channel_surfacing_the_restores_finish_releases_at_once(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import server as srv
+
+        orch, events = self._booting(no_dashboard=False)
+        state = self._dashboard_state(tmp_path, monkeypatch)
+
+        async def _start_dashboard() -> None:
+            state.begin_slot_list_rebuild()
+            await srv._restore_dashboard_sessions(
+                state, _restore_cfg(surface_channel_sessions=False)
+            )
+            orch.dashboard_state = state
+            events.append("surface")
+
+        orch._init_dashboard = _start_dashboard
+        try:
+            await self._run_until(orch, _BootStopsHere)
+        finally:
+            await self._stop_dashboard_tasks(state)
+
+        assert events == ["subagents", "surface", "release"]
+        assert state._channel_slot_reconciler is None
+
+    @pytest.mark.asyncio
+    async def test_a_channel_parents_notice_waits_for_its_rebuilt_tab(
+        self, tmp_path, monkeypatch, close_subagent_managers
+    ):
+        # A Slack conversation was open in a tab at the last shutdown, and its
+        # subagent finished there. The real channel reconciler rebuilds the tab
+        # after the dashboard start returns; its first pass waits for ``first_pass``.
+        from kiro_crew import subagent_persistence as sp
+        from kiro_crew.dashboard import channel_slots
+        from kiro_crew.dashboard import server as srv
+        from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
+        from kiro_crew.history_projection import METADATA_LINE_CORRUPT
+        from kiro_crew.subagent import SubagentManager
+        from kiro_crew.testing.wait import await_until
+
+        for var, sub in (("KIROCREW_HOME", "home"), ("KIROCREW_WORKSPACE", "workspace")):
+            (tmp_path / sub).mkdir()
+            monkeypatch.setenv(var, str(tmp_path / sub))
+        sp.create_agent_folder("orp0101", task="summarise the logs", parent_session="slack:1.1")
+        assert sp.write_finished_result("orp0101", "the whole answer", sp.update_state)
+
+        state = self._dashboard_state(tmp_path, monkeypatch)
+        state.conversation_log = SimpleNamespace(
+            list_sessions_status=lambda: (
+                [{"key": "slack_1.1", "title": "", "modified": 10**12}],
+                True,
+            ),
+            get_metadata_status=lambda _key: ({}, False),
+            metadata_line_state=lambda _key: METADATA_LINE_CORRUPT,
+            mtime_of=lambda _key: None,
+            read_messages=MagicMock(return_value=[{"role": "user", "content": "hello"}]),
+        )
+        state.sessions.channel_key_for_stem = lambda stem: (
+            "slack:1.1" if stem == "slack_1.1" else ""
+        )
+        monkeypatch.setattr(channel_slots, "lookup_channel_folder", AsyncMock(return_value=""))
+        first_pass = asyncio.Event()
+        real_pass = channel_slots._reconcile_pass
+
+        async def _gated_pass(state_, window_minutes):  # type: ignore[no-untyped-def]
+            await first_pass.wait()
+            return await real_pass(state_, window_minutes)
+
+        monkeypatch.setattr(channel_slots, "_reconcile_pass", _gated_pass)
+
+        owner_dm: list[str] = []
+
+        async def _notify(parent_session, msg, meta=None, delivery=None):  # type: ignore[no-untyped-def]
+            # The gateway's own lookup (``_orphan_notify``): the tab showing the parent.
+            slot = state.get_slot(dashboard_slot_key(parent_session))
+            if slot is None:
+                return False
+            slot._pending_subagent_failures.append(msg)
+            return True
+
+        async def _dm(msg):  # type: ignore[no-untyped-def]
+            owner_dm.append(msg)
+            return True
+
+        manager = SubagentManager(
+            sessions=MagicMock(),
+            ctx_builder=MagicMock(),
+            on_done=AsyncMock(),
+            on_orphan_notify=_notify,
+            on_orphan_dm=_dm,
+            hold_orphan_notices=True,
+        )
+        monkeypatch.setattr(manager, "_is_pid_alive", lambda _pid: False)
+        monkeypatch.setattr("kiro_crew.subagent.sel", MagicMock())
+        orch, _events = self._booting(no_dashboard=False)
+        sweeps: list[asyncio.Task[None]] = []
+
+        def _init_subagents() -> None:
+            orch.subagent_mgr = manager
+            sweeps.append(asyncio.create_task(manager._reconcile_orphans()))
+
+        async def _start_dashboard() -> None:
+            state.begin_slot_list_rebuild()
+            await srv._restore_dashboard_sessions(
+                state, _restore_cfg(surface_channel_sessions=True)
+            )
+            orch.dashboard_state = state
+
+        orch._init_subagents = _init_subagents
+        orch._init_dashboard = _start_dashboard
+        try:
+            await self._run_until(orch, _BootMovedOn)
+
+            # The boot went on, and the notices are still held: the tab is not back.
+            assert (
+                not manager._orphan_notice_gate.is_set()
+            ), "the notices were released before the channel tab was rebuilt"
+            assert state.get_slot("slack_1.1") is None
+
+            first_pass.set()
+            await await_until(sweeps[0], what="the sweep the first channel pass released")
+        finally:
+            await self._stop_dashboard_tasks(state)
+
+        tab = state.get_slot("slack_1.1")
+        assert tab is not None and tab.linked_session_key == "slack:1.1"
+        assert len(tab._pending_subagent_failures) == 1
+        assert "orp0101" in tab._pending_subagent_failures[0]
+        assert owner_dm == [], "a notice the rebuilt tab took was also sent to the owner DM"
+        assert sp.read_tombstone("orp0101")["recovery_action"] == "delivered"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

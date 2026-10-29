@@ -4,11 +4,9 @@ the conductor's slot, and which units that board spans.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any, Final, cast
 
-# Reads the work-unit listing (``work_crew_log_units``) from ``session_ledger``.
-from kiro_crew import session_ledger
 from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
 from kiro_crew.crew_log.projection_catalogue import KNOWN_TYPES
 from kiro_crew.crew_log.projection_ledger import _ledger_iso
@@ -33,87 +31,6 @@ from kiro_crew.work_vocab import (
 # --------------------------------------------------------------------------- #
 # work -- the conductor work board, keyed by the conductor's slot
 # --------------------------------------------------------------------------- #
-
-
-def _work_units(
-    slot: str,
-    conductor_units: Sequence[str],
-    *,
-    limit: int | None = None,
-    on_drop: "Callable[[int], None] | None" = None,
-) -> "tuple[str, ...]":
-    """The conductor's units followed by every bound worker's, oldest first.
-
-    *limit* caps what is RETAINED and stops the bind scan once reached, for a caller
-    whose own bound covers this list. It is optional because the two callers differ:
-    the ``work`` fold reads one board and is bounded by that, while ``workstreams``
-    follows nested boards and so states its own ceiling. Without it a bounded caller
-    still pays an unbounded peak here -- the whole listing lands in a list before the
-    caller can measure it, which is the bound describing a state the list already left.
-
-    A worker's report is appended to the WORKER's log, and that log's header names
-    the worker's own slot, so the header index alone never reaches it. The
-    conductor's ``bind`` entries carry ``worker_session_key``: each names a slot whose
-    units join the fold after the conductor's. A worker bound to several boards
-    carries the conductor's ``slot`` on every entry, and the fold keeps only the
-    entries naming this board, so the extra units add nothing that is not this
-    board's.
-    """
-    if limit is not None and limit <= 0:
-        return ()
-    # Bounded BEFORE the logs are opened: the bind scan below reads every entry of
-    # every conductor unit, so a cap applied to its output would still pay to read
-    # units it then discards.
-    #
-    # THE NEWEST ARE KEPT. These are oldest-first, so taking the head keeps a
-    # long-lived crewmate's oldest work and drops what it is doing now -- a dashboard
-    # showing finished boards and hiding the live one. The tail is what a reader came
-    # for, and the fold order below is unchanged: this selects which units, not the
-    # order they are folded in.
-    if limit is not None:
-        listed = list(conductor_units)
-        if on_drop is not None and len(listed) > limit:
-            on_drop(len(listed) - limit)
-        conductor_units = listed[-limit:]
-    workers: list[str] = []
-    seen: set[str] = set()
-    for unit_id in conductor_units:
-        handle = open_session_log(unit_id)
-        if handle is None:
-            continue
-        for entry in handle.iter_from(1, known=KNOWN_TYPES):
-            if entry.type != WORK_ENTRY_TYPE:
-                continue
-            data = entry.data
-            if _as_str(data.get("slot")) != slot:
-                continue
-            # A BASELINE names its worker too, and it is the only record of that
-            # binding once the ``bind`` entry's unit is pruned: a board rebuilt from
-            # baselines has the worker in every item and no `bind` action anywhere, so
-            # a scan for the action alone collects none of their units and every task
-            # on that board reports a cost nobody can be charged for.
-            if data.get("action") != "bind" and data.get("baseline") is not True:
-                continue
-            worker = data.get("worker_session_key")
-            if isinstance(worker, str) and worker and worker not in seen:
-                seen.add(worker)
-                workers.append(worker)
-    units = list(conductor_units)
-    known = set(units)
-    for worker in workers:
-        for unit_id in session_ledger.work_crew_log_units(worker):
-            if unit_id in known:
-                continue
-            if limit is not None and len(units) >= limit:
-                # Counted, not just stopped: a worker's units refused here are boards
-                # and spend the snapshot will not carry, and a reader told nothing
-                # reads the short answer as the whole one.
-                if on_drop is not None:
-                    on_drop(1)
-                continue
-            known.add(unit_id)
-            units.append(unit_id)
-    return tuple(units)
 
 
 def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
@@ -605,7 +522,11 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
     """
     action = _as_str(data.get("action"))
     actor = _as_str(data.get("actor"))
-    if actor == "worker":
+    if actor == "person":
+        # A person's steer moves no field; it is only the event line below.
+        if action != "steer":
+            return
+    elif actor == "worker":
         if action != "report" or data.get("mirror") is True:
             return
         if data.get("board_copy") is True:

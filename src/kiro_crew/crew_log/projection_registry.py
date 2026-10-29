@@ -11,6 +11,8 @@ from collections.abc import Callable, Mapping
 from typing import Any, Final, cast
 
 from kiro_crew.crew_log.entry_types import (
+    CUSTOM_ENTRY_TYPE,
+    CUSTOM_FOLD_NAME,
     DASHBOARD_AGENTIC_ENTRY_TYPE,
     DASHBOARD_FOLD_NAME,
     DASHBOARD_REFUSED_ENTRY_TYPE,
@@ -54,6 +56,10 @@ from kiro_crew.crew_log.projection_dashboard import (
     _agentic_rows,
     _agentic_start,
     _agentic_step,
+    _custom_render,
+    _custom_rows,
+    _custom_start,
+    _custom_step,
     _mistakes_render,
     _mistakes_rows,
     _mistakes_start,
@@ -195,7 +201,8 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
         "session/opened",
         "turn/completed",
         # A refused turn never ran, so it carries no cost and no occupancy -- it is
-        # here only so the ordinal counter sees it. A dispatch gate refusing a turn
+        # here only so the context part's turn counter sees it (``turns`` and the
+        # ordinal memo, ``projection_usage_measured``). A dispatch gate refusing a turn
         # (an oversized or blocked ``@prompt``, a superseded replay) is ordinary
         # operation, and the refusal is the turn's ONLY durable entry: it emits no
         # ``turn/completed`` and composes nothing. Without it the counter never
@@ -264,21 +271,8 @@ def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
         source: dict(row) for source, row in state["credits_by_source"].items()
     }
     grown["by_model"] = {model: dict(row) for model, row in state["by_model"].items()}
-    grown["context_by_source"] = {
-        source: dict(row) for source, row in state["context_by_source"].items()
-    }
-    # Appended to, trimmed from the front, and a row is REPLACED when its turn's
-    # occupancy arrives -- so only the LIST is rebuilt. The row dicts are shared with
-    # the snapshot rather than copied, which is what keeps this O(window) instead of
-    # O(window x sources), and that sharing is exactly why the occupancy stamp in
-    # ``_usage_step`` assigns ``rows[index] = {**row, ...}`` instead of writing into a
-    # row: an in-place write would reach a projection already handed to a reader.
-    grown["context_turns"] = list(state["context_turns"])
     grown["omitted_models"] = list(state["omitted_models"])
-    # Its rows are REPLACED, never edited, so a shallow copy of the map is enough.
-    grown["context_measured_unknown"] = dict(state["context_measured_unknown"])
-    # ``context_turn_keys`` needs no copy: it is a str, which ``_count_turn_ordinal``
-    # REPLACES rather than mutates, so the snapshot keeps the value it was handed.
+    # ``ctx`` needs no copy: ``context_apply`` never edits it, it returns a new one.
     return grown
 
 
@@ -484,7 +478,19 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # Moved again for the engine-measured rows and the running sum of composed
         # characters beside them: a savepoint without the sum would subtract nothing
         # from the engine's user text for the rest of the unit.
-        state_version=_FOLD_STATE_VERSION_BASE + 12,
+        # Moved again for the fixed-size context part (five running sums, the newest
+        # measurement, a 30-row trend ring whose rows carry their own ordinal): a
+        # savepoint holding per-turn rows has none of it.
+        # Moved again because each ring row now holds its turn whole (its blocks by
+        # name and its own engine measurement): a savepoint's shorter rows would be
+        # read past their end.
+        # Moved again for the ordinal memo (``turn_memo``) a rewind reads its ordinal
+        # from: a savepoint without it would give every rewound turn a new ordinal.
+        # Moved again for the dated readings the fullest-turn peak is taken from and
+        # the configured window (``peaks``, ``conf_window``): a savepoint has neither.
+        # Moved again for each row's version and the write counter it comes from
+        # (``row_writes``): a savepoint's shorter rows have neither.
+        state_version=_FOLD_STATE_VERSION_BASE + 18,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
     # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.
@@ -730,6 +736,17 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=frozenset({WAITING_ENTRY_TYPE}),
         copy_state=_flat_copy,
         count_rows=_waiting_rows,
+    ),
+    # The records a script cron writes for its crewmate, keyed by record type and
+    # keeping the latest per type -- the agentic fold's shape with the writer stamped
+    # on every row, so a page can bind a script's result with no model turn.
+    CUSTOM_FOLD_NAME: _Fold(
+        CUSTOM_FOLD_NAME,
+        _custom_start,
+        _custom_step,
+        _custom_render,
+        affects=frozenset({CUSTOM_ENTRY_TYPE}),
+        count_rows=_custom_rows,
     ),
     # The worker sessions a crewmate created, from the crewmate's OWN log: who it made
     # and when, under the cap. What each worker is doing is ``worker``, merged in at

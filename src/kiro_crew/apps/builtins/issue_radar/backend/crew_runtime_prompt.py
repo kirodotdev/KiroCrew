@@ -205,6 +205,9 @@ def build_snapshot(
         "open_count": crew_store.open_slot_count(owner, repo, crew_id, root),
         "max_open": int(crew.get("max_open") or 0),
         "triage_model": crew_model.triage_model(crew) if crew_model.triage_in_effect(crew) else "",
+        # The operator's Additional prompt. Volatile like the rest: the editor can
+        # change it between two turns of one session, so it rides every turn.
+        "extra_prompt": str(crew.get("extra_prompt") or ""),
         "items": [
             {
                 "number": it.get("number"),
@@ -348,8 +351,17 @@ async def compose_turn_prompt_async(
 
 
 def _assemble_turn_prompt(slot: Any, snapshot: dict[str, Any]) -> str:
-    """Nudge from an already-read snapshot, with the brief in front when it is gone."""
-    nudge = compose_nudge(snapshot)
-    if brief_is_present(slot):
-        return nudge
-    return brief_text() + "\n\n---\n\n" + nudge
+    """Brief (only when it is gone), then the operator's extra prompt, then the nudge.
+
+    The extra prompt goes on EVERY turn, after the brief and never in place of it
+    (``crew_ledger_spec.md``). Unlike the brief it is not presence-checked: an
+    operator edit must reach the next turn, not wait for a compaction. It sits
+    before the nudge so the ``Never`` block stays last, where it holds best.
+    Empty or whitespace-only text adds nothing.
+    """
+    parts = [] if brief_is_present(slot) else [brief_text()]
+    extra = str(snapshot.get("extra_prompt") or "").strip()
+    if extra:
+        parts.append("Additional instructions from this crew's operator:\n" + extra)
+    parts.append(compose_nudge(snapshot))
+    return "\n\n---\n\n".join(parts)

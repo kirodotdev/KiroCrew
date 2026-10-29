@@ -46,6 +46,7 @@ from urllib.parse import urlsplit
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.metrics import harness as _harness
 from kiro_crew.metrics import otlp_governance
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
@@ -596,6 +597,11 @@ _CONSENT_RECHECK_SECS = 30.0
 # ``None`` means "no live recorder", so the next call builds rather than compares.
 _built_consent: Optional[bool] = None
 _consent_checked_at = 0.0
+# The ``agent.acp_backend`` / ``agent.provider`` pair the live recorder's
+# ``kirocrew.harness`` resource attribute was read from (see ``_agent_key``).
+# The consent worker compares it too, so a process that registers no config
+# watcher (the MCP gateway daemon) still relabels after a harness switch.
+_built_agent_key: object = None
 # Bumped whenever the live recorder is dropped. An off-thread rebuild captures it
 # and refuses to install if it moved, so a disable that lands mid-build cannot be
 # undone by the build finishing afterwards.
@@ -678,8 +684,16 @@ def mark_gatewayd_process() -> None:
     _is_gatewayd = True
 
 
-def _resource_attributes() -> "dict[str, str | int]":
+def _resource_attributes(harness: str) -> "dict[str, str | int]":
     """Resource attributes for the MeterProvider.
+
+    *harness* is the install's configured default harness, already mapped to
+    its closed value by :func:`kiro_crew.metrics.harness.set_configured`.
+    Required: :func:`_build_recorder`, the only caller, has just loaded the
+    config, so every exported series carries ``kirocrew.harness``. It sits beside ``kirocrew.process.role``
+    because it is the same kind of label: one value per process, read once per
+    recorder. A config change to ``agent.acp_backend`` or ``agent.provider``
+    rebuilds the recorder (:func:`watch_config`), so the label follows it.
 
     A resource attribute becomes a LABEL on every series this process exports,
     which cuts both ways: it is the only place fleet-level GROUP BYs can come
@@ -768,6 +782,7 @@ def _resource_attributes() -> "dict[str, str | int]":
         logger.debug("process.pid resource attr unavailable: %s", exc)
     if _is_gatewayd:
         attrs[RESOURCE_ATTR_PROCESS_ROLE] = PROCESS_ROLE_GATEWAYD
+    attrs[_harness.RESOURCE_ATTR_HARNESS] = harness
     try:
         attrs["service.version"] = beacon.release(__version__)
     except Exception as exc:  # pragma: no cover - defensive
@@ -807,6 +822,23 @@ class _Build(NamedTuple):
     recorder: MetricsRecorder
     provider: Optional["_MeterProviderT"]
     consent: Optional[bool]
+    agent_key: object = None
+
+
+def _agent_key(cfg: object) -> object:
+    """The config values the ``kirocrew.harness`` resource is built from; never raises.
+
+    The raw ``agent.acp_backend`` / ``agent.provider`` pair of a loaded config,
+    compared as-is, so a recheck can tell the resource is stale without mapping
+    it. ``None`` when the agent section cannot be read.
+    """
+    try:
+        agent = getattr(cfg, "agent", None)
+        if agent is None:
+            return None
+        return (getattr(agent, "acp_backend", None), getattr(agent, "provider", None))
+    except Exception:
+        return None
 
 
 def _build_recorder() -> _Build:
@@ -821,27 +853,29 @@ def _build_recorder() -> _Build:
     # it unset there would make every recheck window see a difference and rebuild
     # a no-op recorder in a loop.
     try:
-        cfg = KiroCrewConfig.load().telemetry
+        full_cfg = KiroCrewConfig.load()
+        cfg = full_cfg.telemetry
     except Exception as exc:
         logger.warning("telemetry config load failed; metrics disabled: %s", exc)
         # Unknown rather than False: the next successful read re-resolves once.
         return _Build(MetricsRecorder(None), None, None)
 
     consent = _consent_enabled(cfg)
+    agent_key = _agent_key(full_cfg)
     if not consent:
-        return _Build(MetricsRecorder(None), None, consent)
+        return _Build(MetricsRecorder(None), None, consent, agent_key)
 
     if not _OTEL_AVAILABLE:
         # opentelemetry missing from the env closure. Degrade to the
         # no-op recorder instead of ever reaching this point via a crash.
         logger.warning("opentelemetry not installed; telemetry disabled")
-        return _Build(MetricsRecorder(None), None, consent)
+        return _Build(MetricsRecorder(None), None, consent, agent_key)
 
     # Consent granted — now pay for the SDK import (deferred from module scope
     # so the default-off path never does).
     if not _load_otel():
         logger.warning("opentelemetry not importable; telemetry disabled")
-        return _Build(MetricsRecorder(None), None, consent)
+        return _Build(MetricsRecorder(None), None, consent, agent_key)
 
     # Resolve egress destinations BEFORE any reader is started. Two reasons:
     # the seam belongs to the edition and a PlatformCompositionError from it must
@@ -896,7 +930,12 @@ def _build_recorder() -> _Build:
             beacon.install_id(create=True)
         except Exception:
             logger.debug("install id mint failed", exc_info=True)
-        resource_attrs = _resource_attributes()
+        # Read from the SAME load as the telemetry section, so a rebuild after a
+        # config change labels the new resource with the new harness. Also
+        # records the Claude Code seam for the per-session ``harness`` point
+        # attribute, so the two never disagree about it.
+        harness = _harness.set_configured(getattr(full_cfg, "agent", None))
+        resource_attrs = _resource_attributes(harness)
         provider = MeterProvider(
             metric_readers=started_readers,
             resource=Resource.create(resource_attrs),
@@ -995,7 +1034,7 @@ def _build_recorder() -> _Build:
             register_mcp_gateway_gauges(meter)
         except Exception:
             logger.warning("mcp gateway gauges unavailable", exc_info=True)
-        return _Build(MetricsRecorder(meter), provider, consent)
+        return _Build(MetricsRecorder(meter), provider, consent, agent_key)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: an egress
@@ -1005,7 +1044,7 @@ def _build_recorder() -> _Build:
         # Off this thread, because a reader shutdown performs a final export and
         # joins its ticker with the SDK's 30s default.
         _reap_readers_detached(started_readers)
-        return _Build(MetricsRecorder(None), None, consent)
+        return _Build(MetricsRecorder(None), None, consent, agent_key)
 
 
 def _egress_degraded() -> tuple:
@@ -1368,10 +1407,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
 def _install_locked(built: _Build) -> None:
     """Publish a finished build. Call under ``_lock``."""
     global _recorder, _provider, _initialized, _built_consent, _consent_checked_at
-    global _ever_built
+    global _ever_built, _built_agent_key
     _recorder = built.recorder
     _provider = built.provider
     _built_consent = built.consent
+    _built_agent_key = built.agent_key
     _initialized = True
     _consent_checked_at = time.monotonic()
     _ever_built = True
@@ -1385,12 +1425,21 @@ def _consent_worker(generation: int) -> None:
     actually changed (~14ms) — and "the file changed" is precisely when this runs,
     so the read cannot happen on the caller's thread. ``get_recorder()`` is called
     on the event loop by the route-latency middleware for every request.
+
+    The same read also catches a moved ``agent.acp_backend`` / ``agent.provider``
+    under a live recorder: its ``kirocrew.harness`` resource attribute is fixed
+    for the provider's life, so a change rebuilds it. The gateway also gets that
+    rebuild from ``watch_config``; a process that registers no watcher (the MCP
+    gateway daemon, through ``recheck_consent``) gets it only from here.
     """
     global _consent_checked_at, _check_in_flight, _recorder, _initialized
     global _built_consent
     try:
+        agent_key: object = None
         try:
-            consent: Optional[bool] = _consent_enabled(KiroCrewConfig.load().telemetry)
+            full_cfg = KiroCrewConfig.load()
+            consent: Optional[bool] = _consent_enabled(full_cfg.telemetry)
+            agent_key = _agent_key(full_cfg)
         except Exception as exc:
             # Losing the ability to READ the setting is not withdrawal. Keep the
             # live recorder and try again after the next window.
@@ -1410,9 +1459,17 @@ def _consent_worker(generation: int) -> None:
             # Stamp even when the read failed, so an unreadable config cannot turn
             # every metric call into a fresh read.
             _consent_checked_at = time.monotonic()
-            if consent is None or consent == _built_consent:
+            if consent is None:
                 return
-            logger.info("telemetry consent changed on disk; rebuilding recorder")
+            # The harness only labels a live recorder; a disabled one has no
+            # resource to relabel.
+            harness_moved = bool(consent) and agent_key != _built_agent_key
+            if consent == _built_consent and not harness_moved:
+                return
+            if harness_moved and consent == _built_consent:
+                logger.info("configured harness changed on disk; rebuilding recorder")
+            else:
+                logger.info("telemetry consent changed on disk; rebuilding recorder")
             doomed = _take_provider_locked()
             # Serve a no-op from here on: withdrawal is complete at this point, and
             # an opt-in has nothing to serve until the build lands.
@@ -1568,11 +1625,13 @@ def _take_provider_locked() -> Optional["_MeterProviderT"]:
     flushes it after the lock is released.
     """
     global _recorder, _initialized, _provider, _built_consent, _build_generation
+    global _built_agent_key
     doomed = _provider
     _provider = None
     _recorder = None
     _initialized = False
     _built_consent = None
+    _built_agent_key = None
     # Any rebuild started before this point is now stale.
     _build_generation += 1
     return doomed
@@ -1681,14 +1740,27 @@ def reset_for_testing() -> None:
     # in-process) are state too; the next test starts from neither.
     use_telemetry_provider(None)
     _is_gatewayd = False
+    _harness.reset_for_testing()
 
 
 #: The registered telemetry applier, kept so ``watch_config`` stays idempotent.
 _config_sub: object = None
 
 
+#: The config paths outside ``telemetry`` that a recorder reads at build time:
+#: the ``kirocrew.harness`` resource attribute. A resource is fixed for the life
+#: of a MeterProvider, so the only way to relabel is the same rebuild a
+#: ``telemetry.*`` change takes. Both are live (not restart-marked) settings.
+_RESOURCE_CONFIG_PATHS: tuple[str, ...] = ("agent.acp_backend", "agent.provider")
+
+
 async def _on_config_change(change: object) -> None:
     """Rebuild the recorder whenever anything under ``telemetry`` moves.
+
+    Also on a change to :data:`_RESOURCE_CONFIG_PATHS`: the default harness is a
+    resource attribute, and a resource cannot change under a live provider.
+    Downstream that reads as a new series set from the change on, which is the
+    honest reading of an install that switched harness.
 
     The consent worker re-resolves only ``enabled``, on a 30-second window, so
     every other field in the section (``local_dir``, ``retention_days``,
@@ -1718,4 +1790,6 @@ def watch_config() -> None:
         return
     from kiro_crew.config import live
 
-    _config_sub = live.subscribe("telemetry", callback=_on_config_change, name="telemetry")
+    _config_sub = live.subscribe(
+        "telemetry", *_RESOURCE_CONFIG_PATHS, callback=_on_config_change, name="telemetry"
+    )

@@ -111,7 +111,8 @@ async def api_token_local(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "error": "The gateway could not verify this process as the local owner. "
-                "Open the dashboard using its CLI login link on the gateway host.",
+                "Make this request inside the gateway's own host or container, not "
+                "from an agent's shell or a sandbox.",
                 "code": "member_owner_token_refused",
             },
             status=403,

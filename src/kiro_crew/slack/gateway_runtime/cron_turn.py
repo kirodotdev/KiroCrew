@@ -249,6 +249,7 @@ async def _cron_run_sequence(
                     resumed=_resumed,
                     needs_reinjection=_seq_reinjection,
                     minimal_context=job.minimal_context,
+                    request_prefix_context=cap.prior_result or None,
                 )
                 # Wall clock for the cron agent turn: acp never assigns
                 # TurnUsage.duration_ms, so the row falls back to this.
@@ -620,6 +621,8 @@ async def _cron_run_single(
             needs_reinjection=_needs_reinjection,
             provider_type=_provider,
             minimal_context=job.minimal_context,
+            # The previous run's result, framed as data, ahead of the request.
+            request_prefix_context=cap.prior_result or None,
         )
 
         # Wall clock for the cron agent turn — see the sequential site

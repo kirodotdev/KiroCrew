@@ -173,8 +173,16 @@ class TestAuditSsrfBlocked:
 
     def test_a_failing_audit_never_breaks_the_guard(self):
         # Auditing the defense must not become a way to crash the defense.
+        def _audit(url, host, canonical_host):
+            _http.audit_ssrf_blocked("skillsh", url, host, canonical_host)
+
         with patch("kiro_crew.sel.sel", side_effect=RuntimeError("sel down")):
-            _http.audit_ssrf_blocked("skillsh", "http://127.0.0.1/", "127.0.0.1", "127.0.0.1")
+            assert (
+                _http.audit_ssrf_blocked("skillsh", "http://127.0.0.1/", "127.0.0.1", "127.0.0.1")
+                is None
+            )
+            assert _http.is_internal_url("http://127.0.0.1/", audit=_audit) is True
+            assert _http.is_internal_url("http://0xa9fea9fe/", audit=_audit) is True
 
 
 # ---- the redirect allowlist -----------------------------------------------

@@ -309,7 +309,8 @@ def test_every_api_chat_body_key_is_classified() -> None:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    read = _body_keys_read(functions["api_chat"], "body", functions)
+    # The body is read by ``_api_chat_send``; ``api_chat`` wraps it (Crew Mode steer).
+    read = _body_keys_read(functions["_api_chat_send"], "body", functions)
     assert not _TURN_ONLY_BODY_KEYS & _SETTINGS_BODY_KEYS.keys()
     assert read == _TURN_ONLY_BODY_KEYS | _SETTINGS_BODY_KEYS.keys()
 

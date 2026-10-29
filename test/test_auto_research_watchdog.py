@@ -133,23 +133,29 @@ class TestWatchdogFailureStandDown:
         assert "stood down" in (message or "")
 
     @pytest.mark.asyncio
-    async def test_launch_clears_a_stand_down_record(self, monkeypatch):
+    async def test_launch_clears_a_stand_down_record(self, monkeypatch, tmp_path):
         """A resumed run must not inherit the previous run's stand-down, which
         the watchdog would otherwise settle as this run's failure."""
         from kiro_crew.apps.builtins.auto_research import handlers as h
-        from kiro_crew.autonudge import SESSION_START_FAILURE_REASON
+        from kiro_crew.autonudge import SESSION_START_FAILURE_REASON, AutoNudgeService
 
-        svc = MagicMock()
-        svc.get_by_slot.return_value = SimpleNamespace(
-            id="stood-down", active=False, stopped_reason=SESSION_START_FAILURE_REASON
-        )
-        svc.remove = AsyncMock()
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
-        monkeypatch.setattr(h, "_clear_worker_done_marker", lambda _cid: None)
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        try:
+            stood_down = await svc.add(slot_key="research-a1b2c3d4", message="run", idle_secs=60)
+            await svc.update(
+                stood_down.id, active=False, stopped_reason=SESSION_START_FAILURE_REASON
+            )
+            other = await svc.add(slot_key="research-0badc0de", message="other", idle_secs=60)
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            monkeypatch.setattr(h, "_clear_worker_done_marker", lambda _cid: None)
 
-        await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")
+            await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")
 
-        svc.remove.assert_awaited_once_with("stood-down")
+            assert svc.get_by_slot("research-a1b2c3d4") is None
+            assert svc.list_all() == [other]
+        finally:
+            svc.stop()
 
 
 class TestWatchdogStopTombstone:

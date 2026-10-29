@@ -207,8 +207,13 @@ export interface SteeringFile {
    *  Optional: an absent field fails OPEN (editable), see `selectedReadOnly`. */
   editable?: boolean
   /** Resolved symlink target (display path, home collapsed to `~`); `''` when
-   *  the entry is not linked. */
+   *  the entry is not linked, or when it is linked but not readable. */
   target?: string
+  /** False for a linked entry whose target lies outside the folders the
+   *  dashboard may read: it is listed by name so the tab matches what sessions
+   *  load, but the server refuses to read it and sends no target, size or
+   *  metadata. Optional: an absent field reads as readable. */
+  readable?: boolean
 }
 
 /** Response shape of ``GET /api/steering``. */

@@ -167,7 +167,7 @@ binds from them. New work goes to the owner of its responsibility:
 | `history_files.py` | transcript stems and their Slack aliases (`transcript_stem(s)`, `transcript_lock_stems`, `_safe_key`), the sessions and archive directories, the durable archive write (`_archive_lines`) and its retention sweep (`_cleanup_old_archives`), the file stamps (`_safe_mtime`, `_cache_identity`, `_restore_mtime`) |
 | `history_schema.py` | which metadata keys a rebuilding writer owns (`SLOT_OWNED_META_KEYS`, `ROWS_ONLY_*`, `carry_unowned_metadata`), row provenance (`carry_provenance`), `HUMAN_TURN_META_KEY`, `mint_row_mid`, and the spelling and order of transcript timestamps (`transcript_sort_key`, `metadata_now_iso`, `monotonic_transcript_ts`, `latest_transcript_ts`) |
 | `history_offload.py` | the on-loop persistence discipline (`OnLoopPersistError`, `allow_on_loop_persist`, `on_loop_persist_strict`) and the off-loop writers (`append_off_loop`, `append_if_absent_off_loop`, `append_rows_if_absent_off_loop`, `update_metadata_off_loop`) |
-| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
+| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `_try_acquire_named_sidecar`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
 | `history_derivation.py` | the header's privacy contract (`INCOGNITO_MEMORY_MODES`, `memory_mode_from_header_line`, `is_incognito_transcript`, `transcript_privacy_mode`) and the derivation seam (`derivation_hold`, `publication_hold`, `derive_messages*`, `derive_recent`, `TranscriptWithheld`, `TranscriptBusy`) |
 | `history_threads.py` | the reply-thread sidecar: its location, `read_threads`, `append_thread_reply` and `ThreadStoreUnreadable` |
 | `history_summaries.py` | the one-line and intent summary sidecar caches |
@@ -285,7 +285,9 @@ fields. The no-limit route and callers requiring complete history remain on
 the sparse index nor page projection stores a redacted or alternate transcript.
 
 A poller of the newest page reads it incrementally (`dashboard/slot_detail_delta.py`;
-its one caller is the app-sdk `ChatEmbed`). A paged read passing `cursor=1` also
+its one caller is the app-sdk `ChatEmbed`, which issues the read on a poll and,
+when its host passes a push channel, on each change signal for the slot -- see
+app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged). A paged read passing `cursor=1` also
 gets `cursor: {from, since, digest}`: the page's first and last row indices and a
 digest over the rows in `[from, since)`, so the last row (the folded streaming
 row) is never inside it. The digest is built from each row's render-memo identity
@@ -542,8 +544,8 @@ and is suppressed by transcript renderers. Its `ts` also counts as owner
 presence when the next return measures time away. The deterministic opener row and
 the model-written result carry normal mate message roles and classes. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
-`headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, and the
-gateway-counted `progress`; an older row holds `asked`, `now`, `needs_you` and
+`headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
+an optional HTML `widget`, and the gateway-counted `progress`; an older row holds `asked`, `now`, `needs_you` and
 `next`) that the transcript draws as a fixed plain-text card; its
 `content` is the same brief as plain text, for export and any reader without
 the card.
@@ -1485,6 +1487,12 @@ no longer destroy older turns.
   patiently to a bounded deadline. The same discipline applies to every other
   session-JSONL writer: `clear_closed` (resume un-flags `closed` under `_locked`,
   offloaded via `asyncio.to_thread`) and all `ConversationLog` mutators hold `_locked`.
+  On POSIX a taken sidecar `flock` counts only while the sidecar NAME still reaches
+  the locked inode (`_try_acquire_named_sidecar`): the session janitor prunes an
+  unheld `<stem>.jsonl.lock` whose transcript is gone (`session.md`, transcript
+  staging temps), so a writer that opened the sidecar before that unlink re-opens
+  the name and retries, at most `_SIDECAR_REOPEN_LIMIT` (3) times per attempt,
+  instead of holding an inode no other process can reach.
 - **Delete-won guard**: `delete_session` unlinks the session file under the
   same `_locked` and leaves no tombstone, and the patient off-loop acquire
   means a save can legitimately sit waiting while a permanent delete runs to
@@ -2010,11 +2018,13 @@ writer:
   `get_metadata_status` answers `readable=False` for two different facts, and
   the writers tell them apart through `metadata_line_state` (`readable`,
   `transient`, `corrupt`; `METADATA_LINE_*`). A TRANSIENT failure -- the file
-  could not be opened or decoded after the bounded retries -- clears on its
-  own, so the full save raises and `_dirty` stays armed, the empty-window merge
-  and `update_metadata_if` return without writing, and the next attempt
-  re-decides. A CORRUPT first line -- bytes on disk that are not JSON, which
-  every atomic line writer makes permanent rather than a write in flight --
+  could not be opened after the bounded retries -- clears on its own, so the
+  full save raises and `_dirty` stays armed, the empty-window merge and
+  `update_metadata_if` return without writing, and the next attempt re-decides.
+  A CORRUPT first line -- bytes on disk that are not JSON, or not UTF-8 at all,
+  which every atomic line writer makes permanent rather than a write in flight
+  (the first line is read as bytes and decoded on its own, so undecodable bytes
+  are never mistaken for a read in flight) --
   never clears, and a writer that kept deferring on it would never persist a
   row again: `closed` could never land and the tab would resurrect on every
   restart. So the WRITERS rewrite it: the full save and `_update_metadata_locked`
@@ -2030,9 +2040,22 @@ writer:
   line carries no `created_at` when the title or merge writer heals it (the
   identity is unknowable, and a minted one would read to the owning slot's next
   full save as a fresh incarnation after a delete); the full save's own heal
-  stamps the slot's recorded identity. READERS are unchanged: the derivation seam
+  stamps the slot's recorded identity. `_update_metadata_locked` splits the file
+  by bytes, so an undecodable first line reaches this rewrite like one that is
+  not JSON while the rows after it still decode strictly, and it stages the
+  result through `atomic_write`, which writes every byte, so a short write never
+  publishes a prefix of the transcript. The full save's frozen-prefix and
+  rewrite-archive reads split the file the same way, and its frozen prefix takes
+  the rows after an undecodable first line by position, so the rows older than
+  the in-memory window survive the heal. The first `append` likewise creates a
+  transcript through `atomic_write`: it appears with its whole metadata line or
+  not at all. READERS are unchanged: the derivation seam
   and every identity-sensitive reader refuse both states, a corrupt line before
   the heal because it cannot be read and after it because it is restricted.
+  `read_session_execution` names the two refusals apart: a CORRUPT line answers
+  "session record is unreadable (its first line is damaged); start a new chat
+  (memory is intact) or archive this one", because no retry reads it, and a
+  TRANSIENT one keeps the plain "session record is unreadable".
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and

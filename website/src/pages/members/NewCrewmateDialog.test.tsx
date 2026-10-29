@@ -133,7 +133,7 @@ describe('NewCrewmateDialog', () => {
       expect(toggle()).toHaveAttribute('aria-controls', advanced.id)
       expect(region).toContainElement(advanced)
       expect(await screen.findByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew')
-      expect(screen.getByRole('textbox', { name: 'What it looks after' })).toBeInTheDocument()
+      expect(screen.getByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
       expect(advanced).toContainElement(screen.getByRole('combobox', { name: 'Built from' }))
       expect(within(advanced).getByLabelText('Workspace')).toBeInTheDocument()
       expect(within(advanced).getByLabelText('Edit default model')).toBeInTheDocument()
@@ -148,11 +148,11 @@ describe('NewCrewmateDialog', () => {
       await screen.findByTestId('crewmate-create-form')
       typeName('Scout')
       fireEvent.click(toggle())
-      fireEvent.change(screen.getByRole('textbox', { name: 'What it looks after' }), { target: { value: 'Watch PRs' } })
+      fireEvent.change(screen.getByRole('textbox', { name: 'Goal' }), { target: { value: 'Watch PRs' } })
       fireEvent.click(toggle())
       await waitFor(() => expect(screen.queryByTestId('crewmate-create-advanced')).toBeNull())
       fireEvent.click(toggle())
-      expect(screen.getByRole('textbox', { name: 'What it looks after' })).toHaveValue('Watch PRs')
+      expect(screen.getByRole('textbox', { name: 'Goal' })).toHaveValue('Watch PRs')
       expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Scout')
       // Folded again: still sent.
       fireEvent.click(toggle())
@@ -452,7 +452,7 @@ describe('NewCrewmateDialog opened from a proposal', () => {
     vi.mocked(api.createKirocrewAgent).mockClear()
   })
   afterEach(() => { vi.restoreAllMocks() })
-  const goalField = () => screen.queryByRole('textbox', { name: 'What it looks after' }) as HTMLTextAreaElement | null
+  const goalField = () => screen.queryByRole('textbox', { name: 'Goal' }) as HTMLTextAreaElement | null
 
   it('fills the name, and the goal with Advanced settings open so the goal is in view', async () => {
     renderWithProviders(<NewCrewmateDialog open initialDraft={{ name: 'Scout', goal: 'Watch CI' }} {...props} />)

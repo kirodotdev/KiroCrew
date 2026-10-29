@@ -503,6 +503,14 @@ class TurnDriver:
         drain, and may also reject a structured monitor whose conversation
         generation changed. It must not await: the gate, monitor acceptance, and
         the stream's synchronous turn registration are one event-loop span.
+    event_tap:
+        Optional synchronous observer handed every RAW provider event, before
+        the driver acts on it. For a second surface that shows the turn as it
+        runs (the dashboard tab of a channel conversation) and needs fields an
+        ``OutputEvent`` does not carry -- a tool call's arguments and identity,
+        a tool's result. It only observes: its return value is ignored, and an
+        exception it raises is logged and swallowed, so a broken observer can
+        never change or end the turn.
     """
 
     def __init__(
@@ -522,6 +530,7 @@ class TurnDriver:
         closing_gate: Callable[[], None] | None = None,
         monitor_completion: MonitorCompletionHook | None = None,
         undelivered_watch_key: str = "",
+        event_tap: Callable[[Any], None] | None = None,
     ) -> None:
         self.provider = provider
         self.renderer = renderer
@@ -555,6 +564,7 @@ class TurnDriver:
         # identity was recorded at EVENT_TOOL_CALL — the forgery gate.
         self.directive_consumer = directive_consumer
         self.monitor_completion = monitor_completion
+        self.event_tap = event_tap
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
@@ -811,6 +821,11 @@ class TurnDriver:
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
         async for event in self.provider.stream(message):
+            if self.event_tap is not None:
+                try:
+                    self.event_tap(event)
+                except Exception:
+                    logger.debug("driver: event tap failed; the turn goes on", exc_info=True)
             kind = event.kind
             if kind == EVENT_TEXT_CHUNK:
                 filtered = compaction_filter.feed(event.text or "")

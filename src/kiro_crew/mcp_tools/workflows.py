@@ -361,12 +361,28 @@ def workflow_status(name: str, args: dict[str, Any]) -> str:
     # to the dashboard/chat (credentials + exfiltration URLs).
     safe_err = _redact_obj(d["error"]) if d.get("error") else ""
     safe_name = _redact_obj(d.get("name") or "—")
+    # The same two counts the [Workflow completion event] reports. A run whose
+    # every agent call failed still ends ``finished``, so without them a later
+    # status read looks clean. Positive ints only: a clean run's line is unchanged.
+    warnings = ""
+    error_count = d.get("agent_error_count")
+    if _positive_int(error_count):
+        warnings += f"; {error_count} agent call(s) failed (see `agent_errors` in workflow_result)"
+    partial_count = d.get("partial_result_count")
+    if _positive_int(partial_count):
+        warnings += f"; {partial_count} agent result(s) preserved (see `partial_results` in workflow_result)"
     return _wf_return(
         "workflow_status",
         f"Run `{d.get('run_id')}` ({safe_name}): **{d.get('status')}** "
-        f"— {d.get('event_count', 0)} events" + (f"; error: {safe_err}" if safe_err else ""),
+        f"— {d.get('event_count', 0)} events"
+        + (f"; error: {safe_err}" if safe_err else "")
+        + warnings,
         session_key=session_key,
     )
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def workflow_result(name: str, args: dict[str, Any]) -> str:

@@ -20,9 +20,7 @@ from kiro_crew.providers.acp import AcpProvider
 def _make_app(state: DashboardState) -> web.Application:
     app = web.Application()
     app["state"] = state
-    app.router.add_post(
-        "/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort
-    )
+    app.router.add_post("/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort)
     app.router.add_get(
         "/api/chat/slots/{slot}/selection-capabilities", api_chat_slot_selection_capabilities
     )
@@ -115,7 +113,7 @@ class TestSlotSelectionCapabilities:
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "model_effort_pair_ids": True}
+        assert data == {"known": False, "backend": "codex", "model_effort_pair_ids": True}
 
     @pytest.mark.asyncio
     async def test_cold_member_session_uses_member_backend_for_pair_ids(self, monkeypatch):
@@ -132,7 +130,7 @@ class TestSlotSelectionCapabilities:
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "model_effort_pair_ids": True}
+        assert data == {"known": False, "backend": "codex", "model_effort_pair_ids": True}
 
     @pytest.mark.asyncio
     async def test_live_provider_can_report_effort_unsupported(self):
@@ -302,9 +300,7 @@ class TestChatSlotReasoningEffort:
             chat_handlers.KiroCrewConfig,
             "load",
             lambda: SimpleNamespace(
-                agent=SimpleNamespace(
-                    acp_backend=global_backend, member_acp_backend=member_backend
-                )
+                agent=SimpleNamespace(acp_backend=global_backend, member_acp_backend=member_backend)
             ),
         )
         slot = _ChatSlot("member-test")
@@ -515,15 +511,19 @@ class TestChatSlotReasoningEffort:
 
         state.sessions.reset = AsyncMock(side_effect=_reset)
         async with TestClient(TestServer(_make_app(state))) as client:
-            first = asyncio.create_task(client.post(
-                "/api/chat/slots/test/reasoning-effort",
-                json={"reasoning_effort": "low"},
-            ))
+            first = asyncio.create_task(
+                client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "low"},
+                )
+            )
             await first_reset_started.wait()
-            second = asyncio.create_task(client.post(
-                "/api/chat/slots/test/reasoning-effort",
-                json={"reasoning_effort": "low"},
-            ))
+            second = asyncio.create_task(
+                client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "low"},
+                )
+            )
             # Let the second request reach (and block on) the slot lock, then
             # let the first request's reset fail.
             await asyncio.sleep(0.05)
@@ -911,6 +911,7 @@ class TestValidateReasoningEffortPersistence:
     @pytest.mark.parametrize("level", ["", "low", "medium", "high", "xhigh", "max"])
     def test_passes_through_allowlisted(self, level: str):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(level) == level
 
     @pytest.mark.parametrize(
@@ -919,10 +920,12 @@ class TestValidateReasoningEffortPersistence:
     )
     def test_discards_disallowed(self, tampered: str):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(tampered) == ""
 
     def test_discards_non_string(self):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(5) == ""
         assert _validate_reasoning_effort(None) == ""
         assert _validate_reasoning_effort(["max"]) == ""

@@ -608,6 +608,32 @@ class TestCloudLogin:
         assert cli_cloud._DISPATCH["tunnel"] is cli_cloud._DISPATCH["connect"]
 
 
+class TestEnsurePlugin:
+    def test_a_refused_plugin_is_named_not_offered_an_install(self, monkeypatch, capsys):
+        """Reinstalling a found-but-refused plugin rewrites the same file."""
+        from kiro_crew.cloud import ssm
+
+        refusal = ssm.PluginRefusal(
+            path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="sudo chown -R root:wheel /usr/local/sessionmanagerplugin",
+            code="other_owner",
+        )
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        def _no_prompt(*_a, **_k):
+            raise AssertionError("must not offer to install a refused plugin")
+
+        monkeypatch.setattr(cli_cloud.ui, "confirm", _no_prompt)
+        monkeypatch.setattr(ssm, "install_session_manager_plugin", _no_prompt)
+
+        assert cli_cloud._ensure_session_manager_plugin() is False
+        out = capsys.readouterr()
+        text = out.out + out.err
+        assert refusal.path in text and refusal.reason in text
+
+
 class TestDoctor:
     def test_doctor_probes_resolved_aws_binary(self, monkeypatch, capsys):
         """The doctor probes the binary resolved spawns execute, never the

@@ -37,6 +37,7 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "approval_modes": (("normal", "trust", "trust_reads"), ("yolo",)),
     "mcp": (("@kirocrew-core/local_knowledge_search",), ("@other/tool", "@other")),
     "apps": ((), ("any-app",)),
+    "app_versions": ((), ("any-app@1.0.0",)),
     "commands": ((), ("ls", "git status")),
     "filesystem.read": ((_WORKSPACE_FILE,), ("/etc/passwd", os.path.join("~", "notes.txt"))),
     "filesystem.write": ((), (_WORKSPACE_FILE,)),
@@ -53,6 +54,8 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("", "destinations:default"),
         ("destinations:s3", "regions:us-east-1", "audience:private", "accounts:123456789012"),
     ),
+    "bind_address": (("127.0.0.1",), ("0.0.0.0", "::", "10.0.0.5")),
+    "dashboard_origins": ((), ("https://crew.example.com", "http://localhost:3000")),
 }
 
 

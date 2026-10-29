@@ -244,12 +244,14 @@ from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     api_slack_reactions,
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
+    STOPPED_BEFORE_START_CODE,
     _continue_on_loop,
     _qualified_model_refusal,
     _requested_backend,
     _slot_for_parent,
     _spawn_on_loop,
     _spawn_request_memory_mode,
+    _stopped_before_start,
     api_spawn,
     api_spawn_continue,
 )
@@ -321,6 +323,7 @@ from kiro_crew.notifications.bus import (  # noqa: F401
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.platform.context import redact_via_context  # noqa: F401
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY  # noqa: F401
 from kiro_crew.platform_compat import IS_MACOS  # noqa: F401
 from kiro_crew.security import (  # noqa: F401
@@ -364,6 +367,7 @@ from kiro_crew.subagent_persistence import (  # noqa: F401
     read_tombstone,
     record_panel_dismissal_outcome,
 )
+from kiro_crew.subagent_wait_reasons import stopped_before_start  # noqa: F401
 from kiro_crew.validation import (  # noqa: F401
     _EMOJI_NAME_RE,
     CHANNEL_ID_RE,

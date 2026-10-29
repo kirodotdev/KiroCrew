@@ -21,7 +21,7 @@
  * change even when every test of the moved code still passes.
  */
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react'
-import { Check, Circle, FileUp, Goal, MessageCircleQuestionMark, Plus, Star, X, Zap } from 'lucide-react'
+import { Check, Circle, FileUp, MessageCircleQuestionMark, Plus, Radar, Star, X, Zap } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
 import { useTranslation } from 'react-i18next'
@@ -102,7 +102,9 @@ const STATUS_ICON: Record<MemberStatusFilter, (active: boolean) => React.ReactNo
   // unread state whose roster dot reads `var(--ok)` (`MemberRow`, in MembersPageRosterRows.tsx),
   // and for the sidebar chip that was rebound in #10488 (#10479).
   unread: (active) => <Circle size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--ok)' } : {})} />,
-  patrolling: (active) => <Goal size={12} className={active ? 'text-accent' : 'text-muted'} />,
+  // Radar, not Goal: the Goal glyph is the roster row's "has a goal" mark
+  // (CrewmateRowBody), and this row filters on watch, a different state.
+  patrolling: (active) => <Radar size={12} className={active ? 'text-accent' : 'text-muted'} />,
 }
 /** The A–Z row reuses the sidebar menu's label. The activity row does NOT
  *  reuse the sidebar's "Newest": on a list of people that reads as "newest
@@ -459,12 +461,12 @@ export function MembersPageRosterColumn({
   const { roster, rosterPinned, rosterFolded, rosterShown, rosterAsideRef, setRosterPin } = layout
   const { closeRosterDrawer, rosterDrawerAvailable } = drawers
   const {
-    isRunning, filter, setFilter, filterMenuOpen, setFilterMenuOpen, starredOnly, sourceFilter,
+    filter, setFilter, filterMenuOpen, setFilterMenuOpen, starredOnly, sourceFilter,
     toggleStarredOnly, pickSource, statusFilter, toggleStatus, setRawSort, sort, clearFilters, setStarError,
     starError, starPending, toggleStar, rowsReady, shownMembers,
   } = rosterView
   const {
-    isUnread, patrol, automationOf, isNeedsYou, sortedMembers, filterCounts, narrowed, filteredOut, allHidden,
+    patrol, automationOf, signalsOf, sortedMembers, filterCounts, narrowed, filteredOut, allHidden,
     hiddenCount, hiddenNames,
   } = rosterSignals
   const { reduceMotion } = profileFlight
@@ -932,9 +934,7 @@ export function MembersPageRosterColumn({
                           toggleStar={toggleStar}
                           starPending={starPending}
                           slotKeyOf={slotKeyOf}
-                          isRunning={isRunning}
-                          isUnread={isUnread}
-                          isNeedsYou={isNeedsYou}
+                          signalsOf={signalsOf}
                           automationOf={automationOf}
                           // No layout projection under the drawer's compositor-
                           // driven slide (registerDrawerTargets' precondition).

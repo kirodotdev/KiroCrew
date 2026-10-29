@@ -358,15 +358,21 @@ def test_eager_passes_after_appends_do_not_list_the_unit_root_again(
     """K appends on an unchanged unit set, each followed by the eager pass that folds
     *fold*: once the listing is confirmed, no pass lists the unit root."""
     from kiro_crew.crew_log import eager as crew_log_eager
+    from kiro_crew.crew_log import slot_prime
 
+    # A pass can hand a cold prime to a background thread that lists the unit root
+    # later, so every count is read only once no prime is queued or running.
     crew_log_eager._advance(BOARD, fold)
+    assert slot_prime.drain(), "the first pass's prime never settled"
     clock.advance()
     crew_log_eager._advance(BOARD, fold)
+    assert slot_prime.drain(), "the confirming pass's prime never settled"
     warm_listings = len(listings)
     assert warm_listings >= 1, "the first pass never reached the unit listing"
 
     for index in range(8):
         _append_item(index)
         crew_log_eager._advance(BOARD, fold)
+    assert slot_prime.drain(), "a pass after an append left a prime running"
 
     assert len(listings) == warm_listings, "an eager pass listed the unit root again"

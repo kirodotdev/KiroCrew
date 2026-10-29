@@ -271,17 +271,43 @@ _CRITICAL_RULES_TAIL = (
 
 # The dashboard variant is the module's canonical block: tests and the
 # marker-neutralization prefix check treat "a critical-rules block" as one of
-# these two fixed strings, so both stay module constants (never templated).
+# the fixed strings in _CRITICAL_RULES_VARIANTS, so every variant stays a
+# module constant (never templated).
 _CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
 
 
 _CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
 
 
+# A sub-agent's reply is read by the parent agent that spawned it, not drawn in
+# a UI, so it gets no [OPTIONS:] buttons, keep-visible marker, file-viewer or
+# link-chip clauses, and no per-edit diff mandate (the parent can read the
+# files). It keeps the rules that still help a machine reader: valid fences,
+# absolute paths, and the gender rule.
+_CRITICAL_RULES_SUBAGENT = (
+    _CRITICAL_RULES_HEAD
+    + "Your reply goes to the agent that started you, not to a person in a chat "
+    "UI. Do not add [OPTIONS: ...] lines, <!-- keep-visible --> markers or other "
+    "UI markup.\n"
+    "When you change files, name each changed file by its absolute path.\n"
+    + _FENCE_RULE
+    + "When referencing file paths, ALWAYS use the absolute path, never a "
+    "relative path or bare filename.\n"
+    "Do not assume anyone's gender. When you have not been told a person's "
+    "pronouns, refer to them by name or with singular they/them.\n"
+    "[END CRITICAL RULES]\n\n"
+)
+
+
+# Every fixed critical-rules block. Callers that must recognise the trusted
+# block as a prefix (marker neutralization, essentials splice) test this tuple.
+_CRITICAL_RULES_VARIANTS = (_CRITICAL_RULES, _CRITICAL_RULES_CHANNEL, _CRITICAL_RULES_SUBAGENT)
+
+
 # Runtime sources whose transcript renders tool-call cards (and therefore the
-# inline diff card). Everything else — messaging channels, cron, subagent,
-# background, CLI — gets the hard diff-block mandate: their only file-change
-# display is the message text itself.
+# inline diff card). Sub-agents get their own variant. Everything else —
+# messaging channels, cron, background, CLI — gets the hard diff-block
+# mandate: their only file-change display is the message text itself.
 
 
 def _critical_rules_for(session_key: str | None, runtime_source: str | None) -> str:
@@ -298,4 +324,8 @@ def _critical_rules_for(session_key: str | None, runtime_source: str | None) -> 
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     source = ctx._resolve_runtime_source(session_key or "", runtime_source)
-    return _CRITICAL_RULES if source == "dashboard" else _CRITICAL_RULES_CHANNEL
+    if source == "dashboard":
+        return _CRITICAL_RULES
+    if source == "subagent":
+        return _CRITICAL_RULES_SUBAGENT
+    return _CRITICAL_RULES_CHANNEL

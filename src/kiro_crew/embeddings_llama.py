@@ -1114,8 +1114,17 @@ class LlamaCppEmbedder(EmbeddingBackend):
             thread.join(0.05)
 
     def _start_evictor(self) -> None:
-        """Start the idle evictor for the model just published. Idempotent."""
+        """Start the idle evictor for the model just published. Idempotent.
+
+        Guarded by ``_load_lock`` so it cannot race ``_close_retiring_worker``:
+        if ``retire()`` or ``close()`` cleared ``_llm`` (or set ``_closed``)
+        before this call acquires the lock, the evictor must not start -- the
+        next ``_close_retiring_worker`` already saw ``_evict_thread=None`` and
+        returned without a join, so a thread started here would be orphaned.
+        """
         with self._load_lock:
+            if self._closed or self._llm is None:
+                return
             if self._evict_thread is not None and self._evict_thread.is_alive():
                 return
             self._evict_wake = threading.Event()

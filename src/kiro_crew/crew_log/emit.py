@@ -207,6 +207,7 @@ from kiro_crew.crew_log.emit_surfaces import (  # noqa: F401
     on_card_finished,
     on_card_proposed,
     on_dashboard_agentic,
+    on_dashboard_custom,
     on_dashboard_instance_changed,
     on_dashboard_refused,
     on_goal_recorded,

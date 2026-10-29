@@ -167,7 +167,7 @@ than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
 ## Provenance of what is committed today
 
-All eight backends carry a live capture reaching all seven required classes.
+All nine backends carry a live capture reaching all seven required classes.
 `codex/` also keeps a synthesized `session.jsonl`. Stated plainly because it
 bounds what the corpus proves: a synthesized fixture locks the dispatch layer's
 behaviour against refactoring, which is what it was built for, and it does

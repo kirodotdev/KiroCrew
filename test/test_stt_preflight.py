@@ -109,6 +109,22 @@ class TestHostFlags:
         assert "i8mm" not in flags
         assert "sve" not in flags
 
+    def test_reads_the_arm_features_line_through_the_shared_reader(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """AArch64 goes through `embeddings._linux_aarch64_cpu_features`, the one
+        `Features` parser this repository keeps, as x86 does through its reader."""
+        seen: list[Path] = []
+        sentinel = frozenset({"from-the-shared-reader"})
+
+        def shared(path: Path) -> frozenset[str]:
+            seen.append(path)
+            return sentinel
+
+        monkeypatch.setattr("kiro_crew.embeddings._linux_aarch64_cpu_features", shared)
+        assert _flags(tmp_path, _GRAVITON2_CPUINFO, "aarch64", monkeypatch) is sentinel
+        assert seen == [tmp_path / "cpuinfo"]
+
     def test_arm_features_are_intersected_across_cores(self, tmp_path: Path, monkeypatch) -> None:
         two = _GRAVITON2_CPUINFO + "processor\t: 1\nFeatures\t: fp asimd aes\n"
         flags = _flags(tmp_path, two, "aarch64", monkeypatch)

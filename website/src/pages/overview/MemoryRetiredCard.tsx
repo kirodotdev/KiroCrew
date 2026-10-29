@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Undo2, Archive } from 'lucide-react'
 import { api } from '../../api/client'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 import { Card, CardTitle, Btn, Badge, EmptyState } from '../../components/ui'
 import { fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
@@ -84,7 +85,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
                     escapes a text child already, and pre-escaping turns an
                     ampersand in a remembered sentence into `&amp;` on screen. */}
                 <td className="px-2.5 py-2 border-b border-border text-sm">
-                  {row.text.slice(0, TEXT_PREVIEW_CHARS)}
+                  {sliceCodePoints(row.text, 0, TEXT_PREVIEW_CHARS)}
                   {row.text.length > TEXT_PREVIEW_CHARS && <><span className="text-muted">…</span><details className="mt-2"><summary className="cursor-pointer text-muted">{i18nT('memoryV2.view_details')}</summary><p className="mt-2 whitespace-pre-wrap break-words">{row.text}</p></details></>}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">

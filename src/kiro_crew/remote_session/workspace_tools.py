@@ -8,6 +8,7 @@ capped. ``run_command`` is an unrestricted shell: the gateway approves each call
 from __future__ import annotations
 
 import argparse
+import codecs
 import contextlib
 import errno
 import fnmatch
@@ -21,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 SERVER_NAME = "kirocrew-workspace"
 SERVER_VERSION = "1"
@@ -548,17 +549,186 @@ def serve(server: Server, inp=None, out=None) -> None:
 
 
 def browse(ws: Workspace, request: Any) -> Dict[str, Any]:
-    """One READ-ONLY request: a ``git_status`` of the root, nothing else."""
+    """One READ-ONLY dashboard request: ``list`` or ``read``, nothing else."""
     if not isinstance(request, dict):
         return {"error": "request must be an object"}
+    op, path = request.get("op"), request.get("path") or "."
     try:
-        if request.get("op") == "git_status":
+        if op == "list":
+            real = ws.resolve(path)
+            if not os.path.isdir(real):
+                raise ToolError(f"{path!r} is not a directory")
+            names = sorted(name for name in os.listdir(real) if name != LOCK_DIR)
+            entries = [
+                {"name": n, "dir": os.path.isdir(os.path.join(real, n))}
+                for n in names[:MAX_LIST_ENTRIES]
+            ]
+            return {
+                "root": ws.root,
+                "path": ws.rel(real),
+                "entries": entries,
+                "truncated": len(names) > MAX_LIST_ENTRIES,
+            }
+        if op == "read":
+            real = ws.resolve(path)
+            if os.path.isdir(real):
+                raise ToolError(f"{path!r} is a directory")
+            with open(real, "rb") as handle:
+                data = handle.read(MAX_READ_BYTES + 1)
+            try:
+                # At the cap, a character it splits is dropped rather than an error.
+                decoder = codecs.getincrementaldecoder("utf-8")()
+                text = decoder.decode(data[:MAX_READ_BYTES], final=len(data) <= MAX_READ_BYTES)
+                undecodable = False
+            except UnicodeDecodeError:
+                text, undecodable = "", True
+            return {
+                "root": ws.root,
+                "path": ws.rel(real),
+                "content": text,
+                "binary": undecodable or b"\x00" in data[:8192],
+                "truncated": len(data) > MAX_READ_BYTES,
+            }
+        if op == "git_status":
             return _git_status(ws)
+        if op == "stats":
+            return _stats(ws)
     except ToolError as exc:
         return {"error": str(exc)}
     except OSError as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"error": "op must be git_status"}
+    return {"error": "op must be list, read, git_status or stats"}
+
+
+def _meminfo() -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", "rb") as handle:
+            sample = handle.read(MAX_READ_BYTES + 1)
+        # Omit an oversized sample rather than report a partially read metric.
+        if len(sample) > MAX_READ_BYTES:
+            return out
+        for line in sample.decode("ascii").splitlines():
+            key, _, rest = line.partition(":")
+            fields = rest.split()
+            if key in ("MemTotal", "MemAvailable") and fields and fields[0].isdigit():
+                out[key] = int(fields[0]) * 1024
+    except (OSError, UnicodeDecodeError):
+        pass
+    return out
+
+
+def _cgroup_number(path: str) -> Optional[int]:
+    """A cgroup file's single integer, or None (absent, ``max`` or unreadable)."""
+    try:
+        with open(path, "rb") as handle:
+            text = handle.read(64).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _cgroup_inactive_file(stat_path: str, key: str) -> int:
+    """Reclaimable file cache from a cgroup ``memory.stat``, or 0 when unreadable."""
+    try:
+        with open(stat_path, "rb") as handle:
+            sample = handle.read(MAX_READ_BYTES + 1)
+        if len(sample) > MAX_READ_BYTES:
+            return 0
+        for line in sample.decode("ascii").splitlines():
+            name, _, value = line.partition(" ")
+            if name == key and value.strip().isdigit():
+                return int(value.strip())
+    except (OSError, UnicodeDecodeError):
+        pass
+    return 0
+
+
+def _cgroup_memory() -> Optional[Tuple[int, int]]:
+    """``(limit, working set)`` in bytes when the guest runs under a cgroup memory limit.
+
+    A container workspace (Coder Docker or Kubernetes templates) sees the host
+    node in ``/proc/meminfo``; its real ceiling is the cgroup's. Usage counts
+    page cache, so reclaimable ``inactive_file`` is subtracted, the working set
+    docker and kubectl report. v2 first, then v1.
+    """
+    for limit_path, usage_path, stat_path, key in (
+        (
+            "/sys/fs/cgroup/memory.max",
+            "/sys/fs/cgroup/memory.current",
+            "/sys/fs/cgroup/memory.stat",
+            "inactive_file",
+        ),
+        (
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+            "/sys/fs/cgroup/memory/memory.stat",
+            "total_inactive_file",
+        ),
+    ):
+        limit, usage = _cgroup_number(limit_path), _cgroup_number(usage_path)
+        if limit is not None and usage is not None:
+            return limit, max(0, usage - _cgroup_inactive_file(stat_path, key))
+    return None
+
+
+def _cgroup_cpus() -> Optional[int]:
+    """CPUs the cgroup's v2 ``cpu.max`` quota allows, or None without a quota."""
+    try:
+        with open("/sys/fs/cgroup/cpu.max", "rb") as handle:
+            fields = handle.read(64).decode("ascii").split()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(fields) != 2 or not fields[0].isdigit() or not fields[1].isdigit():
+        return None
+    quota, period = int(fields[0]), int(fields[1])
+    return max(1, -(-quota // period)) if period else None
+
+
+def _stats(ws: Workspace) -> Dict[str, Any]:
+    """Read-only machine metrics for the dashboard's environment card.
+
+    Only numbers and the architecture: no environment, no process list, no
+    paths, and only what the card shows.
+    """
+    import platform
+
+    cpus = os.cpu_count() or 0
+    quota_cpus = _cgroup_cpus()
+    # Inside a container, load average and uptime are the host node's, not the
+    # workspace's: shown beside the container's own core count they mislead, so
+    # a limited container reports neither.
+    contained = quota_cpus is not None and (cpus == 0 or quota_cpus < cpus)
+    if quota_cpus is not None and contained:
+        cpus = quota_cpus
+    result: Dict[str, Any] = {"arch": platform.machine(), "cpus": cpus}
+    mem = _meminfo()
+    if "MemTotal" in mem and "MemAvailable" in mem:
+        total, available = mem["MemTotal"], mem["MemAvailable"]
+        cgroup = _cgroup_memory()
+        if cgroup is not None and cgroup[0] < total:
+            # The container's ceiling, not the host node's.
+            contained = True
+            total = cgroup[0]
+            available = max(0, min(available, cgroup[0] - cgroup[1]))
+        result["memory"] = {"total_bytes": total, "available_bytes": available}
+    if not contained:
+        try:
+            result["load"] = [round(v, 2) for v in os.getloadavg()]
+        except (OSError, AttributeError):
+            pass
+    try:
+        disk = shutil.disk_usage(ws.root)
+        result["disk"] = {"total_bytes": disk.total, "free_bytes": disk.free}
+    except OSError:
+        pass
+    if not contained:
+        try:
+            with open("/proc/uptime", "r") as handle:
+                result["uptime_s"] = int(float(handle.read().split()[0]))
+        except (OSError, ValueError, IndexError):
+            pass
+    return result
 
 
 def _git_status(ws: Workspace) -> Dict[str, Any]:
@@ -626,13 +796,46 @@ def _git_status(ws: Workspace) -> Dict[str, Any]:
     }
 
 
+def write_request(ws: Workspace, request: Any) -> Dict[str, Any]:
+    """The browser's one mutation: save text, refused when ``expected`` differs."""
+    if not isinstance(request, dict):
+        return {"error": "request must be an object"}
+    path, content = request.get("path"), request.get("content")
+    if not isinstance(content, str):
+        return {"error": "content must be a string"}
+    try:
+        expected = request.get("expected")
+        if not isinstance(path, str):
+            raise ToolError("path must be a non-empty string")
+        with ws.write_lock(path) as real:
+            if os.path.exists(real):
+                with open(real, "rb") as handle:
+                    current = handle.read(MAX_WRITE_BYTES + 1).decode("utf-8")
+                if isinstance(expected, str) and current != expected:
+                    return {"error": "the file changed since it was opened", "conflict": True}
+            elif isinstance(expected, str):
+                return {"error": "the file changed since it was opened", "conflict": True}
+            message = ws._write_file_locked(real, content)
+        return {"root": ws.root, "path": ws.rel(ws.resolve(path)), "ok": True, "message": message}
+    except ToolError as exc:
+        return {"error": str(exc)}
+    except (OSError, ValueError) as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="workspace_tools.py")
     p.add_argument("--root", required=True)
-    p.add_argument(
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
         "--browse",
         action="store_true",
         help="answer one read-only JSON request from stdin and exit",
+    )
+    mode.add_argument(
+        "--write",
+        action="store_true",
+        help="save one file from a JSON request on stdin and exit",
     )
     args = p.parse_args(argv)
     os.makedirs(os.path.expanduser(args.root), exist_ok=True)
@@ -640,12 +843,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         os.path.expanduser(args.root),
         lock_dir=os.path.join(os.path.expanduser("~"), ".kirocrew-worker", "file-locks"),
     )
-    if args.browse:
+    if args.browse or args.write:
+        limit = (2 * MAX_WRITE_BYTES) if args.write else 65536
         try:
-            request = json.loads(sys.stdin.buffer.read(65536) or b"null")
+            request = json.loads(sys.stdin.buffer.read(limit) or b"null")
         except ValueError:
             request = None
-        result = browse(ws, request)
+        result = write_request(ws, request) if args.write else browse(ws, request)
         sys.stdout.write(json.dumps(result))
         sys.stdout.flush()
         return 0

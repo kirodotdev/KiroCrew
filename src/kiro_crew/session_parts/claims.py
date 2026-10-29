@@ -525,9 +525,15 @@ def conversation_provider(self: SessionManager, key: str) -> str:
     return self._allocation_boundary().conversation_provider(key)
 
 
-def release(self: SessionManager, key: str, *, cleanup: bool = False) -> None:
-    """Release the key-based session lease."""
-    self._allocation_boundary().release(key, cleanup=cleanup)
+def release(
+    self: SessionManager, key: str, *, cleanup: bool = False, wake_queue: bool = False
+) -> None:
+    """Release the key-based session lease.
+
+    ``wake_queue`` wakes the queued entries' channel drains once the lease is free;
+    see ``SessionAllocationService.release``.
+    """
+    self._allocation_boundary().release(key, cleanup=cleanup, wake_queue=wake_queue)
 
 
 async def _safe_cleanup(self: SessionManager, provider: LLMProvider, session_id: str) -> None:

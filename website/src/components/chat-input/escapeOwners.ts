@@ -26,7 +26,10 @@
  *     close the surface AND stop the turn / discard dictation. The attribute
  *     is set by the surface only while it actually owns Escape.
  *
- * The notification banner is deliberately NOT marked. Its document handler
+ * Surfaces registered on the Escape stack (hooks/useEscapeLayer) are ordered
+ * there instead and need no marker.
+ *
+ * The notification banner is deliberately NOT marked. Its window handler
  * already skips an Escape whose `defaultPrevented` is set, and both composer
  * claimants preventDefault the Escape they take before it bubbles to
  * document. So a focused composer keeps its own Escape (stop the turn,

@@ -228,9 +228,25 @@ export function useTailAppendMount<T>(ctx: {
   })
 }
 
+/** How many rows above the first visible one may mount on each frame while a
+ *  landed older page is staged in; after the last step the full overscan
+ *  applies again. A landing re-bases the window onto the reader's rows and then
+ *  widens it by the whole overscan above them, and mounting those rows in the
+ *  same task as the prepend commit was the one long task a phone fling showed
+ *  (7 rows, 51-55 ms, most of it row render, markdown and layout). The rows
+ *  are off-screen above the reader, so staging them across frames changes no
+ *  pixel the reader sees; the visible rows are never capped. */
+export const LANDING_LEADING_STEPS: readonly number[] = [1, 3]
+
 export interface WindowOperations {
   recomputeWindow: (expandOnly?: boolean) => void
   lastRecomputeAtRef: Ref<number>
+  /** Rows above the first visible one a recompute may mount, or null for the
+   *  full overscan. Armed by `stageLeadingOverscan`. */
+  leadingCapRef: Ref<number | null>
+  /** Mount the overscan above the reader over the next frames instead of in
+   *  this task (see LANDING_LEADING_STEPS). */
+  stageLeadingOverscan: () => void
   mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
   estimateRowTop: (index: number) => number | null
 }
@@ -252,6 +268,8 @@ export function useWindowOperations<T>(ctx: {
   // Written by every recomputeWindow entry; read only by the coverage
   // watchdog's yield check (see VIEWPORT_COVERAGE_YIELD_MS).
   const lastRecomputeAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  const leadingCapRef = useRef<number | null>(null)
+  const stageRafRef = useRef<number | null>(null)
 
   // ---- Window recomputation (pure; never touches scrollTop) ----
   //
@@ -307,6 +325,20 @@ export function useWindowOperations<T>(ctx: {
           start: Math.max(0, firstVisible - overscanN),
           end: Math.min(count, lastVisible + 1 + overscanN),
         }
+        const cap = leadingCapRef.current
+        if (cap !== null && cap < overscanN) {
+          // Staged landing: mount at most `cap` rows above the reader now. A
+          // row above that is already mounted stays mounted -- unmounting it
+          // only to mount it again a frame later is the cost being split.
+          const cappedStart = Math.max(0, firstVisible - cap)
+          const fullStart = next.start
+          const end = next.end
+          setWindowRange((prev) => mergeWindowRange(prev, {
+            start: Math.min(cappedStart, Math.max(fullStart, prev.start)),
+            end,
+          }, expandOnly))
+          return
+        }
       }
     } else {
       next = computeWindow(Math.max(0, el.scrollTop - leadingOffset(el)), el.clientHeight, count, getH, overscan)
@@ -317,6 +349,37 @@ export function useWindowOperations<T>(ctx: {
     // away to a no-op.
     setWindowRange((prev) => mergeWindowRange(prev, next, expandOnly))
   }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, stickRef, setWindowRange])
+
+  // Each step lands on a LATER frame: a frame callback requested from this
+  // task runs before this frame paints, so the step waits for the callback
+  // after it. A new landing restarts the stages from the first.
+  // A step reads the CURRENT recompute: its identity changes as heights are
+  // measured, and the stages outlive the render that armed them.
+  const recomputeRef = useRef(recomputeWindow)
+  useEffect(() => { recomputeRef.current = recomputeWindow }, [recomputeWindow])
+  const stageLeadingOverscan = useCallback(() => {
+    if (LANDING_LEADING_STEPS.length === 0 || typeof requestAnimationFrame !== 'function') return
+    if (stageRafRef.current !== null) cancelAnimationFrame(stageRafRef.current)
+    let step = 0
+    leadingCapRef.current = LANDING_LEADING_STEPS[0]
+    const nextFrame = (fn: () => void) => {
+      stageRafRef.current = requestAnimationFrame(() => {
+        stageRafRef.current = requestAnimationFrame(() => { stageRafRef.current = null; fn() })
+      })
+    }
+    const advance = () => {
+      step++
+      leadingCapRef.current = step < LANDING_LEADING_STEPS.length ? LANDING_LEADING_STEPS[step] : null
+      recomputeRef.current(true)
+      if (leadingCapRef.current !== null) nextFrame(advance)
+    }
+    nextFrame(advance)
+  }, [])
+  useEffect(() => () => {
+    if (stageRafRef.current !== null) cancelAnimationFrame(stageRafRef.current)
+    stageRafRef.current = null
+    leadingCapRef.current = null
+  }, [])
 
   // Ensure `index` is mounted (in the window) so callers can scroll to an
   // off-window target. Near targets union with the current window (no flash);
@@ -373,7 +436,7 @@ export function useWindowOperations<T>(ctx: {
     [getH, leadingOffset, scrollerRef, itemsRef, heightIndexRef],
   )
 
-  return { recomputeWindow, lastRecomputeAtRef, mountIndex, estimateRowTop }
+  return { recomputeWindow, lastRecomputeAtRef, leadingCapRef, stageLeadingOverscan, mountIndex, estimateRowTop }
 }
 
 export function useCoverageWatchdog<T>(ctx: {
@@ -464,11 +527,13 @@ export function useWindowEdgeTriggers<T>(ctx: {
   onTopReachedRef: Ref<(() => void) | undefined>
   itemsRef: Ref<T[]>
   setWindowRange: SetWindowRange
+  ops: Pick<WindowOperations, 'leadingCapRef'>
 }): void {
   const {
     windowRange, itemCount, overscan, prefetchStartIndex, sessionId,
     scrollerRef, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange,
   } = ctx
+  const { leadingCapRef } = ctx.ops
 
   // ---- Row-count prefetch: fire the older-history fetch EARLY ----
   // The sentinel below still exists as the backstop (a fast fling can outrun
@@ -546,7 +611,9 @@ export function useWindowEdgeTriggers<T>(ctx: {
           // at start === 0 expandWindowUp is a no-op, and keying the capture
           // on the committed range moving up makes that case a non-event
           // instead of something this site has to screen for.
-          setWindowRange((prev) => expandWindowUp(prev, overscan))
+          // A staged landing widens by its current step, not the overscan.
+          const cap = leadingCapRef.current
+          setWindowRange((prev) => expandWindowUp(prev, cap === null ? overscan : Math.max(1, Math.min(overscan, cap))))
           onTopReachedRef.current?.()
         }
       },
@@ -566,5 +633,5 @@ export function useWindowEdgeTriggers<T>(ctx: {
     if (topSentinelRef.current) ioTop.observe(topSentinelRef.current)
     if (bottomSentinelRef.current) ioBottom.observe(bottomSentinelRef.current)
     return () => { ioTop.disconnect(); ioBottom.disconnect() }
-  }, [overscan, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange])
+  }, [overscan, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange, leadingCapRef])
 }

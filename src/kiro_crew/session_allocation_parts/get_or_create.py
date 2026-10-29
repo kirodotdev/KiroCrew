@@ -1149,7 +1149,7 @@ async def _get_or_create_impl(
                 # earlier cleanup path may kill unconditionally.
                 await acquire_session_lease(provider)
                 try:
-                    await record_session_started(key)
+                    await record_session_started(key, provider)
                 except BaseException:
                     # See open_task_session: a cancellation here would leave a
                     # registered session whose provider the caller is about to

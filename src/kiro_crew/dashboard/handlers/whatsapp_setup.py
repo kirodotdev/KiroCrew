@@ -47,6 +47,9 @@ async def whatsapp_config_get(request: web.Request) -> web.Response:
             "configured": bool(wa.enabled and getattr(state, "whatsapp_connected", False)),
             "connected": bool(getattr(state, "whatsapp_connected", False)),
             "connect_error": str(getattr(state, "whatsapp_connect_error", ""))[:120],
+            # Whether connect_error describes a failure or a step still to take
+            # (the pairing instruction); written beside it by the gateway.
+            "connect_failed": bool(getattr(state, "whatsapp_connect_failed", False)),
             "state": str(getattr(client, "state", "unpaired")),
             "read_only": not is_direct_local_request(request),
             "enabled": bool(wa.enabled),

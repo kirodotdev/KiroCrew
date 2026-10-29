@@ -496,7 +496,9 @@ class TestSubagentDoneCancelsBeforeRelease:
         gateway.sessions.cancel_current = AsyncMock(
             side_effect=lambda k, **_kw: call_order.append("cancel")
         )
-        gateway.sessions.release = MagicMock(side_effect=lambda k: call_order.append("release"))
+        gateway.sessions.release = MagicMock(
+            side_effect=lambda k, **_kw: call_order.append("release")
+        )
         subagent_done = _capture_subagent_done(gateway)
         info = SubagentInfo(id="s3", task="work", parent_session_key="slack:U000")
         info.result = "done"

@@ -101,6 +101,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _rule_exfil,
     _rule_sensitive_bash,
     _rule_sensitive_path,
+    _spec_builtin_names,
     _tier_app_own_server,
     _tier_deny_rules,
     _tier_governance,
@@ -109,10 +110,12 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_param_paths,
     _tier_read_only,
     _tier_search_target,
+    _tier_spec_builtin_grant,
     _tier_targets,
     _tier_unverifiable_shell,
     _tier_write_protected,
     gate_tier_problems,
+    grant_spec_builtin,
     shell_rules,
 )
 from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
@@ -191,15 +194,20 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _app_owns_mcp_server,
     _builtin_app_for_agent,
     _context_matches,
+    _glob_pattern_leaves_root,
+    _granted_names,
     _has_global_inline_flags,
     _host_builtin_alias,
     _is_declared_builtin_mcp_server,
     _is_deepseek_read_only_builtin,
     _is_first_party_app,
+    _is_first_party_read_only_mcp_tool,
     _is_harness_read_only_builtin,
     _is_host_read_only_builtin,
+    _is_host_search_builtin_call,
     _normalize_tool_name,
     _note_title_only_grant_pattern,
+    _search_root_anchored,
     _tool_matches,
     event_is_spawn_run,
     hook_gate_kwargs,
@@ -495,6 +503,12 @@ class GateTier(NamedTuple):
     rules: tuple[GateRule, ...] = ()
 
 
+#: An extra condition on ``grant_spec_builtin`` (``hook_runtime/gate_tiers.py``):
+#: handed the judgement's facts and the names the call answers to, it may only
+#: NARROW the grant.
+SpecBuiltinAllow = Callable[[GateFacts, tuple[str, ...]], bool]
+
+
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
 
 
@@ -650,6 +664,7 @@ class HookManager:
         agent: str = "",
         app: str = "",
         classifier_only: bool = False,
+        trust_reads: bool = False,
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -692,6 +707,16 @@ class HookManager:
         on its own merits instead of being refused outright (a grant that shadows a
         read costs nothing, a grant that shadows a write approves nothing). Default
         ``False``: a caller with an interactive approver keeps the grants.
+
+        ``trust_reads`` says the surface's Reads approval mode is on for this call
+        (the dashboard slot's ``_trust_reads``). It unlocks exactly one more
+        read-only proof in the classifier: an MCP call whose host-trusted
+        ``(server, tool)`` pair is in :data:`_FIRST_PARTY_READ_ONLY_MCP_TOOLS`,
+        Kiro Crew's own read-only tools. Nothing else reads it -- not a deny tier,
+        not governance, not a grant -- so it can only turn a prompt into a
+        ``read_only`` auto-approve for one of those tools, never the reverse, and
+        an operator ``confirm_tools`` match still asks first. Default ``False``:
+        every other mode and surface judges an MCP call as before.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -702,6 +727,7 @@ class HookManager:
             agent=agent,
             app=app,
             classifier_only=classifier_only,
+            trust_reads=trust_reads,
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -729,11 +755,13 @@ class HookManager:
         mcp_identity_trusted: bool = False,
         mcp_identity_unreadable: bool = False,
         kas_builtin_ids: bool = False,
+        spec_granted_builtins: frozenset[str] = frozenset(),
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
         resolved_agent: str = "",
         classifier_only: bool = False,
+        trust_reads: bool = False,
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -763,6 +791,7 @@ class HookManager:
                 identity_trusted=mcp_identity_trusted,
                 identity_unreadable=mcp_identity_unreadable,
                 kas_builtin_ids=kas_builtin_ids,
+                spec_granted_builtins=frozenset(spec_granted_builtins),
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -772,6 +801,7 @@ class HookManager:
             agent=agent,
             app=app,
             classifier_only=classifier_only,
+            trust_reads=trust_reads,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:
@@ -845,6 +875,66 @@ _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
 # unattended on a surface with no approver.
 _HOST_READ_ONLY_BUILTIN_TOOLS: frozenset[str] = frozenset(
     {"fs_read", "glob", "grep", "web_fetch", "web_search"}
+)
+
+# kiro-cli's file-search built-ins, which the interactive read-only tier approves
+# on their host-stamped identity (``_is_host_search_builtin_call``). kiro-cli stamps
+# them ``kind="search"``, a kind the tier's allow-list does not take, so without
+# this every grep or glob outside the session's folder asked, while ``fs_read`` of
+# the same file did not. A subset of ``_HOST_READ_ONLY_BUILTIN_TOOLS`` on purpose
+# (``test_host_search_builtins_are_host_read_only``): only file reads, never the
+# network built-ins.
+_HOST_SEARCH_BUILTIN_TOOLS: frozenset[str] = frozenset({"glob", "grep"})
+
+# The operations of kiro-cli's ``code`` built-in that only read: tree-sitter
+# lookups that need no language server. ``code`` as a whole can write
+# (``pattern_rewrite``, ``rename_symbol``, ``format``, ``apply_code_action``) and
+# starts language servers (``initialize_workspace``, and every LSP-backed
+# operation), so it is never a host read-only built-in; one of these operations,
+# named in the call's own arguments, is. kiro-cli stamps ``kind="read"`` on EVERY
+# ``code`` call, a rewrite included (captured live, 2.35.1), so the kind proves
+# nothing about which operation runs. Add only an operation that reads files and
+# runs nothing.
+_CODE_READ_ONLY_OPERATIONS: frozenset[str] = frozenset(
+    {"get_document_symbols", "lookup_symbols", "pattern_search", "search_symbols"}
+)
+
+# Kiro Crew's OWN read-only MCP tools, keyed by the ``(server, tool)`` pair the
+# transport stamped (``_meta.kiro.mcpServerName`` / ``toolName``), so the same
+# tool name on any other server matches nothing. The read-only tier reads this
+# ONLY for a surface that passed ``trust_reads=True`` to ``judge`` (the
+# dashboard's Reads approval mode); under every other mode and on every other
+# surface an MCP call is as unprovable as before. Each entry is one of the core
+# server's tools whose handler (``mcp_tools/``) reads the user's own Kiro Crew
+# data and calls nothing beyond this gateway: ``memory_recall``
+# (``GET /api/memory/recall``), ``search_chat_history`` / ``get_chat_session``
+# (the transcript store), ``skill_search`` (the installed-skill catalog) and
+# ``local_knowledge_search`` (the local knowledge index; its embedder is
+# in-process). "Read-only" here is a claim about the USER'S world, which is
+# what the approval card guards: the only writes on these paths are the
+# gateway's own housekeeping of its derived indexes (a lazy build, a schema
+# migration or a repair of the skill, history, knowledge or notebook index --
+# ``SkillSearchIndex.sync``, ``history_index._ensure_open``, the knowledge
+# store's migrate step, ``_repair_notebook_index``), which the dashboard pages
+# that read the same data run with no card at all; none writes a user file,
+# memory content or anything outside the gateway's data directory, and none
+# spends model tokens. ``autonudge_judge`` keeps NO MCP allowlist for its own
+# reason -- it labels whether a turn changed anything at all, where an index
+# build counts -- and that reason does not transfer here. ``list_sessions`` is
+# deliberately absent: its ``summarize`` argument asks the gateway to spend
+# model tokens, and this set is matched on identity, never on arguments. Closed
+# and first-party: no config, app or edition adds to it.
+# ``test_first_party_read_only_mcp_tools_are_core_reads``
+# (``test/test_hooks_trusted_identity.py``) pins every entry to a tool the core
+# server really serves and to none of its write tools.
+_FIRST_PARTY_READ_ONLY_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
+    {
+        (CORE_MCP_SERVER, "memory_recall"),
+        (CORE_MCP_SERVER, "search_chat_history"),
+        (CORE_MCP_SERVER, "get_chat_session"),
+        (CORE_MCP_SERVER, "skill_search"),
+        (CORE_MCP_SERVER, "local_knowledge_search"),
+    }
 )
 
 
@@ -1700,6 +1790,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("governance", "deny_policy", _tier_governance),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
+    GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),
     GateTier("read-only", "classify", _tier_read_only),
 )
 

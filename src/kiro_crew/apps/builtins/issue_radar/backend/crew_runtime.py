@@ -661,6 +661,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         install_app_disable_hook,
         install_slot_close_hook,
         on_app_disabled,
+        refresh_crew_loop_message,
         revoke_crew_execution,
         revoke_crew_grants,
         suspend_crews,

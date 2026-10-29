@@ -50,8 +50,8 @@ the test trees patch through the loader to reaching every owner that binds it.
 | `config/sections_stt.py`, `config/sections_decisions.py`, `config/sections_telemetry.py` | Speech-to-text and its degradation rules; `decisions`; `telemetry` and `wakatime`. |
 | `config/memory_sections.py` | `memory`, `knowledge`, `skills`, `session_summary` and the named `memory_stores` records. |
 | `config/integration_sections.py` | `mcp`, `mcp_gateway` (with the MCP stub roster readers the gateway seed shares), `instances`, `tunnel`, `publish`, `computer_use`, `aws` and the external app `registries`. |
-| `config/service_sections.py` | `taskrunner`, `messaging`, `cron_history`, `monitoring`, `heartbeat`, `watchdog` and `work_ledger`. |
-| `config/section_builders.py` | The `_build_*` helper of 27 sections, grouped by the module that owns each section's DTO. Each reads its section through `sections.SectionReader`, so an omitted key builds the DTO field's default and a `read()` coercer falls back to it; the values a builder keeps of its own and the deliberate departures are listed under "Defaults come from the DTO fields". Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in the loader's `build_config` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
+| `config/service_sections.py` | `taskrunner`, `messaging`, `cron_history`, `monitoring`, `heartbeat`, `watchdog`, `work_ledger` and `power`. |
+| `config/section_builders.py` | The `_build_*` helper of 28 sections, grouped by the module that owns each section's DTO. Each reads its section through `sections.SectionReader`, so an omitted key builds the DTO field's default and a `read()` coercer falls back to it; the values a builder keeps of its own and the deliberate departures are listed under "Defaults come from the DTO fields". Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in the loader's `build_config` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
 | `config/migration.py` | The write-back migration ids, the document transform `apply_document_migrations`, the one-shot `connections_ui` marker name, the legacy `skills.lazy_load` cohort test, superseded-default reporting, and the in-memory half of an adoption. |
 | `config/resolution.py` | Raw overlay merging, top-level section classification, and degraded-input tracking. |
 | `config/validation.py`, `config/schema.py` | Schema validation with the validated-data cache, and the JSON schema and restart registry built from the DTOs. |
@@ -229,6 +229,12 @@ is the single accessor and resolves to:
    drive root and system directories such as `/usr`, `/System`, `/etc` and the
    macOS-resolved `/private/etc`), else
 2. `~/.kiro/crew` (the default).
+
+The override is resolved and validated once per distinct raw value
+(`_override_home_pin`, keyed on the env string): a changed value is resolved
+afresh, while a relative or `~` value stays anchored to the cwd and `HOME` of the
+first call, and a repoint of the same string's symlink target is not seen until
+the value changes or the process restarts.
 
 **No migration — net-new users only.** All supported installs start directly in
 `~/.kiro/crew`; there is no `~/.kirocrew` to relocate, so `config_dir()` simply
@@ -576,7 +582,11 @@ prologue after `boot_platform` for every CLI subcommand except `gateway`,
 memory preparation worker (never on the boot path), so both
 surfaces publish the missing `member_id` / `owner_member_id` pair before any
 member is resolved. It writes through `update_config_locked`, skips a config
-whose memory section degraded, and never raises. Criteria, refusals and the
+whose memory section degraded, and never raises. The same repair restores a
+member store whose declaration an older build's save stripped back to V1
+(`memory_version`, `owner_member_id`, `owner_member` and the member's `member_id`
+gone) when its `memory.db` still records a `member_database` identity for that
+store and exactly one identity-less member is bound to it. Criteria, refusals and the
 database half are owned by
 [memory-skills-hooks](memory-skills-hooks.md#pre-identity-member-stores-are-upgraded-at-start).
 
@@ -1483,6 +1493,20 @@ from another tab or channel cannot publish its pre-import copy over the restored
 file. It then sets `ui_prefs_restored`, only when the archive carried a vetted
 `ui-prefs.json`.
 
+## Shared Crew (`dashboard.shared_crew`)
+
+`config/sections_shared_crew.py` owns the section. Every integer is clamped to
+`SHARED_CREW_BOUNDS` and a wrong-typed value reads as its default, so an edit can
+narrow or widen a limit but never remove one. The two exposure switches read
+fail-narrow: `tailnet_direct` turns on only for a literal `true`, and
+`local_authorization` reads a missing key or a literal `false` as off and any other
+non-boolean value as on. No code reads the section in this build yet, so the
+section is marked `restart=True` and every help text says it is not active. `effective_limits`
+resolves `0` (auto) values against a caller-supplied automatic Crew width and caps
+per-person limits at the Crew's. Every switch that changes behaviour is off by
+default. Defaults and meanings: [shared-crew.md](shared-crew.md) section 4, Defaults
+and API.
+
 ## Unknown keys are preserved on round-trip
 
 `save()` re-emits the whole dataclass, so anything the running build does not
@@ -1666,7 +1690,7 @@ place. Tests build one in memory, holding what the read stage would produce, and
 call `build_config` with no config file on disk.
 
 **Section construction.** Compound section constructors run in small private
-helpers: `config/section_builders.py` holds 27 of them and `config/loader_builders.py`
+helpers: `config/section_builders.py` holds 28 of them and `config/loader_builders.py`
 keeps the agent, session, telemetry and dashboard ones (see the Overview); the
 loader facade re-exports all of them. This bounds each construction frame instead of
 putting every field expression in one large traced resolver frame. The helpers
@@ -2453,6 +2477,10 @@ removals of servers, tools or approval entries refuse with
 the saved and final projected rows, so Parent reconciliation, selected acceptance,
 per-item inheritance and whole reset cannot bypass the explicit-remove guard.
 A final projection with `includeMcpJson: false` can represent these removals.
+Under ambient loading an `@server` entry in `allowedTools` whose server the spec
+does not declare is kept, because the global `mcp.json` can serve that server;
+with `includeMcpJson: false` such an entry is dropped. An entry naming a server
+the spec declares `disabled` is dropped in both cases.
 
 Sidecar reads are capped at 8 MiB and require a single-link regular file.
 Mutators refuse unreadable state instead of replacing it with an empty map.
@@ -3040,6 +3068,7 @@ class MemoryConfig:
     persistence_enabled: bool = True # global switch: off = no automatic memory writes (lessons, consolidation, task-runner) AND no stored memory/lessons injected
     writes_enabled: bool = True      # off = the same automatic writers persistence_enabled stops, while injection and memory_recall continue (read-only memory)
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
+    kind_routing: str = "off"        # off | shadow | enforce: whether consolidation tags each project.* write with a kind (fact/event/state) and what it does with it; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log; unknown values read as off (memory_kind_routing.py)
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
     inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
@@ -3126,12 +3155,13 @@ class DashboardConfig:
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
+    translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
-    terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
+    terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), orphan_timeout_s (43200 = 12 h a shell runs with no browser attached before it and its processes are ended; floor 60), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
     crewmates_onboarded: bool = False  # legacy record of the retired Meet Mates flow; nothing reads it
     tips_enabled: bool = True      # feature-discovery tips (GET /api/tips/next); live-read
     tips_cadence_hours: float = 6.0    # min hours between surfaced tips (server-side gate; clamped >= 0)
@@ -3501,8 +3531,8 @@ screenshot.
 
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
-nothing else: `coder_url`, `profiles`, and the optional `stop_on_shutdown`.
-`config/session_environments.py` owns
+nothing else: `coder_url`, `profiles`, and the optional `default_profile` and
+`stop_on_shutdown`. `config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -3518,6 +3548,8 @@ duplicate or over-cap profile is dropped with a warning).
   digit then letters, digits, `_` or `-` (64 max, unique); `name` is 1-128
   characters, `template` 1-255, `workdir` an absolute POSIX path of at most
   1024. Text is whitespace-stripped and may not hold control characters.
+- `default_profile`: a saved profile id or `""` (this machine); a whole-section
+  save refuses a default the same save drops.
 - `stop_on_shutdown`: a boolean, default `true`.
 
 There is no `enabled` field (the opt-in is the per-device preview flag) and no
@@ -3608,13 +3640,15 @@ read by more than one enforcement mechanism, and two of those keys mean
 | `max_total_memory_mb` | — | slice `MemoryMax` (all trees together) | — |
 | `max_total_processes` | — | slice `TasksMax` | — |
 | `scope_memory_high_pct` | — | per-scope `MemoryHigh` as % of `MemoryMax`, 1..100; unset = 90; `0` = emit none | — |
+| `slice_reclaim_trigger_pct` | — | slice page-cache reclaim trigger, % of slice `memory.high`; unset = `95`, `0` = off for this gateway only, `50..99` used, else `95`; never inside a pod | — |
 | `xdist_auto_cap` | — | — | `-1` auto, `0` off, `N` fixed |
 
 On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 (`sandbox.apply_windows_resource_ceiling`) enforces only `max_processes`
 (`ActiveProcessLimit`) and `max_memory_mb` (`JobMemoryLimit`). The other keys
 (`cpu_weight`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`,
-`max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`) are accepted but not enforced there,
+`max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`,
+`slice_reclaim_trigger_pct`) are accepted but not enforced there,
 and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
 
@@ -3651,10 +3685,38 @@ reads one of these keys.
 
 ### Dashboard theme persistence
 
-`DashboardConfig.theme_mode` / `theme_color` / `onboarded` are workspace-persistent
-(shared across ports and devices) rather than browser-local. The frontend reads
-them at boot via `GET /api/theme/boot`; empty `theme_mode`/`theme_color` mean
-unset (the frontend falls back to `localStorage` or the built-in default).
+`DashboardConfig.theme_mode` / `theme_color` / `translucent_panels` / `onboarded`
+are workspace-persistent (shared across ports and devices) rather than
+browser-local. The frontend reads them at boot via `GET /api/theme/boot`; empty
+`theme_mode`/`theme_color` mean unset (the frontend falls back to `localStorage`
+or the built-in default).
+
+`translucent_panels` is the "Translucent panels" switch (Settings -> Display ->
+View; the Liquid Glass primitive). It is a string like `theme_mode`, not a bool,
+because `""` carries a meaning a bool cannot: "never chosen on this workspace".
+The setting was browser-local (`mc-liquid-glass`) before it was server-backed,
+and `localStorage` is per ORIGIN, so a new gateway port, `localhost` against
+`127.0.0.1`, a second browser or the desktop app each started from an absent
+key and read as "the glass keeps turning itself off". The browser copy stays as
+the render cache (`index.html` reads it before hydration so the first paint
+matches). At boot `useTheme` adopts `"on"` / `"off"` into the browser
+(`adoptServerLiquidGlass` in `website/src/utils/liquidGlass.ts`); on `""` it
+leaves the browser copy alone and, when that copy says on, publishes `"on"` once
+through `PUT /api/config/theme`, so an existing user's choice survives the
+upgrade and reaches their other browsers. An absent (off) browser copy is never
+published on `""`: it is also what a fresh browser holds. `useLiquidGlass`
+publishes every flip of the switch (and the first-run seed) the same way. The
+loader (`_translucent_panels_from`) reads anything outside
+`TRANSLUCENT_PANELS_VALUES` (`"", "on", "off"`) as `""`, and the PUT refuses it
+(400), so a bool written by hand never persists as a choice. Adopting an
+explicit value also writes the browser's `mc-liquid-glass-seeded` marker, so the
+first-run "Pick your look" seed (which turns the glass on for a fresh install)
+never runs over a workspace that already holds a choice. The change event the
+hooks follow carries the new value itself, not a pointer to the store: with
+site storage blocked the cache write fails silently, and a listener that re-read
+the store would answer the solid default and undo the flip. A failed workspace
+write is not surfaced, the same as a failed theme-mode write: the browser copy
+holds for the session and nothing the user can act on has happened.
 
 ### Sidebar folder order
 
@@ -4005,6 +4067,27 @@ punctuation-separated reason on one line (`label_guard.is_verdict_reply`, the
 same check the messaging namer and the session summary run against their own
 taught word) -- while a real title that merely opens with the word ("SKIP and
 KEEP handling", "KEEP-ALIVE header bug") survives.
+
+#### The tag also writes a crewmate's hidden turns
+
+A crewmate's first welcome and its goal check-ins are hidden gateway turns
+(`mate_welcome.dispatch_hidden_turn`) with no user text to follow, and the
+`[UI LANGUAGE]` block scopes itself to tool-call purpose text, so without a
+tag named in the prompt they come back in English. Both preambles
+(`welcome.preamble`, `wake.preamble`) carry one language sentence,
+`hidden_turn.language_default` ("`[UI LANGUAGE]` when it is shown, else English"),
+and `mate_welcome.with_language` swaps it in place for one naming the tag, so a
+prompt always holds exactly one language directive. The tag comes from
+`mate_welcome.hidden_turn_language()`: the configured tag through
+`context.ui_language_tag()`, else -- for the welcome only -- the opening tab's
+`X-UI-Lang` header (`activeLocale()`, sent by `api.memberGreet`), validated by
+`normalize_ui_language_tag` and used for that request only, never persisted.
+`en` and an unusable tag swap nothing, so an English install's prompts stay
+byte-identical. The welcome is told to write in the tag
+(`hidden_turn.language_first`); a check-in runs in a thread the user has written
+in, so it is told to follow the user's language there, falling back to the tag
+(`hidden_turn.language_thread_or_tag`). A check-in has no tab behind it, so on a
+"follow the browser" install it keeps the preamble's sentence.
 
 ### Response verbosity reaches every agent
 

@@ -131,7 +131,7 @@ The gap before the agent-started turn begins is already covered on claude: the h
 
 ### 6. A user message during the agent-started turn
 
-Per decision 3 (recommended: queue), a message sent while the agent-started turn runs takes the existing queued path, because `slot.running` is set. It runs when the agent-started turn ends. A message whose prompt was already written before the reader saw the first frame is the one case this design does not attribute. So is a user turn that claimed the slot before the frame arrived (§2). In both, that turn reads the agent-started frames as its own. Phase 0 found the adapter does not interleave the two: it queues the prompt behind the running cycle, so the cycle's frames arrive first and end with its origin `usage_update`, and the prompt's own reply follows.
+Per decision 3 (recommended: queue), a message sent while the agent-started turn runs takes the existing queued path, because `slot.running` is set. It runs when the agent-started turn ends. A Steer-mode send, the busy send button's default, tries the steer path first and falls back to the queue, because the client refuses steers while an agent-started turn reads. A message whose prompt was already written before the reader saw the first frame is the one case this design does not attribute. So is a user turn that claimed the slot before the frame arrived (§2). In both, that turn reads the agent-started frames as its own. Phase 0 found the adapter does not interleave the two: it queues the prompt behind the running cycle, so the cycle's frames arrive first and end with its origin `usage_update`, and the prompt's own reply follows.
 
 ### 7. Cancel and interrupt
 

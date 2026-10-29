@@ -362,7 +362,7 @@ class TestOtherTransportsThatCanAnswer:
         a peer who spoke once keeps receiving proactive messages forever.
         """
         t = self._weixin("allowlist", [])
-        t._known_users.add("u1")
+        t._known_users["u1"] = None
         assert t.may_send_to("u1") is False
 
     def test_wecom_mirrors_authorize(self) -> None:

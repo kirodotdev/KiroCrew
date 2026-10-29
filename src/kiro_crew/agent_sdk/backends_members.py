@@ -99,6 +99,10 @@ ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
 # whole and reports ``excludedTools`` as a projection gap, so a worker with
 # single-tool limits is refused there before
 # spawn (``capability_tool_limits_unsupported``); without limits it runs.
+# KAS is captured live on KAS 0.66.58 (kiro-cli 2.33.1):
+# ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``. A crewmate file's
+# ``excludedTools [shell]``, carried in the worker's customAgents entry, withheld
+# ``shell``: the model listed only the ``read`` tools.
 ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
 
 # Backends that carry a crewmate WORKER's per-session spec (its kit): a spec built

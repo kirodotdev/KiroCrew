@@ -12,9 +12,11 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
+from kiro_crew import crew_mode
 from kiro_crew.config.sections import FOLDER_SORT_DEFAULT
 from kiro_crew.dashboard.folder_ownership import _folder_owner_app, _subtree_holds_foreign_folder
 from kiro_crew.mcp_dashboard_caller_scope import (
+    CREW_MODE_FOLDER_NOTE,
     _own_chat_slot,
     _refuse_tree_shaping_if_unverifiable,
     _visible_chat_slots,
@@ -649,6 +651,10 @@ def _run_chat_folder_file_self(args: dict[str, Any], ctx: ToolContext) -> str:
     if own_err:
         return own_err
     own_key = str(own_slot.get("key") or "")
+    if crew_mode.row_in_turned_on_tree(own_slot, {str(r.get("key") or ""): r for r in rows}):
+        # A chat that turned Crew Mode on and its workers stay out of the person's
+        # folders: the chat is the entry.
+        return redact(f"Left this session (`{own_key}`) where it is.{CREW_MODE_FOLDER_NOTE}")
     # The row's ``created`` is the slot's birth stamp, minted once per slot
     # object. It rides along on the PATCH as a generation token so the
     # endpoint refuses (409 ``session_gone``) if this tab closed and its key

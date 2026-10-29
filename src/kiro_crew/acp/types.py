@@ -17,6 +17,7 @@ from typing import Any
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -421,6 +422,7 @@ PROVIDER_LABEL_OPENCODE = "opencode"
 PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
+PROVIDER_LABEL_COPILOT = "copilot"
 
 #: Backend id -> its label. The mapping is what ``provider_label`` resolves
 #: through, so a harness's label and the answer a session persists under are one
@@ -440,6 +442,7 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
     ACP_BACKEND_PI: PROVIDER_LABEL_PI,
     ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
     ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
+    ACP_BACKEND_COPILOT: PROVIDER_LABEL_COPILOT,
 }
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
@@ -579,6 +582,12 @@ STOP_REASON_TOOL_STALL = "error: tool stall"
 # it deliberately triggers NO retry — the user-visible compaction notice
 # already explains what happened, and this only releases the slot.
 STOP_REASON_COMPACTION_FAILED = "error: compaction failed"
+# Signalled by the session handle when a session/cancel got no ack within the
+# cancel grace window and the runtime is still up: the caller is unblocked with
+# this completion and the runtime is kept for its other sessions. Kept in the
+# "error:" family, so it classifies as ``failed``; to the caller that sent the
+# cancel it is that cancel, left unanswered.
+STOP_REASON_CANCEL_UNACKED = "error: cancel unacked"
 
 # ── Stop-reason classes ──
 #
@@ -1101,6 +1110,14 @@ class AcpEvent:
     #: maps to its kiro-cli policy name. False on every other harness, whose
     #: bare ids the gate reads under their own name only.
     kas_builtin_ids: bool = False
+    #: spec_granted_builtins: on a KAS session's OWN permission request (never a
+    #: sub-session's), the built-ins the active agent's spec grants that the KAS
+    #: policy keeps at ``ask`` (``AcpSessionHandle.kas_crew_answered``). Written by
+    #: the session handle from the projection it registered, never from the
+    #: frame. The gate's ``spec-builtin-grant`` tier reads it, after every deny
+    #: tier and governance, and approves only a host-identified built-in it names.
+    #: Empty everywhere else, which grants nothing.
+    spec_granted_builtins: frozenset[str] = frozenset()
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``

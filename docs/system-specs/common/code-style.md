@@ -263,8 +263,9 @@ functions taking `self`, and the body binds each as a one-line attribute
 with no new mixin or base class (`src/kiro_crew/acp/session_handle_class.py`). A member
 that uses zero-argument `super()`, `__class__` or a name-mangled attribute stays in the
 body. Keep `__module__` and `__qualname__` wherever anything reads them: moved exception
-classes keep the facade's name because error text renders it, and a family-scoped helper
-(`_own_methods` there) renames each bound function `<Class>.<name>`. An owner logs under
+classes keep the facade's name because error text renders it, and the shared helper
+`kiro_crew._facade_bindings.own_methods(cls, owners)` renames each function the class binds
+from a module in its explicit owner set `<Class>.<name>`. An owner logs under
 the original module's logger, `logging.getLogger("kiro_crew.<original>")`: the log format
 prints the logger name, and `caplog` tests filter on it.
 

@@ -296,5 +296,18 @@
   "pages.settings.chatPanel.follow_default_more",
   "pages.membersPage.goals_heartbeat_per_day",
   "appSdk.newMessagesDivider.new_messages",
-  "pages.chatPage.jump_to_new"
+  "pages.chatPage.jump_to_new",
+  "pages.contextBreakdown.list_count",
+  "pages.contextBreakdown.media_documents",
+  "pages.contextBreakdown.media_images",
+  "pages.contextBreakdown.blocks_heading",
+  "pages.contextBreakdown.blocks_omitted",
+  "pages.mcpManagement.stale_banner",
+  "pages.mcpManagement.reload_button",
+  "pages.mcpManagement.reload_skipped",
+  "pages.mcpManagement.reload_failed",
+  "pages.mcpManagement.reload_confirm_title",
+  "pages.mcpManagement.approval_title",
+  "pages.mcpManagement.confirm_will_share",
+  "apps.issueRadar.components.threads.show_earlier"
 ]

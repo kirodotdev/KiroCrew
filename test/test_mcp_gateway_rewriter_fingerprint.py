@@ -548,6 +548,48 @@ def test_pre_governed_passthrough_schema_forces_regeneration(
     assert rewrite_counter["n"] == before + 2
 
 
+def test_a_kept_overlay_from_before_the_vendor_denylist_drops_the_vendor_stub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schema 10 overlay can hold a stub for a credential vendor.
+
+    Before the vendors joined ``UNPOOLABLE_SERVERS`` an operator could list one
+    in ``stub_servers`` and the rewriter wrapped it. The denylist is not a
+    fingerprint input, so with every input unchanged a kept overlay would keep
+    that stub, and its shared backend would run outside every chat sandbox. The
+    schema bump is what rejects such an overlay on the next boot.
+    """
+    from mcp_gateway_rewriter_fingerprint_helpers import _CMD
+
+    from kiro_crew.mcp_gateway import rewriter_spec
+    from kiro_crew.mcp_gateway.rewriter_launch import _WRAPPER_MARKER
+
+    src = tmp_path / "agents"
+    src.mkdir()
+    (tmp_path / "settings").mkdir()
+    (tmp_path / "settings" / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+    (src / "agent-0.json").write_text(
+        json.dumps({"name": "agent-0", "mcpServers": {"creds-agent": {"command": _CMD}}})
+    )
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+
+    def vendor_entry() -> dict[str, Any]:
+        return json.loads(overlay.read_text())["mcpServers"]["creds-agent"]
+
+    stub_servers = frozenset({"creds-agent"})
+    with monkeypatch.context() as patch:
+        # The pass as it ran before this change: schema 10, empty denylist.
+        patch.setattr(rewriter, "_FINGERPRINT_SCHEMA", 10)
+        patch.setattr(rewriter_spec, "UNPOOLABLE_SERVERS", frozenset())
+        _rewrite(tmp_path, stub_servers=stub_servers)
+    assert vendor_entry().get(_WRAPPER_MARKER) is True  # pooled before
+
+    # Same inputs, current schema and denylist: the overlay must be rebuilt.
+    _rewrite(tmp_path, stub_servers=stub_servers)
+    assert _WRAPPER_MARKER not in vendor_entry()
+    assert vendor_entry()["command"] == _CMD
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows executable casing")
 @pytest.mark.parametrize("transient_settings_fault", [False, True])
 @pytest.mark.parametrize("rename_command", [False, True])

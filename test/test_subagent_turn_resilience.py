@@ -42,6 +42,8 @@ from subagent_turn_resilience_helpers import (  # noqa: F401 -- the autouse fixt
     _TransientError,
 )
 
+from kiro_crew import session_surface
+from kiro_crew import subagent_persistence as sp
 from kiro_crew.llm_helpers import TRANSIENT_RETRIES
 from kiro_crew.subagent import (
     _TRANSIENT_CONTINUE_MSG,
@@ -319,6 +321,126 @@ async def test_shutdown_cancel_does_not_auto_continue():
     assert mgr._shutting_down is True
     assert info._cancel_retry_used is False  # no recovery attempted
     assert info.done is True
+
+
+# ── 3b. A shutdown cancel under a dashboard parent waits for the next start ──
+
+_DASHBOARD_PARENT = "dashboard:chat-7"
+_CHANNEL_PARENT = "slack:C0123ABCD:1700000000.000100"
+
+
+async def _cancelled_by_the_shutdown(
+    parent: str, *, user_stopped: bool = False, folder_seeded: bool = True
+) -> tuple[SubagentInfo, AsyncMock]:
+    """One run under *parent* the shutdown cancels mid-stream; the parent consumer
+    (``on_done``) is a recorder. ``folder_seeded=False`` stands for a run whose
+    folder write failed."""
+    started = asyncio.Event()
+    on_done = AsyncMock()
+    mgr = SubagentManager(
+        sessions=_mock_sessions(_hanging_stream_factory(started)),
+        ctx_builder=_mock_ctx_builder(),
+        on_done=on_done,
+    )
+    mgr._should_use_session_sharing = MagicMock(return_value=False)
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("job at shutdown", parent_session_key=parent)
+        assert info is not None
+        await await_until(started, what="the stream's first yield")
+        # A Stop the user pressed before the shutdown reached the run.
+        info.user_stopped = user_stopped
+        assert info._folder_seeded is True  # the spawn wrote the run's folder
+        info._folder_seeded = folder_seeded
+        await mgr.cancel_all()
+    assert info.done is True
+    return info, on_done
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parent", "open_tabs"),
+    [
+        pytest.param(_DASHBOARD_PARENT, frozenset(), id="dashboard-chat"),
+        pytest.param(_CHANNEL_PARENT, frozenset({_CHANNEL_PARENT}), id="channel-tab"),
+    ],
+)
+async def test_a_shutdown_cancel_under_a_tab_is_announced_by_the_next_start(
+    monkeypatch, parent, open_tabs
+):
+    # The report made during the shutdown could only queue in the tab's memory or
+    # start a turn the shutdown refuses, so the next start's sweep announces it. A
+    # channel conversation's tab is back by then: the gateway holds the sweep's
+    # notices until the channel reconciler's first complete pass.
+    monkeypatch.setattr(session_surface, "_dashboard_surfaced", open_tabs)
+    info, on_done = await _cancelled_by_the_shutdown(parent)
+
+    on_done.assert_not_awaited()
+    assert sp.read_tombstone(info.id) is None
+    assert [state["id"] for state in sp.list_orphans()] == [info.id]
+
+    notify = AsyncMock(return_value=True)
+    next_start = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_notify=notify)
+    next_start._is_pid_alive = MagicMock(return_value=False)
+    with patch("kiro_crew.subagent.sel"):
+        await next_start._reconcile_orphans()
+
+    notify.assert_awaited_once()
+    notified_parent, msg = notify.await_args.args[:2]
+    assert notified_parent == parent
+    assert f"Agent `{info.id}` ⚠️ cut off mid-turn by gateway restart" in msg
+    assert "Partial output saved at:" in msg  # the text it streamed before the cancel
+    assert sp.list_orphans() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parent", "user_stopped"),
+    [
+        pytest.param(_DASHBOARD_PARENT, True, id="user-stopped"),
+        pytest.param(_CHANNEL_PARENT, False, id="channel-parent"),
+        pytest.param("cron:nightly-digest", False, id="cron-parent"),
+    ],
+)
+async def test_a_shutdown_cancel_with_a_stop_or_no_tab_is_reported_now(
+    monkeypatch, parent, user_stopped
+):
+    # A channel or cron parent's report goes to a thread or the bell, and a user's
+    # Stop is its own ending: both keep the cancelled tombstone and the report.
+    monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset())
+    info, on_done = await _cancelled_by_the_shutdown(parent, user_stopped=user_stopped)
+
+    on_done.assert_awaited_once_with(info)
+    assert sp.read_tombstone(info.id)["cause"] == "cancelled"
+    assert sp.list_orphans() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parent",
+    ["cron:nightly-digest", "subagent:p1", "taskrunner:t1:chat:tok1"],
+    ids=["cron", "subagent", "task-review"],
+)
+async def test_a_shutdown_cancel_under_another_kind_of_tab_is_reported_now(monkeypatch, parent):
+    # Only a dashboard chat or a channel conversation is left to the next start's
+    # sweep: any other kind of parent keeps the report with its tab open.
+    monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset({parent}))
+    assert session_surface.has_dashboard_surface(parent)
+
+    info, on_done = await _cancelled_by_the_shutdown(parent)
+
+    on_done.assert_awaited_once_with(info)
+    assert sp.read_tombstone(info.id)["cause"] == "cancelled"
+    assert sp.list_orphans() == []
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_cancel_of_a_run_whose_folder_was_never_written_is_reported_now():
+    # The sweep finds runs by their folder, so a run whose folder write failed is
+    # not left to it, and the shutdown decides that from memory, not from disk.
+    info, on_done = await _cancelled_by_the_shutdown(_DASHBOARD_PARENT, folder_seeded=False)
+
+    on_done.assert_awaited_once_with(info)
+    assert sp.read_tombstone(info.id)["cause"] == "cancelled"
 
 
 # ── 4. Orphan-notification wiring ────────────────────────────────────

@@ -9,6 +9,7 @@ Covers:
 The scripts live under the packaged builtin skill and are NOT importable as a
 package, so we load them by path with importlib. Everything here is stdlib.
 """
+
 import configparser
 import json
 import os
@@ -24,7 +25,9 @@ from git_maintenance_helpers import git_maintenance_off_entries
 from skill_script_helpers import load_skill_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
+SKILL_DIR = (
+    REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
+)
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 PROFILES_DIR = SKILL_DIR / "profiles"
 
@@ -265,9 +268,9 @@ def test_opus_profile_model_matches_the_ci_workflow():
     # --model per stage. They must agree with each other -- a lane that
     # discovers with one model and validates with another has no single model
     # for the local gate to mirror -- and that one value must match the profile.
-    assert len(set(ci_models)) == 1, (
-        f"claude-review.yml's stages disagree on the model: {ci_models}"
-    )
+    assert (
+        len(set(ci_models)) == 1
+    ), f"claude-review.yml's stages disagree on the model: {ci_models}"
     ci_model = ci_models[0]
 
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
@@ -312,9 +315,9 @@ def test_charter_budgets_match_the_ci_workflows():
 
     # The GPT lane's budget lives with the contract that applies it -- the
     # shared review-core prompt -- not in the workflow that splices it.
-    gpt_contract = (
-        REPO_ROOT / ".github" / "review-prompts" / "gpt-review-core.md"
-    ).read_text(encoding="utf-8")
+    gpt_contract = (REPO_ROOT / ".github" / "review-prompts" / "gpt-review-core.md").read_text(
+        encoding="utf-8"
+    )
     assert "BUDGET: report ALL defects that genuinely pass the BLOCK BAR" in gpt_contract, (
         "gpt-review-core.md's BUDGET is expected to be report-ALL; if a numeric "
         "cap returned, restore the numeric charter assertions here"
@@ -349,9 +352,7 @@ def _ci_workflow_run_text() -> str:
     for name in ("ci.yml", "fast-gate.yml"):
         text = (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         parts.append(
-            "\n".join(
-                line for line in text.splitlines() if not line.lstrip().startswith("#")
-            )
+            "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
         )
     return "\n".join(parts)
 
@@ -405,9 +406,9 @@ def test_every_floor_command_names_a_real_target():
         assert (REPO_ROOT / rel).is_file(), f"floor references missing script {rel}"
 
     npm_scripts = set(re.findall(r"\bnpm(?: --prefix \S+)? run ([a-z0-9:-]+)", commands))
-    declared = json.loads(
-        (REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8")
-    )["scripts"]
+    declared = json.loads((REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8"))[
+        "scripts"
+    ]
     for name in sorted(npm_scripts):
         assert name in declared, f"floor references undeclared npm script {name!r}"
 
@@ -460,6 +461,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # lives under .github/scripts). Network orchestration with no verdict of
         # its own, for the same reason as the barrier it probes.
         "scripts/cancel-superseded-run.sh",
+        # Computes which test_*.py files a non-leaf PR added or modified (via git
+        # diff against base.sha from the pull_request event payload). The scope
+        # depends on the PR base commit, which only exists once the PR event
+        # fires; there is no pre-push analogue.
+        "scripts/new_test_stability_scope.py",
         # Installs the built Linux packages in Ubuntu and Amazon Linux containers.
         # It needs docker AND a completed electron-builder run, so it cannot be a
         # pre-push gate: the floor would then demand a ~10-minute desktop build
@@ -526,9 +532,7 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
 
     npm_invoked = set(re.findall(r"\bnpm run ([a-z0-9:-]+)", run_text))
     npm_missing = sorted(n for n in npm_invoked if f"run {n}" not in floor)
-    assert not npm_missing, (
-        f"ci.yml runs these npm scripts but the floor does not: {npm_missing}"
-    )
+    assert not npm_missing, f"ci.yml runs these npm scripts but the floor does not: {npm_missing}"
 
     # A blocking step can also be a bare binary -- `cfn-lint`, `mypy`, `flake8`
     # -- which neither scan above can see. Enumerating the TOOL NAMES keeps that
@@ -541,13 +545,13 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "sudo": "privileged provisioning -- belongs in manual host setup",
         # Wrappers whose payload is already covered by another assertion.
         "bash": "an interpreter prefix -- the payload is the .sh path, covered by "
-                "the script scan above",
+        "the script scan above",
         "npm": "covered by the npm-script scan above",
         "npx": "covered by the npm-script scan and the tsc/eslint assertions",
         "python": "covered by the scripts/ scan and the scoped-test gate, which "
-                  "runs pytest (or falls back to the full suite)",
+        "runs pytest (or falls back to the full suite)",
         "python3": "covered by the scripts/ scan and the scoped-test gate, which "
-                   "runs pytest (or falls back to the full suite)",
+        "runs pytest (or falls back to the full suite)",
         "unshare": "namespace wrapper around the backend test gate",
         # node runs two kinds of step: the diagnostic blob-reconcile step in
         # frontend-coverage-merge (always exits 0, never a gate) and the
@@ -610,9 +614,9 @@ def test_test_gates_are_diff_scoped_and_carry_a_base_ref():
         )
         # Resolve-then-use, so an unresolvable base returns nonzero instead of
         # inlining an empty substitution and reducing on nothing.
-        assert entry.startswith('BASE="$(git merge-base HEAD origin/main)" &&'), (
-            f"the {surface} test gate must resolve the base first and short-circuit"
-        )
+        assert entry.startswith(
+            'BASE="$(git merge-base HEAD origin/main)" &&'
+        ), f"the {surface} test gate must resolve the base first and short-circuit"
 
     assert "python3 scripts/run_scoped_tests.py --test" in gates, (
         "the runner's self-test must sit ahead of its scans -- a PR that changes "
@@ -681,9 +685,9 @@ def test_floor_typechecks_the_way_ci_does():
     gates = "\n".join(
         json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))["gates"]
     )
-    assert TSC_APP_PROJECT in gates, (
-        f"the gate floor no longer type-checks with `{TSC_APP_PROJECT}`"
-    )
+    assert (
+        TSC_APP_PROJECT in gates
+    ), f"the gate floor no longer type-checks with `{TSC_APP_PROJECT}`"
     assert "tsc -b" not in gates, (
         "the floor type-checks in build mode; with the incremental cache in "
         "tsconfig.app.json, `-b` reports a changed dependency `.d.ts` as up to date "
@@ -709,9 +713,9 @@ def test_typecheck_script_actually_type_checks():
     restores one that skips a changed dependency (see
     test_floor_typechecks_the_way_ci_does).
     """
-    scripts = json.loads(
-        (REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8")
-    )["scripts"]
+    scripts = json.loads((REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8"))[
+        "scripts"
+    ]
     typecheck = scripts["typecheck"]
 
     assert TSC_APP_PROJECT in typecheck, (
@@ -743,9 +747,9 @@ def test_ci_type_check_step_spells_the_type_check_like_the_floor():
     run_text = _ci_workflow_run_text()
     tsc_lines = [ln.strip() for ln in run_text.splitlines() if "tsc " in ln]
     assert tsc_lines, "no `tsc` command visible in the blocking CI workflows"
-    assert any(TSC_APP_PROJECT in ln for ln in tsc_lines), (
-        f"CI type-checks with {tsc_lines!r}, not `{TSC_APP_PROJECT}`"
-    )
+    assert any(
+        TSC_APP_PROJECT in ln for ln in tsc_lines
+    ), f"CI type-checks with {tsc_lines!r}, not `{TSC_APP_PROJECT}`"
     assert not any("tsc -b" in ln for ln in tsc_lines), (
         f"CI type-checks in build mode ({tsc_lines!r}); `-b` trusts the incremental "
         "cache across a dependency change"
@@ -849,9 +853,9 @@ def test_gate_rationale_reference_exists_and_is_pointed_at():
     ref = SKILL_DIR / "references" / "gate-floor.md"
     assert ref.is_file(), "references/gate-floor.md is missing from the skill"
     skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-    assert "references/gate-floor.md" in skill, (
-        "SKILL.md no longer points at the gate-floor rationale"
-    )
+    assert (
+        "references/gate-floor.md" in skill
+    ), "SKILL.md no longer points at the gate-floor rationale"
     body = ref.read_text(encoding="utf-8")
     # The constraints a gate must satisfy are the load-bearing part; if they are
     # gone the reference has stopped carrying what SKILL.md delegates to it.
@@ -908,8 +912,16 @@ def test_partial_toml_config_fills_gates_from_autodetect(tmp_path):
 
 def test_normalize_defaults_fill_missing_keys():
     prof = resolve_profile.normalize({}, "generic")
-    for key in ("source", "base_branch", "single_commit", "setup", "gates",
-                "rule_files", "reviewers", "readiness"):
+    for key in (
+        "source",
+        "base_branch",
+        "single_commit",
+        "setup",
+        "gates",
+        "rule_files",
+        "reviewers",
+        "readiness",
+    ):
         assert key in prof
 
 
@@ -1015,9 +1027,7 @@ def test_readiness_context_env_override():
 
 def test_readiness_context_flag_beats_env():
     argv = ["pr_status.py", "662", "--readiness-context", "Flag Gate"]
-    ctx = pr_status.resolve_readiness_context(
-        argv, {"PREPARE_PR_READINESS_CONTEXT": "Env Gate"}
-    )
+    ctx = pr_status.resolve_readiness_context(argv, {"PREPARE_PR_READINESS_CONTEXT": "Env Gate"})
     assert ctx == "Flag Gate"
 
 

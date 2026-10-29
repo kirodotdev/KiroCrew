@@ -560,6 +560,16 @@ def _gateway_routed_names() -> frozenset[str]:
         return frozenset()
 
 
+def gateway_routed_names() -> frozenset[str]:
+    """The servers the running MCP gateway starts; empty on any failure.
+
+    The public read of :func:`_gateway_routed_names` for callers outside the
+    materialization (the dashboard's MCP probe and list), so the MCP tab and the
+    agent-spec rebuild give the same routing answer. Blocking.
+    """
+    return _gateway_routed_names()
+
+
 def _unrouted_secret_reference(
     name: str,
     chosen: dict,

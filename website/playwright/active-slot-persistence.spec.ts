@@ -28,6 +28,10 @@ async function seedTwoSessions(request: APIRequestContext) {
 test.describe('Active slot persistence across surface switches', () => {
   test.beforeEach(async ({ page, request }) => {
     await seedTwoSessions(request)
+    // The rail starts collapsed; this spec clicks its text labels.
+    await page.addInitScript(() => {
+      if (localStorage.getItem('mc-nav') === null) localStorage.setItem('mc-nav', '0')
+    })
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('.session-row').first()).toBeVisible({ timeout: 10000 })
   })

@@ -126,7 +126,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "project_aws_profile": ("function", False, "cb2074e9df23", "companions"),
     "record_failure": ("function", True, "1eda252b53bd", "facade"),
     "record_success": ("function", False, "958babeb61c8", "facade"),
-    "release": ("function", False, "b35cc323b390", "facade"),
+    "release": ("function", False, "b3a2d80a5701", "facade"),
     "release_subagent_runtime": ("function", True, "0f7ee42764e5", "companions"),
     "reserve_inbound_callback": ("function", False, "b58e9cc18136", "facade"),
     "restore_queue": ("function", False, "e233ef2976f2", "facade"),

@@ -209,20 +209,24 @@ class TestHandleMessage:
         assert sum("The answer is 42" in u for u in updates) >= 2, updates
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "emoji",
-        [
-            pytest.param("eyes", id="test_adds_eyes_reaction"),
-            pytest.param("lobster", id="test_adds_checkmark_after"),
-        ],
-    )
-    async def test_adds_phase_reaction(self, emoji):
+    async def test_adds_eyes_reaction(self):
         slack = MockSlackClient()
         sessions = FakeSessionManager()
         await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
 
         reacts = [a for a in slack.actions if a[0] == "react"]
-        assert any(r[1]["emoji"] == emoji for r in reacts)
+        assert any(r[1]["emoji"] == "eyes" for r in reacts)
+
+    @pytest.mark.asyncio
+    async def test_ack_comes_down_with_no_done_reaction(self):
+        slack = MockSlackClient()
+        sessions = FakeSessionManager()
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+        await asyncio.sleep(0)
+
+        reacts = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
+        unreacts = [a[1]["emoji"] for a in slack.actions if a[0] == "unreact"]
+        assert reacts == ["eyes"] and unreacts == ["eyes"]
 
     @pytest.mark.asyncio
     async def test_thinking_posted_then_updated(self):

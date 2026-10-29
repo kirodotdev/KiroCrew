@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PR Size: flag a very wide or long-open pull request, and record an owner's approval.
 
-``.github/workflows/pr-size.yml`` (job ``PR Size``) calls ``check``;
+``.github/workflows/pr-policy.yml`` (step ``PR Size``) calls ``check``;
 ``.github/workflows/pr-size-override.yml`` calls ``parse-approve``, ``authorize``
 and ``render-comment``. The rules and numbers live here so a test can run them.
 

@@ -587,8 +587,8 @@ def derive_caller_app(
         # its own name ("when set, _run_chat uses this as session key" --
         # ``DashboardState``), so the caller presents that key and the lookup
         # above cannot find it. Without this the slot's ``_app`` is invisible
-        # and the caller reads as the person: the very shape this fix exists to
-        # end, since the slot IS there and may carry an owner.
+        # and the caller reads as the person: the very shape this lookup exists
+        # to end, since the slot IS there and may carry an owner.
         linked = _slot_by_linked_key(slots, sk)
         owner = str(getattr(linked, "_app", "") or "") if linked is not None else ""
         if owner:

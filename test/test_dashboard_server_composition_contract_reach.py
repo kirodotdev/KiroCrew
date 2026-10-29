@@ -658,13 +658,14 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 
 #: The full middleware chain of each entrypoint, outermost first, by the name of each
 #: layer and the factory that built it. The order is a security contract: latency is
-#: outermost, the deny-audit boundary is outer to every barrier that can refuse, the
-#: SEL request audit is inner to them, the per-slot ownership checkpoint is inner to
-#: token auth and the audit record, and the workflow and crewmate-prune gates and the
-#: change-card hook (innermost, after auth has classified the caller) are appended
-#: after the explicit list.
+#: outermost, the client-sent relay-header strip is next, the deny-audit boundary is
+#: outer to every barrier that can refuse, the SEL request audit is inner to them, the
+#: per-slot ownership checkpoint is inner to token auth and the audit record, and the
+#: workflow and crewmate-prune gates and the change-card hook (innermost, after auth
+#: has classified the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
@@ -681,6 +682,7 @@ _DASHBOARD_CHAIN = (
 )
 _API_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
@@ -760,13 +762,13 @@ _DASHBOARD_BOOT = tuple("""
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
-    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -774,7 +776,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -813,9 +815,11 @@ _DASHBOARD_TEARDOWN = tuple("""
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
-    S:_initialize_workflow_service S:_prune_browser_snapshots_loop S:_stt_idle_sweep
+    S:_initialize_workflow_service S:_prebuild_memory_after_preparation
+    S:_prune_browser_snapshots_loop S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
-    T:_live_sibling_port T:_register_deploy_skills T:_take_prior_dropped_grant
+    T:_live_sibling_port T:_register_deploy_skills
+    T:_take_prior_dropped_grant
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
     T:_write_secret_file T:apply_config_duration T:cleanup_migrated_builtin
     T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
@@ -834,12 +838,13 @@ _API_BOOT = tuple("""
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1062,8 +1067,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 312
-_MCP_TABLE_DIGEST = "f0f47a39f898c08d39490dd0ad300dac3fe717153772371d458295134180c185"
+_MCP_TABLE_ROWS = 322
+_MCP_TABLE_DIGEST = "b1d1276b275acf3b56a9585ecfb2025704cc1c57fe6fca39ee3409368b1e018f"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

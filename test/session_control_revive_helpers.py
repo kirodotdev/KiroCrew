@@ -15,7 +15,6 @@ import asyncio
 
 import pytest
 
-from kiro_crew import history_projection as _history_projection
 from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
@@ -102,13 +101,10 @@ def _settle_metadata_rewrite_before_read(monkeypatch):
                 # probe succeeds and this pacing is never reached.
                 time.sleep(0.005)  # flake-ok: paces a probe that may run on the loop thread
 
-    # Both metadata writers reach the rename through this module-level name:
-    # ``clear_closed``/close via ``atomic_write`` (which calls it) and
-    # ``_update_metadata_locked`` directly. Patch it where each looks it up.
+    # Every metadata writer (close, ``clear_closed``, ``update_metadata_if``)
+    # reaches the rename through ``atomic_write``, which looks this name up in
+    # its own module, so patching it there covers all of them.
     monkeypatch.setattr(_aw, "replace_with_retry", replace_with_retry)
-    monkeypatch.setattr(
-        _history_projection, "replace_with_retry", replace_with_retry, raising=False
-    )
 
 
 def _slot(state, name: str, **kwargs):

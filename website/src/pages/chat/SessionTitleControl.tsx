@@ -14,6 +14,7 @@ import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
+import { slotRowByKey } from '../../store/slotIndex'
 
 /**
  * SessionTitleControl — the session title as ONE editable control: the
@@ -101,11 +102,11 @@ export default function SessionTitleControl({
   const dispatch = useAppDispatch()
   const store = useAppStore()
   const queryClient = useQueryClient()
-  const memoryMode = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey)?.memory_mode)
+  const memoryMode = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey)?.memory_mode)
   // Pinning from the header menu moves the row to the sidebar's pinned group,
   // often out of view, so the header itself has to show the state: without
   // it a pin or unpin from the chevron gave no visible sign it took.
-  const pinned = useAppSelector((s) => !!s.dashboard.slots.find((x) => x.key === slotKey)?.pinned)
+  const pinned = useAppSelector((s) => !!slotRowByKey(s.dashboard.slots, slotKey)?.pinned)
   const [localEditing, setLocalEditing] = useState(false)
   const editing = editingProp ?? localEditing
   const setEditing = (next: boolean) => { setLocalEditing(next); onEditingChange?.(next) }

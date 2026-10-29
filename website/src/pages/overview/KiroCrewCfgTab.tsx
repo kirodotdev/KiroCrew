@@ -506,7 +506,7 @@ export default function KiroCrewCfgTab() {
 /**
  * The two run-time editors Settings > Agent Harness hosts: Subagent Settings
  * and Warm Pool. They read and write the same `['kirocrewConfig']` cache as the
- * Developer page's config tab, so an edit on either surface shows on the other.
+ * Settings > Developer > Config page, so an edit on either surface shows on the other.
  */
 export function AgentRunSettings() {
   const provider = useProvider()

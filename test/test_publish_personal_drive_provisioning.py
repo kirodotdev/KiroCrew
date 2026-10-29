@@ -267,10 +267,10 @@ def test_engine_failure_is_wrapped_not_leaked(monkeypatch, payload):
     spy.install(monkeypatch)
     real = pd.engine._checked
 
-    def _checked(args, profile, action="", timeout=0):
+    def _checked(args, profile, action="", timeout=0, **kw):
         if args[:2] == ["s3api", "put-object"]:
             raise pd.engine.AWSError("throttled")
-        return real(args, profile, action=action, timeout=timeout)
+        return real(args, profile, action=action, timeout=timeout, **kw)
 
     monkeypatch.setattr(pd.engine, "_checked", _checked)
     with pytest.raises(PublishError) as exc:

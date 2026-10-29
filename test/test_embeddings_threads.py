@@ -88,14 +88,14 @@ class TestEmbedThreads:
         _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == expected
 
-    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (11, 4), (16, 6)])
     def test_unset_leaves_one_core_free(self, monkeypatch, cores, expected) -> None:
         """Unset means llama.cpp never gets the whole box.
 
         Handing every core to the batch pool starves the event loop the gateway
         answers on, which a 2-vCPU host feels hardest. The 16-core expectation
-        is the one that matters twice: the cap is a CEILING on the four-thread
-        default, so a big host answers 4, not 15.
+        is the one that matters twice: the cap is a CEILING on the default, so
+        a big host answers the large-host 6, not 15.
         """
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         _pin_cores(monkeypatch, cores)
@@ -103,7 +103,7 @@ class TestEmbedThreads:
         if cores > 1:
             assert embeddings_mod._embed_threads() < cores
 
-    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 6)])
     def test_the_declared_default_in_config_is_not_operator_intent(
         self, monkeypatch, cores, expected
     ) -> None:
@@ -139,6 +139,61 @@ class TestEmbedThreads:
         )
         _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == configured
+
+    @pytest.mark.parametrize("cores,expected", [(8, 4), (11, 4), (12, 6), (16, 6), (64, 6)])
+    def test_a_large_host_defaults_to_six_threads(self, monkeypatch, cores, expected) -> None:
+        """Twelve or more usable CPUs default to 6 threads; fewer keep 4.
+
+        More threads embed faster, but past 6 an embed slowed the memory searches
+        running beside it (see ``_LARGE_HOST_EMBED_THREADS``). Laptops (8 cores
+        or fewer) keep 4.
+        """
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        _pin_cores(monkeypatch, cores)
+        assert embeddings_mod._embed_threads() == expected
+
+    def test_a_large_host_without_an_affinity_api_defaults_to_six(self, monkeypatch) -> None:
+        """macOS and Windows read the host count, and a 16-core one gets 6."""
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: 16)
+        assert embeddings_mod._embed_threads() == 6
+
+    def test_a_small_cpu_set_on_a_large_host_keeps_four(self, monkeypatch) -> None:
+        """The large-host default reads the CPUs this process may use, not the box."""
+        if not hasattr(os, "sched_getaffinity"):
+            pytest.skip("this platform has no os.sched_getaffinity to narrow")
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.setattr(os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(8)))
+        assert embeddings_mod._embed_threads() == 4
+
+    def test_bulk_inherit_follows_the_large_host_default(self, monkeypatch) -> None:
+        """``embedding_bulk_threads: 0`` inherits the interactive count, whatever it is."""
+        monkeypatch.setattr(
+            embeddings_mod, "_read_memory_config", lambda: {"embedding_bulk_threads": 0}
+        )
+        _pin_cores(monkeypatch, 16)
+        assert embeddings_mod.bulk_embed_threads() == 6
+
+    def test_the_help_says_4_cannot_be_pinned_on_a_large_host(self, monkeypatch) -> None:
+        """A typed 4 on a 16-CPU host runs 6, and the operator help must say so.
+
+        4 is the declared default, so it is read as the default; on 12 or more
+        usable CPUs that default is the large-host 6. Help that promised "4 can
+        be pinned anywhere above 4 CPUs" would make an operator's cap of 4 run 6.
+        """
+        import dataclasses
+
+        from kiro_crew.config.memory_sections import MemoryConfig
+
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 4})
+        _pin_cores(monkeypatch, 16)
+        assert embeddings_mod._embed_threads() == embeddings_mod._LARGE_HOST_EMBED_THREADS
+        field = {f.name: f for f in dataclasses.fields(MemoryConfig)}["embedding_threads"]
+        help_text = field.metadata["help"]
+        assert f"{embeddings_mod._LARGE_HOST_MIN_CORES} or more CPUs" in help_text
+        assert "pinning threads where the process may use 4 or fewer CPUs" not in help_text
 
     def test_a_cpu_set_decides_the_cap_not_the_machine(self, monkeypatch) -> None:
         """Two cores out of sixty-four means two cores.

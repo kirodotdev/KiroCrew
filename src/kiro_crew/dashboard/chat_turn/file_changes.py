@@ -11,6 +11,8 @@ import stat as stat_module
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import safe_read_file_bytes_nolink
@@ -404,6 +406,78 @@ def _resolve_pending_str_replace(pending: dict[str, Any], after: str) -> _Snapsh
     return None
 
 
+def _content_block_path(diff_path: str) -> str:
+    """The local path a diff content block names, or ``""``.
+
+    kiro-cli's v3 engine names the file as a ``file://`` URI; older shapes use a
+    plain path. A URI for another host, or any other scheme, names no local file.
+    """
+    if not diff_path.startswith("file:"):
+        return diff_path
+    parsed = urlparse(diff_path)
+    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+        return ""
+    return url2pathname(parsed.path)
+
+
+def _lf_newlines(text: str) -> str:
+    """Fold CRLF and bare CR to LF, as the disk reads of a snapshot do."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _same_spelling(path: str) -> str:
+    """One spelling of a local path for comparing a call's path with its block's."""
+    return os.path.normpath(os.path.expanduser(path))
+
+
+def _snapshot_commandless_write(
+    raw_params: dict, diff_old_text: str | None, diff_path: str
+) -> dict | None:
+    """Snapshot a kiro-cli v3 write, whose arguments carry no ``command``.
+
+    The v3 write tools send ``fs_write`` / ``fs_append`` as ``{path, text}``
+    and ``str_replace`` as ``{path, oldStr, newStr, replace_all}``. The
+    arguments alone cannot tell a whole-file write from an append, and the
+    first frame lands while the write may already be running, so a disk read
+    here could record the file after the write. The before is taken only from
+    the frame whose diff content block names this same file: its ``oldText``
+    is the whole file as the call found it, for all three tools. Every other
+    frame of the call (no block, or the empty placeholder block a replace
+    sends in between) returns None, and ``_record_turn_snapshot`` keeps the
+    first before per file, so a later write in the turn cannot replace it.
+
+    Any other argument shape (another harness's write tool) returns None, as
+    it did before this shape was read.
+    """
+    path = raw_params.get("path")
+    if not isinstance(path, str) or not path or len(path) > _MAX_SNAPSHOT_PATH_CHARS:
+        return None
+    if not set(raw_params) <= _COMMANDLESS_WRITE_KEYS:
+        return None
+    if not isinstance(diff_old_text, str) or not isinstance(diff_path, str):
+        return None
+    block_path = _content_block_path(diff_path)
+    if not block_path or _same_spelling(block_path) != _same_spelling(path):
+        return None
+    canonical = validate_file_path(path)
+    if canonical is None:
+        return None
+    # The turn-end after is read from disk with newlines folded to LF
+    # (``_safe_read_file_text``), so the before is folded the same way: a CRLF
+    # file would otherwise count every line as changed.
+    old_text = _lf_newlines(diff_old_text)
+    before = _truncate_snapshot(old_text)
+    snapshot: dict[str, Any] = {
+        "path": path,
+        "canonical_path": canonical,
+        "content": before.content,
+        "truncated": before.truncated,
+    }
+    if len(old_text) <= _MAX_RECONSTRUCT_BYTES:
+        snapshot["full_content"] = old_text
+    return snapshot
+
+
 def _snapshot_write_target(
     raw_params: dict | None,
     diff_old_text: str | None = None,
@@ -448,6 +522,8 @@ def _snapshot_write_target(
     """
     if not isinstance(raw_params, dict):
         return None
+    if "command" not in raw_params:
+        return _snapshot_commandless_write(raw_params, diff_old_text, diff_path)
     cmd = raw_params.get("command", "")
     path = raw_params.get("path", "") or diff_path
     if (
@@ -511,6 +587,9 @@ def _snapshot_write_target(
 
     # Prefer authoritative content-block before-text when available.
     if diff_old_text is not None:
+        # Folded to LF like every disk read here, so a CRLF file's card does
+        # not count its unchanged lines as changed.
+        diff_old_text = _lf_newlines(diff_old_text)
         # diff_old_text == "" means "file was created" (no previous content).
         # Apply truncation so content-block-sourced text obeys the same cap as
         # disk-sourced text (security + message-meta size invariant).
@@ -957,6 +1036,11 @@ def _note_reply_row(slot: "_ChatSlot", row: dict[str, Any]) -> None:
 # renders these as file-change chips with click-through to a Monaco diff.
 
 _WRITE_COMMANDS = frozenset({"create", "strReplace", "insert"})
+
+# The argument keys of kiro-cli v3's write tools, which name no ``command``:
+# ``fs_write`` / ``fs_append`` send ``{path, text}`` and ``str_replace`` sends
+# ``{path, oldStr, newStr, replace_all}`` (see _snapshot_commandless_write).
+_COMMANDLESS_WRITE_KEYS = frozenset({"path", "text", "oldStr", "newStr", "replace_all"})
 
 
 _MAX_SNAPSHOT = 200_000  # cap per-file snapshot to bound message meta size

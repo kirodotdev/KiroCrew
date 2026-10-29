@@ -229,18 +229,75 @@ def _forward_for_effective_tier(effective: str, hidden_dirs: tuple[str, ...] | l
     can only take the forward away, never leave it on a tier that hides
     ``~/.ssh``. Raises on a consent read error; callers fail closed.
     """
-    tier = _SANDBOX_MODE_ALIASES.get(effective, effective)
-    if (
-        tier in _SSH_VISIBLE_TIERS
-        and not _tier_lists_ssh(tier)
-        and not _ssh_dir_masked(hidden_dirs)
-    ):
+    if _forwards_without_consent(effective, hidden_dirs):
         return True
     from kiro_crew import (
         ssh_auth_sock_consent,  # circular import: sandbox is a low-level dep of config.loader
     )
 
     return ssh_auth_sock_consent.is_granted()
+
+
+def _forwards_without_consent(effective: str, hidden_dirs: tuple[str, ...] | list[str]) -> bool:
+    """Whether an ALREADY-CLAMPED tier keeps the socket with no consent at all.
+
+    The default route of :func:`_forward_for_effective_tier`, alone: the tier
+    leaves ``~/.ssh`` readable and no entry of *hidden_dirs* masks it. False
+    means the consent leaf decides. Shared with
+    :func:`ssh_auth_sock_consent_notice` so the notice names exactly the spawns
+    the forward sends to the consent route.
+    """
+    tier = _SANDBOX_MODE_ALIASES.get(effective, effective)
+    return (
+        tier in _SSH_VISIBLE_TIERS
+        and not _tier_lists_ssh(tier)
+        and not _ssh_dir_masked(hidden_dirs)
+    )
+
+
+def ssh_auth_sock_consent_notice(
+    backend: str, mode: str, hidden_dirs: tuple[str, ...] | list[str]
+) -> str:
+    """The operator-facing line for a spawn whose agent socket waits on consent.
+
+    Non-empty only when the forward for this spawn is decided by the
+    ``ssh_auth_sock_consent.json`` leaf (``strict``, or a harness whose
+    credential mask covers ``~/.ssh``) and that consent is not granted, so the
+    child starts without ``SSH_AUTH_SOCK``. The line names the setting and how
+    to grant it, because the child itself can only report that no ssh keys are
+    available.
+
+    Diagnostic only: it decides nothing. :func:`_forward_ssh_auth_sock` stays
+    the one verdict the spawn applies, and this reads the same inputs through
+    the same helpers. Any failure to resolve the tier or read consent returns
+    ``""`` -- a notice that cannot be computed is omitted, never guessed. The
+    text carries no socket path.
+    """
+    if platform_compat.IS_WINDOWS:
+        return ""
+    try:
+        if _forwards_without_consent(effective_sandbox_mode(mode), hidden_dirs):
+            return ""
+        from kiro_crew import (
+            ssh_auth_sock_consent,  # circular import: sandbox is a low-level dep of config.loader
+        )
+        from kiro_crew.config.loader import ssh_auth_sock_consent_path
+
+        if ssh_auth_sock_consent.is_granted():
+            return ""
+        consent_path = ssh_auth_sock_consent_path()
+    except Exception:
+        return ""
+    return (
+        f"ssh-agent not forwarded to the {backend} agent: its sandbox hides ~/.ssh, "
+        "so SSH_AUTH_SOCK is kept there only with the ssh-agent forward consent, "
+        "which is not granted. git over SSH and SSH commit signing inside that "
+        'session will report no keys. To allow it, write {"enabled": true} to '
+        f"{consent_path} from a terminal outside Kiro Crew; the next {backend} "
+        "agent that starts picks it up. The consent applies to every agent whose "
+        "sandbox hides ~/.ssh, and lets the commands those agents run use the keys "
+        "in your ssh-agent."
+    )
 
 
 def unsandboxed_exec_permitted_by() -> str:

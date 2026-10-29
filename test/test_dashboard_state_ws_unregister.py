@@ -52,6 +52,7 @@ class TestWebSocketUnregisteredOnEveryExit:
         state._yolo = False
         state._folders = []
         state.folders_generation.return_value = 0
+        state.tags_generation.return_value = 0
 
         class Request(dict):
             def __init__(self) -> None:

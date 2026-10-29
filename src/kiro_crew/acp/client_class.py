@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from kiro_crew import pinned_fs
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
 from kiro_crew.acp import client_claude_session as _client_claude_session
+from kiro_crew.acp import client_copilot as _client_copilot
 from kiro_crew.acp import client_elicitation as _client_elicitation
 from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
@@ -56,6 +57,7 @@ from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
@@ -104,6 +106,7 @@ class AcpClient:
     _session_mcp_inline_settings: dict[str, Any] | None
     _stdin_lock: asyncio.Lock
     _steering_waiter_map: dict[int, asyncio.Future[Any]]
+    _unanswered_steering_id_set: set[int]
     _windows_tree_cleanup_failed: bool
     if TYPE_CHECKING:
         _native_skill_projection: NativeSkillProjection | None
@@ -330,6 +333,14 @@ class AcpClient:
         self._pi_steer_turn: int | None = None
         self._pi_steers_pending: dict[int, str] = {}
         self._pi_steer_lock = asyncio.Lock()
+        # The Copilot CLI launch MCP config file this spawn wrote, removed once the
+        # session exists (``acp.harness.copilot``).
+        self._copilot_mcp_config_path = ""
+        # Length of the notification buffer when the routing write answered: the
+        # config reports below it were superseded by that answer.
+        self._routing_answer_floor = 0
+        # Mode reports the start's drain read, kept for the drift check after it.
+        self._drain_mode_reports: list = []
         # Every server name that handoff carried (the member mounts AND the pooled
         # stubs), which is what a pi MCP tool title is spelled after.
         self._pi_mcp_server_names: tuple[str, ...] = ()
@@ -577,6 +588,11 @@ class AcpClient:
         # permission event can carry diff_path for the edit gate when the params
         # themselves carry no path key. Mirrors AcpSessionHandle's cache.
         self._tool_call_diff_path: dict[str, str] = {}
+        # Copilot CLI tool_call ids whose title more than one placed MCP server could
+        # have produced; their permission request is refused.
+        self._copilot_ambiguous_mcp_calls: set[str] = set()
+        # Copilot CLI kind-``other`` tool_call titles no placed server name matched.
+        self._copilot_unmatched_titles: dict[str, str] = {}
         # Map JSON-RPC request id → {"once": optionId, "always": optionId} so
         # the host can echo back the exact optionIds the agent advertised.
         # kiro-cli uses "allow_once"/"allow_always"; claude-agent-acp uses
@@ -786,9 +802,11 @@ class AcpClient:
     _claude_session_mcp_servers = _client_mcp_array._claude_session_mcp_servers
     _opencode_session_mcp_servers = _client_mcp_array._opencode_session_mcp_servers
     _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
+    _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
+    _discard_copilot_mcp_config = _client_mcp_array._discard_copilot_mcp_config
     _goose_session_mcp_servers = _client_mcp_array._goose_session_mcp_servers
     _invalidate_session_mcp_projection = _client_mcp_array._invalidate_session_mcp_projection
     _prepare_session_mcp = _client_mcp_array._prepare_session_mcp
@@ -834,11 +852,17 @@ class AcpClient:
         case for a zero-tool agent) would otherwise leave ``_spec_denied_tools`` empty
         and this property False, which is exactly the auto-approve path the zero-tool
         ban exists to close.
+
+        Copilot CLI judges too: it publishes no identity channel, so its MCP identity is
+        recovered from the ``tool_call`` frame, which only the full extractor reads, and
+        a call whose identity cannot be established is refused on every answering site,
+        the auto-approve one included.
         """
         return (
             bool(self._spec_denied_tools)
             or self._enforces_zero_tool_ban
             or self.backend in ACP_BACKENDS_META_IDENTITY
+            or self._is_copilot
         )
 
     @property
@@ -860,6 +884,10 @@ class AcpClient:
     @property
     def _is_deepseek(self) -> bool:
         return self.backend == ACP_BACKEND_DEEPSEEK
+
+    @property
+    def _is_copilot(self) -> bool:
+        return self.backend == ACP_BACKEND_COPILOT
 
     @property
     def _model_registry_namespace(self) -> str:
@@ -1288,7 +1316,15 @@ class AcpClient:
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
     _note_goose_version = _client_permissions._note_goose_version
+    _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
     _tripwire_goose_mode = _client_permissions._tripwire_goose_mode
+    _tripwire_session_config = _client_permissions._tripwire_session_config
+    _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
+    _restore_copilot_edit_seed = _client_copilot._restore_copilot_edit_seed
+    _confirm_copilot_mcp_identity = _client_copilot._confirm_copilot_mcp_identity
+    _tripwire_permission_state = _client_permissions._tripwire_permission_state
+    _drop_superseded_config_frames = _client_permissions._drop_superseded_config_frames
+    _refuse_session_config_drift = _client_permissions._refuse_session_config_drift
     _tripwire_pi_gate = _client_permissions._tripwire_pi_gate
     # Answer an MCP server's elicitation on this client: ``kiro_crew.acp.client_elicitation``.
     _handle_elicitation_request = _client_elicitation._handle_elicitation_request
@@ -1378,6 +1414,7 @@ class AcpClient:
     steer = _client_turn_control.steer
     _steering_request_ready = _client_turn_control._steering_request_ready
     _steering_waiters = _client_turn_control._steering_waiters
+    _unanswered_steering_ids = _client_turn_control._unanswered_steering_ids
     _settle_steering_answer = _client_turn_control._settle_steering_answer
     _steer_via_steering_request = _client_turn_control._steer_via_steering_request
     _await_steering_answer = _client_turn_control._await_steering_answer
@@ -1496,6 +1533,7 @@ class AcpClient:
     _track_tool_call = _client_tool_events._track_tool_call
     _extract_tool_event = _client_tool_events._extract_tool_event
     _extract_tool_call_update = _client_tool_events._extract_tool_call_update
+    _recover_copilot_mcp_identity = _client_tool_events._recover_copilot_mcp_identity
     _extract_tool_call_refinement = _client_tool_events._extract_tool_call_refinement
     _read_new_tool_results = _client_tool_events._read_new_tool_results
     _read_new_tool_results_sync = _client_tool_events._read_new_tool_results_sync

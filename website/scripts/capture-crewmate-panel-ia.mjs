@@ -373,7 +373,7 @@ async function captureScheduleVariant(frame, file, expected) {
   await page.waitForTimeout(400)
   check('switcher lists every mate', (await page.getByTestId('crewmate-switcher-row').count()) === 6)
   check('the chip carries a needs-you dot for Pixel', (await page.getByTestId('crewmate-switcher-needs-you').count()) === 1)
-  check('Pixel row shows needs-you, Scout row shows unread', (await page.getByTestId('crewmate-switcher-needs-you-dot').count()) >= 1 && (await page.getByTestId('crewmate-switcher-unread-dot').count()) >= 1)
+  check('Pixel row shows needs-you, Scout row shows unread', (await page.getByTestId('crewmate-switcher-row-needs-you-dot').count()) >= 1 && (await page.getByTestId('crewmate-switcher-row-unread-dot').count()) >= 1)
   const h = await page.getByTestId('member-thread-header').boundingBox()
   const l = await list.boundingBox()
   await page.screenshot({ path: join(OUT, '11-switcher-open-light.png'), clip: { x: h.x, y: h.y, width: Math.max(560, l.x + l.width - h.x + 20), height: l.y + l.height - h.y + 16 } })

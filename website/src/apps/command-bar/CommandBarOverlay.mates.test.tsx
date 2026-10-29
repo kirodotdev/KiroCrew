@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import CommandBarOverlay from './CommandBarOverlay'
 import { i18nT } from '../../i18n/t'
-import { PREVIEW_CREW } from '../../utils/previewFlags'
 
 /**
  * The Command Bar's CREWMATES VIEW.
@@ -189,9 +188,6 @@ const openMatesView = async () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // The gate is OFF by default in the product, so every other test in this file has to
-  // turn it on explicitly -- which is also what keeps the two gate tests above honest.
-  localStorage.setItem(PREVIEW_CREW, '1')
   chatFolders.mockResolvedValue([])
   agentCatalog.mockResolvedValue({ agents: ROSTER, default_agent: '' })
   dispatch.mockReturnValue({ unwrap: () => Promise.resolve('slot-1') })
@@ -199,28 +195,12 @@ beforeEach(() => {
   storeState.chat = { slotStatusDetail: {}, activeSlot: null }
 })
 
-describe('command bar — the mates preview gate', () => {
-  it('advertises NOTHING about mates while the preview is off', async () => {
-    // This bar is an INGRESS to `/members`, and that page is registered with
-    // `previewFlag: PREVIEW_CREW`, so every other door applies this gate. The app ships
-    // `defaultEnabled: true`, so without it a DEFAULT install advertises a page the
-    // operator has not opted into.
-    localStorage.removeItem(PREVIEW_CREW)
-    mount()
-    await waitFor(() => expect(hasRow('Search Sessions')).toBe(true))
-    expect(hasRow('Search Mates')).toBe(false)
-    // All three rows, because each is independently reachable.
-    type('oncall')
-    await waitFor(() => expect(hasRow('Search sessions for')).toBe(true))
-    expect(hasRow('Search mates for')).toBe(false)
-    // And nothing fetched the roster to decide any of that.
-    expect(agentCatalog).not.toHaveBeenCalled()
-  })
-
-  it('offers them once the operator turns the preview on', async () => {
-    localStorage.setItem(PREVIEW_CREW, '1')
+describe('command bar — mates on a default install', () => {
+  it('offers the mates rows with no opt-in, and fetches nothing to do it', async () => {
     mount()
     await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
+    // The root row is local; the roster is fetched only once the view is entered.
+    expect(agentCatalog).not.toHaveBeenCalled()
     type('oncall')
     await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
   })

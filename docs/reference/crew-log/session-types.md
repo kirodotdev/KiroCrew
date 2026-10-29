@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Forty-seven types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -27,6 +27,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`session/opened`](#sessionopened) | The crew log was created, or a claim re-attached to it. | live | `gateway` | — |
 | [`session/class`](#sessionclass) | The session's class changed after its log was opened. | live | `gateway` | supersedes `session/opened.class` |
 | [`session/closed`](#sessionclosed) | The gateway stopped serving this session. | live | `gateway` | — |
+| [`session/unrestored`](#sessionunrestored) | This session's tab was listed as open at startup and did not come back. | live | `gateway` | — |
 | [`session/adopted`](#sessionadopted) | Another session took this one over. | live | `gateway` | supersedes `session/opened.parent` |
 | [`session/released`](#sessionreleased) | This session's parent let it go. | live | `gateway` | retracts the parent edge |
 | [`session/spawned`](#sessionspawned) | This session created another one. | live | `gateway` | the creator's side of `session/opened.parent` |
@@ -67,6 +68,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`dashboard/agentic_refused`](#dashboardagentic_refused) | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
 | [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A crewmate's goal record after a change: goals and milestones. | live | `gateway` | — |
 | [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a crewmate waits on the person for, after it changed. | live | `gateway` | — |
+| [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a crewmate, stamped with who wrote it. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -283,6 +285,37 @@ may land after it.
 corruption. Read to the end of the last segment.
 
 **Since** — #10091.
+
+### `session/unrestored`
+
+This session's tab was listed as open at startup and did not come back.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per dropped tab, after a dashboard restart's tab restore
+finishes (`dashboard/chat_persistence_parts/restore_drivers.py`), on the DROPPED session's own
+log. Carries no `turn`.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `listed` | integer | required | Keys the open-tab snapshot listed this boot. | |
+| `restored` | integer | required | How many of them became tabs. | |
+| `kept` | integer | required | How many listed keys this restore dropped, this one included. A dropped key stays in the reopen seed; it is only not shown. | |
+
+**Invariants** — **Not a close.** The session is intact; only the registry of open
+tabs lost it. All three counts are written together, because one tab only means
+something against the set.
+
+```json
+{"type":"session/unrestored","seq":12,"time":1789000095000,"src":"gateway","data":{"listed":16,"restored":15,"kept":1}}
+```
+
+**Reader hint** — Read it as "this tab was not shown", never as "this session ended".
+`kept` against `listed` tells a lost working set from one unreadable transcript.
+
+**Since** — #18262.
 
 ### `session/adopted`
 
@@ -1612,6 +1645,114 @@ the file still serves that crew's panel.
 
 **Since** — #13440.
 
+## The dynamic dashboard
+
+A crewmate's Dashboard tab: its own copy of a template, the values it writes into
+that copy, and the writes that were refused. All three land on the crewmate's own
+DM session log and fold under its slot.
+
+### `dashboard/instance_changed`
+
+One accepted change to a crewmate's own dynamic dashboard.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per accepted adopt, edit or rollback, by the instance store
+(`dashboard_templates/instance.py`), after the version file is written. The change
+waits a bounded flush (`_APPEND_FLUSH_SECONDS`) for the entry but never fails on it:
+the file is the record of the current page, and this entry is its history.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slug` | string | required | Whose dashboard changed, so one entry names its crewmate without resolving the slot. | |
+| `instance_version` | integer | required | The instance's own counter after this change. Never the template's version. | |
+| `action` | string | required | What the change was. Closed: the store clamps it to this list. | `adopted`, `edited`, `rolled_back` |
+| `template_id` | string | required | Id of the template this instance was copied from. | |
+| `template_version` | integer | required | The template version copied at adopt. An edit does not move it. | |
+| `from_version` | integer | optional | The instance version this change came from. Absent for an adopt. | |
+| `fields` | integer | optional | How many fields the copied manifest declares after this change. | |
+| `html_bytes` | integer | optional | Size of the page this version holds, in bytes. | |
+| `at_ms` | integer | optional | When the change was accepted, epoch milliseconds. | |
+
+**Invariants** — Carries what changed, never the page, so it is bounded by
+construction. The instance's history is a fold over these entries.
+
+```json
+{"type":"dashboard/instance_changed","seq":91,"time":1789000004000,"src":"gateway","data":{"slug":"conductor","instance_version":3,"action":"edited","template_id":"goal-board","template_version":2,"from_version":2,"fields":9,"html_bytes":14210,"at_ms":1789000004000}}
+```
+
+**Reader hint** — Read the current page from the instance file, not from here. A
+change with the log off still succeeds, so a missing entry is not a missing change.
+
+**Since** — #17507.
+
+### `dashboard/agentic_value`
+
+One agentic dashboard value the crewmate wrote, already type-checked.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per accepted `dashboard_write`, by the agentic write path
+(`dashboard/handlers/agent_panel_dashboard.py`), after the value is checked against
+the live manifest. The write waits for the append, because this log is the value's
+only home. Folded as `agentic`.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `field` | string | required | The manifest field this value fills. The fold keys on it. | |
+| `type` | string | required | The type the manifest declared for the field. | |
+| `value` | object | required | A wrapper holding the value under the one key `v`, so any of the five manifest types fits. | |
+| `instance_version` | integer | optional | The instance version the value was written against. | |
+| `crew_key` | string | optional | Digest of the writing crew's exact name, for ownership on a shared slot. | |
+
+**Invariants** — Each write replaces ONE field and leaves the others alone. The fold
+re-checks `v` against `type`, because these are bytes off a file.
+
+```json
+{"type":"dashboard/agentic_value","seq":92,"time":1789000004100,"src":"gateway","data":{"field":"open_prs","type":"number","value":{"v":3},"instance_version":3,"crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+**Reader hint** — Unwrap `value.v`. Compare `instance_version` with the instance's
+current one to spot a value written for a field set since edited away.
+
+**Since** — #17507.
+
+### `dashboard/agentic_refused`
+
+One refused agentic write, or one write that corrected an earlier refusal.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — On the refusal path of `dashboard_write`, and again when a later
+accepted write uses a field an earlier refusal reached wrongly. Best-effort: the
+refusal is already on its way back to the caller. Folded as `mistakes`.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `code` | string | required | Why it was refused, or `corrected` on a correction. The mistake book groups on it. | |
+| `field` | string | optional | The field the write named. Absent for a refusal about no field. | |
+| `reason` | string | optional | The sentence the agent was given. | |
+| `corrects` | array of string | optional | On a correction: the field names an earlier refusal reached wrongly. | |
+| `crew_key` | string | optional | Digest of the refused caller's exact crew name. | |
+
+**Invariants** — Two shapes on one type. A refusal carries a refusal code; a
+correction carries `code` `corrected` and `corrects`.
+
+```json
+{"type":"dashboard/agentic_refused","seq":93,"time":1789000004200,"src":"gateway","data":{"code":"unknown_field","field":"credits_total","reason":"credits_total is not a field of this dashboard; did you mean credits?","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+**Reader hint** — Branch on `code`, not on whether `corrects` is present. Read the
+`mistakes` fold, not the raw entries, to get each group's latest correction.
+
+**Since** — #17507.
+
 ## A crewmate's own record
 
 Two snapshots the gateway appends to a crewmate's own DM session log so its
@@ -1619,7 +1760,7 @@ Dashboard page can bind them (`dashboard/crewmate_feed.py`). Each replaces the
 last one whole in its slot fold, so a page reading it moves when the fact does,
 with no value the crewmate typed.
 
-#### `dashboard/goal_recorded`
+### `dashboard/goal_recorded`
 
 Kind `session`, `src` `gateway`. Written after every write of the crewmate's goal
 record (a goal set, milestones applied, a reading recorded), through
@@ -1635,7 +1776,11 @@ the thread's next growth, when its session is known. Folded as `goal`.
 | `goals_total` | integer | how many goals the record holds in all |
 | `milestones_total` | integer | how many milestones the record holds in all |
 
-#### `dashboard/waiting_changed`
+```json
+{"type":"dashboard/goal_recorded","seq":94,"time":1789000004300,"src":"gateway","data":{"goals":[{"text":"Land our open PRs"}],"milestones":[{"text":"PRs merged this week","target":"20","current":"12 merged","at":"2026-10-28T14:00:00Z"}],"goals_total":1,"milestones_total":1}}
+```
+
+### `dashboard/waiting_changed`
 
 Kind `session`, `src` `gateway`. Written when the list
 `dashboard.member_waiting.waiting_items` reads off the thread differs from the
@@ -1647,6 +1792,41 @@ an `[OPTIONS]` chip, a card raised or pressed, a turn ending). Folded as
 | --- | --- | --- |
 | `items` | array of `{kind, text, options, options_total, asked_at}` | newest first; `kind` is `options`, `question` or `card`; at most `CREWMATE_WAITING_LIMIT`, each with at most `CREWMATE_OPTION_LIMIT` choices and `options_total` counting them all |
 | `total` | integer | how many items wait in all, including any past `items` |
+
+```json
+{"type":"dashboard/waiting_changed","seq":95,"time":1789000004400,"src":"gateway","data":{"items":[{"kind":"options","text":"Merge the release PR now?","options":["Merge it","Wait"],"options_total":2,"asked_at":"2026-10-28T14:05:00Z"}],"total":1}}
+```
+
+### `dashboard/custom_value`
+
+Kind `session`, `src` `gateway`. Written when a script cron bound to this crewmate
+calls `ctx.crew_log_append(type, data)`, through
+`POST /api/agent-panel/dashboard/record` (`dashboard/handlers/agent_panel_record.py`),
+or when an installed app holding the `/api/member-records/*` grant posts to
+`POST /api/member-records/<slug>` (`dashboard/handlers/agent_panel_record_app.py`); both
+routes hand the record to the same append. The body carries `type` and `data` only;
+`writer`, `member` and `crew_key` are stamped by the gateway from the caller's attested
+identity (the job's scope, or the token's app claim), so neither a script nor an app can
+choose who it writes as. A job bound to no crewmate is refused; an app names the
+crewmate in the path and is refused for a slug no crewmate has or two share. An app's
+`type` is stored as `<app id with - as _>__<type>`, one bindable path segment that
+splits one way, so two apps never share a key and `__` is refused in every caller's
+type. Folded as
+`custom`, which keeps the latest record per `type`, so a Dashboard page binds
+`custom.latest.<type>.data.<key>`. The data is the writer's own words: a page draws it
+as text, and nothing frames it as an instruction to an agent.
+
+| field | type | notes |
+| --- | --- | --- |
+| `type` | string | the record type the writer named (for an app, `<app id with - as _>__<type>`): one plain name without `__`, at most `CUSTOM_TYPE_NAME_LIMIT` characters |
+| `data` | object | the record, at most `CUSTOM_RECORD_BYTES` serialized and `CUSTOM_RECORD_DEPTH` deep; its members are the writer's own |
+| `writer` | string | `cron:<job id>` or `app:<app id>`, stamped by the gateway |
+| `member` | string | the slug of the crewmate written for (the job's binding, or the app route's path), stamped by the gateway |
+| `crew_key` | string | digest of that crewmate's exact name, for ownership on a shared slot |
+
+```json
+{"type":"dashboard/custom_value","seq":96,"time":1789000004500,"src":"gateway","data":{"type":"build_health","data":{"green":41,"red":2},"writer":"cron:nightly-build","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
 
 ## Change cards and guides
 

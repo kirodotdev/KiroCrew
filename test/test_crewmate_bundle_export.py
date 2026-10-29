@@ -835,6 +835,25 @@ def test_avatar_digest_uses_exported_content_and_canonical_traits() -> None:
     assert ex.preview(_build(_sources())[0])["avatar_digest"] == ""
 
 
+@pytest.mark.parametrize(
+    ("avatar", "image", "kind"),
+    [
+        ({"kind": "image"}, True, "image"),
+        ({"kind": "ghost", "traits": {"eyes": "round"}}, False, "ghost"),
+        # No trait survives the length cap, so the manifest holds no ghost to show.
+        ({"kind": "ghost", "traits": {"eyes": "x" * 65}}, False, ""),
+        ({}, False, ""),
+    ],
+)
+def test_preview_names_the_avatar_the_file_carries(
+    avatar: dict[str, Any], image: bool, kind: str
+) -> None:
+    plan, entries = _build(_sources(avatar=avatar, avatar_image=_png() if image else None))
+    assert ex.preview(plan)["avatar"] == kind
+    assert ("avatar.png" in entries) is (kind == "image")
+    assert ("avatarTraits" in json.loads(entries["crewmate.json"])) is (kind == "ghost")
+
+
 def test_picture_metadata_never_travels() -> None:
     """An upload is stored as sent; its text chunks, EXIF and XMP stay home."""
     secret = TOKEN.encode()

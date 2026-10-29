@@ -537,6 +537,10 @@ async def api_chat_tag_column_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
+    # An open tab learns of the column write through the tags generation
+    # on the slots frame, so the frame has to go out now.
+    state.bump_tags_generation()
+    state.push_slots_update()
     sel().log_api_access(
         caller=rl_caller,
         operation="chat.tag_column_create",
@@ -601,6 +605,10 @@ async def api_chat_tag_column_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
+    # An open tab learns of the column write through the tags generation
+    # on the slots frame, so the frame has to go out now.
+    state.bump_tags_generation()
+    state.push_slots_update()
     sel().log_api_access(
         caller=rl_caller,
         operation="chat.tag_column_update",
@@ -636,6 +644,10 @@ async def api_chat_tag_column_delete(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
+    # An open tab learns of the column write through the tags generation
+    # on the slots frame, so the frame has to go out now.
+    state.bump_tags_generation()
+    state.push_slots_update()
     sel().log_api_access(
         caller=rl_caller,
         operation="chat.tag_column_delete",
@@ -710,6 +722,10 @@ async def api_chat_tag_columns_reorder(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
+    # An open tab learns of the column write through the tags generation
+    # on the slots frame, so the frame has to go out now.
+    state.bump_tags_generation()
+    state.push_slots_update()
     sel().log_api_access(
         caller=rl_caller,
         operation="chat.tag_columns_reorder",

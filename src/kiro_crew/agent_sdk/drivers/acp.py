@@ -273,6 +273,24 @@ def provider_label(provider: object) -> str:
     return _impl(provider)
 
 
+def _provider_backend(provider: object) -> object:
+    """The backend id *provider* talks to, or ``None`` for a shape that carries none.
+
+    Private, and kept out of ``__all__``: ``llm_helpers.provider_backend`` is the
+    public reader (``""`` on a miss); this one exists only for the ``harness``
+    metric attribute, which must tell a miss from kiro-cli's ``""``.
+
+    Thin delegation to :func:`kiro_crew.providers.acp._provider_backend`, the
+    shape check :func:`provider_label` resolves through, so the ``harness``
+    metric attribute (``metrics/harness.py``) reads the same answer the session
+    map persists without importing the providers layer. Function-local import
+    for the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.providers.acp import _provider_backend as _impl
+
+    return _impl(provider)
+
+
 def catalog_row_would_drop(model_id: str, advertised: object) -> bool:
     """Whether the entitlement filter drops catalog row *model_id* against
     *advertised*.
@@ -449,6 +467,20 @@ def narrowed_agent_permissions(
         "the session projection re-derives them from allowedTools",
     )
     return {"rules": carried}
+
+
+def backend_delivers_spec_servers(backend: str) -> bool:
+    """Whether *backend* runs the servers an agent spec declares.
+
+    kiro-cli and KAS read the spec itself (``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE``); a
+    backend with a mirror (``providers.mirrors.has_mirror``) is handed them in its
+    ``session/new`` array. A broker-only backend runs only the pooled stubs. Asked here
+    so a caller above the boundary need not import the mirror registry.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
+    from kiro_crew.providers.mirrors import has_mirror
+
+    return backend in ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE or has_mirror(backend)
 
 
 def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bool]]]:
@@ -755,6 +787,29 @@ def self_served_install_command(backend: str) -> str:
     from kiro_crew.agent_sdk.backends import launch_for
 
     return launch_for(backend).install_command
+
+
+def self_served_wrong_version(backend: str) -> str:
+    """The release *backend*'s binary would run, when it is not the one Crew verified.
+
+    ``""`` when the binary does not resolve, when its release cannot be read, when it
+    is the verified one, and for every harness with no single verified release. Only
+    Copilot CLI has one (``COPILOT_VERIFIED_VERSION``): a session on any other release
+    is refused at the handshake, so an install row that only looked for the binary
+    would call a harness ready that refuses every chat. Read from the install's own
+    manifest, never by running it.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT, COPILOT_VERIFIED_VERSION
+
+    if backend == ACP_BACKEND_COPILOT:
+        from kiro_crew.acp.client import _resolve_self_served_bin
+        from kiro_crew.acp.harness.copilot import copilot_installed_version
+
+        binary, _searched_path = _resolve_self_served_bin(backend)
+        version = copilot_installed_version(binary) if binary else ""
+        if version and version != COPILOT_VERIFIED_VERSION:
+            return version
+    return ""
 
 
 def pi_components_resolve() -> tuple[bool, bool]:

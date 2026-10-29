@@ -13,6 +13,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
 ``_claude_settings_written``, ``_confirmed_capability_session``, ``_consult_future``,
+``_copilot_mcp_config_path``,
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_ref_spec``,
 ``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
@@ -610,6 +611,15 @@ def _reset_state(self: AcpClient) -> None:
     if handoff_path:
         try:
             os.remove(handoff_path)
+        except OSError:
+            pass
+    # The Copilot CLI launch MCP config of a spawn that never reached initialize
+    # (a spawn error after resolve_spawn wrote it): same shape, one unlink.
+    copilot_config = getattr(self, "_copilot_mcp_config_path", "")
+    self._copilot_mcp_config_path = ""
+    if copilot_config:
+        try:
+            os.remove(copilot_config)
         except OSError:
             pass
     # The settings.local.json THIS session seeded is removed by

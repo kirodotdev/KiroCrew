@@ -658,16 +658,21 @@ const Field: React.FC<{ label: string; desc?: string; value: string; onChange: (
 }
 
 
-const SelectField: React.FC<{ label: string; desc?: string; value: string; options: (string | { value: string; label: string })[]; onChange: (v: string) => void; disabled?: boolean }> = ({ label, desc, value, options, onChange, disabled }) => (
-  <div style={{ marginBottom: 8 }}>
-    <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 1 }}>{label}</div>
-    {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>{desc}</div>}
-    <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}
-      style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', color: 'var(--text)', fontSize: 12, outline: 'none' }}>
-      {options.map((o) => { const v = typeof o === 'string' ? o : o.value; const l = typeof o === 'string' ? o : o.label; return <option key={v} value={v}>{l}</option> })}
-    </select>
-  </div>
-)
+const SelectField: React.FC<{ label: string; desc?: string; value: string; options: (string | { value: string; label: string })[]; onChange: (v: string) => void; disabled?: boolean }> = ({ label, desc, value, options, onChange, disabled }) => {
+  // Named by its caption, the same way `Field` is: `useId` because SelectField
+  // renders once per setting, so a fixed id would repeat in the document.
+  const labelId = useId()
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div id={labelId} style={{ fontSize: 12, color: 'var(--text)', marginBottom: 1 }}>{label}</div>
+      {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>{desc}</div>}
+      <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} aria-labelledby={labelId}
+        style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', color: 'var(--text)', fontSize: 12, outline: 'none' }}>
+        {options.map((o) => { const v = typeof o === 'string' ? o : o.value; const l = typeof o === 'string' ? o : o.label; return <option key={v} value={v}>{l}</option> })}
+      </select>
+    </div>
+  )
+}
 
 
 /**

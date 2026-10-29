@@ -1,8 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
+import { invalidateReactionsForSlotOn } from './reactionToggleLedger'
+import { recoverableQueryClients } from '../api/queryClient'
 import { useAppDispatch } from '../store'
-import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
+import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
@@ -38,6 +40,8 @@ import {
 } from './websocket/slotProjection'
 import { useSocketConnection } from './websocket/connection'
 import { createFoldWatch, FOLD_HELLO_FRAME, type FoldWatch } from './websocket/foldWatch'
+import { applySlotFoldFrame, readSlotFoldFrame, resetWorkDeltaBases, SLOT_DELTA_FRAME, type SlotFoldFrame, type SlotFoldOutcome } from './websocket/workDelta'
+import { noteAppSlotFrame } from '../utils/appSlotPush'
 import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
@@ -192,6 +196,8 @@ export function useWebSocket() {
       // from the previous socket are not comparable with this one's: carried over,
       // a restarted gateway's frames would all read as stale.
       resetSlotProjectionRevisions()
+      // Same reason for the work boards' delta bases: the next read re-labels them.
+      resetWorkDeltaBases(queryClient)
       // The crew-log panel's cached read carries the PREVIOUS process's revisions,
       // which a restarted gateway's frames would all fall below. One re-read per
       // connection re-bases it on the process now serving.
@@ -235,6 +241,8 @@ export function useWebSocket() {
       if (isLookPreviewFrame()) return
       try {
         const { type, data, msg } = decodeFrame(e.data)
+        // App embeds watching this frame's slot re-read it (utils/appSlotPush.ts).
+        noteAppSlotFrame(type, data)
         switch (type) {
           case 'dashboard':
             bundle.onDashboardStatus(data)
@@ -325,6 +333,27 @@ export function useWebSocket() {
             const slotKey = (data as { slot_key?: string }).slot_key
             if (slotKey) {
               queryClient.invalidateQueries({ queryKey: ['chat-pins', slotKey] })
+            }
+            break
+          }
+          case 'reactions_changed': {
+            // A reaction was toggled on another tab or pop-out (or via the
+            // API). Mirror pins_changed: invalidate only the affected slot's
+            // ['chat-reactions', slotKey] cache so a second view updates
+            // without a remount, instead of holding stale reactions behind the
+            // app-wide staleTime: Infinity. The payload carries slot_key only
+            // — no reaction content crosses the WebSocket.
+            const slotKey = (data as { slot_key?: string }).slot_key
+            if (slotKey) {
+              // Refetch this slot's reactions — but hold it back if a local
+              // toggle is still in flight, or it would drop that toggle's
+              // optimistic entry and a queued off-toggle would then read the
+              // identity as absent and POST instead of DELETE. The deferred
+              // refresh is flushed when the last local toggle settles, so the
+              // other tab's change still lands (reactionToggleLedger).
+              // Every registered app client too: an embedded app chat holds
+              // its own copy of this slot's reactions on its own client.
+              invalidateReactionsForSlotOn([queryClient, ...recoverableQueryClients()], slotKey)
             }
             break
           }
@@ -453,7 +482,7 @@ export function useWebSocket() {
           case 'refresh': {
             const kinds: string[] = Array.isArray(data.kinds) ? data.kinds.filter((k: unknown): k is string => typeof k === 'string') : []
             dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient, kinds)
+            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()))
             if (kinds.includes('history')) dispatch(fetchHistory(false))
             break
           }
@@ -715,6 +744,36 @@ export function useWebSocket() {
             // reconnect invalidates the whole `command-center` prefix, and the
             // work board pulls on its own timer besides.
             break
+          case SLOT_DELTA_FRAME: {
+            // A work board's advance as a delta on a base revision, sent instead
+            // of `slot_projection` to a tab that declared `fold_delta.2` and
+            // watches the board. Applied on the cached board when its base is the
+            // one held; otherwise the board is re-read (see workDelta.ts).
+            if (typeof data.slot !== 'string') break
+            const frame = readSlotFoldFrame(data)
+            if (!frame) break
+            const roots = teamRoots(store.getState().dashboard.slots, data.slot)
+            const pull = (next: SlotFoldFrame, outcome: SlotFoldOutcome, all: readonly string[]) => {
+              if (outcome === 'stale') return
+              // The frame's own board needs a read only when the delta could not
+              // be applied. An ancestor reads ITS OWN board over a different unit
+              // set, so it is re-read on every frame, exactly as for
+              // `slot_projection`.
+              for (const root of all) {
+                if (root === next.slot && outcome !== 'snapshot' && outcome !== 'ignored') continue
+                const key = ['command-center', root, 'work']
+                const inFlight = queryClient.getQueryCache().find({ queryKey: key, exact: true })
+                if (inFlight?.state.fetchStatus === 'fetching' && inFlight.promise) {
+                  void inFlight.promise.catch(() => undefined).finally(() => { void queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false }) })
+                } else queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
+              }
+            }
+            // A held frame replayed after a read pulls only its own board: the
+            // ancestors were re-read when it first arrived.
+            const outcome = applySlotFoldFrame(queryClient, frame, (next, replayed) => pull(next, replayed, [next.slot]))
+            pull(frame, outcome, roots)
+            break
+          }
           case 'slot_projection': {
             // A slot's crew log grew. A work board folds its conductor's units
             // with its bound workers', so the boards that move are this slot's
@@ -938,7 +997,7 @@ export function useWebSocket() {
           case 'sessions_restarting':
             // Backend pushed session restart status (restarting/ready)
             dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient)
+            invalidateRefreshQueries(queryClient, undefined, () => dispatch(triggerCronRefresh()))
             break
           case 'update_progress':
             handleUpdateProgress(dispatch, data)
@@ -946,7 +1005,7 @@ export function useWebSocket() {
           case 'refine':
             // Handled by ProjectsPage via Redux
             dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient)
+            invalidateRefreshQueries(queryClient, undefined, () => dispatch(triggerCronRefresh()))
             break
           case 'channel_message':
           case 'channel_agent_status':

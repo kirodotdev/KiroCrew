@@ -7,6 +7,7 @@ host where the sandbox is broken.
 
 from __future__ import annotations
 
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -312,6 +313,46 @@ def _doctor_sandbox(issues: list[str]) -> None:
     print("\nSandbox")
     _doctor_sandbox_backend(issues)
     _doctor_kiro_internal_sandbox()
+    _doctor_ssh_agent_forward()
+
+
+def _doctor_ssh_agent_forward() -> None:
+    """Name the agents that start without the ssh-agent socket for lack of consent.
+
+    Silent unless this shell runs an ssh-agent (``SSH_AUTH_SOCK`` is set) and at
+    least one harness, under the configured tier, keeps the socket only with the
+    ``ssh_auth_sock_consent.json`` consent, which is not granted. Each line comes
+    from ``sandbox.ssh_auth_sock_consent_notice``, the same reader the gateway uses
+    at that harness's spawn. Doctor judges the configured tier and each harness's
+    declared mask; a per-session mode override can differ.
+
+    Not an issue: a scrubbed socket is the configured behaviour, so it must not add
+    to the ``issues`` list. It is reported because the agent can only say that no
+    ssh keys are available, which does not point at the setting.
+    """
+    if cli_doctor.platform_compat.IS_WINDOWS or not os.environ.get("SSH_AUTH_SOCK"):
+        return
+    try:
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_ROUTING
+        from kiro_crew.agent_sdk.tool_gate import adapter_hidden_credential_dirs
+
+        mode = cli_doctor.sandbox.configured_sandbox_mode()
+        withheld: list[tuple[str, str]] = []
+        for backend in sorted(ACP_BACKEND_ROUTING):
+            notice = cli_doctor.sandbox.ssh_auth_sock_consent_notice(
+                backend, mode, tuple(adapter_hidden_credential_dirs(backend))
+            )
+            if notice:
+                withheld.append((backend, notice))
+    except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
+        print(f"  ssh-agent:   ⚠️  could not check ({render._safe_display(exc)})")
+        return
+    if not withheld:
+        return
+    names = ", ".join(backend for backend, _ in withheld)
+    print(f"  ssh-agent:   ⚠️  not forwarded to {names}")
+    # One harness's full line carries the remedy; it is the same for each.
+    render._print_wrapped(withheld[0][1])
 
 
 def _doctor_sandbox_backend(issues: list[str]) -> None:

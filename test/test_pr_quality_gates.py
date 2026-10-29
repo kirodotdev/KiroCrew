@@ -19,9 +19,34 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
+# PR Size, PR Scope, Cross-Platform Portability and Screenshot Evidence are
+# steps of this one read-only job: one runner start per event instead of one
+# per policy. The licence gate (`dependency-review.yml`) stays its own workflow
+# because it needs `pull-requests: write`, and permissions are per job.
+POLICY_WORKFLOW = "pr-policy.yml"
+POLICY_JOB = "pr-policy"
+# The workflow files the fold retired. Pinned absent so one cannot quietly come
+# back as a second copy of a policy that now lives in pr-policy.yml.
+FOLDED_WORKFLOWS = (
+    "pr-size.yml",
+    "pr-scope.yml",
+    "cross-platform.yml",
+    "screenshot-evidence.yml",
+)
+
 
 def _read(name: str) -> str:
     return (WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def _policy_steps() -> list[dict]:
+    return yaml.safe_load(_read(POLICY_WORKFLOW))["jobs"][POLICY_JOB]["steps"]
+
+
+def _policy_step(name: str) -> dict:
+    step = next((s for s in _policy_steps() if s.get("name") == name), None)
+    assert step is not None, f"step {name!r} not found in {POLICY_WORKFLOW}"
+    return step
 
 
 _FORK_BLOCK_HEADER = 'echo "**No write access on this repository?**'
@@ -58,7 +83,7 @@ class TestScreenshotEvidence:
         # Without `edited`, a contributor who adds the screenshots to the
         # description cannot turn the check green without a no-op push.
         # Without `labeled`, the escape hatch has the same problem.
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         types_line = next(ln for ln in wf.splitlines() if "types:" in ln)
         for needed in ("edited", "labeled", "unlabeled"):
             assert needed in types_line, f"missing '{needed}' trigger"
@@ -66,12 +91,12 @@ class TestScreenshotEvidence:
     def test_has_escape_hatch_label(self):
         # A gate with no exemption path forces contributors to paste a
         # meaningless screenshot to get green, which defeats the purpose.
-        assert "no-screenshots" in _read("screenshot-evidence.yml")
+        assert "no-screenshots" in _read(POLICY_WORKFLOW)
 
     def test_excludes_non_visual_frontend_paths(self):
         # Tests, type declarations and locale catalogues change constantly
         # with no visual delta; gating on them trains bad habits.
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         for excluded in (
             ":(exclude)website/src/**/*.test.tsx",
             ":(exclude)website/src/test/**",
@@ -82,14 +107,14 @@ class TestScreenshotEvidence:
     def test_body_is_only_pattern_matched(self):
         # The PR body is untrusted author input. It must never be eval'd or
         # interpolated into a shell command.
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert 'body="$(gh api' in wf
         assert "eval" not in wf
 
     def test_has_fork_friendly_body_marker(self):
         # Fork contributors cannot add labels, so the body marker must exist
         # as a self-service waiver alongside the label.
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert "<!-- no-visual-delta -->" in wf
         # The marker is attacker-controlled text: fixed-string match only.
         assert "grep -qF -- '<!-- no-visual-delta -->'" in wf
@@ -97,13 +122,13 @@ class TestScreenshotEvidence:
     def test_marker_requires_justification(self):
         # A bare marker is a silent bypass; the waiver must carry a reviewable
         # claim and fail loudly without one.
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert "why no screenshots?" in wf.lower()
         assert "marker without a justification" in wf
 
     def test_marker_waiver_warns_instead_of_passing_silently(self):
         # A reviewer scanning the run log must see that evidence was waived.
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert (
             "::warning::'<!-- no-visual-delta -->' marker present" in wf
         ), "waiver must emit a warning annotation naming the marker"
@@ -130,7 +155,7 @@ class TestScreenshotEvidence:
         must occur exactly once, so the scoped advice cannot be duplicated into
         an unscoped copy and pass by being "inside a fork block" somewhere.
         """
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert "gh pr edit $PR --body-file <body.md> --attach" in wf
         # The create-time hint names the subcommand without spelling out the
         # full command: test_workflow_pr_create_handoff.py treats any run block
@@ -230,7 +255,7 @@ class TestScreenshotEvidence:
         cost = "a committed file merges into main's"
         template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
         assert cost in template and "the blob stays" in template
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert cost in wf and 'echo "blob stays."' in wf
         prepare = (skills / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
         contract = (
@@ -293,7 +318,7 @@ class TestScreenshotEvidence:
         root = WORKFLOWS.parents[1]
         skills = root / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
         template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
-        wf = _read("screenshot-evidence.yml")
+        wf = _read(POLICY_WORKFLOW)
         prepare = (skills / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
         # The attachment limits stay where they are, and the committed ceiling
         # is stated in the same block as the `git add -f` it applies to, after
@@ -405,8 +430,8 @@ class TestScreenshotEvidence:
         # dies of SIGPIPE, and the `if` reads false even though the pattern
         # matched -- real evidence misreported as missing. A here-string has
         # no writer process to kill, so the status is grep's alone.
-        wf = yaml.safe_load(_read("screenshot-evidence.yml"))
-        steps = wf["jobs"]["screenshot-evidence"]["steps"]
+        wf = yaml.safe_load(_read(POLICY_WORKFLOW))
+        steps = wf["jobs"][POLICY_JOB]["steps"]
         step = next(
             (s for s in steps if s.get("name") == "Require visual evidence in the PR body"),
             None,
@@ -456,8 +481,8 @@ class TestScreenshotEvidenceBodyLogic:
         gh_status: int = 0,
         fail_first: int = 0,
     ):
-        wf = yaml.safe_load(_read("screenshot-evidence.yml"))
-        steps = wf["jobs"]["screenshot-evidence"]["steps"]
+        wf = yaml.safe_load(_read(POLICY_WORKFLOW))
+        steps = wf["jobs"][POLICY_JOB]["steps"]
         step = next(
             (s for s in steps if s.get("name") == "Require visual evidence in the PR body"),
             None,
@@ -659,8 +684,8 @@ class TestScreenshotEvidenceSurfaceDetection:
     """
 
     def _run_detect(self, tmp_path: Path, git_stdout: str = "", git_status: int = 0):
-        wf = yaml.safe_load(_read("screenshot-evidence.yml"))
-        steps = wf["jobs"]["screenshot-evidence"]["steps"]
+        wf = yaml.safe_load(_read(POLICY_WORKFLOW))
+        steps = wf["jobs"][POLICY_JOB]["steps"]
         step = next(
             (s for s in steps if s.get("name") == "Detect user-visible frontend changes"),
             None,
@@ -721,14 +746,14 @@ class TestCrossPlatform:
     """Findings must be confined to lines the PR actually adds."""
 
     def test_scans_added_lines_only(self):
-        wf = _read("cross-platform.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert "grep -E '^\\+'" in wf
         assert "grep -vE '^\\+\\+\\+'" in wf
 
     def test_filters_prose_before_matching(self):
         # A docstring quoting ``shell=True`` to explain why it is avoided must
         # not fail the gate.
-        wf = _read("cross-platform.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert "grep -vE '^\\+[[:space:]]*#'" in wf
         assert "grep -vF '``'" in wf
 
@@ -737,7 +762,7 @@ class TestCrossPlatform:
         # and multi-line calls split `encoding=` onto another line. Both give
         # FALSE failures on correct code,
         # so the rule is deliberately absent and its absence is documented.
-        wf = _read("cross-platform.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert "deliberately NO" in wf, "the absence must stay documented"
         # No rule may actually grep for the encoding kwarg.
         rule_lines = [ln for ln in wf.splitlines() if ln.lstrip().startswith("hits=")]
@@ -746,30 +771,32 @@ class TestCrossPlatform:
             assert "encoding" not in ln, f"encoding rule reintroduced: {ln.strip()[:80]}"
 
     def test_excludes_vendor_and_compat_module(self):
-        wf = _read("cross-platform.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert ":(exclude)src/kiro_crew/_vendor/**" in wf
         assert ":(exclude)src/kiro_crew/platform_compat.py" in wf
 
     def test_has_escape_hatch_label(self):
-        assert "posix-only-approved" in _read("cross-platform.yml")
+        assert "posix-only-approved" in _read(POLICY_WORKFLOW)
 
 
 class TestPrScope:
     """Scope breadth is advisory: it must never fail the build."""
 
     def test_never_exits_nonzero(self):
-        wf = _read("pr-scope.yml")
-        assert "exit 1" not in wf, "PR Scope must stay advisory"
+        # Scoped to the step: the job it shares with the blocking policies
+        # does exit 1, in their steps and in the verdict.
+        run = _policy_step("Measure diff breadth")["run"]
+        assert "exit 1" not in run, "PR Scope must stay advisory"
 
     def test_requires_both_thresholds(self):
         # Breadth alone or size alone is legitimately self-contained; only the
         # combination reviews badly.
-        wf = _read("pr-scope.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert '-gt "$MAX_AREAS" ] && [' in wf
         assert "MAX_LINES" in wf
 
     def test_excludes_vendor_and_screenshots(self):
-        wf = _read("pr-scope.yml")
+        wf = _read(POLICY_WORKFLOW)
         assert ":(exclude)src/kiro_crew/_vendor/**" in wf
         assert ":(exclude)temp-screenshots/**" in wf
 
@@ -797,8 +824,8 @@ class TestPrScopeMeasureLogic:
         git_status: int = 0,
         numstat_status: int = 0,
     ):
-        wf = yaml.safe_load(_read("pr-scope.yml"))
-        steps = wf["jobs"]["pr-scope"]["steps"]
+        wf = yaml.safe_load(_read(POLICY_WORKFLOW))
+        steps = wf["jobs"][POLICY_JOB]["steps"]
         step = next((s for s in steps if s.get("name") == "Measure diff breadth"), None)
         assert step is not None, "step 'Measure diff breadth' not found"
         files_file = tmp_path / "files.txt"
@@ -895,6 +922,134 @@ class TestPrScopeMeasureLogic:
         assert "read failure" in result.stdout, result.stdout
         assert "Scope looks self-contained." not in result.stdout, result.stdout
         assert "NOT measured" in summary, summary
+
+
+class TestPrPolicyFold:
+    """Four read-only policies share one job; these pin what makes that safe.
+
+    The check on the pull request is one row, and a run REPLACES that row for
+    its head SHA. So a policy that skipped on some event would let that event's
+    run mask a red the previous run had found. Every policy therefore runs on
+    every event, each one is `continue-on-error` so a red does not stop the
+    rest from reporting, and one verdict step reads every outcome and fails
+    the job. The job's token is read-only, and a policy that needs a write
+    scope (the licence gate's failure comment) keeps its own workflow rather
+    than widening the token every step shares.
+    """
+
+    # The one step whose `if:` is legitimately not an event filter: the
+    # evidence step runs only when the detect step saw a user-visible surface.
+    _CONDITIONAL = {
+        "Require visual evidence in the PR body": "steps.visual.outputs.visual == 'true'",
+    }
+    _POLICY_IDS = {
+        "pr-size",
+        "pr-scope",
+        "cross-platform",
+        "visual",
+        "screenshot-evidence",
+    }
+
+    def test_the_folded_workflows_are_gone(self):
+        present = [name for name in FOLDED_WORKFLOWS if (WORKFLOWS / name).exists()]
+        assert (
+            present == []
+        ), f"policy workflows that should have folded into {POLICY_WORKFLOW}: {present}"
+
+    def test_the_job_is_read_only_and_the_write_scoped_gate_stays_separate(self):
+        # Permissions are per job. Every step shares this token, so the floor
+        # is `read`; the licence gate needs `write` for its failure comment and
+        # therefore keeps its own workflow, with its own token.
+        wf = yaml.safe_load(_read(POLICY_WORKFLOW))
+        assert wf["permissions"] == {"contents": "read", "pull-requests": "read"}
+        for step in _policy_steps():
+            assert "permissions" not in step, step.get("name")
+            assert "dependency-review-action" not in str(step.get("uses", "")), step.get("name")
+        license_gate = yaml.safe_load(_read("dependency-review.yml"))
+        assert license_gate["permissions"]["pull-requests"] == "write"
+        (job,) = license_gate["jobs"].values()
+        assert any("dependency-review-action" in str(s.get("uses", "")) for s in job["steps"])
+
+    def test_one_job_subscribed_to_the_union_of_the_four_trigger_lists(self):
+        wf = yaml.safe_load(_read(POLICY_WORKFLOW))
+        assert list(wf["jobs"]) == [POLICY_JOB]
+        assert wf["jobs"][POLICY_JOB]["name"] == "PR Policy"
+        triggers = wf.get(True, wf.get("on"))
+        assert set(triggers) == {"pull_request"}
+        assert set(triggers["pull_request"]["types"]) == {
+            "opened",
+            "synchronize",
+            "reopened",
+            "edited",
+            "labeled",
+            "unlabeled",
+        }
+        assert wf["concurrency"]["cancel-in-progress"] is True
+        assert "pull_request.number" in wf["concurrency"]["group"]
+
+    def test_every_policy_runs_on_every_event(self):
+        # No `if:` that reads github.event.action: an event filter on a policy
+        # step is the masking bug the class docstring describes.
+        policy_steps = [s for s in _policy_steps() if s.get("id") in self._POLICY_IDS]
+        assert {s["id"] for s in policy_steps} == self._POLICY_IDS
+        for step in policy_steps:
+            cond = step.get("if")
+            expected = self._CONDITIONAL.get(step["name"])
+            assert cond == expected, f"{step['name']!r}: if={cond!r}"
+            assert step.get("continue-on-error") is True, step["name"]
+
+    def test_the_verdict_reads_every_policy_outcome_and_is_the_only_failing_step(self):
+        steps = _policy_steps()
+        verdict = steps[-1]
+        assert verdict["name"] == "Fail the job for every red policy"
+        assert "continue-on-error" not in verdict
+        outcomes = verdict["env"]["OUTCOMES"]
+        for step_id in self._POLICY_IDS:
+            assert f"${{{{ steps.{step_id}.outcome }}}}" in outcomes, step_id
+        assert "${{" not in verdict["run"], "outcomes reach the script via env only"
+        assert "exit 1" in verdict["run"]
+        assert "::error title=" in verdict["run"]
+
+    def test_the_two_checkouts_keep_the_size_script_on_the_default_branch(self):
+        # The diff policies read the PR's merge commit; PR Size runs the default
+        # branch's script so a pull request cannot edit the check that judges it.
+        checkouts = [
+            s for s in _policy_steps() if str(s.get("uses", "")).startswith("actions/checkout@")
+        ]
+        assert len(checkouts) == 2
+        pr_checkout, base_checkout = checkouts
+        assert pr_checkout["with"]["fetch-depth"] == 2
+        assert "ref" not in pr_checkout["with"]
+        assert base_checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+        assert base_checkout["with"]["path"] == "base"
+        for c in checkouts:
+            assert c["with"]["persist-credentials"] is False
+        assert (
+            "python3 base/.github/scripts/pr_size.py check"
+            in _policy_step("Measure files and hours open")["run"]
+        )
+
+    def test_the_size_override_handler_reruns_this_workflow(self):
+        rerun = next(
+            s
+            for s in yaml.safe_load(_read("pr-size-override.yml"))["jobs"]["record"]["steps"]
+            if s.get("name") == "Re-run PR Size"
+        )
+        assert f"workflows/{POLICY_WORKFLOW}/runs" in rerun["run"]
+        for name in FOLDED_WORKFLOWS:
+            assert f"workflows/{name}/runs" not in rerun["run"], name
+
+    def test_the_watchdog_knows_the_fold(self):
+        # The fold moved a fleet route; the watchdog's inventory is pinned to the
+        # routed set by its own test, this one just names the intent. The module
+        # is loaded the way its own tests load it (it has a parts package that
+        # resolves through sys.modules), so the helper does the import.
+        from ci_runner_watchdog_helpers import wd
+
+        assert POLICY_WORKFLOW in wd.WATCHED_WORKFLOWS
+        assert POLICY_WORKFLOW in wd.HEAL_SAFE_PULL_REQUEST_WORKFLOWS
+        assert "dependency-review.yml" in wd.WATCHED_WORKFLOWS
+        assert not set(FOLDED_WORKFLOWS) & set(wd.WATCHED_WORKFLOWS)
 
 
 class TestDesignReviewBlocks:

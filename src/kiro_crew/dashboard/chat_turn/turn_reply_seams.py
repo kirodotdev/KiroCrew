@@ -103,14 +103,19 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
         # Records come out of the same pass for the reason _redact_segment
         # gives: after this line only the placeholder exists, so an
         # interrupted reply would otherwise lose what it explains for good.
-        _redacted, _blocked, _redactions = _redact_segment(slot, turn.assistant_text)
+        _ordered: list[bool] = []
+        _redacted, _blocked, _redactions = _redact_segment(
+            slot, turn.assistant_text, _ordered_out=_ordered
+        )
         _note_reply_row(
             slot,
             slot.append(
                 "assistant",
                 _redacted,
                 "msg msg-a",
-                meta=_segment_row_meta(slot, _blocked, _redactions),
+                meta=_segment_row_meta(
+                    slot, _blocked, _redactions, links_ordered=_ordered == [True]
+                ),
             ),
         )
         # Saved once per turn: a recovery arm saves it here, and a cancel

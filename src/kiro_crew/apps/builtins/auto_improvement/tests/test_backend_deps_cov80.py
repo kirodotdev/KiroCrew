@@ -123,7 +123,7 @@ class TestCheckDeps:
         assert report["ok"] is True
         assert report["blocking"] == []
         by_id = {d["id"]: d for d in report["deps"]}
-        assert set(by_id) == {"git", "gh", "ruff"}
+        assert set(by_id) == {"git", "gh", "pytest", "ruff"}
         assert by_id["git"]["detail"] == _stub_bin("git")
         assert by_id["ruff"]["installable"] is True
         assert by_id["gh"]["installable"] is False

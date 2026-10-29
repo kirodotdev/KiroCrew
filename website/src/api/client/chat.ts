@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot, ChatSlotDetailResponse, SideSnapshot } from '../../types'
+import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -15,6 +15,7 @@ import { lookPreviewSlotDetail, lookPreviewSlots } from '../../utils/lookPreview
 import { resolveDefaultMemoryMode } from '../queryClient'
 import { TAB_ID } from '../tabId'
 import { takeSessionFolderNotice } from '../../lib/sessionFolderNotice'
+import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
 
@@ -69,7 +70,34 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
   const slotList = {
     // The look-preview frame (utils/lookPreview.ts) shows one demo session in
     // place of the user's own: fixtures answer both reads below.
-    chatSlots: () => isLookPreviewFrame() ? Promise.resolve(lookPreviewSlots()) : fetch('/api/chat/slots').then(j),
+    // `crew=all` keeps a Crew Mode root's workers in the answer: these reads look a
+    // session up by key (a worker opened from the side panel included), and the
+    // person's own list leaves workers out on the client (`crewModeView`).
+    chatSlots: () => isLookPreviewFrame() ? Promise.resolve(lookPreviewSlots()) : fetch('/api/chat/slots?crew=all').then(j),
+    /** One Crew Mode root's workers: every session it dispatched, directly or
+     *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
+    /** A closed root (its tab gone) still answers, from saved data:
+     *  `root_closed: true` and its saved `root_title`. */
+    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string }> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers').then(j),
+    /** One Crew Mode root's timeline: a lane per session, bars from recorded
+     *  transcript rows only (`GET /api/chat/slots/{root}/crew-timeline`). */
+    crewTimeline: (root: string): Promise<CrewTimeline> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-timeline').then(j),
+    /** Type into one of a root's workers as the person: cuts into its running
+     *  turn, or queues for its next one (`POST .../crew-workers/{worker}/steer`). */
+    crewWorkerSteer: (root: string, worker: string, message: string): Promise<{ ok: boolean; steered: boolean; queued: boolean; started: boolean; ledger_event?: string | null; ledger_error?: string | null }> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/steer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      }).then(j).then(receipt => { noteCrewSteerReceipt(worker, receipt); return receipt }),
+    /** Decide one of a root's workers' pending tool approvals from the root's
+     *  approval card: Approve or Reject once, or Trust this worker
+     *  (`POST .../crew-workers/{worker}/approve`, the per-slot approve route on the
+     *  worker's own slot). */
+    crewWorkerApprove: (root: string, worker: string, action: 'approve' | 'reject' | 'trust', requestId: string, requestMid: string, requestInstance = ''): Promise<{ ok?: boolean }> =>
+      post('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/approve', { action, request_id: requestId, request_mid: requestMid, request_instance: requestInstance }).then(j),
     /** How many tabs this gateway's startup restore listed but could not show.
      *
      *  `reported: false` means the restore has not answered yet, which is not the
@@ -206,6 +234,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
     /** Drop the slot's native conversation; the next turn starts a fresh one seeded from a text replay of the transcript (`replay: true`). The transcript stays. */
     resetConversation: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/reset-conversation', { replay: true }).then(j) as Promise<{ slot: string; reset: boolean; replay: boolean }>,
+    /** Downscale the oversized images in the slot's transcript in place, then re-issue the interrupted turn (recovery from the provider's many-image 2000px cap). No turns are lost, unlike `resetConversation`. */
+    repairImages: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/repair-images', undefined).then(j) as Promise<{ slot: string; repaired: boolean; resumed: boolean }>,
     switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),
     editResend: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/edit-resend', { ts, content }).then(j),
     rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),

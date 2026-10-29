@@ -991,7 +991,7 @@ def _resolved_root_key() -> _ResolvedRoots:
     # canonically, within the budget.  Anything else -- a stall, an open
     # cooldown, a pinned or faulted pool -- raises, and every gate turns that
     # into a refusal, exactly as it does for a stalled candidate.  Three
-    # weaker fallbacks were each found open in review: lexical spellings (a
+    # weaker fallbacks are each open: lexical spellings (a
     # symlinked override root on another mount loses its canonical target), a
     # UNC skip (same, via a junction in a UNC home), and serving the previous
     # canonical resolution (a symlink repointed during the stall moves the

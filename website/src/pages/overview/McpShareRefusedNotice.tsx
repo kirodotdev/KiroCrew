@@ -2,13 +2,12 @@
  * The notice the MCP servers list shows when a server config asks to share is
  * not shared, because the gateway refused its launch until it is approved.
  *
- * The approval itself stays on Developer > MCP Management: that page reads the
- * exact launch and the approve write is checked against it. This notice only
- * makes the refusal visible where people look, and links to that page, which the
- * router serves whether or not Developer Mode puts it in the side rail.
+ * The approval itself stays on Settings > Developer > MCP Management: that page
+ * reads the exact launch and the approve write is checked against it. This
+ * notice only makes the refusal visible where people look, and links to that
+ * page.
  */
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
@@ -17,7 +16,7 @@ import { i18nT } from '../../i18n/t'
 import type { GatewayStatus } from '../settings/mcpManagementModel'
 
 /** Developer > MCP Management, where a refused launch is approved. */
-export const MCP_MANAGEMENT_PATH = '/developer?tab=mcp-pool'
+export const MCP_MANAGEMENT_PATH = '/settings/developer/mcp-pool'
 
 /** How often the open notice re-reads gateway status. */
 export const STATUS_POLL_MS = 30_000
@@ -79,28 +78,29 @@ export default function McpShareRefusedNotice({
   const names = refusedShares(status)
   if (names.length === 0) return null
   const review = i18nT('pages.overview.mcpTab.share_refused_review')
+  // A refused share is a launch the gateway rejected, so it is an error surface:
+  // the hand-off is on unless the host page holds staged edits it would drop.
   return (
-    <div
-      role="status"
-      data-testid="mcp-share-refused"
-      className={`p-3 rounded border border-[var(--warn)] bg-warn/20 text-[13px] ${className}`}
-    >
-      <div className="text-[var(--warn)]">
-        <AlertTriangle className="lucide-inline" />{' '}
-        {i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: names.join(', ') })}
-      </div>
-      <div className="mt-1 text-muted">
-        {i18nT('pages.overview.mcpTab.share_refused_restart')}{' '}
-        {stagedChanges ? (
-          <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline" target="_blank" rel="noopener noreferrer">
-            {review}
-          </Link>
-        ) : (
-          <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline">
-            {review}
-          </Link>
-        )}
-      </div>
-    </div>
+    <ErrorNotice
+      className={className}
+      message={i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: names.join(', ') })}
+      askAgent={!stagedChanges}
+      actionPlacement="below"
+      testId="mcp-share-refused"
+      footer={
+        <span className="text-muted">
+          {i18nT('pages.overview.mcpTab.share_refused_restart')}{' '}
+          {stagedChanges ? (
+            <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline" target="_blank" rel="noopener noreferrer">
+              {review}
+            </Link>
+          ) : (
+            <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline">
+              {review}
+            </Link>
+          )}
+        </span>
+      }
+    />
   )
 }

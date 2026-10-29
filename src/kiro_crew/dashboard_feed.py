@@ -59,6 +59,7 @@ from dataclasses import field as dc_field
 from typing import Any, Callable, Final, Iterable, Mapping
 
 from kiro_crew.crew_log import bus as crew_log_bus
+from kiro_crew.crew_log import fold_delta
 from kiro_crew.crew_log.entry_types import PANEL_FOLD_NAME
 from kiro_crew.crew_log.projection import SESSION_FOLD_NAMES, SLOT_PROJECTION_NAMES
 from kiro_crew.dashboard_templates.manifest import TemplateManifest
@@ -294,6 +295,11 @@ class DashboardFeed:
         self._cells: dict[str, _Cell] = {}
         self._disposers: list[Callable[[], None]] = []
         self._folds: frozenset[str] = frozenset()
+        #: Folds with a snapshot re-read in flight (:meth:`_resync_soon`).
+        self._resyncing: set[str] = set()
+        self._resync_again: set[str] = set()
+        #: Notified (under ``_lock``) when a fold leaves ``_resyncing``.
+        self._resync_done = threading.Condition(self._lock)
 
     # -- subscription ------------------------------------------------------- #
 
@@ -385,6 +391,11 @@ class DashboardFeed:
         report fields that exist as missing. So it waits here for the prime, which has
         already published to this subscription when it settles. The fold still runs
         off this thread and once per cell; waiting costs no CPU.
+
+        A prime's publish of a ``work`` board is a ``snapshot_needed`` with no value
+        (its first publish in this process), which this feed answers with a re-read
+        on its own thread (:meth:`_resync_soon`). That re-read is waited for too,
+        within the same *timeout*, so a one-shot read still gets the primed value.
         """
         from kiro_crew.crew_log import slot_prime
 
@@ -398,6 +409,16 @@ class DashboardFeed:
             if seen:
                 continue
             slot_prime.wait(self.slot, fold, max(deadline - time.monotonic(), 0.0))
+            self._wait_resync(fold, deadline)
+
+    def _wait_resync(self, fold: str, deadline: float) -> None:
+        """Block until *fold* has no re-read in flight, or until *deadline*."""
+        with self._resync_done:
+            while fold in self._resyncing:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._resync_done.wait(remaining)
 
     def _make_callback(self, fold: str) -> Callable[[Any], None]:
         """The per-fold callback, closed over the fold NAME rather than reading it.
@@ -419,11 +440,22 @@ class DashboardFeed:
         The event is read DEFENSIVELY, as the WS exporter reads it and for the same
         reason: a bus carries whatever a publisher sends, and a malformed one must
         cost this update rather than the fan-out to the next subscriber.
+
+        A ``work`` DELTA (``kind`` not ``value``) is applied on the value held when its
+        base is the revision held (:func:`~kiro_crew.crew_log.fold_delta.value_after`),
+        else the whole value the event carries is taken. With neither (a
+        ``snapshot_needed`` or a gap) the render the publisher recorded for this very
+        revision is taken (:meth:`_published_render`). It is held by the publisher,
+        not the warm memo, so a board too big to keep warm still gets its value. Only
+        when that is gone too is the cell re-read off this thread (:meth:`_resync_soon`).
         """
         revision = int(getattr(event, "revision", 0) or 0)
         seq = int(getattr(event, "seq", 0) or 0)
         value = getattr(event, "value", None)
-        if revision <= 0 or not isinstance(value, Mapping):
+        kind = getattr(event, "kind", fold_delta.KIND_VALUE)
+        if revision <= 0:
+            return
+        if kind == fold_delta.KIND_VALUE and not isinstance(value, Mapping):
             return
         with self._lock:
             cell = self._cells.get(fold)
@@ -434,10 +466,19 @@ class DashboardFeed:
                 # can reach here in either order, and seq cannot order them -- see
                 # the module docstring.
                 return
-            cell.value = value
-            cell.revision = revision
-            cell.seq = seq
-            cell.seen = True
+            if kind != fold_delta.KIND_VALUE:
+                held = cell.value if cell.seen and isinstance(cell.value, Mapping) else None
+                value = fold_delta.value_after(held, cell.revision if cell.seen else 0, event)
+                if value is None:
+                    value = self._published_render(fold, revision)
+            if value is not None:
+                cell.value = value
+                cell.revision = revision
+                cell.seq = seq
+                cell.seen = True
+        if value is None:
+            self._resync_soon(fold)
+            return
         # OUTSIDE THE LOCK. The callback hands the frame to the socket loop, and
         # holding this lock across that would put the reader's lock on the folder's
         # critical path for every open dashboard.
@@ -446,6 +487,75 @@ class DashboardFeed:
                 self._on_change(fold)
             except Exception:  # pragma: no cover - a push must not cost the cache
                 logger.debug("dashboard push for %s/%s failed", self.slot, fold, exc_info=True)
+
+    def _published_render(self, fold: str, revision: int) -> "Mapping[str, Any] | None":
+        """The render published for *fold* at exactly *revision*, or ``None``. No I/O.
+
+        Asked inside the bus delivery of that publish, so the publisher's recorded
+        base is that render (:func:`kiro_crew.crew_log.eager.try_published_value`). An
+        older revision answers ``None``. NON-BLOCKING: a held event replayed after a
+        baseline reaches here under the subscriber's delivery guard, while a publish on
+        another thread may hold the publisher's lock and wait on that guard. A busy
+        lock answers ``None`` and the cell is re-read instead. Never raises.
+        """
+        try:
+            from kiro_crew.crew_log import eager
+
+            render = eager.try_published_value(self.slot, fold, revision)
+        except Exception:  # pragma: no cover - a lookup must never cost the cache
+            return None
+        return render if isinstance(render, Mapping) and render else None
+
+    def _resync_soon(self, fold: str) -> None:
+        """Re-read *fold* once on a daemon thread; at most one read per fold in flight.
+
+        The bus calls :meth:`_accept` on the fold worker, which may not read, so the
+        snapshot pull runs on its own thread. The read is labelled with the revision
+        last published for the cell, taken BEFORE the value
+        (:func:`kiro_crew.crew_log.eager.published_revision`), so the next delta, whose
+        base is that publish, applies on it. A read that fails leaves the cell as it
+        was; the next publish tries again.
+        """
+        with self._lock:
+            if fold in self._resyncing:
+                # A gap during the read: the read may predate it, so read once more.
+                self._resync_again.add(fold)
+                return
+            self._resyncing.add(fold)
+        threading.Thread(
+            target=self._resync, args=(fold,), name=f"dashboard-feed-resync-{fold}", daemon=True
+        ).start()
+
+    def _resync(self, fold: str) -> None:
+        while True:
+            self._resync_once(fold)
+            with self._lock:
+                if fold not in self._resync_again:
+                    self._resyncing.discard(fold)
+                    self._resync_done.notify_all()
+                    return
+                self._resync_again.discard(fold)
+
+    def _resync_once(self, fold: str) -> None:
+        try:
+            # Read and labelled under the publisher's lock: the label is this value's
+            # own revision and the base the next delta applies on.
+            folded, label = crew_log_bus._read_slot_labelled(self.slot, fold)
+            value = getattr(folded, "value", None)
+            stored = False
+            if label > 0 and isinstance(value, Mapping):
+                with self._lock:
+                    cell = self._cells.get(fold)
+                    if cell is not None and not (cell.seen and label <= cell.revision):
+                        cell.value = value
+                        cell.revision = label
+                        cell.seq = int(getattr(folded, "seq", 0) or 0)
+                        cell.seen = True
+                        stored = True
+            if stored and self._on_change is not None:
+                self._on_change(fold)
+        except Exception:
+            logger.debug("dashboard feed re-read of %s/%s failed", self.slot, fold, exc_info=True)
 
     # -- reading ------------------------------------------------------------ #
 

@@ -717,13 +717,12 @@ def _load_or_create_secret(outcome: "list[str] | None" = None) -> bytes:
         # Retries exhausted, or a policy refusal broke out of them. The in-place fallback
         # below creates the
         # destination EMPTY and writes afterwards, so it carries the very
-        # truncation window this fix removes -- it is worth that only where the
+        # truncation window the hard-link path avoids -- it is worth that only where the
         # alternative is no persisted key on any boot, i.e. a filesystem that
         # genuinely cannot hard-link (FAT/exFAT, some network mounts). Anything
         # else that exhausted the budget -- a transient sharing violation, a
         # policy refusal, a short/empty file already at key_path -- skips it and
-        # degrades to the ephemeral secret with key_path untouched, exactly as
-        # the pre-PR code did.
+        # degrades to the ephemeral secret with key_path untouched.
         #
         # Fall back under its OWN bounded loop.
         #

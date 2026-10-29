@@ -1105,8 +1105,20 @@ def test_register_routes_assertion_coverage():
     """Every /api/deploy handler is either allowed or @_internal_denied."""
     from aiohttp import web
     app = web.Application()
-    # Should NOT raise — all handlers are properly covered
     handlers.register_routes(app)
+    routes = {
+        (route.method, route.resource.canonical)
+        for route in app.router.routes()
+        if route.resource is not None
+    }
+    assert {
+        ("POST", "/api/deploy/deploy"),
+        ("POST", "/api/deploy/pending/{id}/confirm"),
+        ("POST", "/api/deploy/recall"),
+        ("POST", "/api/deploy/destroy"),
+        ("POST", "/api/deploy/teardown/{slug}"),
+        ("GET", "/api/deploy/list"),
+    } <= routes
 
 
 def test_internal_secret_profiles_post_denied():

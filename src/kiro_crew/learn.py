@@ -216,6 +216,26 @@ def _prune_to_total(lessons: list[Lesson]) -> list[Lesson]:
     return [lesson for index, lesson in enumerate(lessons) if index not in drop]
 
 
+def _keep_one_identity(lesson: Lesson) -> str:
+    """What makes two JSONL rows copies of one lesson for ``remove(keep_one=True)``.
+
+    The whole row except its timestamp, not a chosen subset of its fields: any
+    stored difference (a NOT-clause, a tier, a scope, a category) makes two rows
+    different lessons. Only rule and clause text compare case-insensitively
+    with edge whitespace ignored, and an admissible scope compares canonically,
+    as a plain delete reads it. A value that is not text (a hand-edited file)
+    compares as stored, so it never matches a text row.
+    """
+    row = {k: v for k, v in asdict(lesson).items() if k != "ts" and v is not None}
+    for field in ("rule", "negative"):
+        if isinstance(row.get(field), str):
+            row[field] = row[field].lower().strip()
+    scope = lesson.repo_scope
+    if isinstance(scope, str) and scope_is_admissible(scope):
+        row["repo_scope"] = canonical_scope(scope)
+    return json.dumps(row, sort_keys=True)
+
+
 class LessonStore:
     """Append-only JSONL store for learned corrections."""
 
@@ -513,9 +533,20 @@ class LessonStore:
 
     @named_store_operation
     def remove(
-        self, rule_substring: str, repo_scope: str | None = None, *, exact: bool = False
+        self,
+        rule_substring: str,
+        repo_scope: str | None = None,
+        *,
+        exact: bool = False,
+        keep_one: bool = False,
     ) -> bool:
         """Remove lessons whose rule contains *rule_substring*. Returns True if any removed.
+
+        *keep_one* removes only the EXTRA copies: matched rows are grouped by
+        whole stored row (see ``_keep_one_identity``), the
+        first row of each group in file order (the oldest, since the file is
+        append-ordered) stays, and the rest go. Two different lessons never
+        share a group, so no lesson loses its last copy in this mode.
 
         Substring matching on the rule text is deliberate: a user targets a
         lesson by a fragment of its rule rather than retyping the whole thing
@@ -584,7 +615,22 @@ class LessonStore:
                         return False
                 return True
 
-            kept = [le for le in lessons if not _matches(le)]
+            if keep_one:
+                # One survivor per lesson: rows are copies only when their
+                # whole stored row matches (see _keep_one_identity), so a copy
+                # that differs in any field is a different lesson and stays.
+                seen: set[str] = set()
+                kept = []
+                for le in lessons:
+                    if not _matches(le):
+                        kept.append(le)
+                        continue
+                    group = _keep_one_identity(le)
+                    if group not in seen:
+                        seen.add(group)
+                        kept.append(le)
+            else:
+                kept = [le for le in lessons if not _matches(le)]
             if len(kept) == len(lessons):
                 return False
             self._write_all(kept)

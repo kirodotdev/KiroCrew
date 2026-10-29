@@ -696,6 +696,98 @@ class TestRunChatAutoApproveRungs:
             and c.kwargs.get("outcome") == "auto_approved"
         ]
 
+    # ── Reads mode and Kiro Crew's own read-only MCP tools ───────────────────
+
+    @staticmethod
+    def _real_gate_state(tmp_path):
+        """A runner whose context builder carries a REAL ``HookManager``, so the
+        permission walks the gate's tiers rather than a scripted verdict."""
+        from kiro_crew.hooks import HookManager
+
+        context_builder = MagicMock()
+        context_builder.hooks = HookManager()
+        context_builder.build_message.return_value = ("hello", None)
+        return _runner_state(tmp_path, context_builder=context_builder)
+
+    @staticmethod
+    def _core_read(
+        server: str = "kirocrew-core", tool: str = "memory_recall", *, trusted: bool = True
+    ):
+        """A permission request for a first-party MCP read, as kiro-cli raises
+        it: the trusted ``_meta.kiro`` pair, no ``kind``, a model-authored title."""
+        return _permission(
+            title=f"Running: @{server}/{tool}",
+            tool_input=json.dumps({"query": "what did we decide"}),
+            tool_kind="",
+            is_shell=False,
+            tool_name=tool,
+            mcp_server_name=server,
+            mcp_identity_trusted=trusted,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reads_mode_auto_approves_a_first_party_read_only_mcp_tool(self, tmp_path):
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        slot._trust_reads = True
+        _set_stream(client, [self._core_read(), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert _card_outcomes(slot) == []
+        assert not _errors(slot)
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_still_prompts_for_the_same_first_party_read(self, tmp_path):
+        """The proof is Reads mode's: a Normal slot shows the card as before."""
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        assert slot._trust_reads is False
+        state.push_slots_update.side_effect = lambda: _answer_card(slot, "rejected")
+        _set_stream(client, [self._core_read(), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == ["rejected"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "server,tool",
+        [
+            ("evil-server", "memory_recall"),  # same name, another server
+            ("kirocrew-core", "learn_add"),  # a core WRITE tool
+            ("kirocrew-core", "list_sessions"),  # a core tool kept off the list
+        ],
+    )
+    async def test_reads_mode_prompts_for_every_other_mcp_call(self, tmp_path, server, tool):
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        slot._trust_reads = True
+        state.push_slots_update.side_effect = lambda: _answer_card(slot, "rejected")
+        _set_stream(client, [self._core_read(server, tool), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == ["rejected"]
+
+    @pytest.mark.asyncio
+    async def test_reads_mode_prompts_when_the_identity_is_not_trusted(self, tmp_path):
+        """The pair without the provenance flag is prose, not identity: an
+        event that merely NAMES the core server and tool prompts."""
+        state, client = self._real_gate_state(tmp_path)
+        slot = _slot()
+        slot._trust_reads = True
+        state.push_slots_update.side_effect = lambda: _answer_card(slot, "rejected")
+        _set_stream(client, [self._core_read(trusted=False), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        assert _card_outcomes(slot) == ["rejected"]
+
     @pytest.mark.asyncio
     async def test_trust_reads_rejects_an_invalid_tool_name(self, tmp_path):
         state, client = _runner_state(tmp_path)

@@ -69,6 +69,7 @@ from kiro_crew.mcp_cron_vet import (
     _vet_script_file,
     _vet_shell_command,
 )
+from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -387,8 +388,8 @@ def _deny_channel_agent_cron(tool_name: str) -> str | None:
 #:
 #: The consequence is deliberate and worth stating: a cron created with
 #: ``kirocrew cron add`` does not appear in ``cron_list`` from chat. The CLI
-#: remains its management surface. The alternative -- showing it -- was tried in an
-#: earlier revision of this change and is what the paragraph above rules out.
+#: remains its management surface. The alternative -- showing it -- is what the
+#: paragraph above rules out.
 #:
 #: Note the set keeps GROWING for as long as the CLI and the importer create rows
 #: without a session, which is why this is a permanent scope rule rather than a
@@ -653,7 +654,7 @@ def _owner_unusable_caveat(svc: "CronService", session_key: str, job_id: str) ->
         return ""
     caller_job = svc.get_job(caller_job_id)
     # No record means no evidence, so say nothing: a warning we cannot substantiate
-    # is the exact failure this branch was rewritten to remove.
+    # is worse than no warning.
     if caller_job is None or cron_session_key_is_stable(caller_job):
         return ""
     return (
@@ -1323,8 +1324,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             resources=f"job_id={jid}:{','.join(sorted(secrets))}",
         )
         # No in-chat approval surface, deliberately: an approval record
-        # reachable from generic chat resolution paths kept widening the
-        # owner-only boundary in review, so approval lives EXCLUSIVELY on the
+        # reachable from generic chat resolution paths keeps widening the
+        # owner-only boundary, so approval lives EXCLUSIVELY on the
         # owner-gated Schedule page. The durable pending record above is the
         # source of truth.
         return (
@@ -1347,7 +1348,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 #: backend advertised this capability -- so without the advertisement the block
 #: never arrives, and this server's resolver reads an empty identity no matter how
 #: correctly it is written. Nothing declines to POOL an unadvertised backend
-#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: (``rewriter.UNPOOLABLE_SERVERS`` lists only credential vendors and documents that the capability is
 #: read only to decide injection), so the unadvertised state was not "per-session
 #: spawn" -- it was pooled AND identity-blind.
 #:
@@ -1367,6 +1368,7 @@ def run_mcp_server() -> None:
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
         error_prefix_is_error=True,
+        instructions=_INSTRUCTIONS,
     )
 
 

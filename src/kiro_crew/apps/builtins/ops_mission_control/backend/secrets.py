@@ -335,7 +335,7 @@ class KeystoneFileBackend:
         # ``from None`` leaves it on ``__context__``. Constructing the refusal
         # after the handler has exited severs the chain entirely, so no copy of
         # the store's bytes rides on the exception that crosses into route
-        # handlers and log formatters. Found in review (GPT 5.6).
+        # handlers and log formatters.
         raise CorruptDocumentError(corrupt_msg, "", 0)
 
     def _lock(self) -> "_SecretLock":
@@ -354,11 +354,11 @@ class KeystoneFileBackend:
         # No cleanup on failure: every failure inside the publish —
         # lockdown, payload write (ENOSPC), rename — happens BEFORE the final
         # path is touched, so an unprotectable file never exists at
-        # ``self._path`` at all. The unlink the old code ran on lockdown
-        # failure existed to remove a NEW store already PUBLISHED at a wide
-        # DACL; that state is unreachable now, and keeping the unlink would
-        # instead delete the PREVIOUS, healthy, already-locked-down store —
-        # every stored provider token — on one transient lockdown failure.
+        # ``self._path`` at all. An unlink on lockdown failure would only
+        # serve a NEW store already PUBLISHED at a wide DACL; that state is
+        # unreachable, and an unlink would instead delete the PREVIOUS, healthy,
+        # already-locked-down store — every stored provider token — on one
+        # transient lockdown failure.
         #
         # Staged in the masked auth-store staging directory, not beside the
         # store: this file is a hidden leaf masked by its exact name, so a

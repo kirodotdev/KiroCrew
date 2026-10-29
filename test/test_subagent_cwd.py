@@ -12,13 +12,16 @@ Covers:
 
 from __future__ import annotations
 
+import ntpath
 import os
+import posixpath
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sandbox_plan
 from kiro_crew.subagent import SubagentManager, validate_cwd
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -144,6 +147,52 @@ class TestValidateCwd:
         resolved, err = validate_cwd(str(sibling), [str(allow)])
         assert resolved == ""
         assert "not under any allowed root" in err
+
+    def test_filesystem_root_entry_admits_a_directory_below_it(self, tmp_path: Path) -> None:
+        """A filesystem-root entry (``/``, or the drive root on Windows) admits its subtree."""
+        (tmp_path / "project").mkdir()
+        real_project = os.path.realpath(str(tmp_path / "project"))
+        root = Path(real_project).anchor
+        resolved, err = validate_cwd(real_project, [root])
+        assert err == ""
+        assert resolved == real_project
+
+
+class TestCwdRootBoundary:
+    """``validate_cwd``'s boundary (``sandbox_plan.path_within``) under both separators.
+
+    The cases swap ``sandbox_plan``'s ``os`` for an ``ntpath``- or
+    ``posixpath``-backed namespace, so both shapes are checked on any host.
+    """
+
+    @pytest.mark.parametrize(
+        ("path", "root", "windows", "expected"),
+        [
+            ("H:\\REPL\\project", "H:\\", True, True),
+            ("H:\\", "H:\\", True, True),
+            ("H:\\REPL", "H:\\REPL", True, True),
+            ("H:\\REPL\\project", "H:\\REPL", True, True),
+            ("H:\\REPL-extra", "H:\\REPL", True, False),
+            ("G:\\REPL", "H:\\", True, False),
+            ("/srv/project", "/", False, True),
+            ("/srv/project", "/srv", False, True),
+            ("/srv-extra", "/srv", False, False),
+        ],
+    )
+    def test_boundary(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+        root: str,
+        windows: bool,
+        expected: bool,
+    ) -> None:
+        """A root that already ends in the separator is not given a second one."""
+        flavour = ntpath if windows else posixpath
+        monkeypatch.setattr(
+            sandbox_plan, "os", types.SimpleNamespace(path=flavour, sep=flavour.sep)
+        )
+        assert sandbox_plan.path_within(path, root) is expected
 
 
 # ---------------------------------------------------------------------------

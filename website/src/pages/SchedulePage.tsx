@@ -59,6 +59,7 @@ import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
+import { browserTimeZone, isValidTimeZone } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -383,11 +384,13 @@ export default function SchedulePage() {
   const [renderTz, setRenderTz] = useState<string>(() => {
     try {
       const stored = localStorage.getItem(RENDER_TZ_STORAGE_KEY)
-      if (stored) return stored
+      // A stored zone may be junk ("undefined" from an earlier build that
+      // saved a missing browser zone): keep only names Intl accepts.
+      if (isValidTimeZone(stored)) return stored
     } catch {
       // localStorage unavailable (private mode) — fall through to default
     }
-    return Intl.DateTimeFormat().resolvedOptions().timeZone
+    return browserTimeZone()
   })
   useEffect(() => {
     try {
@@ -469,10 +472,13 @@ export default function SchedulePage() {
   }, [])
   useEffect(() => { load() }, [load])
 
-  // Auto-reload when backend pushes a 'crons' refresh (e.g. job starts/ends,
-  // or a run is cancelled) — supersedes interval polling for is_running state.
-  const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
-  useEffect(() => { if (refreshTrigger > 0) { load(); refreshFolders() } }, [refreshTrigger, load, refreshFolders])
+  // Auto-reload when the cron caches go stale: a 'crons' or 'cron_history'
+  // refresh (a job starts or ends, a run is cancelled, a job or folder is
+  // edited) at once, a turn-end 'history' frame at most once per
+  // TURN_END_CRON_REFRESH_MS. Keyed on the kind-blind refreshTrigger, every
+  // turn that ended on any session re-read the whole job list.
+  const cronRefreshTrigger = useAppSelector(s => s.dashboard.cronRefreshTrigger)
+  useEffect(() => { if (cronRefreshTrigger > 0) { load(); refreshFolders() } }, [cronRefreshTrigger, load, refreshFolders])
 
   const { running, actionError, setActionError, runNow, openInChat, cancelling, cancelRun } = useCronActions(load)
   // Measured overflow state for the jobs table's scroller — drives the fade cue
@@ -1797,10 +1803,26 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job?.last_error && (
               <>
                 {/* No hand-off: JobForm draft */}
+                {/* A `last_error` is often a multi-frame Python traceback. The
+                    cap is viewport-relative (`min(45vh, 420px)`), not a fixed
+                    200px: a 200px window crushes a traceback to a few lines
+                    that scroll under the fold, so the one line naming the
+                    failure is the half the reader loses. 45vh uses the dialog's
+                    own `max-h-[86vh]` height, the 420px ceiling stops it
+                    dominating a tall screen, and it still scrolls internally
+                    for anything longer.
+
+                    `shrink-0` is load-bearing: this notice is a direct
+                    `overflow-y-auto` flex child of the column-flex DialogBody,
+                    which gives it an automatic `min-height: 0`, so the column
+                    squeezes it to its content's min-content height (~16px, one
+                    line) regardless of `max-height`. Measured in a running
+                    instance: without `shrink-0` the box renders 16px against a
+                    499px traceback; with it, the full height the cap allows. */}
                 <ErrorNotice
                   title={i18nT('pages.schedulePage.last_error')}
                   message={job.last_error}
-                  className="max-h-[200px] overflow-y-auto font-mono"
+                  className="shrink-0 max-h-[min(45vh,420px)] overflow-y-auto font-mono"
                   testId="schedule-job-last-error"
                 />
               </>

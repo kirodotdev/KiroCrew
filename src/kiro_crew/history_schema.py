@@ -54,6 +54,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # as memory_store: a name-only pick after a template pick writes no key,
         # and an unowned key would carry the stale "template" forward forever.
         "agent_kind",
+        "crew_mode_agent",
         # The app-owned agent binding (see _ChatSlot.app_agent_owner). Slot-owned so a
         # session that carries none clears it instead of inheriting a stale one.
         "app_agent_owner",

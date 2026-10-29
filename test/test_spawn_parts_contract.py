@@ -95,10 +95,12 @@ def test_both_halves_of_every_tool_resolve_on_the_facade() -> None:
 
 
 def test_the_facade_keeps_its_logger_name() -> None:
-    """No owner logs; the facade's own records keep the module name they carried."""
+    """The owner that logs binds the facade's logger for a stable module name."""
     assert spawn.logger is logging.getLogger(_FACADE)
     loggers = [vars(owner)["logger"] for owner in _owners() if "logger" in vars(owner)]
-    assert loggers == [], "an owner logs: bind it by the facade's name, as control_parts does"
+    assert loggers == [
+        spawn.logger
+    ], "wave.py is the one owner allowed to log, using the facade's logger"
 
 
 def test_a_moved_class_reports_the_owner_it_lives_in() -> None:

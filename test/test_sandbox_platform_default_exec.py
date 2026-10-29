@@ -87,9 +87,8 @@ class TestUnsandboxedExecDeclaredReadsPresenceNotValue:
     """``unsandboxed_exec_declared`` answers "did the operator decide", not "what".
 
     DIAGNOSTIC ONLY: it labels an audit event and picks message wording, and must
-    never gate execution. A full-document ``save()`` materializes the key, so a host
-    that never answered can read as declared afterwards — which is exactly why the
-    effective policy lives in the resolved VALUE instead.
+    never gate execution. A full-document ``save()`` leaves an undeclared key off disk,
+    so a host that never answered still reads as undeclared afterwards.
     """
 
     @pytest.fixture
@@ -143,6 +142,24 @@ class TestUnsandboxedExecDeclaredReadsPresenceNotValue:
         main, _ = cfg
         main.write_text(json.dumps({"agent": ["not", "a", "dict"]}), encoding="utf-8")
         assert loader_mod.unsandboxed_exec_declared() is False
+
+    def test_windows_default_survives_a_full_document_round_trip(self, cfg, monkeypatch) -> None:
+        """An existing document that never declared the key loads, saves and reloads undeclared.
+
+        ``save()`` publishes the whole in-memory snapshot, whose agent section holds the
+        RESOLVED value, so it must leave the key off disk. Written, it would read as a
+        decision on the next load: the host would stop following its platform default.
+        """
+        monkeypatch.setattr("sys.platform", "win32")
+        main, _ = cfg
+        main.write_text(json.dumps({"agent": {"approval_mode": "auto"}}), encoding="utf-8")
+        loaded = loader_mod.KiroCrewConfig.load()
+        assert loaded.agent.sandbox_allow_unsandboxed_exec is True
+        loaded.save()
+        written = json.loads(main.read_text(encoding="utf-8"))["agent"]
+        assert "sandbox_allow_unsandboxed_exec" not in written
+        assert loader_mod.unsandboxed_exec_declared() is False
+        assert loader_mod.KiroCrewConfig.load().agent.sandbox_allow_unsandboxed_exec is True
 
 
 class TestTheGateReadsTheResolvedValue:

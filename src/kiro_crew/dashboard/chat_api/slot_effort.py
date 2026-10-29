@@ -75,6 +75,8 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
         return web.json_response(
             {
                 "known": False,
+                # The harness a new session would get: the Context panel names it.
+                "backend": backend,
                 "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
             }
         )

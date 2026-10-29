@@ -6,8 +6,10 @@ from __future__ import annotations
 import functools
 import json
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
 from kiro_crew.dashboard.state import DENY_CAUSE_POLICY
 from kiro_crew.deny_guidance import (
@@ -235,10 +237,18 @@ def _persistable_session_policy(slot: Any, yolo_active: bool) -> str:
     A scope-trusted worker is not left stalling: its own tool approvals never
     consult this value. They go through :func:`_slot_is_trusted` per event, which
     re-checks the scope each time.
+
+    A Crew Mode card trust ("Trust this worker", ``slot._trust_card_scoped``) is
+    not cached either. It covers THAT worker only: its own tools still
+    auto-approve through :func:`_slot_is_trusted`, but the subagents it spawns and
+    the sessions it creates must keep asking, so their requests reach the
+    conductor's card. A stored ``"auto"`` would hand them the trust.
     """
-    if yolo_active or getattr(slot, "_trust", False):
+    if yolo_active:
         return "auto"
-    return ""
+    from kiro_crew.dashboard.approval_posture import trust_carries
+
+    return "auto" if trust_carries(slot) else ""
 
 
 def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
@@ -262,6 +272,72 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
         or _slot_is_trusted(slot)
         or state.is_yolo_active()
     )
+
+
+#: The reads a conductor makes of its own crew members. ``session_send`` is NOT here:
+#: the conductor skill pins that a send is never auto-approved (it runs text as the
+#: target's user turn under the target's grants, and a conductor reads untrusted
+#: content), so a send keeps prompting as it does on every other session.
+_CREW_ROOT_OWN_WORKER_VERBS = frozenset({"session_status", "session_read_message"})
+
+
+def _vouched_creator_of(target: str, slots: Mapping[str, Any]) -> str:
+    """The slot that created live slot *target*, by gateway-vouched lineage only, or ``""``.
+
+    The settled session tree's parent edge first (the crew log's own record, which
+    an adoption moves and a ``session_release`` clears); with no settled tree, the
+    birth stamp ``_created_by`` ONLY when ``_lineage_minted`` says THIS process
+    stamped it at ``session_create`` time. Never the saved ``created_by`` a restore
+    reads back from transcript metadata: that file is editable by an agent's file
+    tools, and the slot list's display stamp (``crew_mode.live_stamps``) falls back
+    to it, so a display rule cannot be the proof an approval exemption rests on.
+    """
+    from kiro_crew import crew_mode
+
+    if crew_mode.lineage_is_settled():
+        tracked = crew_mode.persisted_tree_slots()
+        if tracked is not None and target in tracked:
+            return crew_mode.persisted_parents().get(target, "")
+    child = slots.get(target)
+    if child is None or not bool(getattr(child, "_lineage_minted", False)):
+        return ""
+    return str(getattr(child, "_created_by", "") or "")
+
+
+def _crew_root_own_worker_call(state: Any, slot: Any, event: Any) -> bool:
+    """A Crew Mode conductor's OWN read of one of ITS crew members.
+
+    Keyed on the verified ``kirocrew-dashboard`` identity, a read verb
+    (:data:`_CREW_ROOT_OWN_WORKER_VERBS`), and the verified ``target`` argument,
+    which must be the exact key of a live session whose gateway-vouched creator
+    (:func:`_vouched_creator_of`) is this conductor. Anything else (a send, a
+    subagent's call, a title-only or unverified identity, another session, a target
+    by title, a creator known only from saved metadata) keeps asking. Inert
+    (``False`` for every call) until ``crew_mode.APPROVAL_ROUTING_LIVE`` is on,
+    which the Crew panel part turns on.
+    """
+    from kiro_crew import crew_mode
+
+    if not crew_mode.APPROVAL_ROUTING_LIVE:
+        return False
+    if event.sub_session_id or not (event.mcp_identity_trusted and event.raw_params_trusted):
+        return False
+    if event.mcp_server_name != "kirocrew-dashboard":
+        return False
+    if event.tool_name not in _CREW_ROOT_OWN_WORKER_VERBS:
+        return False
+    params = event.raw_tool_params or {}
+    # A deferred tool runs through tool_search's ``tool_call``: the real arguments
+    # sit under ``arguments``, named by a ``tool_id`` that must be this same tool.
+    if params.get("tool_id") == f"{event.mcp_server_name}::{event.tool_name}":
+        params = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+    target = params.get("target")
+    slots = getattr(state, "_slots", {}) or {}
+    if not isinstance(target, str) or target == slot.key or target not in slots:
+        return False
+    if not crew_mode.slot_is_crew_mode_root(slot):
+        return False
+    return _vouched_creator_of(target, slots) == slot.key
 
 
 async def _name_grant_refusal_for(event: object) -> Refusal | None:
@@ -334,6 +410,17 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
     the interactive card gets it before it is drawn.
     """
     slot = turn.slot
+    # The id the request names the tool by is what the call's PostToolUse
+    # spec hooks match on, as PreToolUse's do here.
+    if event.tool_call_id:
+        _post_identity = post_tool_identity(
+            turn.client,
+            event,
+            is_shell=False,
+            earlier=turn._pending_tool_ids.get(event.tool_call_id),
+        )
+        if _post_identity is not None:
+            turn._pending_tool_ids[event.tool_call_id] = _post_identity
     if turn.assistant_text and not open_construct_at_end(turn.assistant_text):
         slot._owed_segment_cut = functools.partial(_pay_permission_cut, turn)
     try:
@@ -463,6 +550,14 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             # maps to a concrete kiro agent, so it must never decide
             # which builtin app an agent belongs to.
             resolved_agent=read_effective_agent(client),
+            # The slot's Reads approval mode, so the gate's read-only
+            # tier may prove one of Kiro Crew's OWN read-only MCP
+            # tools by its trusted identity (``@kirocrew-core/
+            # memory_recall`` and its siblings). A surface fact, like
+            # ``classifier_only``: it unlocks that one proof and
+            # nothing else, and the auto-approve it yields walks the
+            # same hook branch below -- PreToolUse hooks and all.
+            trust_reads=bool(slot._trust_reads),
         )
         if tool_result.action == TOOL_DENY:
             # Surface WHY: carry the deny reason into the pill so
@@ -760,15 +855,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # parent turn. Deny-by-default (CWE-1188): with no active crew this
     # predicate is False no matter the trust flags, so the tool falls
     # through to the normal trust gate below, then _on_permission_prompt's card.
-    # The claude backend never takes this path. Its permission requests do
-    # not say which session sent them, so an open child card cannot tell a
-    # child's request from the parent's, and the parent's own tool calls
-    # would be approved with no card.
+    # The claude backend never takes either path. Its permission requests do not
+    # say which session sent them, so an open child card cannot tell a child's
+    # request from the parent's, and the parent's own tool calls would be approved
+    # with no card; for the same reason a subagent's send to a crew member would
+    # read as the conductor's own.
+    _claude_backend = is_claude_backend_name(capabilities_of(client).backend)
+    _own_worker_call = not _claude_backend and _crew_root_own_worker_call(state, slot, event)
     if (
-        not is_claude_backend_name(capabilities_of(client).backend)
-        and _native_crew_should_auto_approve(_native_tracker, state, slot)
-        and _child_grant_eligible
-    ):
+        _own_worker_call
+        or (not _claude_backend and _native_crew_should_auto_approve(_native_tracker, state, slot))
+    ) and _child_grant_eligible:
         logger.debug(
             "Native crew auto-approve: %r (request_id=%s)",
             _safe_native_crew_debug_title(event.title),
@@ -810,7 +907,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             tool_kind=event.tool_kind,
             outcome="auto_approved",
             request_id=event.request_id,
-            metadata={"reason": "native_crew"},
+            metadata={"reason": "crew_mode_own_worker" if _own_worker_call else "native_crew"},
         )
         return _Flow.CONTINUE
     # Session-trusted patterns: auto-approve commands matching user globs.

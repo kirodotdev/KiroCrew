@@ -556,6 +556,27 @@ describe('ArtifactPanel', () => {
       expect(document.body.style.overflow).toBe('')
     })
 
+    // #24784: the native caption buttons of a frameless desktop window cover
+    // the overlay's top-right corner, so the header drops below that band.
+    it('drops the header below the caption band under a Windows host (#24784)', async () => {
+      document.documentElement.classList.add('embedded-win-inset')
+      try {
+        renderPanel()
+        await screen.findByText(NAME)
+        await enterFullscreen()
+        expect(screen.getByTestId('artifact-panel-fullscreen-header').style.marginTop).toBe('42px')
+      } finally {
+        document.documentElement.classList.remove('embedded-win-inset')
+      }
+    })
+
+    it('leaves the header at the top in a plain browser tab', async () => {
+      renderPanel()
+      await screen.findByText(NAME)
+      await enterFullscreen()
+      expect(screen.getByTestId('artifact-panel-fullscreen-header').style.marginTop).toBe('')
+    })
+
     it('keeps the body card chrome in fullscreen while the panel body stays flush', async () => {
       renderPanel()
       await screen.findByText(NAME)

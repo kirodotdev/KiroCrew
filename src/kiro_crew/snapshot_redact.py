@@ -300,8 +300,8 @@ def outbound_redaction_enabled() -> bool:
         # An ABSENT key is not an attempt to set the switch, so the default applies and the
         # default is off -- redaction is opt-IN, and off is the fail-safe direction here
         # (no rewriting means no chance of corrupting the off-host copy; the destination is
-        # owner-only either way). Review asked for this to raise, on the grounds that the
-        # refusal contract covers "anything not exactly true or false". It does not: the
+        # owner-only either way). It does not raise, although the refusal contract may read
+        # as covering "anything not exactly true or false". It does not: the
         # refusal below is for a value that IS set and cannot be interpreted -- `"true"`,
         # `1` -- where the operator plainly tried to set the switch and resolving it either
         # way would override their intent. Nothing was attempted here.

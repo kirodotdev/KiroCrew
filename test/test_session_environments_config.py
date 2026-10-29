@@ -21,7 +21,7 @@ _BASE_CONFIG = {
     "an_edition_section": {"keep": "me"},
 }
 #: What a read adds to a section that omits them.
-_DEFAULTS = {"stop_on_shutdown": True}
+_DEFAULTS = {"default_profile": "", "stop_on_shutdown": True}
 
 
 def _profile(pid: str = "dev", **overrides: object) -> dict:
@@ -179,6 +179,7 @@ class TestLoader:
         section = {
             "coder_url": "https://c.example.com",
             "profiles": [_profile("a")],
+            "default_profile": "",
             "stop_on_shutdown": True,
         }
         _write_section(config_file, section)

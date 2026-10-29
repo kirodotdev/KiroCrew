@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SelectionComposer } from '../components/SelectionToolbar'
+import { sliceCodePoints } from '../components/CommentOverlay'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { clearAnnotationHighlight } from '../utils/annotationHighlight'
 
@@ -32,7 +33,7 @@ export interface ExternalSelectionState { text: string; x: number; y: number; st
 const NOTICE_QUOTE_MAX = 48
 const clipQuote = (quote: string): string => {
   const flat = quote.replace(/\s+/g, ' ').trim()
-  return flat.length > NOTICE_QUOTE_MAX ? `${flat.slice(0, NOTICE_QUOTE_MAX - 1)}…` : flat
+  return flat.length > NOTICE_QUOTE_MAX ? `${sliceCodePoints(flat, 0, NOTICE_QUOTE_MAX - 1)}…` : flat
 }
 
 export function useSelectionComposerAnchor<A>({

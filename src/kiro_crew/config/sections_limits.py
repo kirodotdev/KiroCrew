@@ -227,6 +227,12 @@ SESSION_SORT_MODES: tuple[str, ...] = (
     "name-desc",
     "manual",
 )
+# The "Translucent panels" (Liquid Glass) switch as the workspace stores it: a
+# string like ``theme_mode``, with ``""`` for "never chosen here" so the browser's
+# own stored choice keeps holding on a workspace that predates the key. The
+# loader normalizes to this set, ``PUT /api/config/theme`` accepts exactly it, and
+# the frontend's ``liquidGlass.ts`` mirrors the two non-empty values.
+TRANSLUCENT_PANELS_VALUES: tuple[str, ...] = ("", "on", "off")
 SESSION_TIMEOUT_MIN = 0
 SESSION_TIMEOUT_MAX = 86400
 POOL_TTL_SECS_MIN = 0
@@ -488,6 +494,20 @@ class ResourceLimitsConfig:
             nullable=True,
         ),
     )
+    slice_reclaim_trigger_pct: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Slice page-cache reclaim trigger (%)",
+            "The gateway writes the agents SLICE's memory.reclaim once "
+            "memory.current reaches this percent of the slice memory.high and "
+            "clean page cache is at least half of it, so cached files alone do "
+            "not hold the slice at its ceiling and throttle every agent. Unset "
+            "uses 95, 0 turns it off for this gateway only (the slice is shared "
+            "by every gateway of the user), 50-99 is accepted and anything else "
+            "uses 95. Never runs inside a pod. Linux with cgroup v2 only.",
+            nullable=True,
+        ),
+    )
     xdist_auto_cap: int | None = field(
         default=None,
         metadata=_meta(
@@ -527,6 +547,9 @@ class ResourceLimitsConfig:
             ),
             scope_memory_high_pct=_limit_int(
                 section.get("scope_memory_high_pct"), "scope_memory_high_pct", lo=0, hi=100
+            ),
+            slice_reclaim_trigger_pct=_limit_int(
+                section.get("slice_reclaim_trigger_pct"), "slice_reclaim_trigger_pct", lo=0, hi=99
             ),
             xdist_auto_cap=_limit_int(section.get("xdist_auto_cap"), "xdist_auto_cap", lo=-1),
         )

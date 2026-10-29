@@ -1122,20 +1122,39 @@ def test_mcp_tools_pass_the_verified_key_to_transport(monkeypatch):
     from kiro_crew.mcp_tools import ledger as tools
 
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-v-1")
-    get = MagicMock(return_value={"state": {}, "events": []})
-    post = MagicMock(return_value={"ok": True, "state": {"phase": "", "next": ""}})
+    # Each fake answers with the ledger of the key it was handed, so the tool's
+    # reply shows whose ledger was read and written.
+    get = MagicMock(
+        side_effect=lambda _path, *, session_key, timeout: {
+            "state": {"goal": f"goal-of-{session_key}"},
+            "events": [],
+        }
+    )
+    post = MagicMock(
+        side_effect=lambda _path, _payload, *, session_key: {
+            "ok": True,
+            "state": {"phase": f"phase-of-{session_key}", "next": ""},
+        }
+    )
     monkeypatch.setattr(mcp_core, "_get", get)
     monkeypatch.setattr(mcp_core, "_post", post)
-    tools.session_ledger_read("x", {})
+    read = tools.session_ledger_read("x", {})
+    assert json.loads(read)["state"] == {"goal": "goal-of-chat-v-1"}
     get.assert_called_once_with(
         "/api/session-ledger",
         session_key="chat-v-1",
         timeout=tools._LEDGER_READ_TIMEOUT_S,
     )
-    tools.session_ledger_record("x", {"goal": "g"})
+    recorded = tools.session_ledger_record("x", {"goal": "g"})
+    assert recorded.startswith("Recorded. phase=phase-of-chat-v-1 ")
     post.assert_called_once_with(
         "/api/session-ledger/record", {"goal": "g"}, session_key="chat-v-1"
     )
+    # An empty ledger for that key reads as the start-one hint, not as JSON.
+    monkeypatch.setattr(
+        mcp_core, "_get", lambda _path, *, session_key, timeout: {"state": {}, "events": []}
+    )
+    assert tools.session_ledger_read("x", {}).startswith("This session has no work ledger yet.")
 
 
 # ── MCP read budget ───────────────────────────────────────────────────────

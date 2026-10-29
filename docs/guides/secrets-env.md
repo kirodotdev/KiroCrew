@@ -156,7 +156,7 @@ of the file, delete that plaintext copy once you have verified the migration.
 
 ### Channel tokens and the vault
 
-A channel token saved from the dashboard (Settings > Channels) is stored in the
+A channel token saved from the dashboard (Settings > Messaging Channels) is stored in the
 vault under its key name, and its `.env` line is written as
 `KEY=secret://KEY`. A token already in `.env` as plaintext keeps working as it
 is: every channel reader accepts either form, and a hand-edited
@@ -168,8 +168,9 @@ that its `secret://KEY` line pointed at.
 
 A release that predates this behaviour reads a `KEY=secret://KEY` line as the
 token itself, so after a downgrade the channels saved this way fail to
-authenticate. To go back, re-enter each channel token under Settings > Channels
-on the older release (vault values cannot be read back), or put the plaintext
+authenticate. To go back, re-enter each channel token under Settings > Messaging
+Channels on the older release (named Channels before 2026-09-21; vault values
+cannot be read back), or put the plaintext
 token on its `.env` line by hand before downgrading.
 
 ### Jira uses the vault automatically

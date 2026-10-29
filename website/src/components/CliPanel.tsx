@@ -5,9 +5,9 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
-import { ansiPaletteFromVars } from '../utils/terminalPalette'
+import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
 import TerminalCompletion from './TerminalCompletion'
@@ -27,12 +27,34 @@ const termCache = new Map<string, { term: Terminal; fit: FitAddon }>()
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
   const style = getComputedStyle(document.documentElement)
-  const read = (name: string) => style.getPropertyValue(name)
+  const bg = style.getPropertyValue('--term-bg').trim() || style.getPropertyValue('--bg').trim()
+  const fg = style.getPropertyValue('--term-fg').trim() || style.getPropertyValue('--text').trim()
+  // The ANSI palette orders its black/white extremes and the bright ramp by the
+  // luminance of --bg / --text, so it must read the TERMINAL's own background
+  // and foreground: a pack that gives the terminal the opposite light/dark
+  // polarity from the app (the case these variables exist for) would otherwise
+  // pick the ends from the app theme and render ANSI white invisible on a light
+  // terminal. The palette parses hex only, so the two extremes are normalised to
+  // hex first — a pack may legitimately give --term-bg / --term-fg as rgb() (the
+  // value sanitizer allows it), and an unparsed rgb() would make luminance() null
+  // and collapse ANSI black onto the background. Every other entry the palette
+  // reads (the semantic ANSI hues, --term-magenta / --term-cyan) is an app-theme
+  // colour and passes through unchanged.
+  const bgHex = toHexColor(bg)
+  const fgHex = toHexColor(fg)
+  const read = (name: string) =>
+    name === '--bg' ? bgHex
+      : name === '--text' ? fgHex
+        : style.getPropertyValue(name)
+  // Each terminal surface reads its own --term-* variable first and falls back
+  // to the general app variable it used before the dedicated one existed, so a
+  // theme pack can colour the terminal independently of the agent chat without
+  // breaking a pack that sets neither.
   return {
-    background:          style.getPropertyValue('--bg').trim()            || '#1e1e2e',
-    foreground:          style.getPropertyValue('--text').trim()          || '#cdd6f4',
-    cursor:              style.getPropertyValue('--accent').trim()        || '#89b4fa',
-    selectionBackground: style.getPropertyValue('--accent-subtle').trim() || '#313244',
+    background:          bg || '#1e1e2e',
+    foreground:          fg || '#cdd6f4',
+    cursor:              style.getPropertyValue('--term-cursor').trim()    || style.getPropertyValue('--accent').trim()        || '#89b4fa',
+    selectionBackground: style.getPropertyValue('--term-selection').trim() || style.getPropertyValue('--accent-subtle').trim() || '#313244',
     // The 16 ANSI entries: without them xterm renders ANSI-coloured output with
     // its own palette, which ignores the theme entirely.
     ...ansiPaletteFromVars(read),
@@ -256,10 +278,32 @@ export function useDeleteTerminalSession() {
 export function remeasureAndFit(term: Terminal, fit: FitAddon): void {
   const el = term.element
   if (!el || !el.offsetParent) return // offsetParent === null when display:none / detached
-  const ff = term.options.fontFamily
-  term.options.fontFamily = 'monospace' // transient — forces CharSizeService.measure()
-  term.options.fontFamily = ff          // restore — re-measures with the now-loaded font
+  // The toggle also empties xterm's glyph-width cache, and the DOM renderer
+  // then forces a layout per glyph it draws (~50 on a phone, in the frame the
+  // panel slides in). Only pay it when the cell size can have changed since
+  // this terminal last measured: another font or size, or the font having
+  // finished loading in the meantime.
+  const key = cellKey(term)
+  if (measuredWith.get(term) !== key) {
+    const ff = term.options.fontFamily
+    term.options.fontFamily = 'monospace' // transient — forces CharSizeService.measure()
+    term.options.fontFamily = ff          // restore — re-measures with the now-loaded font
+    measuredWith.set(term, key)
+  }
   fit.fit()
+}
+
+/** What each terminal's cell metrics were last measured against. */
+const measuredWith = new WeakMap<Terminal, string>()
+
+/** Everything a measured cell depends on: the family, the size, and whether
+ *  that font has loaded (`check` is false while it still renders a fallback). */
+function cellKey(term: Terminal): string {
+  const family = term.options.fontFamily ?? 'monospace'
+  const size = term.options.fontSize ?? 13
+  let loaded = true
+  try { loaded = document.fonts?.check?.(`${size}px ${family}`) ?? true } catch { /* invalid spec */ }
+  return `${family}|${size}|${loaded}`
 }
 
 /* ── Terminal view for one session ── */
@@ -275,7 +319,7 @@ function touchSelectHint(status: TouchSelectStatus): string {
   }
 }
 
-function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: string; cwd?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
+function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
@@ -298,6 +342,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   // to avoid flicker; only a manual retry sets manualRetry.
   const connStatus = useTerminalConnStatus(sessionId)
   const invalidCwd = useTerminalInvalidCwd(sessionId)
+  const wrongMachine = useTerminalWrongMachine(sessionId)
   const manualRetry = useTerminalManualRetry(sessionId)
   // The manual "Reconnecting…" state: the user clicked Reconnect and the dial
   // has not yet resolved. On failure the status flips back to 'disconnected'
@@ -332,30 +377,77 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   // panel/route unmounts; torn down only on explicit tab close. Unmounting this
   // component does not disconnect — the module-level manager owns the socket.
   useEffect(() => {
-    ensureTerminalConnection(sessionId, term, fit, cwd)
-  }, [sessionId, term, fit, cwd])
+    ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot, chatSlot)
+  }, [sessionId, term, fit, cwd, remoteSlot, chatSlot])
+
+  // A terminal that has never been opened, while its host asks to wait (the
+  // dock is still sliding in): xterm's first open, render and glyph measuring
+  // would freeze the slide. A light stand-in field takes the focus instead, so
+  // iOS still raises the keyboard inside the opening tap, and xterm opens and
+  // takes the focus over once the host lets go. A terminal opened before is
+  // cheap to re-attach and never waits.
+  const holding = !!deferOpen && !term.element
+  const proxyRef = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    if (holding && visible) proxyRef.current?.focus({ preventScroll: true })
+  }, [holding, visible])
+  // Hand-off: whatever reached the stand-in goes to the shell as a paste, so
+  // the shell's bracketed-paste guard holds and a newline in it does not run
+  // a command; the focus moves to xterm's own field (the focus effect below),
+  // field to field, so the keyboard stays up.
+  const proxyText = useRef('')
+  const handingOff = useRef(false)
+  // Only a hold the user could see hands off: a hidden held tab opens later
+  // and takes focus like any tab switched to.
+  useLayoutEffect(() => {
+    if (holding) handingOff.current = visible
+  }, [holding, visible])
 
   // Attach terminal to DOM
   useEffect(() => {
-    if (!containerRef.current) return
+    if (holding || !containerRef.current) return
     const el = term.element
     if (el) {
       containerRef.current.appendChild(el)
     } else {
       term.open(containerRef.current)
+      // open() has just measured the cell with the font as it is now, so the
+      // re-measure toggle the visible effect runs next would only empty the
+      // glyph cache and render every row twice more.
+      measuredWith.set(term, cellKey(term))
     }
     fit.fit()
-  }, [term, fit])
+    const pending = proxyText.current
+    proxyText.current = ''
+    if (pending) term.paste(pending)
+  }, [term, fit, holding])
 
   // Focus + refit when becoming visible. Re-measure here too so a pane that
   // gained the web font while it was hidden (display:none) picks up the correct
   // cell metrics the moment it is shown.
+  //
+  // Until xterm's first render places its helper textarea at the cursor, the
+  // stylesheet parks it at left:-9999em. iPhone Safari lifts the page to reveal
+  // the field it focuses as the keyboard opens, and an off-screen field gives
+  // it nothing to reveal, so a newly opened terminal stayed under the keyboard.
+  // Seat it at the first cell instead; xterm overwrites both on its next sync.
   useEffect(() => {
-    if (!visible) return
+    if (!visible || holding) return
+    // Ending a hold must not take the focus back from a field the user moved
+    // to meanwhile (the chat composer, say).
+    const fromHold = handingOff.current
+    handingOff.current = false
+    const active = document.activeElement
+    const movedAway = fromHold && !!active && active !== document.body && !wrapperRef.current?.contains(active)
     const raf = requestAnimationFrame(doRefit)
-    term.focus()
+    const input = term.textarea
+    if (input && !input.style.left) {
+      input.style.left = '0px'
+      input.style.top = '0px'
+    }
+    if (!movedAway) term.focus()
     return () => cancelAnimationFrame(raf)
-  }, [visible, term, doRefit])
+  }, [visible, term, doRefit, holding])
 
   // Refit on container resize — always observe, not just when visible
   useEffect(() => {
@@ -535,6 +627,20 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
         onTouchCancel={touchSelect.onTouchEnd}
       >
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
+        {holding && (
+          // 16px so iOS does not zoom on focus; on screen and non-zero so
+          // Safari has a field to reveal above the keyboard.
+          <textarea
+            ref={proxyRef}
+            data-testid="terminal-focus-proxy"
+            aria-label={i18nT('app.terminal')}
+            className="absolute left-0 top-0 w-px h-4 p-0 m-0 border-0 opacity-0 resize-none text-[16px]"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={e => { proxyText.current = e.currentTarget.value }}
+          />
+        )}
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
             (it reserves Tab/arrows/Escape while its menu is open, and Enter only once
             a row has been arrowed onto). A later
@@ -598,10 +704,13 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
                 className={invalidCwd ? 'w-full min-w-0 min-h-0' : 'min-w-0 flex-auto'}
                 message={invalidCwd
                   ? i18nT('components.cliPanel.invalid_cwd_message', { cwd })
-                  : i18nT('components.cliPanel.disconnected_message')}
+                  : wrongMachine
+                    ? i18nT('components.cliPanel.wrong_machine_message')
+                    : i18nT('components.cliPanel.disconnected_message')}
               />
             )}
             <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {!wrongMachine && (
               <Btn
                 type="button"
                 onClick={() => retryTerminalConnection(sessionId)}
@@ -612,6 +721,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
                   ? i18nT('components.cliPanel.use_here')
                   : i18nT('components.cliPanel.reconnect')}
               </Btn>
+              )}
               {invalidCwd && (
                 <Btn
                   type="button"
@@ -707,16 +817,28 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen }: {
   sessionId: string
   cwd?: string
+  /** Open the shell in this chat's REMOTE session workspace instead of locally. */
+  remoteSlot?: string
+  /** The chat a local shell belongs to: the gateway refuses it if that chat is remote. */
+  chatSlot?: string
   visible?: boolean
   onSendToChat?: (text: string) => void
+  /** Hold a never-opened terminal behind a focus stand-in until this turns false. */
+  deferOpen?: boolean
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
-    <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
-      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} />
+    // The wrapper's padding is painted with --term-bg (falling back to --bg) so
+    // it matches the xterm canvas: a pack that gives the terminal its own
+    // background no longer gets a frame of the app --bg around the terminal.
+    <div
+      className="flex flex-col w-full h-full overflow-hidden px-3 pt-2"
+      style={{ background: 'var(--term-bg, var(--bg))' }}
+    >
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} />
     </div>
   )
 }

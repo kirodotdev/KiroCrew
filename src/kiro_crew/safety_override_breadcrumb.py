@@ -90,7 +90,7 @@ _breadcrumb_io_lock = threading.Lock()
 #: the approval-policy read on every dashboard turn), so a synchronous
 #: ``atomic_write`` there would put filesystem latency on the gateway's event
 #: loop -- and a slow or stalled filesystem would then stall gateway traffic and
-#: the heartbeat with it (found in review). A queue rather than a thread per
+#: the heartbeat with it. A queue rather than a thread per
 #: transition so thread churn is bounded, and FIFO ordering reinforces the
 #: generation guard.
 _breadcrumb_queue: "queue.Queue[Callable[[], None]]" = queue.Queue()
@@ -99,7 +99,7 @@ _breadcrumb_worker_lock = threading.Lock()
 #: Set while nothing is queued AND nothing is mid-write. ``flush`` waits on this
 #: rather than joining the queue: a write stalled on a hung filesystem would make
 #: an unconditional ``join()`` wait forever, and the caller is a restart path, so
-#: blocking it is worse than losing the record (found in review).
+#: blocking it is worse than losing the record.
 _breadcrumb_idle = threading.Event()
 _breadcrumb_idle.set()
 _breadcrumb_pending = 0
@@ -192,13 +192,9 @@ def _write_breadcrumb(*, path: Path, source: str, expires_at_wall: float, perman
                 # Whose record this is. A reader in the SAME process image must not
                 # treat it as a dropped grant -- that is what lets the read happen
                 # anywhere in startup rather than having to run before this
-                # process can write one of its own (found in review). Keyed on the
+                # process can write one of its own. Keyed on the
                 # import-time nonce, NOT the pid: os.execv keeps the pid.
                 "image": _IMAGE_TOKEN,
-                # Whose record this is. A reader in the SAME process must not treat
-                # it as a dropped grant -- that is what lets the read happen
-                # anywhere in startup rather than having to run before this
-                # process can write one of its own (found in review).
             }
         )
         # 0600: the record names the auto-approval posture and its deadline.
@@ -271,7 +267,7 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
     # Opened by descriptor rather than read by name, because the SHAPE of the file
     # matters as much as its size. A FIFO planted at this path reports st_size 0,
     # so it sails through a size check and then blocks FOREVER on read -- which
-    # would hang gateway initialization before readiness (found in review). So:
+    # would hang gateway initialization before readiness. So:
     # O_NONBLOCK so no open or read can wait on a writer, O_NOFOLLOW so a symlink
     # cannot redirect the read at something else, and an fstat that refuses
     # anything that is not a regular file.
@@ -353,16 +349,11 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
     # THIS process image's own live grant. Left untouched -- consuming it would
     # delete the record for a grant that is in force, so a later restart would
     # have nothing to report. This is also what frees the read from having to run
-    # before the startup grant is applied (found in review). Compared on the
+    # before the startup grant is applied. Compared on the
     # import-time nonce, because os.execv preserves the pid and every restart this
     # feature instruments goes through exec.
     if writer_image and writer_image == _IMAGE_TOKEN:
         return None
-
-    # THIS process's own live grant. Left untouched -- consuming it would delete
-    # the record for a grant that is in force, so a later restart would have
-    # nothing to report. This is also what frees the read from having to run
-    # before the startup grant is applied (found in review).
 
     # From here the record belongs to a previous process, so it is consumed
     # whatever the verdict: one dropped grant cannot notify twice, and a record

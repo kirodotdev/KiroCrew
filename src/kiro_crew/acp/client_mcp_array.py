@@ -8,7 +8,7 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_capability_projection_gaps``,
+Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_path``,
 ``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
 ``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
@@ -976,6 +976,23 @@ def _deepseek_session_mcp_servers(self: AcpClient) -> list:
     return self._session_mcp_servers()
 
 
+def _copilot_session_mcp_servers(self: AcpClient) -> list:
+    """MCP server array passed to a Copilot CLI ``session/new`` / ``session/load``.
+
+    The copilot twin of :meth:`_deepseek_session_mcp_servers`: ``copilot --acp``
+    reads no ``~/.kiro/agents/<name>.json``, and with copilot in ``MIRRORS``
+    :meth:`_pooled_mcp_servers` answers ``[]`` for it, so this array is the only
+    route for Crew's own tools, the spec's servers and a member session's own
+    mounts. The stdio element is measured end to end for this harness
+    (``test/fixtures/acp_frames/copilot/mcp-stdio-mount-live.jsonl``).
+
+    In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
+    this accessor adds no scheduling or failure point to a call site shared with
+    kiro-cli (harness-parity H13).
+    """
+    return self._session_mcp_servers()
+
+
 def _pi_session_mcp_servers(self: AcpClient) -> list:
     """MCP server array passed to a pi ``session/new`` / ``session/load``.
 
@@ -1012,6 +1029,20 @@ async def _discard_pi_mcp_handoff(self: AcpClient) -> None:
     self._pi_mcp_handoff = ("", b"")
     if path:
         await asyncio.to_thread(discard_pi_mcp_handoff, path)
+
+
+async def _discard_copilot_mcp_config(self: AcpClient) -> None:
+    """Remove this session's Copilot CLI launch MCP config and forget it.
+
+    Copilot CLI reads the file when its process starts, so once the session exists
+    nothing reads it again, and it carries a session credential. Off-loop: an unlink.
+    """
+    from kiro_crew.acp.harness.copilot import discard_copilot_mcp_config
+
+    path = getattr(self, "_copilot_mcp_config_path", "")
+    self._copilot_mcp_config_path = ""
+    if path:
+        await asyncio.to_thread(discard_copilot_mcp_config, path)
 
 
 def _goose_session_mcp_servers(self: AcpClient) -> list:

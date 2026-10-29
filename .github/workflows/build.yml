@@ -127,17 +127,22 @@ jobs:
   #
   # On a pull_request it runs only when a Windows-packaging input changed (the
   # `windows_installer` output of desktop-matrix, the same paths-filter that
-  # gates the macos-15 leg). It is a hosted-only job -- the installer test needs
-  # an interactive desktop the CodeBuild Windows container lacks -- so running it
-  # on every PR spends the shared hosted pool on PRs that cannot change what it
-  # proves. Source-level Windows regressions stay covered per PR by ci.yml's
+  # gates the macos-15 leg). It cannot run on the CodeBuild fleet -- the
+  # installer test needs an interactive desktop the Windows container lacks --
+  # so running it on every PR spends billed larger-runner minutes on PRs that
+  # cannot change what it proves. Source-level Windows regressions stay covered
+  # per PR by ci.yml's
   # backend-test-windows; a source change deeper in the gateway's import
   # closure is proven installed only by the merge group or the push. A merge
   # group always runs it; a push to main runs it unless MERGE_QUEUE_ENABLED is
   # 'true' (build-wheel's skip then skips this job through `needs`).
   build-windows-installer:
     name: Build Windows Installer (x64)
-    runs-on: windows-latest
+    # `kirocrew-runners-windows` larger-runner group, targeted by GROUP not
+    # label; see "The Windows larger-runner group" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners-windows
     # Consumes build-wheel's artifact rather than building its own wheel: that
     # job already stages the frontend dist into the package before building, so
     # its wheel is the one users install. Building a second wheel here would add
@@ -215,6 +220,14 @@ jobs:
           # checkout is never imported into the bundled backend.
           New-Item -ItemType Directory -Force (Join-Path $out "bin") | Out-Null
           Set-Content -Encoding ascii -LiteralPath (Join-Path $out "bin\kirocrew.cmd") `
+            -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
+          # pip's Scripts\kirocrew.exe embeds this runner's absolute python.exe
+          # path, so it fails with "Fatal error in launcher" once installed
+          # anywhere else. Replace it with the same relocatable shim:
+          # Scripts\ sits one level below the bundle root, like bin\.
+          Remove-Item -Force -ErrorAction SilentlyContinue `
+            -LiteralPath (Join-Path $out "Scripts\kirocrew.exe"), (Join-Path $out "Scripts\kirocrew-script.py")
+          Set-Content -Encoding ascii -LiteralPath (Join-Path $out "Scripts\kirocrew.cmd") `
             -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
           # Self-containment gate, same as the packaging script's: a missing
           # dependency must fail here, not at gateway boot.

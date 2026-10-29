@@ -32,6 +32,7 @@ import time
 import unittest.mock
 from collections import Counter
 from dataclasses import replace
+from typing import Any
 
 import pytest
 from crew_log_fold_eager_helpers import (  # noqa: F401 -- the autouse fixture registers by import
@@ -1354,12 +1355,19 @@ def test_status_and_class_declare_the_whole_vocabulary_rather_than_none():
 
 
 def _subscribe_slot_events(sink: list) -> None:
-    """Append each SLOT event to *sink* as ``(slot, fold, revision, value)``."""
-    bus.subscribe(
-        bus.FOLD_ADVANCED,
-        lambda event: sink.append((event.key, event.fold, event.revision, event.value)),
-        scope=bus.SCOPE_SLOT,
-    )
+    """Append each SLOT event to *sink* as ``(slot, fold, revision, value)``.
+
+    A ``work`` event carries no value (it is a delta); its whole render is what the WS
+    exporter looks up inside the publish, ``eager.published_value`` at its revision.
+    """
+
+    def _record(event: Any) -> None:
+        value = event.value
+        if value is None:
+            value = eager.published_value(event.key, event.fold, event.revision)
+        sink.append((event.key, event.fold, event.revision, value))
+
+    bus.subscribe(bus.FOLD_ADVANCED, _record, scope=bus.SCOPE_SLOT)
 
 
 @pytest.fixture

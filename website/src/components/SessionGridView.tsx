@@ -18,8 +18,11 @@ import { errMessage } from '../utils/thunkError'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
+import { crewModeView } from '../lib/crewMode'
 type Slot = {
   key: string
+  /** Set on a Crew Mode worker: the root it works for. */
+  crew_root?: string
   title?: string
   running?: boolean
   pending_approval?: boolean
@@ -55,8 +58,10 @@ export default function SessionGridView({
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
   /** Down to a single session pane → return to the native single-chat surface on
-   *  that session (the grid never shows a 1-pane chrome). */
-  onCollapse: (slot: string, anchorTs?: string, anchorMid?: string) => void
+   *  that session (the grid never shows a 1-pane chrome). `gesture` is true only
+   *  for a pane's own open-full click; the grid collapsing itself after a close or
+   *  a prune is not the user opening that chat (#23564). */
+  onCollapse: (slot: string, anchorTs?: string, anchorMid?: string, gesture?: boolean) => void
   seedSlot?: string | null
   /** Bring the host's Side Chat surface on screen for a pane's slot — what the
    *  selection toolbar's Ask needs. The grid owns no Side Chat of its own
@@ -176,7 +181,7 @@ export default function SessionGridView({
           onRemove={() => grid.closeLeaf(leaf.id)}
           onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
           onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
-          onOpenFull={onCollapse}
+          onOpenFull={(slot, anchorTs, anchorMid) => onCollapse(slot, anchorTs, anchorMid, true)}
           openSideChat={openSideChat}
           leading={paneLeading}
           onFileOpen={openFileForPane}
@@ -291,7 +296,10 @@ function PlaceholderPane({
     },
   })
 
-  const available = slots
+  // A Crew Mode worker is its conductor's to show, never offered as a pane here
+  // (edge review R2 F4); a pane already showing one is kept (pruneAgainst reads
+  // the full list).
+  const available = crewModeView(slots)
     .filter((s) => !occupied.includes(s.key))
     .filter(
       (s) =>

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 
 from kiro_crew.auth.provider import KasAuthProvider
 from kiro_crew.auth.store import KasToken, TokenStore, TokenStoreError
+from kiro_crew.auth.whoami import recorded_start_url
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -155,8 +156,9 @@ def vault_identity_claims() -> tuple[str, dict[str, str]]:
     so the labels a caller publishes describe the fingerprinted account, never
     one that landed between a fingerprint read and a separate claims read. The
     claims are :data:`_VAULT_PUBLIC_CLAIMS` -- the slot and the provider class,
-    which together say "a Builder ID sign-in", "a Google sign-in" -- and no
-    secret, ARN or registration detail. ``("", {})`` when nothing is stored or
+    which together say "a Builder ID sign-in", "a Google sign-in" -- plus the
+    Identity Center ``start_url`` the sign-in recorded, when it recorded one, and
+    no secret, ARN or registration detail. ``("", {})`` when nothing is stored or
     the vault cannot be read; never raises. Blocking file IO -- call off the loop.
     """
     try:
@@ -170,6 +172,13 @@ def vault_identity_claims() -> tuple[str, dict[str, str]]:
         for claim in _VAULT_PUBLIC_CLAIMS
         if isinstance(value := getattr(token, claim, None), str) and value
     }
+    # The Identity Center portal the sign-in was begun against, when it recorded
+    # one: the same field ``kirocrew kas whoami`` prints as ``startUrl``. A portal
+    # URL, not a secret, and outside the fingerprint (a token minted before the
+    # URL was recorded is the same account as one minted after).
+    start_url = recorded_start_url(token)
+    if start_url:
+        claims["start_url"] = start_url
     return _identity_digest(token), claims
 
 

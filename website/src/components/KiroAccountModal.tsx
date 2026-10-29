@@ -25,9 +25,7 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
  * cache warms, `'none'` when the gateway holds no reading (no plan from the API
  * and none from the scrape; the pill shows this state only on the Kiro backend,
  * where the Refresh below can fill it), `'failed'` when
- * the fetch itself failed with nothing cached, `'api-key'` when the account
- * authenticates with an API key (usage needs an SSO/OIDC token that auth type
- * never has, so the state is terminal by construction), `'signin-required'`
+ * the fetch itself failed with nothing cached, `'signin-required'`
  * when no live Kiro credential could be read, or `'config-unreadable'` when the
  * gateway holds no reading AND the config read that decides whether this is the
  * Kiro backend at all failed -- so nothing can be shown as a fact, and the read
@@ -41,7 +39,6 @@ export type KiroAccountUsage =
   | null
   | 'none'
   | 'failed'
-  | 'api-key'
   | 'signin-required'
   | 'config-unreadable'
 
@@ -50,10 +47,10 @@ const isUsageReading = (usage: KiroAccountUsage): usage is KiroCreditUsage =>
   typeof usage === 'object' && usage !== null && !isAccountOnly(usage)
 
 /**
- * The no-reading states a refresh can fill. `'api-key'` is excluded because that
- * auth type has no credit readout at all, and `'signin-required'` takes the
- * sign-in error surface before this is consulted: the `/usage` read needs the
- * same sign-in. `null` is still loading, so there is nothing to refresh yet.
+ * The no-reading states a refresh can fill. `'signin-required'` is excluded
+ * because it takes the sign-in error surface before this is consulted: the
+ * `/usage` read needs the same sign-in. `null` is still loading, so there is
+ * nothing to refresh yet.
  */
 const canRefreshUsage = (usage: KiroAccountUsage): boolean =>
   usage === 'failed' || usage === 'none' || usage === 'config-unreadable'
@@ -471,9 +468,8 @@ function RefreshButton({
   compact: boolean
 }) {
   // One verb for the one action, wherever the button sits.
-  const label = pending
-    ? i18nT('components.kiroAccountModal.refreshing_balance')
-    : i18nT('components.kiroAccountModal.refresh_balance')
+  const idleLabel = i18nT('components.kiroAccountModal.refresh_balance')
+  const pendingLabel = i18nT('components.kiroAccountModal.refreshing_balance')
   const shape = compact
     ? 'rounded-md border border-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-muted hover:border-border-strong hover:text-text'
     : 'rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-accent-fg hover:brightness-110'
@@ -483,12 +479,22 @@ function RefreshButton({
       onClick={onClick}
       disabled={pending || held}
       aria-busy={pending || undefined}
-      className={`inline-flex items-center gap-1.5 self-start transition-all disabled:cursor-default disabled:opacity-60 focus-ring-accent ${shape}`}
+      className={`inline-flex items-center gap-1.5 self-start transition-colors disabled:cursor-default disabled:opacity-60 focus-ring-accent ${shape}`}
     >
       {pending
         ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
         : <RefreshCw className="lucide-inline" aria-hidden="true" />}
-      {label}
+      {/* Both labels share one grid cell, so the button is as wide as the
+          longer one in every locale and keeps its size when the state flips.
+          Only the shown label is in the accessible name. */}
+      <span className="inline-grid text-left">
+        <span className={`col-start-1 row-start-1 ${pending ? 'invisible' : ''}`} aria-hidden={pending || undefined}>
+          {idleLabel}
+        </span>
+        <span className={`col-start-1 row-start-1 ${pending ? '' : 'invisible'}`} aria-hidden={!pending || undefined}>
+          {pendingLabel}
+        </span>
+      </span>
     </button>
   )
 }
@@ -613,9 +619,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
               {/* `none` reports that no reading exists yet, not that a read failed
                   (`failed`, above, says that), so its copy names the absence and
                   the Refresh under it is the way to fill it. */}
-              {i18nT(usage === 'api-key'
-                ? 'components.kiroAccountModal.credit_usage_api_key_auth'
-                : 'components.kiroAccountModal.credit_usage_no_reading')}
+              {i18nT('components.kiroAccountModal.credit_usage_no_reading')}
             </div>
           )}
         {/* Refresh sits directly under the notice that says there is no reading. */}

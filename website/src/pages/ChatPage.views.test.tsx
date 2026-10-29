@@ -13,7 +13,7 @@ import { forwardRef, type ReactNode } from 'react'
 const seen = vi.hoisted(() => ({
   crewWindow: null as null | { onClose?: () => void; target: unknown },
   crewGuard: null as null | { onClose?: () => void },
-  flyout: null as null | { onExpand: () => void; onDismiss: () => void },
+  flyout: null as null | { onExpand: () => void; onDismiss: () => void; slots: { key: string }[] },
   headerMenu: null as null | { onReveal?: () => void; onRename?: () => void },
   pinnedPrompt: null as null | { onToggleExpanded: () => void; onJump: () => void },
   toolGroups: [] as Array<{ onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number }>,
@@ -27,7 +27,7 @@ vi.mock('../components/SnipOverlay', () => ({ default: () => null }))
 vi.mock('./chat/page/ChatPaneNotices', () => ({ default: () => null }))
 vi.mock('../components/SessionTabStrip', () => ({ default: () => null }))
 vi.mock('./chat/SessionFlyout', () => ({
-  default: forwardRef((p: { onExpand: () => void; onDismiss: () => void }, _ref) => { seen.flyout = p; return <div data-testid="flyout" /> }),
+  default: forwardRef((p: { onExpand: () => void; onDismiss: () => void; slots: { key: string }[] }, _ref) => { seen.flyout = p; return <div data-testid="flyout" /> }),
   TOGGLE_RECT: { x: 8, y: 9, size: 28 },
 }))
 vi.mock('./ChatSidebar', () => ({ default: () => null }))
@@ -67,6 +67,7 @@ import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
 import { api } from '../api/client'
 import { requestSlotReveal } from '../store/chatSlice'
+import { transcriptShownFor } from '../hooks/useAckCronNotesInView'
 
 /** A view's props: the fields a case sets, the rest left undefined (each view reads only what its branch needs). */
 const props = <T,>(over: Partial<T>) => over as T
@@ -133,6 +134,23 @@ describe('SessionsSidebarChrome', () => {
     act(() => { seen.flyout!.onDismiss() })
     expect(close).toHaveBeenCalled()
     expect(focus).toHaveBeenCalled()
+  })
+
+  it('hands the flyout the person\'s rows, not the page\'s list that keeps a crew member', () => {
+    const root = { key: 'root', title: 'Crew chat', messages: 1, running: false, crew_mode_root: true }
+    const member = { key: 'member', title: 'A crew member', messages: 1, running: false, crew_root: 'root' }
+    render(<SessionsSidebarChrome {...props<SidebarProps>({
+      embedMode: 'chat', isMobile: false,
+      // The page keeps the crew member (its active slot must stay listed)...
+      filteredSlots: [root, member] as never,
+      // ...and the flyout gets the person's rows, which `pageEnvironment` derives with `crewModeView`.
+      personSlots: [root] as never,
+      effectiveSidebarWidth: 280, containerH: 600,
+      flyoutEligible: true, expandSidebar: vi.fn(), flyoutTriggerRef: { current: null },
+      flyoutSurfaceRef: { current: null },
+      flyout: { open: true, openedBy: 'pointer', close: vi.fn(), surfaceProps: {} } as never,
+    })} />)
+    expect(seen.flyout!.slots.map(s => s.key)).toEqual(['root'])
   })
 })
 
@@ -232,5 +250,19 @@ describe('ChatTranscriptView', () => {
     expect(vi.mocked(api.resolveApproval).mock.calls[0][0]).toBe('ap-1')
     expect(p.dismissApproval).toHaveBeenCalledWith('ap-1')
     expect(noId.onApprove).toBe(p.approve)
+  })
+
+  // #23564: a cron note is read against a transcript the user can see. While the
+  // restore gate hides the loaded rows behind the skeleton, the pane is not
+  // showing the chat yet.
+  it('counts its chat shown only once the restore gate lifts', () => {
+    const items = [{ kind: 'msg', idx: 0, msg: msg('assistant', 'a1') }]
+    const gated = base(items, { activeSlot: 'cron-a', slotLoading: false, virt: { measureRef: () => undefined, restoreGate: true } as never })
+    const { rerender, unmount } = render(<ChatTranscriptView {...gated} />)
+    expect(transcriptShownFor('cron-a')).toBe(false)
+    rerender(<ChatTranscriptView {...base(items, { activeSlot: 'cron-a', slotLoading: false })} />)
+    expect(transcriptShownFor('cron-a')).toBe(true)
+    unmount()
+    expect(transcriptShownFor('cron-a')).toBe(false)
   })
 })

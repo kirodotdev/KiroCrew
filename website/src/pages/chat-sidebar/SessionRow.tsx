@@ -2,15 +2,16 @@
  *  ordered state resolver, the slot-scoped live state it subscribes to, its
  *  menus and its drag and keyboard gestures. The shell builds the row's `view`
  *  (./rows) and its one `actions` object; the row's memo compares both. */
-import { useRef, useEffect, memo, useMemo, useContext } from 'react'
+import { useRef, useEffect, memo, useMemo, useContext, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
-import { useAppDispatch, useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector, type RootState } from '../../store'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../components/ui/dropdown-menu'
-import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../../components/ui/context-menu'
+import { ContextMenuStableTrigger, ContextMenuContent } from '../../components/ui/context-menu'
 import { offlineProps } from '../../utils/offline'
+import { sessionRefBlockReason } from '../../utils/sessionRefs'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from '../../store/chatSlice'
 import { slotIsRemoteBound } from '../../store/dashboardSlice'
@@ -47,6 +48,28 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { CrewEyebrow, CrewGhostBadge, CrewWorkerStack } from '../../components/crew/CrewModeMarks'
+import { summarizeCrewWorkers } from '../../lib/crewWorkers'
+import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
+import ErrorNotice from '../../components/ErrorNotice'
+import { MemberRowHead } from './MemberRowFace'
+
+/** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
+ *  caller's shallowEqual compares each fact by identity: the workflow entry
+ *  (rebuilt per run event) is spread into primitives for the same reason the
+ *  old per-field subscription compared it shallowly. */
+function selectRowLive(st: RootState, localSlotKey: string) {
+  const wf = selectSidebarWorkflowActive(st)[normalizeRunSessionKey(localSlotKey)]
+  return {
+    statusDetail: st.chat.slotStatusDetail?.[localSlotKey],
+    automation: selectAutomationForSlot(st, localSlotKey),
+    queuedForSlot: st.chat.subagentQueued?.[localSlotKey] || 0,
+    queuedReason: st.chat.subagentQueuedReason?.[localSlotKey],
+    wfCount: wf?.count,
+    wfName: wf?.name,
+    wfPhase: wf?.phase,
+  }
+}
 
 /**
  * Session-row type scale, quantized to a 4px baseline grid.
@@ -211,6 +234,17 @@ interface SessionRowActions {
   openElsewhere: (path: string) => void
   /** The conductor lane's chevron: open or close the sessions this row opened. */
   toggleConductor: (identity: string) => void
+  /** Stage a reference to a session in the active chat's composer — the same
+   *  callback the drag-into-the-composer drop fires. The row menu's "Reference
+   *  in chat" item calls it for THIS row's session after the row has checked
+   *  `sessionRefBlockReason`; `canStageSessionRef` gates whether a composer
+   *  exists to stage into at all. Undefined on a surface with no chat pane
+   *  (the embed sessions list), which hides the item. */
+  onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
+  /** Whether a composer exists to stage a session reference into (not split
+   *  view, an active slot present). The row combines it with the per-row block
+   *  reason to decide whether to offer "Reference in chat". */
+  canStageSessionRef?: boolean
 }
 
 interface SessionRowProps {
@@ -229,13 +263,48 @@ interface SessionRowProps {
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
 
+/** A Crew Mode root's live workers on its row: a ghost per worker coloured by
+ *  state, then "N needs you" or "done x/y". It IS the row's status line, not a
+ *  line of its own: the row's running and approval states outrank it (the caller
+ *  passes them first), and with no workers yet it shows *fallback*, the last
+ *  message line, so a crew card is as tall as any other row. */
+function CrewRootSummaryLine({ root, fallback }: { root: string; fallback: ReactNode }) {
+  // The server's groups (the worker list API), so the row, the panel and the
+  // breadcrumb agree; the fallback until the list has answered.
+  // A failed background poll keeps the last summary's ghosts and says the read
+  // failed in the row's own status line (the panel's wording, with the agent
+  // hand-off); the next poll clears it. With no data at all the row says so too.
+  const { lastWorkers, failed } = useCrewWorkerSummary(root)
+  // Only tool approvals reach the person; a worker's question is its conductor's.
+  const { groups, approval, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
+  if (total === 0 && !failed) return <>{fallback}</>
+  return (
+    <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
+      {total > 0 && <CrewWorkerStack groups={groups} />}
+      {failed ? (
+        <ErrorNotice variant="inline" askAgent className="ml-auto min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
+      ) : (
+        <span className={`ml-auto text-[12px] truncate ${approval > 0 ? 'crew-tone-warn font-medium' : 'crew-tone-muted'}`}>
+          {approval > 0
+            ? i18nT('components.crewMode.summary_approval', { n: approval })
+            : i18nT('components.crewMode.summary_done', { done, total })}
+        </span>
+      )}
+    </div>
+  )
+}
+
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, isActive, isOut, isPinned, isUnread, isRunning,
+    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
+  // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
+  // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
+  // local row: a peer row's stamps describe another gateway's tree.
+  const crewRoot = !!s.crew_mode_root && !s.peer_id
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
@@ -283,7 +352,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
     slotRenameEnterRef,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
-    openElsewhere, toggleConductor,
+    openElsewhere, toggleConductor, onDropSessionRef, canStageSessionRef,
   } = actions
   // A LOCAL row whose surface this page does not render goes where it lives: click
   // and Enter land here instead of `switchSlot`, and every local-only affordance
@@ -345,16 +414,22 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // namespace and a collision would show another session's status here.
   // `selectAutomationForSlot` does its own `isUnsafeKey`/`safeKey` normalization,
   // so this needs no own-property guard of its own.
-  const statusDetail = useAppSelector(st => st.chat.slotStatusDetail?.[localSlotKey])
-  const automation = useAppSelector(st => selectAutomationForSlot(st, localSlotKey))
+  //
+  // ONE subscription for all of them (`selectRowLive`): every mounted row runs
+  // its selectors on every store notification, so five per row was five times
+  // the sidebar's share of each dispatch. shallowEqual over the flat result
+  // keeps each field's own identity rule: an entry object repaints only when
+  // THIS slot's entry is replaced, and the workflow primitives only when this
+  // slot's runs change.
+  const { statusDetail, automation, queuedForSlot, queuedReason, wfCount, wfName: wfRawName, wfPhase: wfRawPhase } =
+    useAppSelector(st => selectRowLive(st, localSlotKey), shallowEqual)
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
-  const queuedForSlot = useAppSelector(st => st.chat.subagentQueued?.[localSlotKey] || 0)
-  const queuedReason = useAppSelector(st => st.chat.subagentQueuedReason?.[localSlotKey])
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
-  // shallowEqual because the map is rebuilt per run event; the primitives only
-  // change when THIS slot's runs do.
-  const wf = useAppSelector(st => selectSidebarWorkflowActive(st)[normalizeRunSessionKey(localSlotKey)], shallowEqual)
+  const wf = useMemo(
+    () => (wfCount === undefined ? undefined : { count: wfCount, name: wfRawName ?? '', phase: wfRawPhase ?? '' }),
+    [wfCount, wfRawName, wfRawPhase],
+  )
     // The conductor lane's count cluster, built HERE so it can sit inside the card's
     // own meta group. The lane hands over numbers and renders none of this itself,
     // which is what keeps one card implementation across every lane.
@@ -384,8 +459,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         {conductor.orphanOf != null && (
           <span className="inline-flex items-center text-muted shrink-0"
             role="img"
-            aria-label={i18nT('pages.chatSidebar.opened_by_closed_session', { slot: conductor.orphanOf })}
-            title={i18nT('pages.chatSidebar.opened_by_closed_session', { slot: conductor.orphanOf })}
+            aria-label={i18nT('pages.chatSidebar.opened_by_closed_session')}
+            title={i18nT('pages.chatSidebar.opened_by_closed_session')}
             data-orphan-of={conductor.orphanOf}
             data-testid={`conductor-orphan-${rowIdentity}`}>
             <CornerDownRight size={11} className="lucide-inline" aria-hidden="true" />
@@ -738,7 +813,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 working row's "Loop N/M" verbatim made the two rows read as
                 the same state (UX span 03f52eaca7f7); the tooltip above
                 carries the full sentence. */}
-            <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted"> · {goalLoop
+            <span className="truncate"><span className="font-medium crew-tone-warn">{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted"> · {goalLoop
               ? (goalLoop.maxCycles > 0
                 ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
                 : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
@@ -968,6 +1043,18 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         role="img" aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
         title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
       : null
+    // The row's tail line when no state claims it: the last message, led by the
+    // unread dot. A crew card shows it too until its workers summary has an answer.
+    const lastMessageLine = (s.last_message || unreadDot) ? (
+      <div className={ROW_STATUS_LINE_MUTED_CLS}>
+        {unreadDot}
+        {/* `min-w-0` or the ellipsis never renders: this is a flex child, and
+            a flex item's `min-width: auto` floor keeps it at content width
+            instead of letting `truncate` clip it (i18n render gate,
+            layout/ellipsis-with-flex-parent). */}
+        {s.last_message ? <span className="truncate min-w-0">{s.last_message}</span> : null}
+      </div>
+    ) : null
     // Custom hex (color_hex) wins over the palette index. It is deliberately
     // theme-independent: palette swatches re-derive from the theme accent,
     // a custom color is frozen. Muted-text legibility still goes through the
@@ -1032,7 +1119,33 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // Removing an adopted remote-crew copy is reversible (the session stays on
       // its peer), so its menu item renders neutral, not destructive-red.
       closeNeutral: releaseLocally,
-    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel])
+      // "Reference in chat": stage a link to THIS session in the active chat's
+      // composer, the discoverable form of the drag gesture. Offered only when a
+      // composer exists (`canStageSessionRef`) and this session may be referenced
+      // into it — `sessionRefBlockReason` refuses an incognito/temporary target
+      // and the already-active session (a self-reference). A foreign (peer) row's
+      // slot is owned elsewhere and stages nothing, so it is withheld there too.
+      // `crewWindowCovers` withholds it on EVERY row while a crew window covers
+      // the pane: the active composer is then hidden under an opaque cover, so a
+      // staged ref would land where the user cannot see it (the no-visible-
+      // composer case `canStageSessionRef` guards, which stays true here because
+      // activeSlot is still set). Re-decided at click time from the SAME pure
+      // function the drop zone uses, so the offer and the handler cannot drift.
+      // `isSidebarActiveSlot` is the raw key===activeSlot test (a per-row view
+      // field), NOT `isActive`: a crew window over the pane makes `isActive`
+      // false while the session is still active, which would otherwise offer a
+      // self-reference the drop zone refuses. Carried in the view, not
+      // `rowActions`, so a chat switch re-renders only the rows whose answer
+      // flips. Fires the same callback the drop does, with the row's snapshot.
+      onReferenceInChat: onDropSessionRef && canStageSessionRef && !foreignRow && !crewWindowCovers
+        && !sessionRefBlockReason({ key: rowKey, activeSlot: isSidebarActiveSlot ? rowKey : null, memoryMode: s.memory_mode })
+        ? () => onDropSessionRef({
+            key: rowKey,
+            title: rowTitle && rowTitle !== rowKey ? rowTitle : rowKey,
+            messages: s.messages,
+          })
+        : undefined,
+    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel, onDropSessionRef, canStageSessionRef, foreignRow, crewWindowCovers, isSidebarActiveSlot, s.memory_mode, s.messages])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       // In flow, not absolute: the phone ⋮ is always drawn, so the content
       // column must end before it. Absolutely placed, the column ran to the
@@ -1122,11 +1235,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           disabled={!dndRow || isRenaming}
         >
           {({ setNodeRef, listeners, isDragging }) => (
-        <ContextMenu>
-          <ContextMenuTrigger asChild>
+        <ContextMenuStableTrigger content={rowContextMenuContent}>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
           className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          data-crew-root={crewRoot ? 'true' : undefined}
           style={boostStyle as React.CSSProperties}
           draggable={
             // Both drag paths are off for a peer-owned row and for a row that
@@ -1211,7 +1324,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             if (!connected) return
             if (peerId) { onOpenPeerSession?.(peerId, s.key); return }
             if (onOpenElsewhere) { onOpenElsewhere(); return }
-            dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
+            dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true }))
             onSelectSlot?.(s.key)
           }}
           onDragStart={!dndRow ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move'; nativeDragInFlight.current = true; onNativeDragStart?.(s.key) }) : undefined}
@@ -1273,7 +1386,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               onOpenSlotInNewTab(s.key, { background: true })
               return
             }
-            dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
+            dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true }))
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
@@ -1358,11 +1471,15 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               <DisclosureChevron open={conductor.expanded} size={12} />
             </button>
           ) : (
-            // Keeps a childless row's card aligned with its siblings' rather than
+            // Keeps a childless row aligned with its siblings' rather than
             // shifted left by the missing chevron.
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
-          <div className="flex-1 min-w-0 overflow-hidden">
+          {crewRoot && <span className="mt-2 mr-2"><CrewGhostBadge size={26} /></span>}
+          {/* The `:has` rule hides the title line below while a crewmate head (`MemberRowHead`),
+              which already carries the name, is drawn on the first line. Not while
+              renaming: the rename box lives in that title line. */}
+          <div className={`flex-1 min-w-0 overflow-hidden ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
@@ -1371,7 +1488,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
-              {memberTitle === null && (
+              {/* A Crew Mode root names the mode, not the conductor behind it: the
+                *  conductor is Crew Mode's to choose and may be swapped. */}
+              {crewRoot && <CrewEyebrow />}
+              {memberTitle === null && !crewRoot && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* WHY this card is sitting above its folder's other rows, in a
@@ -1436,14 +1556,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  leave a touch reader with an unexplained page jump. The text names
                 *  the DESTINATION ("Members page", with the leave-this-page glyph),
                 *  not the bare noun "Members", which in this product also means the
-                *  crew's participants and read as "people are in it" on a cold read. */}
+                *  crew's participants and read as "people are in it" on a cold read.
+                *  A crewmate the roster lists instead wears its face and name on this
+                *  line (`MemberRowHead`), and the title line below is hidden; this chip
+                *  is the fallback for every other case. */}
               {!peerId && onOpenElsewhere && (
-                <span
-                  className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1 rounded bg-info-subtle text-info-text border border-info/40"
-                  data-testid="members-page-chip">
-                  <ExternalLink size={9} className="shrink-0" aria-hidden="true" />
-                  {i18nT('pages.chatSidebar.members_page_chip')}
-                </span>
+                <MemberRowHead agent={memberTitle !== null ? s.agent ?? '' : ''} name={shownTitle} tooltip={tooltipTitle} running={isRunning} />
               )}
               {/* NO destination marker beside the agent name any more. It read
                 *  "· opens the astro dashboard", and it was there because the click
@@ -1620,17 +1738,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 The tail is `last_message`, which is also where the `unread` dot
                 lands — the one marker with no state branch of its own. A row that
                 is unread with nothing said yet still renders the line, because the
-                dot IS the content then. */}
-            {rowState ?? ((s.last_message || unreadDot) ? (
-              <div className={ROW_STATUS_LINE_MUTED_CLS}>
-                {unreadDot}
-                {/* `min-w-0` or the ellipsis never renders: this is a flex child, and
-                    a flex item's `min-width: auto` floor keeps it at content width
-                    instead of letting `truncate` clip it (i18n render gate,
-                    layout/ellipsis-with-flex-parent). */}
-                {s.last_message ? <span className="truncate min-w-0">{s.last_message}</span> : null}
-              </div>
-            ) : null)}
+                dot IS the content then. A crew card's workers summary takes the
+                tail's place: still ONE line, below the row's own state. */}
+            {rowState ?? (crewRoot ? <CrewRootSummaryLine root={s.key} fallback={lastMessageLine} /> : lastMessageLine)}
             {s.source_links && s.source_links.length > 0 && (
               <SessionSourceChips
                 slotKey={s.key}
@@ -1639,7 +1749,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 connected={connected}
                 isActive={isActive}
                 onOpenSource={onOpenSource}
-                onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true })); onSelectSlot?.(s.key) }}
+                onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }}
               />
             )}
             {/* No tag chips here: every tag renders in the meta line above as
@@ -1680,9 +1790,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
            *  its slot is local, so every one of those operations still applies. */}
           {rowActions}
         </div>
-          </ContextMenuTrigger>
-          {rowContextMenuContent}
-        </ContextMenu>
+        </ContextMenuStableTrigger>
           )}
         </DndDraggable>
         {/* The divider starts at the CONTENT x, not the row's edge, so it

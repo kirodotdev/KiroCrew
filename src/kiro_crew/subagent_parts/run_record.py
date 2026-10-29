@@ -313,6 +313,19 @@ class SubagentInfo:
     # returns, so this is the only sign the parent was never told, and the run
     # loop writes no ``delivered`` tombstone while it is set.
     _report_undelivered: bool = False
+    # True when the shutdown ended this run and left it for the next start: its
+    # parent has a dashboard tab, so the arm that ended it wrote no tombstone.
+    # The report skips ``_on_done`` and marks nothing delivered, so held wave
+    # siblings and owed reports stay visible to the next start's orphan sweep,
+    # which announces the run in that tab, with a resume hint while its
+    # conversation survives. A report made now could only queue in a slot that
+    # does not survive the restart or start a turn the shutdown refuses.
+    _left_for_next_start: bool = False
+    # True once ``create_agent_folder`` wrote this run's ``state.json``: the file
+    # the next start's orphan sweep finds runs by. Kept in memory so the shutdown
+    # can decide which runs to leave to that sweep without reading the disk on
+    # the event loop.
+    _folder_seeded: bool = False
     # True when the gateway QUEUED this completion's injection because the
     # parent's slot was busy. Delivery is not consumption: the announce sits in
     # the slot queue until a turn drains it, and that wait is bounded only by the
@@ -395,6 +408,13 @@ class SubagentInfo:
     include_memory: bool = True
     include_lessons: bool = True
     include_project: bool = True
+    # The parent's folder steering directories, resolved when each run of this
+    # child starts (``SubagentManager._parent_steering_dirs``) and handed to
+    # ``build_message`` so the child follows the guides its parent follows. Kept
+    # on the record so a child this run spawns inherits the same set. In memory
+    # only: a retried, drained or continued run resolves it again from its
+    # parent, the same way a chat re-resolves its folder on every rebuild.
+    steering_dirs: tuple[str, ...] = ()
     # The memory silo this child reads and writes, or "" for the global store.
     # Carried rather than derived: `agent` above holds a kiro-cli modeId, a
     # namespace disjoint from cfg.agents, so resolving a store from it answers
@@ -656,6 +676,12 @@ class SubagentInfo:
     # non-success completion (stall, cancel, error). The parent must not read
     # it as a finished answer.
     partial: bool = False
+    # True when the run ended NORMALLY but its final segment carries a tool
+    # call written as prose (``has_leaked_tool_call``): that call never ran,
+    # so the requested output may be missing although the run completed.
+    # Notice-only: the outcome stays completed (earlier calls may have taken
+    # effect); the parent is told to check the work (LEAKED_TOOL_CALL_NOTE).
+    leaked_tool_call: bool = False
     # Continue-nudges already spent recovering a ``stalled`` / ``recovering``
     # completion in place (``STOP_RECOVERY_MAX_RETRIES`` budget, shared with
     # the main chat's ``slot._tool_stall_retries``).

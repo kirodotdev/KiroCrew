@@ -439,6 +439,35 @@ export function heightAnchorStillUsable(
 }
 
 /**
+ * Did the ENGINE, not the reader, move the viewport between a height-sync
+ * capture and its consume? True when the commit shrank the document so far that
+ * the captured scrollTop is now past the maximum, and the live scrollTop sits
+ * exactly on that maximum: the layout the commit forced clamped it there.
+ *
+ * WebKit has no scroll anchoring, so a reprice that SHRINKS the rows above a
+ * released reader by more than their distance from the bottom is answered by
+ * that clamp with no application write anywhere. Read by heightAnchorStillUsable
+ * alone, the clamp looks like the reader moving, the correction is dropped, and
+ * the reader is left flush at the bottom: reported on iPhone as a fully loaded
+ * chat snapping to the end a few seconds after a small scroll up, the moment the
+ * measure farm reprices a batch of rows. The correction is still exact after a
+ * clamp: it is measured from the candidates' painted tops to their tops in the
+ * clamped viewport, so writing `scrollTop + delta` lands the reader where the
+ * reprice alone would have put them.
+ *
+ * A clamp only ever lands ON the ceiling, and only when the capture is above it;
+ * a reader who scrolled is anywhere else, so the pairing names the clamp.
+ */
+export function heightAnchorClampedToCeiling(
+  capturedScrollTop: number,
+  geom: ScrollGeom,
+  epsilon: number = SELF_SCROLL_EPSILON,
+): boolean {
+  const ceiling = bottomTarget(geom)
+  return capturedScrollTop > ceiling + epsilon && Math.abs(geom.scrollTop - ceiling) <= epsilon
+}
+
+/**
  * Distance (px) from the true bottom within which a user scroll RE-ENGAGES
  * follow. Deliberately much tighter than DEFAULT_BOTTOM_THRESHOLD: that 100px
  * band drives the jump-to-bottom pill's visibility, and reusing it for follow

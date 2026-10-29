@@ -259,6 +259,29 @@ def deepseek_policy_alias(tool_name: str) -> str:
     return entry[0] if entry else ""
 
 
+#: pi's read-only built-ins, by the bare name pi's gate extension states, -> the
+#: kiro-cli built-in that does the same job (``ls`` lists a directory, as
+#: ``fs_read`` does). For the pi Side Chat seam to map from.
+PI_READ_ONLY_BUILTINS: dict[str, str] = {
+    "read": "fs_read",
+    "grep": "grep",
+    "find": "glob",
+    "ls": "fs_read",
+}
+
+#: Every harness whose permission TITLE is its bare tool name -> that name's
+#: kiro-cli name, so governance asks the title and ``harness_builtin_tool`` as one
+#: tool. claude is not here: its permission title carries the arguments
+#: (``Read .env``), so it never equals a bare name. Only consulted once a seam
+#: has already stated ``harness_builtin_tool``; it proves nothing alone.
+HARNESS_READ_POLICY_NAMES: dict[str, str] = {**PI_READ_ONLY_BUILTINS}
+
+
+def is_harness_read_alias(native: str, builtin: str) -> bool:
+    """True when *native* is a harness's own name for the kiro-cli *builtin*."""
+    return bool(builtin) and HARNESS_READ_POLICY_NAMES.get(native) == builtin
+
+
 def policy_aliases(*identities: str) -> tuple[str, ...]:
     """The kiro-cli policy names for whichever of *identities* are KAS tool ids.
 

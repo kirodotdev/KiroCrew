@@ -239,6 +239,40 @@ def _reset_degraded_config_observations():
 
 
 @pytest.fixture(autouse=True)
+def _forget_enterprise_profile_pin():
+    """Forget the enterprise profile pin, which a process keeps for its life by design.
+
+    Read through ``sys.modules`` so a test that never loads the module does not import
+    it (the boot tier's own tests pin which modules a host with no source imports).
+    """
+    import sys
+
+    def forget() -> None:
+        module = sys.modules.get("kiro_crew.platform.enterprise_policy_fetch")
+        if module is not None:
+            module._pinned = ""
+
+    forget()
+    yield
+    forget()
+
+
+@pytest.fixture(autouse=True)
+def _forget_sandbox_launch_mark():
+    """Forget that an entry point saw the sandbox marker.
+
+    ``sandbox_launch_mark`` never forgets within a process, by design. A test that sets
+    ``KIROCREW_SANDBOX_ACTIVE`` and runs ``cli.main`` would otherwise make every later
+    enterprise test in the worker boot as a sandboxed child.
+    """
+    from kiro_crew import sandbox_launch_mark
+
+    sandbox_launch_mark._launched_in_sandbox = False
+    yield
+    sandbox_launch_mark._launched_in_sandbox = False
+
+
+@pytest.fixture(autouse=True)
 def _reset_channel_turn_ceiling():
     """Forget the channel turn ceiling's process-global per-conversation counts.
 
@@ -349,6 +383,23 @@ def _no_restart_ready_timeout_override(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_git_proxy_env(_floor_monkeypatch):
+    """Keep a developer's proxy variables out of every test.
+
+    A proxy URL holding a password sends an App Store clone down the split fetch
+    path, so an exported ``HTTPS_PROXY`` would change which git commands a registry
+    test sees. The names come from the module that reads them, so the two cannot
+    drift. CA-bundle variables are left alone: they change no git command, and the
+    CLI start exports ``SSL_CERT_FILE`` itself when it is unset. A test that needs
+    a proxy sets the variable itself.
+    """
+    from kiro_crew.apps.registry_pipeline.subprocess_env import _GIT_PROXY_ENV_KEYS
+
+    for key in (*_GIT_PROXY_ENV_KEYS, "NO_PROXY", "no_proxy"):
+        _floor_monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_managed_venv_override(_floor_monkeypatch):
     """Keep a developer's ``KIROCREW_VENV`` out of every test.
 
@@ -359,6 +410,18 @@ def _no_managed_venv_override(_floor_monkeypatch):
     scratch ``KIROCREW_HOME``. A test that needs a layout sets the variable itself.
     """
     _floor_monkeypatch.delenv("KIROCREW_VENV", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _session_memory_scope_sample_unshared(_floor_monkeypatch):
+    """Start every test with no reused host sample in ``session_memory_scope``.
+
+    The route keeps its last host sample for a few seconds so a wave of callers
+    shares one ``/proc`` walk; a sample one test took must not answer the next.
+    """
+    module = sys.modules.get("kiro_crew.dashboard.handlers.session_memory_scope")
+    if module is not None:
+        _floor_monkeypatch.setattr(module, "_last_sample", None)
 
 
 @pytest.fixture(autouse=True)
@@ -420,10 +483,11 @@ def _history_cleanup_throttle_closed(_floor_monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_advertised_model_cache(_floor_monkeypatch):
-    """Keep one session's advertised model spellings inside its own test."""
+    """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry
 
     _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_META", {})
 
 
 @pytest.fixture(autouse=True)
@@ -455,8 +519,10 @@ def _disarm_agent_slice_memory_high():
     user manager — exactly the class of side effect the root conftest's
     host-service guard refuses (``set-property`` is a mutating verb), turning
     those tests into guard failures. Pre-disarm via the module's own kill
-    switch and restore all four state globals after, so tests of the
-    reconciler itself can re-arm explicitly in their own body.
+    switch and restore all the state globals after, so tests of the
+    reconciler itself can re-arm explicitly in their own body. The epoch
+    stamps are reset too: a stamp left by an earlier test would mark the
+    kill switch as a failure from an older session and re-arm it.
     """
     import kiro_crew.sandbox as _sb
 
@@ -464,7 +530,11 @@ def _disarm_agent_slice_memory_high():
     saved_applied = _sb._SLICE_MEMHIGH_APPLIED
     saved_events_seen = _sb._SLICE_MEMHIGH_EVENTS_SEEN
     saved_climb_warned = _sb._SLICE_MEMHIGH_CLIMB_WARNED
+    saved_memhigh_epoch = _sb._SLICE_MEMHIGH_EPOCH
+    saved_limits_epoch = _sb._SLICE_LIMITS_EPOCH
     _sb._SLICE_MEMHIGH_DISABLED = True
+    _sb._SLICE_MEMHIGH_EPOCH = None
+    _sb._SLICE_LIMITS_EPOCH = None
     try:
         yield
     finally:
@@ -472,6 +542,36 @@ def _disarm_agent_slice_memory_high():
         _sb._SLICE_MEMHIGH_APPLIED = saved_applied
         _sb._SLICE_MEMHIGH_EVENTS_SEEN = saved_events_seen
         _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
+        _sb._SLICE_MEMHIGH_EPOCH = saved_memhigh_epoch
+        _sb._SLICE_LIMITS_EPOCH = saved_limits_epoch
+
+
+@pytest.fixture(autouse=True)
+def _reset_crewmate_worker_slots():
+    """A test that registers a session key as a crewmate worker must not leak it.
+
+    ``_CREWMATE_WORKER_SLOTS`` and ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` are
+    process-wide sets in ``kiro_crew.members_parts.member_sessions``.
+    ``note_crewmate_worker_session`` mutates them directly (not through a
+    monkeypatch), so a test that calls ``resolve_session_agent_bindings`` or
+    ``note_worker_session`` with a worker execution silently contaminates every
+    later test on the same xdist worker that calls ``get_or_create`` on the same
+    key: the allocation's crewmate-worker gate fires and raises
+    ``CapabilityStartupError("capability_harness_unsupported")`` against a plain
+    mock provider that never set ``mate_worker_kit_supported = True``.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.members_parts.member_sessions")
+        if module is not None:
+            module._CREWMATE_WORKER_SLOTS.clear()
+            module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
 
 
 @pytest.fixture(autouse=True)
@@ -906,3 +1006,61 @@ def _crewmate_dynamic_capabilities_on():
     crewmate_dynamic_capabilities._override = True
     yield
     crewmate_dynamic_capabilities._override = prior
+
+
+@pytest.fixture(autouse=True)
+def _reset_materialized_agents_snapshot():
+    """Reset the materialized-agents process-wide snapshot before and after each test.
+
+    ``kiro_crew.config.loader_snapshots`` keeps a process-wide in-memory snapshot
+    of installed kiro agent names (``_MATERIALIZED_AGENTS``) and a removal-evidence
+    history (``_MATERIALIZED_SEEN``). Any test that triggers a scan -- via
+    ``dispatch_kiro_agent`` in a synchronous context, ``publish_materialized_agents``,
+    ``publish_mate_agents``, or ``refresh_materialized_agents`` -- modifies this
+    snapshot and its history dict.
+
+    The critical failure mode: if any test leaves a name (e.g. ``"atlas"``) in
+    ``_MATERIALIZED_SEEN`` while the current ``_MATERIALIZED_AGENTS`` frozenset does
+    NOT contain it, ``_removal_evidence`` classifies it as a removed agent. A later
+    test that passes ``cfg.agent.default_agent = "atlas"`` to ``default_template``
+    then silently receives ``DEFAULT_KIRO_TEMPLATE`` (``"kirocrew"``) instead, because
+    ``default_template`` falls back to the managed default for any name that has been
+    "removed" from the snapshot. Because ``_MATERIALIZED_SEEN`` is a dict mutated in
+    place, a ``monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", ...)`` restore does
+    NOT clear it -- only ``_MATERIALIZED_AGENTS`` is restored, not the history.
+
+    Reset on both sides (before the test body and in teardown) so a test that primes
+    the snapshot and a test that queries it both start from a clean slate. Uses
+    ``setattr(loader, ...)`` so the ``_facade_mirror`` propagates each write
+    atomically to both the loader facade and the owning ``loader_snapshots`` module.
+    """
+
+    def clear():
+        loader_mod = sys.modules.get("kiro_crew.config.loader")
+        if loader_mod is None:
+            return
+        # Rebound globals: write through the facade mirror so both the loader
+        # facade and loader_snapshots are updated in one call.
+        for name, value in (
+            ("_MATERIALIZED_AGENTS", frozenset()),
+            ("_MATERIALIZED_AGENTS_READY", False),
+            ("_MATERIALIZED_COMPLETE", False),
+            ("_MATERIALIZED_MATE_ONLY", frozenset()),
+            ("_MATERIALIZED_AGENTS_GENERATION", 0),
+            ("_MATERIALIZED_REFRESH_APPLIED", 0),
+            ("_MATERIALIZED_REFRESH_ISSUED", 0),
+        ):
+            if hasattr(loader_mod, name):
+                setattr(loader_mod, name, value)
+        # Mutable dicts: replace the binding with a new empty dict so the
+        # ``global _X`` reference in production code picks up the empty
+        # mapping on its next use, without patching its referencing modules.
+        for name in ("_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS"):
+            if hasattr(loader_mod, name):
+                setattr(loader_mod, name, {})
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

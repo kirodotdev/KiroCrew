@@ -47,6 +47,16 @@ def _pi_session_frames() -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines()[1:]]
 
 
+def _pi_effort_frames() -> list[dict]:
+    """The live max capture: claude-opus-4-8 (maps max), then claude-sonnet-4-5."""
+    path = ROOT / "test" / "fixtures" / "acp_frames" / "pi" / "effort-live.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()[1:]]
+
+
+def _thought_level(frame: dict) -> dict:
+    return next(o for o in frame["result"]["configOptions"] if o["id"] == "thought_level")
+
+
 def _pi_thought_level_option() -> dict:
     """The ``thought_level`` select pi advertised on that capture's session/new."""
     for frame in _pi_session_frames():
@@ -93,18 +103,20 @@ class TestTheEffortChannel:
         assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
 
-    def test_the_one_level_pi_does_not_advertise_is_folded_to_its_ceiling(self) -> None:
-        """``max`` is Crew's top level and pi has no such value, so it is spelled down.
+    def test_max_is_written_as_max_where_pi_offers_it(self) -> None:
+        """pi 1.3.0 offers ``max`` on a model that maps it and reads it back as ``max``.
 
-        The fold's target is checked against the capture rather than written twice:
-        a table naming a value this harness never advertised is the same defect as
-        pushing ``max`` itself.
+        A fold onto ``xhigh`` sent the user's ``max`` pick to that model as ``xhigh``.
         """
-        advertised = [o["value"] for o in _pi_thought_level_option()["options"]]
+        frames = _pi_effort_frames()
+        session_new = _thought_level(frames[1])
+        after_write = _thought_level(
+            frames[next(i for i, f in enumerate(frames) if f.get("id") == 3)]
+        )
 
-        assert "max" not in advertised
-        assert effort_config_option_value(ACP_BACKEND_PI, "max") == "xhigh"
-        assert effort_config_option_value(ACP_BACKEND_PI, "max") in advertised
+        assert "max" in [o["value"] for o in session_new["options"]]
+        assert after_write["currentValue"] == "max"
+        assert effort_config_option_value(ACP_BACKEND_PI, "max") == "max"
 
     def test_every_level_pi_does_advertise_is_written_verbatim(self) -> None:
         """The table is one fold, not a translation layer: the rest pass through."""
@@ -114,9 +126,9 @@ class TestTheEffortChannel:
             if level in advertised:
                 assert effort_config_option_value(ACP_BACKEND_PI, level) == level
 
-    def test_no_other_harness_gains_a_fold(self) -> None:
+    def test_no_harness_has_a_fold(self) -> None:
         """A row is an exception; every backend without one writes Crew's own spelling."""
-        for backend in ACP_BACKENDS_KNOWN - {ACP_BACKEND_PI}:
+        for backend in ACP_BACKENDS_KNOWN:
             for level in EFFORT_LEVELS:
                 assert effort_config_option_value(backend, level) == level
 
@@ -180,7 +192,7 @@ class TestTheEffortChannel:
 
         body = inspect.getsource(provider_module.AcpProvider._set_effort_config_option)
 
-        assert "effort_config_option_value(self._client.backend, level)" in body
+        assert "effort_config_option_value(self._client.backend, level, advertised)" in body
         assert "EFFORT_LEVELS.index(level)" not in body
         assert "EFFORT_LEVELS.index(target)" in body
 
@@ -291,8 +303,7 @@ class TestTheEffortControlIsReachableOnThisHarness:
         """The advertised list is a filter, not a bypass.
 
         The example is a level with neither an advertised match nor a row in
-        ``EFFORT_CONFIG_OPTION_VALUES``; ``max`` has the latter, and
-        ``TestTheFoldAndTheFilterAgree`` is where that pairing is pinned.
+        ``EFFORT_CONFIG_OPTION_VALUES``; ``TestMaxFollowsTheModel`` pins ``max``.
         """
         provider = _pi_provider(tmp_path)
         provider._effort_per_model = {PI_MODEL: "gargantuan"}
@@ -321,7 +332,8 @@ class TestTheEffortControlIsReachableOnThisHarness:
             assert "model_supports_effort(" not in body, method
 
         resolve = inspect.getsource(provider_module.AcpProvider._resolve_effort)
-        assert "levels=self._advertised_effort_levels()" in resolve
+        assert "advertised = self._advertised_effort_levels()" in resolve
+        assert "levels=advertised" in resolve
 
     def test_the_shared_resolver_keeps_its_registry_behaviour_untouched(self) -> None:
         """Every existing caller omits ``levels``, so the model registry still answers."""
@@ -395,30 +407,95 @@ class TestAPersistedLevelSurvivesAColdStart:
         assert provider._resolve_effort() == "minimal"
 
 
-class TestTheFoldAndTheFilterAgree:
-    """Two rules of this change meet on one stored value, and their ORDER decides.
+class TestMaxFollowsTheModel:
+    """pi offers ``max`` per model, so the advertised list decides, as on deepseek.
 
-    ``change_effort`` admits any level the dynamic validation set knows -- which is
-    every harness's advertised vocabulary merged, plus Crew's own -- so ``max``
-    reaches the slot on pi and the write folds it to ``xhigh``. If the startup
-    resolution filtered against pi's advertised list BEFORE applying the same fold,
-    it would drop the level the live push had just applied: the session would run
-    the adapter default while the slot still recorded ``max``.
+    Applied as ``max`` where the session offers it. Where it does not but offers
+    ``xhigh``, a saved ``max`` runs at ``xhigh``, as it did before pi 1.3.0 offered
+    ``max``. Every other level the model lacks stays hidden.
     """
 
-    def test_a_stored_level_is_folded_then_filtered(self, tmp_path) -> None:
-        """``max`` is not pi's, but it IS pi's ``xhigh``, and that is what applies."""
+    def _max_provider(self, tmp_path):
+        return _pi_provider(tmp_path, options=[_thought_level(_pi_effort_frames()[1])])
+
+    def test_a_stored_max_applies_as_max_where_offered(self, tmp_path) -> None:
+        provider = self._max_provider(tmp_path)
+        provider._effort_per_model = {PI_MODEL: "max"}
+
+        assert provider.accepts_effort_level("max") is True
+        assert provider._resolve_effort() == "max"
+
+    def test_a_workspace_default_takes_the_same_route(self, tmp_path) -> None:
+        provider = self._max_provider(tmp_path)
+        provider._effort_defaults = {PI_MODEL: "max"}
+
+        assert provider._resolve_effort() == "max"
+
+    def test_a_saved_max_runs_at_xhigh_where_the_model_tops_out_there(self, tmp_path) -> None:
+        """The capture without ``max`` tops out at ``xhigh``; a saved ``max`` lands there.
+
+        Without the fold the level is dropped: the session runs pi's default while
+        the slot still records ``max``.
+        """
         provider = _pi_provider(tmp_path)
         provider._effort_per_model = {PI_MODEL: "max"}
 
+        assert provider.accepts_effort_level("max") is True
         assert provider._resolve_effort() == "xhigh"
 
-    def test_a_workspace_default_takes_the_same_order(self, tmp_path) -> None:
-        """Defaults are coerced through the same fold, not only slot overrides."""
+    def test_a_saved_max_default_takes_the_same_fold(self, tmp_path) -> None:
         provider = _pi_provider(tmp_path)
         provider._effort_defaults = {PI_MODEL: "max"}
 
         assert provider._resolve_effort() == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_the_push_writes_xhigh_for_max_where_max_is_absent(self, tmp_path) -> None:
+        from unittest.mock import AsyncMock
+
+        provider = _pi_provider(tmp_path)
+        provider._client.set_config_option = AsyncMock()
+
+        await provider._set_effort_config_option("max")
+
+        provider._client.set_config_option.assert_awaited_once_with("thought_level", "xhigh")
+
+    def test_max_is_hidden_where_neither_max_nor_xhigh_is_offered(self, tmp_path) -> None:
+        """The fold needs its target advertised; otherwise ``max`` stays hidden."""
+        options = [
+            {
+                "id": "thought_level",
+                "type": "select",
+                "currentValue": "medium",
+                "options": [{"value": v, "name": v} for v in ("off", "low", "medium", "high")],
+            }
+        ]
+        provider = _pi_provider(tmp_path, options=options)
+        provider._effort_per_model = {PI_MODEL: "max"}
+
+        assert provider.accepts_effort_level("max") is False
+        assert provider._resolve_effort() is None
+
+    def test_only_max_folds_and_only_when_absent(self) -> None:
+        """Pinned on the resolver: the fold is one row, taken only on absence."""
+        without_max = ["off", "minimal", "low", "medium", "high", "xhigh"]
+
+        assert effort_config_option_value(ACP_BACKEND_PI, "max", without_max) == "xhigh"
+        assert effort_config_option_value(ACP_BACKEND_PI, "max", [*without_max, "max"]) == "max"
+        assert effort_config_option_value(ACP_BACKEND_PI, "max") == "max"
+        assert effort_config_option_value(ACP_BACKEND_PI, "high", ["low"]) == "high"
+        assert effort_config_option_value(ACP_BACKEND_OPENCODE, "max", without_max) == "max"
+
+    @pytest.mark.asyncio
+    async def test_the_push_writes_max(self, tmp_path) -> None:
+        from unittest.mock import AsyncMock
+
+        provider = self._max_provider(tmp_path)
+        provider._client.set_config_option = AsyncMock()
+
+        await provider._set_effort_config_option("max")
+
+        provider._client.set_config_option.assert_awaited_once_with("thought_level", "max")
 
     def test_a_level_that_folds_to_nothing_advertised_is_still_dropped(self, tmp_path) -> None:
         """The fold is not a bypass: a level with no row and no advertised match goes."""
@@ -433,7 +510,8 @@ class TestTheFoldAndTheFilterAgree:
 
         body = inspect.getsource(provider_module.AcpProvider._resolve_effort)
 
-        assert "normalize=functools.partial(effort_config_option_value" in body
+        assert "normalize=functools.partial(" in body
+        assert "effort_config_option_value, self._client.backend, advertised=advertised" in body
 
     def test_the_shared_resolver_folds_before_it_checks(self) -> None:
         """Directly, on the resolver: a fold applied after the check cannot pass this."""
@@ -486,22 +564,26 @@ class TestThePushNeverNeedsARefusal:
         """
         from kiro_crew.effort import EFFORT_LEVELS
 
-        target = effort_config_option_value(ACP_BACKEND_PI, level)
+        advertised = [o["value"] for o in _pi_thought_level_option()["options"]]
+        target = effort_config_option_value(ACP_BACKEND_PI, level, advertised)
+        if target not in advertised:
+            return []
         try:
             start = EFFORT_LEVELS.index(target)
         except ValueError:
             return [target]
-        return list(reversed(EFFORT_LEVELS[: start + 1]))
+        return [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1]) if lvl in advertised]
 
     def test_every_crew_level_emits_only_values_pi_advertised(self) -> None:
-        """Crew's whole ladder, including the two levels pi does not have."""
+        """Crew's whole ladder, including the level this model does not have."""
         from kiro_crew.effort import EFFORT_LEVELS
 
         advertised = {o["value"] for o in _pi_thought_level_option()["options"]}
 
         for level in EFFORT_LEVELS:
             emitted = self._emitted(level)
-            assert emitted, level
+            expected = level in advertised or (level == "max" and "xhigh" in advertised)
+            assert bool(emitted) == expected, level
             unknown = [value for value in emitted if value not in advertised]
             assert unknown == [], f"{level} would send pi {unknown}"
 
@@ -526,7 +608,7 @@ class TestThePushNeverNeedsARefusal:
 
         assert "EFFORT_LEVELS[: start + 1]" in body
         assert "_is_config_value_rejection(exc, effort_option)" in body
-        assert "effort_config_option_value(self._client.backend, level)" in body
+        assert "effort_config_option_value(self._client.backend, level, advertised)" in body
 
 
 # What pi-acp 0.0.34 answered, driving pi 0.87.1, when ``session/set_config_option``

@@ -76,6 +76,10 @@ kiro-cli login
 On the first dashboard launch, the Set up Kiro page walks through installing the
 CLI and completing sign-in.
 
+Already a kiro-cli user? [Coming from kiro-cli](coming-from-kiro-cli.md) covers
+what carries over (agents, MCP servers, steering, your login), why a Crew chat
+behaves differently from `kiro-cli chat`, and how to get CLI-style behaviour.
+
 ## First-Time Setup
 
 ```bash

@@ -1,9 +1,15 @@
 import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, type LucideIcon } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
-import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
+import { ICON_ACTION_ROW_CLS, HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
+import { MessageReactionBar } from './MessageReactionBar'
+import type { ReactionError } from '../../hooks/useChatReactions'
+
+// Stable empty-set identity so an absent `activeReactions` prop never forces
+// a re-render of MessageReactionBar's memo comparison on every parent render.
+const EMPTY_REACTIONS: ReadonlySet<string> = new Set()
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
@@ -24,12 +30,49 @@ import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type Messa
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { readSteerRecord } from './decisionRecord'
 import { revealComposer } from './composerFocus'
-import type { SteerRetractAction, SteerRetractRefusal } from '../../hooks/useSteerRetract'
+import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../hooks/useSteerRetract'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
 // persists for the app session — each steered message animates exactly once.
 const animatedSteers = new Set<string>()
+
+/* Each take-back notice names the action that was picked. The keys stay full
+ * literals so the dead-key and dynamic-key checks can see every one of them. */
+const STEER_UNSUPPORTED_KEY: Record<SteerRetractAction, string> = {
+  unsend: 'pages.chat.userMessage.steer_unsend_unsupported',
+  edit: 'pages.chat.userMessage.steer_edit_unsupported',
+  queue: 'pages.chat.userMessage.steer_queue_unsupported',
+}
+const STEER_FAILED_KEY: Record<SteerRetractAction, string> = {
+  unsend: 'pages.chat.userMessage.steer_unsend_failed',
+  edit: 'pages.chat.userMessage.steer_edit_failed',
+  queue: 'pages.chat.userMessage.steer_queue_failed',
+}
+const STEER_UNCONFIRMED_KEY: Record<SteerRetractAction, string> = {
+  unsend: 'pages.chat.userMessage.steer_unsend_unconfirmed',
+  edit: 'pages.chat.userMessage.steer_edit_unconfirmed',
+  queue: 'pages.chat.userMessage.steer_queue_unconfirmed',
+}
+
+// One icon per take-back action, shared by the in-flight line and the settled
+// note, so a person sees the same mark from the click to the result.
+const STEER_ACTION_ICON: Record<SteerRetractAction, LucideIcon> = {
+  unsend: Undo2,
+  edit: Pencil,
+  queue: ArrowUpFromLine,
+}
+
+const STEER_IN_FLIGHT_KEY = {
+  unsend: 'pages.chat.userMessage.steer_unsend_in_flight',
+  edit: 'pages.chat.userMessage.steer_edit_in_flight',
+  queue: 'pages.chat.userMessage.steer_queue_in_flight',
+} as const satisfies Record<SteerRetractAction, string>
+
+function SteerActionIcon({ action }: { action: SteerRetractAction }) {
+  const Icon = STEER_ACTION_ICON[action]
+  return <Icon size={12} className="shrink-0" aria-hidden="true" />
+}
 
 interface UserMessageProps {
   content: string
@@ -57,6 +100,18 @@ interface UserMessageProps {
   mode?: string
   pinned?: boolean
   onTogglePin?: () => void
+  /** Emoji the current caller has already placed on this message.
+   *  Absent or empty: the reaction row still renders when
+   *  `onToggleReaction` is given — `active` only decides which of the fixed
+   *  four start filled. */
+  activeReactions?: ReadonlySet<string>
+  /** Toggle one of the fixed reaction emoji on this message. Absent: no
+   *  reaction row is drawn, same opt-in contract as `onTogglePin`. */
+  onToggleReaction?: (emoji: string) => void
+  /** The last failed reaction on this message, surfaced inline by the bar so a
+   *  failure is never silent. */
+  reactionError?: ReactionError | null
+  onClearReactionError?: () => void
   /** Open (or start) the reply thread on this message. Only a crewmate's chat offers it. */
   onReplyInThread?: () => void
   /** Whether the slot currently has a running turn. Gates the pending-steer
@@ -110,12 +165,12 @@ interface UserMessageProps {
   /** The take-back in flight for this row: its controls give way to a progress line. */
   steerActionPending?: SteerRetractAction
   /** Why this row's last take-back did not happen. */
-  steerActionRefusal?: SteerRetractRefusal
+  steerActionRefusal?: SteerRetractRefusalNotice
   /** The take-back request failed before its outcome was known. */
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, activeReactions, onToggleReaction, reactionError, onClearReactionError, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -391,11 +446,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 
   if (retractedAction) {
     const settleAnimated = !mountedRetracted && !reducedMotion
-    const retractedIcon = retractedAction === 'queue'
-      ? <ArrowUpFromLine size={12} className="shrink-0" aria-hidden="true" />
-      : retractedAction === 'edit'
-        ? <Pencil size={12} className="shrink-0" aria-hidden="true" />
-        : <Undo2 size={12} className="shrink-0" aria-hidden="true" />
+    // The meta field is free text from the transcript; anything unknown reads as
+    // an unsend, the same fallback the label below takes.
+    const retractedKind: SteerRetractAction = retractedAction === 'edit' || retractedAction === 'queue' ? retractedAction : 'unsend'
+    const retractedIcon = <SteerActionIcon action={retractedKind} />
     const retractedLabel = retractedAction === 'edit'
       ? i18nT('pages.chat.userMessage.steer_retracted_edit')
       : retractedAction === 'queue'
@@ -686,7 +740,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 <span className="inline-flex items-center gap-1" data-testid="steer-pending-status">
                   <span className="inline-flex items-center gap-1 animate-pulse" role={steerActionPending ? 'status' : undefined}>
                     {steerActionPending
-                      ? <><Undo2 size={12} className="shrink-0" aria-hidden="true" /> {i18nT('pages.chat.userMessage.steer_taking_back')}</>
+                      ? <><SteerActionIcon action={steerActionPending} /> {i18nT(STEER_IN_FLIGHT_KEY[steerActionPending])}</>
                       : <><Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steering')}</>}
                   </span>
                   {!steerActionPending && <InfoTip text={i18nT('pages.chat.userMessage.redirecting_the_running_turn_not_yet_confirmed')} />}
@@ -730,13 +784,13 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                   ruling as the copy-failure notice below). */}
               <ErrorNotice
                 message={steerActionPending && steerActionRequestFailed
-                  ? i18nT('pages.chat.userMessage.steer_take_back_unconfirmed')
+                  ? i18nT(STEER_UNCONFIRMED_KEY[steerActionPending])
                   : steerActionRefusal && !steerActionPending
-                    ? steerActionRefusal === 'busy'
+                    ? steerActionRefusal.refusal === 'busy'
                       ? i18nT('pages.chat.userMessage.steer_take_back_busy')
-                      : steerActionRefusal === 'unsupported'
-                        ? i18nT('pages.chat.userMessage.steer_take_back_unsupported')
-                        : i18nT('pages.chat.userMessage.steer_take_back_failed')
+                      : steerActionRefusal.refusal === 'unsupported'
+                        ? i18nT(STEER_UNSUPPORTED_KEY[steerActionRefusal.action])
+                        : i18nT(STEER_FAILED_KEY[steerActionRefusal.action])
                     : null}
                 variant="inline"
                 className="mt-1"
@@ -761,6 +815,23 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {steerDecision && <SteerDecisionLine record={steerDecision} />}
           {bubbleWithMenu}
         </>
+      )}
+      {/* Reaction row directly UNDER the bubble and ABOVE the action strip, so a
+          placed emoji reads as belonging to THIS message. Rendered below the
+          strip it sat past the strip's reserved (opacity-0 but space-occupying)
+          height — about 70px under the bubble and nearer the reply below, so a
+          reader could not tell which message a reaction marked (UX review). The
+          bar manages its own per-button reveal: a placed emoji shows at rest as
+          a marker, with the `+` beside it; on a message with none the whole
+          row stays collapsed until hover/focus. */}
+      {messageTs && onToggleReaction && (
+        <MessageReactionBar
+          active={activeReactions ?? EMPTY_REACTIONS}
+          onToggle={onToggleReaction}
+          error={reactionError}
+          onClearError={onClearReactionError}
+          className={`mt-0.5 ${HOVER_NONE_ACTIONS_ROW_CLS}`}
+        />
       )}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px

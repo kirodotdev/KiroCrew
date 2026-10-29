@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         make_route_latency_middleware,
         mark_audit_claimed,
         reject_compressed_body_middleware,
+        relay_header_strip_middleware,
         resolve_dashboard_host,
         sel,
         slot_ownership_middleware,
@@ -121,10 +122,11 @@ def _install_dashboard_middlewares(
 ) -> None:
     """Install the dashboard's middleware chain on *app*, outermost first.
 
-    The order is a security contract: route latency outermost, then the deny-audit
-    boundary outer to every barrier that can refuse, the host canonicalization,
-    the ``Host`` barrier, the header policy, CSRF, token auth, the SEL request
-    audit and the per-slot ownership checkpoint, with the SPA fallback innermost.
+    The order is a security contract: route latency outermost, then the client-sent
+    relay-header strip, the deny-audit boundary outer to every barrier that can
+    refuse, the host canonicalization, the ``Host`` barrier, the header policy, CSRF,
+    token auth, the SEL request audit and the per-slot ownership checkpoint, with the
+    SPA fallback innermost.
     ``_register_workflow_lifecycle`` and ``_register_crewmate_prune_gate`` append
     their gates after it. The barriers are built by the entrypoint from the shared
     factories; the layers only this chain uses are built here.
@@ -209,10 +211,14 @@ def _install_dashboard_middlewares(
         # method / bounded route_template / status_class — never a real path,
         # query, id, or body — so it cannot leak content or explode cardinality.
         make_route_latency_middleware(),
+        # Ahead of every barrier, auth layer and handler: a client-sent
+        # ``x-kiro-relay-*`` identity header is dropped before anything reads it
+        # (dashboard/relay_headers.py).
+        relay_header_strip_middleware,
         # Outer to every barrier that can refuse, so a pre-audit 403 is recorded
         # by POSITION rather than by each deny site remembering to. Inner to the
-        # latency middleware only, which keeps that one's "times the FULL
-        # in-gateway handling" contract intact.
+        # latency middleware and the relay-header strip only, which keeps the
+        # latency layer's "times the FULL in-gateway handling" contract intact.
         deny_audit_middleware,
         host_canonical_redirect,
         host_validation_middleware,
@@ -276,10 +282,10 @@ def _install_api_middlewares(
     """Install the headless (``--slack-only``) API server's middleware chain on *app*.
 
     At parity with :func:`_install_dashboard_middlewares` over the MCP route surface
-    both servers mount: route latency outermost, then the deny-audit boundary, the
-    ``Host`` barrier, CSRF, token auth with no SPA shell, the SEL request audit and
-    the per-slot ownership checkpoint. ``_register_workflow_lifecycle`` appends its
-    gate after it.
+    both servers mount: route latency outermost, then the client-sent relay-header
+    strip, the deny-audit boundary, the ``Host`` barrier, CSRF, token auth with no SPA
+    shell, the SEL request audit and the per-slot ownership checkpoint.
+    ``_register_workflow_lifecycle`` appends its gate after it.
     """
     # SEL audit middleware — log mutating MCP tool calls
     _sel_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
@@ -322,14 +328,17 @@ def _install_api_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
-    # Explicit ordering mirrors start_dashboard: latency → deny-audit → host →
-    # csrf → token → audit.
+    # Explicit ordering mirrors start_dashboard: latency → relay strip →
+    # deny-audit → host → csrf → token → audit.
     app.middlewares[:] = [
         # Outermost: privacy-safe, bounded-cardinality per-route latency (rec #1).
         # The MCP routes are registered AFTER this assignment, so the middleware
         # captures its route-template set LAZILY on the first request (by which
         # point every route is registered) — see make_route_latency_middleware.
         make_route_latency_middleware(),
+        # Same client-sent relay-header strip as the dashboard chain, ahead of
+        # every barrier, auth layer and handler.
+        relay_header_strip_middleware,
         # Outer to every barrier that can refuse: a pre-audit 403 is recorded by
         # POSITION here, not by each deny site remembering to.
         deny_audit_middleware,

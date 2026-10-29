@@ -48,7 +48,7 @@ _THIS_FILE = Path(__file__).resolve()
 
 #: Names the test trees are known to patch through the facade, one of each seam the
 #: handlers have: the SEL audit and its sink, the app's store, the retriever and the embed
-#: pool the searches use, the sync status write and claim, the agent source's URL fetch,
+#: pool the searches use, the sync status write and claim, the web-page source's fetch,
 #: the sensitive-path fence, the embedding rebuild, the embedder factory, the folder dialog
 #: and an upload archive cap. The scan below must find all of them, so a scanner that stops
 #: matching goes red instead of passing over nothing.
@@ -61,7 +61,7 @@ _KNOWN_SEAMS = frozenset(
         "run_in_embed_pool",
         "_set_sync_status",
         "_claim_sync",
-        "fetch_url_content",
+        "fetch_page",
         "is_sensitive_path",
         "rebuild_embeddings",
         "_create_embedder",

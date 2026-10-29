@@ -1371,7 +1371,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "code with no chance to inspect the script first."
         ),
     ),
-    # The ``restart`` / ``update`` / ``file-delivery approve`` / ``cloud <lifecycle>`` /
+    # The ``restart`` / ``update`` / ``cloud <lifecycle>`` /
     # ``gateway restart`` self-management commands have NO catalog row.  A regex row opening
     # with an unbounded any-run before the product name matches the name in a worktree path
     # plus the verb word later (``ls ~/kirocrew-wt/restart.log``), and protects nothing the

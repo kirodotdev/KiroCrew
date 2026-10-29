@@ -452,7 +452,11 @@ a tree while the argv test is per process: the chokepoint takes harness argv on 
 (`is_kiro_cli`), and a marked tool tree can spawn a harness, so an orphaned harness can
 carry the marker without being tool work and must stay reachable. The exclusion is
 therefore exactly the population the argv condition withheld already — the arm's reach
-is unchanged, and what it removes is their per-pass count, gate allow and attribution.
+is unchanged, and what it removes is their count in `unowned_alive` on every pass and
+the withheld-reason audit rows each would write (a "first pass unowned" row, then a
+"not a managed agent process" row, per process identity). It removes no gate allow or
+attribution: condition 3 withholds a non-harness pid before the gate is asked, so none
+was ever written for one.
 It FAILS OPEN, unlike every condition below: an unreadable marker leaves the pid a
 candidate, because a sparing that fails closed would widen what escapes the conditions
 on doubt.
@@ -727,5 +731,7 @@ recover.
   argv test is per process: a harness leaked inside a tool tree carries the marker
   without being tool work, and stays a candidate. The excluded population is
   therefore exactly the one the argv condition withheld already — the kill arm's
-  reach is the same, and what the exclusion removes is their per-pass count, gate
-  allow and kill attribution.
+  reach is the same, and what the exclusion removes is their count in
+  `unowned_alive` on every pass and their withheld-reason audit rows. It removes no
+  gate allow or kill attribution, because the argv condition withholds them before
+  the gate is asked.

@@ -495,9 +495,9 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "File watch frames",
         "dashboard/file_api/transfer.py",
         "The file-watch SSE frames (api_file_watch) are redacted before they are "
-        "pushed. The file download and the Range stream serve the file's own "
-        "bytes and use redact() as a GATE: a file whose text the redactor would "
-        "change is refused, not served masked.",
+        "pushed. The owner-only file download serves the file's own bytes "
+        "without a content scan. The Range stream uses redact() as a GATE: a "
+        "file whose text the redactor would change is refused, not served masked.",
     ),
     (
         "Office document preview",
@@ -865,6 +865,20 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "it draws the value. The type and size questions are asked again about the "
         "scrubbed result, because a value that fit before the scrub can be over the "
         "cap after it.",
+    ),
+    (
+        "Script-cron records appended for a mate's dashboard page",
+        "dashboard/handlers/agent_panel_record.py",
+        "Every string a member-bound script cron sends through the record door "
+        "(`POST /api/agent-panel/dashboard/record`) on its way into the mate's own crew "
+        "log, where the custom fold keeps it and the mate's page draws it. The scrub runs "
+        "on the way IN, like the agentic value's, with the same two redactors in the "
+        "same order and the same recursive walk over arrays and objects, keys included; "
+        "and each string value is judged a second time beside its key, because a bearer "
+        "token is caught only next to its authorization header and a script that records "
+        "an upstream response's headers writes exactly that pair. The size is judged on "
+        "the scrubbed form, which is what lands. The client (`ScriptContext."
+        "crew_log_append`) scrubs too, but it is one caller of the route and not its gate.",
     ),
     (
         "Field values pushed to a mate's dashboard page",

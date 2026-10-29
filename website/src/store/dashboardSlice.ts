@@ -13,6 +13,7 @@ import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName 
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
 import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+export { selectPersonSlots } from './personSlots'
 
 /** A close tombstone entry (see `applySlots`). */
 interface CloseHold {
@@ -167,6 +168,9 @@ export interface DashboardState {
   approvalMode: string
   channelTrusted: boolean
   refreshTrigger: number
+  /** Bumped when the cron caches are re-read (see `invalidateRefreshQueries`):
+   *  what the Schedule page reloads its job list on. */
+  cronRefreshTrigger: number
   unreadSlots: string[]
   /** Watermarks for relayed clears: slot -> newest message ts that marked it
    *  unread. A cross-window `slot_read` clears the badge only when its read
@@ -248,6 +252,7 @@ const initialState: DashboardState = {
   approvalMode: 'normal',
   channelTrusted: false,
   refreshTrigger: 0,
+  cronRefreshTrigger: 0,
   ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
   unreadDrainHeld: true,
   slotsListPartial: false,
@@ -1460,6 +1465,7 @@ const dashboardSlice = createSlice({
     setPendingManualOrder(state, action: PayloadAction<string[] | null>) { state.pendingManualOrder = action.payload },
     setManualOrderError(state, action: PayloadAction<string>) { state.manualOrderError = action.payload },
     triggerRefresh(state) { state.refreshTrigger += 1 },
+    triggerCronRefresh(state) { state.cronRefreshTrigger += 1 },
     /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
      *  MANUAL reminder: records the relay-immune sentinel; only a local read
      *  in this window clears it. Object payload `{slot, ts?}` = message
@@ -1843,7 +1849,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, triggerCronRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 export { slotSurfaceKey, slotIsRemoteBound } from './slotIdentity'

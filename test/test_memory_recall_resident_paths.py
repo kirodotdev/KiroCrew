@@ -17,7 +17,7 @@ import pytest
 
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew.vector_memory import VectorMemoryStore
-from kiro_crew.vector_memory_runtime import lessons, semantic
+from kiro_crew.vector_memory_runtime import lessons, semantic, term_index
 
 _DIM = 16
 
@@ -121,6 +121,8 @@ def test_scoring_vectors_reference_the_rows_own_blobs(tmp_path: Path) -> None:
 
 
 def test_token_memo_stops_growing_at_its_byte_cap(tmp_path: Path, monkeypatch) -> None:
+    # The per-text memo serves a set the term index declines.
+    monkeypatch.setattr(term_index, "MAX_TERM_IDS", 0)
     store = _store(tmp_path)
     _seed_facts(store, 60)
     store._semantic_scoring = None
@@ -189,3 +191,79 @@ def test_lesson_render_memo_matches_the_uncached_render(tmp_path: Path, caplog) 
             uncached.append((row, text))
     assert [(r["key"], t) for r, t in cached] == [(r["key"], t) for r, t in uncached]
     assert lessons._lesson_render_fields.cache_info().currsize == len(rows)
+
+
+def _memo_path(store: VectorMemoryStore, query: str, monkeypatch) -> list[dict]:
+    """The resident set scored through the per-text memo, the index declined."""
+    with monkeypatch.context() as m:
+        m.setattr(term_index, "MAX_TERM_IDS", 0)
+        store._semantic_scoring = None
+        return store._semantic_candidates_v1(query)
+
+
+@pytest.mark.parametrize(
+    "query", ["tokyo deploy", "Rust recall memories", "pipelines deploying notes 7", "zzz"]
+)
+def test_term_index_ranks_like_the_memo_and_the_scan(
+    tmp_path: Path, monkeypatch, query: str
+) -> None:
+    store = _store(tmp_path)
+    _seed_facts(store, 60)
+    store._semantic_scoring = None
+    fast = store._semantic_candidates_v1(query)
+    derived = store._semantic_scoring.derived
+    assert isinstance(derived["term_index"][0], term_index.RowTermIndex)
+    assert not derived.get("tokens"), "the index path stemmed a row through the memo"
+    assert fast == _memo_path(store, query, monkeypatch) == _scan(store, query)
+
+
+def test_a_label_changed_since_the_build_is_scored_from_its_new_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _store(tmp_path)
+    _seed_facts(store, 20)
+    store._semantic_scoring = None
+    store._semantic_candidates_v1("tokyo")  # builds the index with no identities
+    real = store._fact_identities
+    renamed = {"project.item_2.fact": {"subject": "Kyoto", "predicate": "trip", "scope": ""}}
+    monkeypatch.setattr(store, "_fact_identities", lambda: {**real(), **renamed})
+    fast = store._semantic_candidates_v1("kyoto trip")
+    renamed_row = next(r for r in fast if r["key"] == "project.item_2.fact")
+    assert renamed_row["retrieval"]["matched_terms"] == ["trip"]
+    assert fast == _scan(store, "kyoto trip")
+
+
+def test_the_index_is_built_once_per_set(tmp_path: Path, monkeypatch) -> None:
+    store = _store(tmp_path)
+    _seed_facts(store, 10)
+    store._semantic_scoring = None
+    builds = []
+    real_build = term_index.RowTermIndex.build
+    monkeypatch.setattr(
+        term_index.RowTermIndex,
+        "build",
+        classmethod(lambda cls, texts, np: builds.append(1) or real_build(texts, np)),
+    )
+    for query in ("tokyo", "paris", "rust"):
+        store._semantic_candidates_v1(query)
+    assert builds == [1]
+    assert store.set_semantic("project.new.fact", "brand new", 1.0, "user_explicit") is None
+    store._semantic_candidates_v1("brand")
+    assert builds == [1, 1], "a write replaces the set, and its index with it"
+
+
+def test_term_index_holds_each_text_s_exact_terms() -> None:
+    from kiro_crew.vector_memory_runtime import text_scoring
+
+    texts = ["deploy pipelines", "Rust memory recalls", "", "deploy deploy x"]
+    index = term_index.RowTermIndex.build(texts, np)
+    for query in ({"deploy", "rust", "memori"}, {"recal", "recall", "x"}, set()):
+        hits = index.query(query)
+        for i, text in enumerate(texts):
+            assert hits.matched(i) == query & text_scoring._row_stem_tokens_uncached(text)
+
+
+def test_past_its_bound_the_index_declines(monkeypatch) -> None:
+    monkeypatch.setattr(term_index, "MAX_TERM_IDS", 3)
+    assert term_index.RowTermIndex.build(["a b", "c d e"], np) is None
+    assert term_index.RowTermIndex.build(["a b", "c"], np) is not None

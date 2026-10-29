@@ -520,6 +520,17 @@ class SessionEnvironmentsConfig:
         ),
     )
 
+    default_profile: str = field(
+        default="",
+        metadata=_meta(
+            "Default Environment",
+            "Profile id new dashboard chats start on; empty runs them on this machine. "
+            "Applied once, when a chat is created, and changeable in its composer until "
+            "the first message. Scheduled jobs, channels and subagents are unaffected "
+            "(a subagent follows its parent).",
+        ),
+    )
+
     stop_on_shutdown: bool = field(
         default=True,
         metadata=_meta(
@@ -535,6 +546,7 @@ class SessionEnvironmentsConfig:
     def from_raw(cls, section: object) -> "SessionEnvironmentsConfig":
         """Build from the raw section, keeping every valid part (never raises)."""
         from kiro_crew.config.session_environments import (
+            load_default_profile,
             load_session_environments,
             load_stop_on_shutdown,
         )
@@ -543,6 +555,7 @@ class SessionEnvironmentsConfig:
         return cls(
             coder_url=coder_url,
             profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
+            default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
         )
 

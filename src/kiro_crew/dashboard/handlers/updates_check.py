@@ -62,7 +62,13 @@ from kiro_crew.platform.update_capability import (
     bundled_by_desktop_app,
     derive_capability,
 )
-from kiro_crew.platform.update_governance import min_version
+from kiro_crew.platform.update_governance import (
+    fetch_and_pin_upstream,
+    git_command_env,
+    min_version,
+    repo_exec_config_reason,
+    upstream_remote_and_branch,
+)
 from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
@@ -467,43 +473,65 @@ async def _run_update_check() -> None:
 
 
 async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
-    """Compare a git checkout in *proj* against its tracked remote."""
+    """Compare a git checkout in *proj* against its tracked remote.
+
+    *proj* is a tree an agent can write, and this runs on the host at boot, on
+    the 12-hourly poll and on the dashboard's Check button. So every git call
+    here goes through the same guards as the unattended apply: ``git`` resolved
+    off ``PATH``, :func:`git_command_env` pinning every fixed-key exec vector
+    (``core.sshCommand``, ``core.fsmonitor``, ``core.hooksPath``,
+    ``diff.external`` ...), and a :func:`repo_exec_config_reason` refusal for
+    the repo-NAMED ones (``diff.<driver>.textconv``, ``filter.<name>.*``) that
+    no pin can reach. The changelog diff also runs ``--no-textconv
+    --no-ext-diff``, so no attribute can route it to a program.
+    """
     base: dict[str, object] = _capability_fields(capability)
 
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "fetch",
-        "--quiet",
-        cwd=proj,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-    )
-    try:
-        _, fetch_err = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.CancelledError:
-        await platform_compat.kill_and_reap(proc)
-        raise
-    except asyncio.TimeoutError:
-        await platform_compat.kill_and_reap(proc)
-        logger.warning("git fetch timed out")
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
+    git = platform_compat.trusted_git_bin()
+    if git is None:
+        logger.warning("Update check skipped: no trustworthy git outside PATH")
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
-    if proc.returncode != 0:
+    exec_config = await asyncio.to_thread(repo_exec_config_reason, proj)
+    if exec_config:
         logger.warning(
-            "git fetch failed (rc=%s): %s",
-            proc.returncode,
-            (fetch_err or b"").decode(errors="replace").strip(),
+            "Update check skipped: %s, which git would run during the check", exec_config
         )
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
+        return
+    # Carries the shared guards (trusted PATH, built-in transports only, no git
+    # proxy, every fixed-key exec vector pinned, location vars stripped).
+    env = git_command_env()
+
+    # The tracked upstream to compare against, read from config (not the
+    # `origin/<name>` short form). None for a detached HEAD or a branch with no
+    # upstream: nothing to compare against, a failed check -- exactly what the
+    # old bare `git fetch` + `rev-parse @{u}` reported.
+    upstream = await asyncio.to_thread(upstream_remote_and_branch, proj)
+    if upstream is None:
+        logger.warning("Could not resolve the tracked upstream in %s", proj)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
+        return
+    remote_name, remote_branch = upstream
+
+    # The fetch runs through the shared isolated helper: a repo-defined hook
+    # cannot fire on the fetch's ref write (it happens in a git dir the gateway
+    # owns), while the fetched objects land in this checkout and the tip is
+    # pinned into its tracking ref, so the reads below resolve against it with no
+    # ref transaction. The same helper fetches for the unattended apply.
+    remote_sha = await fetch_and_pin_upstream(
+        proj, remote_name, remote_branch, git=git, env=env, timeout=30
+    )
+    if remote_sha is None:
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
         return
 
     local = await asyncio.create_subprocess_exec(
-        "git",
+        git,
         "rev-parse",
         "HEAD",
         cwd=proj,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -518,33 +546,10 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         await platform_compat.kill_and_reap(local)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
-    remote = await asyncio.create_subprocess_exec(
-        "git",
-        "rev-parse",
-        "@{u}",
-        cwd=proj,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-    )
-    try:
-        remote_out, _ = await asyncio.wait_for(remote.communicate(), timeout=10)
-    except asyncio.CancelledError:
-        await platform_compat.kill_and_reap(remote)
-        raise
-    except asyncio.TimeoutError:
-        await platform_compat.kill_and_reap(remote)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
-        return
 
     local_sha = local_out.decode(errors="replace").strip()
-    remote_sha = remote_out.decode(errors="replace").strip()
-    if not local_sha or not remote_sha:
-        # No upstream (detached HEAD, untracked branch) or an unreadable HEAD.
-        # There is nothing to compare against, which is a failed check and not
-        # "you are on the latest version".
-        logger.warning("Could not resolve HEAD and/or upstream in %s", proj)
+    if not local_sha:
+        logger.warning("Could not resolve HEAD in %s", proj)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
 
@@ -562,7 +567,7 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # and the second is precisely the case with commits to lose. Only a checkout
     # that is behind and NOT ahead can be fast-forwarded, so only that one is
     # offered an update.
-    counts = await count_divergence(proj, "@{u}")
+    counts = await count_divergence(proj, remote_sha, git=git, env=env)
     if isinstance(counts, DivergenceUnreadable):
         # A check that could not count must not answer "you are on the latest
         # version" — the unattended auto-apply reads this verdict.
@@ -576,10 +581,12 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # Compare the remote's version (or the on-disk one when already pulled).
     target_sha = remote_sha if local_sha != remote_sha else local_sha
     show = await asyncio.create_subprocess_exec(
-        "git",
+        git,
         "show",
+        "--no-textconv",
         f"{target_sha}:src/kiro_crew/__init__.py",
         cwd=proj,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -642,12 +649,17 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     if available:
         diff_base = f"v{_local_version}" if local_sha == remote_sha else local_sha
         diff = await asyncio.create_subprocess_exec(
-            "git",
+            git,
             "diff",
+            # A tracked `.gitattributes` can name a diff driver for CHANGELOG.md;
+            # these keep git's own text diff whatever the attributes say.
+            "--no-textconv",
+            "--no-ext-diff",
             f"{diff_base}..{target_sha}",
             "--",
             "CHANGELOG.md",
             cwd=proj,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=platform_compat.IS_POSIX,

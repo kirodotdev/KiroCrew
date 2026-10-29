@@ -36,11 +36,7 @@ def _conditions(placement: dict[str, Any]) -> list[str]:
 
 
 def _has_preview_flag(placement: dict[str, Any]) -> bool:
-    # The Crewmates preview prerequisite every control on the page carries.
-    return any(
-        r["kind"] == "preview_flag" and r.get("setting_id") == "developer.mates"
-        for r in placement["requires"]
-    )
+    return any(r["kind"] == "preview_flag" for r in placement["requires"])
 
 
 # (query, lang, id, path in the query's language, conditions)
@@ -157,9 +153,8 @@ def test_crewmate_controls_are_found_with_their_path_and_state(
     (placement,) = hit["placements"]
     assert _path(placement) == path
     assert _conditions(placement) == conds
-    # Crewmates is still a preview: every control ON that page names the switch
-    # that shows it, and a crew control on Customize names none.
-    assert _has_preview_flag(placement) == placement["route"].startswith("/members")
+    # Crewmates needs no opt-in: no crew control names a preview switch.
+    assert not _has_preview_flag(placement)
 
 
 def test_creating_a_crewmate_names_every_host_and_the_state_that_draws_it() -> None:

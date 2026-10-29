@@ -372,6 +372,10 @@ async def api_work_report(request: web.Request) -> web.Response:
             # report -- an unknown or closed item, a ``done`` with no evidence, a
             # status outside the worker's vocabulary -- returned long before here.
             work_metrics.record_report(item.status, item.reason)
+            from kiro_crew.metrics import crew_mode as crew_mode_metrics
+
+            if crew_mode_metrics.board_is_crew_mode(state, conductor_key):
+                crew_mode_metrics.record_worker_report(item.status, item.reason)
             crew_store = _crew_store(conductor_key)
             if crew_store and item.status:
                 # The answer to the dispatch, in the crew's own log: the emitter
@@ -437,3 +441,151 @@ def _report(
         pr=pr,
         reason=reason,
     )
+
+
+# ── the person's steer ────────────────────────────────────────────────────
+
+
+#: Why a person's steer wrote no ledger event (the route's ``ledger_error``).
+STEER_CREW_LOG_OFF = "crew_log_off"
+STEER_NO_UNIT = "crew_log_unit_unknown"
+STEER_NOT_RECORDED = "not_recorded"
+#: The worker's item is already accepted or closed: nothing to record.
+STEER_ITEM_CLOSED = "item_closed"
+#: No such item on that ledger, or the item is one the record cannot hold whole.
+STEER_NO_ITEM = "no_item"
+STEER_ITEM_TOO_LARGE = "work_item_too_large"
+
+
+def _steer_unit(state: Any, keys: tuple[str, ...], board_key: str) -> str:
+    """The crew-log unit a person's steer appends to, or ``""``. BLOCKING (a listing).
+
+    The live unit of the first of *keys* that has one (the steered worker first, the
+    way a worker's own report records into the worker's unit), then the board's
+    live unit, then the board's newest recorded work unit: a root with no live
+    session (reset by the migration, reaped while idle, before its first turn after
+    a restart) still holds its ledger, and the fold reads every unit recorded
+    under the board, so the steer lands where the conductor will read it.
+    """
+    from kiro_crew import session_ledger
+    from kiro_crew.crew_log.resolve import UNKNOWN, unit_for_session_key
+
+    sessions = getattr(state, "sessions", None)
+    for key in (*keys, board_key):
+        unit = unit_for_session_key(sessions, key)
+        if unit and unit != UNKNOWN:
+            return unit
+    try:
+        recorded = session_ledger.work_crew_log_units(board_key)
+    except Exception:
+        recorded = ()
+    return recorded[-1] if recorded else ""
+
+
+async def record_person_steer_result(
+    state: Any,
+    board_key: str,
+    item_id: str,
+    text: str,
+    *,
+    unit_keys: tuple[str, ...] = (),
+) -> tuple[str, str]:
+    """One ``steer`` event on *item_id* of *board_key*'s ledger, as the person wrote it.
+
+    The one person-steer transaction: the Crew Mode worker steer route and the
+    worker's own composer (``POST /api/chat`` on a worker) both call it, through
+    ``crew_workers.person_steer``, after the text was delivered. Identity is
+    server-resolved there: *board_key* is the ledger that holds the worker's item
+    (its root's, or a sub-conductor's under that root), and *item_id* is that item.
+    *text* is already redacted; the store caps it. *unit_keys* are the sessions whose
+    live crew-log unit is preferred (the worker); see :func:`_steer_unit`.
+
+    The write takes the board lock, commits the event (no item field moves),
+    appends one ``work/recorded`` entry (actor ``person``, action ``steer``,
+    ``by`` the board), and undoes the event when that entry does not land, as every
+    ledger write does. Returns ``(item id, "")`` or ``("", why)``.
+    """
+    if not crew_log_emit.enabled():
+        _audit(board_key, "crew_mode.steer", "denied", resources=item_id, error="crew_log_off")
+        return "", STEER_CREW_LOG_OFF
+    unit = await asyncio.to_thread(_steer_unit, state, unit_keys, board_key)
+    if not unit:
+        _audit(board_key, "crew_mode.steer", "denied", resources=item_id, error=STEER_NO_UNIT)
+        return "", STEER_NO_UNIT
+    async with _board_lock(board_key):
+        if await _refuse_if_dirty(board_key, board_key, "crew_mode.steer") is not None:
+            return "", STEER_NOT_RECORDED
+        # Refused BEFORE the cache commits, as every ledger write is: the widest
+        # entry this steer can produce (the text at its cap, over the baseline an
+        # unstamped item is owed) must fit one crew-log line, or the event would be
+        # committed and then undone where a plain refusal was owed.
+        probe_item, probe_board = await asyncio.to_thread(
+            _current_item_and_board, board_key, item_id
+        )
+        if probe_item is None:
+            _audit(board_key, "crew_mode.steer", "denied", resources=item_id, error=STEER_NO_ITEM)
+            return "", STEER_NO_ITEM
+        probe, invalid = _entry_probe_with_baseline(
+            board_key,
+            probe_item,
+            probe_board,
+            actor="person",
+            by=board_key,
+            action="steer",
+            item_id=item_id,
+            generation=_WIDEST_HEX_ID,
+            event=_WIDEST_EVENT_TEXT,
+            event_kind="steer",
+            event_id=_WIDEST_HEX_ID,
+            event_ts=_WIDEST_STAMP,
+        )
+        if invalid is not None or probe is None or not crew_log_emit.work_entry_fits(probe):
+            _audit(
+                board_key,
+                "crew_mode.steer",
+                "denied",
+                resources=item_id,
+                error=STEER_ITEM_TOO_LARGE,
+            )
+            return "", STEER_ITEM_TOO_LARGE
+        snapshot = await asyncio.to_thread(
+            functools.partial(work_ledger.snapshot_for_write, board_key, item_id=item_id)
+        )
+        try:
+            result = await asyncio.to_thread(
+                work_ledger.apply_person_steer, board_key, item_id, text
+            )
+        except WorkLedgerError:
+            _audit(board_key, "crew_mode.steer", "denied", resources=item_id, error=STEER_NO_ITEM)
+            return "", STEER_NO_ITEM
+        if result is None:
+            return "", STEER_ITEM_CLOSED
+        item, event = result["item"], result["event"]
+        board = await asyncio.to_thread(work_ledger.read_conductor, board_key)
+        established, board = await _board_header(board_key, board)
+        landed = established and await asyncio.to_thread(
+            crew_log_emit.on_work_recorded,
+            unit,
+            _entry_with_baseline(
+                board_key,
+                item,
+                board,
+                actor="person",
+                by=board_key,
+                action="steer",
+                item_id=item.item_id,
+                generation=getattr(board, "generation", None) or None,
+                event=event.text,
+                event_kind="steer",
+                event_id=event.id or None,
+                event_ts=event.ts or None,
+            ),
+        )
+        if not landed:
+            await _refuse_unrecorded(
+                board_key, "crew_mode.steer", item.item_id, board_key, snapshot
+            )
+            return "", STEER_NOT_RECORDED
+        await asyncio.to_thread(_mark_recorded, board_key, item.item_id)
+        _audit(board_key, "crew_mode.steer", "ok", resources=item.item_id)
+    return item.item_id, ""

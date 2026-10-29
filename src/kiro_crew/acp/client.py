@@ -925,6 +925,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_spawn_env",
     "kiro_crew.acp.client_permissions",
     "kiro_crew.acp.client_elicitation",
+    "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
     "kiro_crew.acp.client_claude_seed",
     "kiro_crew.acp.client_seed_ownership",

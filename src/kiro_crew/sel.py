@@ -806,7 +806,7 @@ class SecurityEventLog:
                 event_type="tool_invocation",
                 caller_identity=session_key,
                 agent=agent,
-                source=source or _infer_source(session_key),
+                source=source or _tool_invocation_source(session_key),
                 operation=tool_name,
                 tool_kind=tool_kind,
                 outcome=outcome,
@@ -998,6 +998,27 @@ class SecurityEventLog:
             ),
             critical=critical,
         )
+
+
+#: The caller identity the dashboard's own HTTP handlers (file reads and writes,
+#: dashboard config, memory, knowledge) write their tool-invocation rows under. It is
+#: not a session key, so :func:`_infer_source` has no branch for it and would file
+#: those rows under its ``slack`` fallback.
+_DASHBOARD_HANDLER_CALLER = "dashboard"
+
+
+def _tool_invocation_source(session_key: str) -> str:
+    """The source a ``tool_invocation`` row carries when its caller names none.
+
+    The dashboard handlers' bare ``"dashboard"`` caller is the dashboard. Every
+    other key goes through :func:`_infer_source` unchanged, and that function is
+    left alone on purpose: governance binds a profile through it, so teaching it
+    the bare key would change which profile a check with that key applies,
+    which an audit-label fix must not do.
+    """
+    if session_key == _DASHBOARD_HANDLER_CALLER:
+        return "dashboard"
+    return _infer_source(session_key)
 
 
 def _infer_source(session_key: str) -> str:
