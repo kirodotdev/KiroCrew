@@ -747,13 +747,16 @@ function InteractionPlugin({
       COMMAND_PRIORITY_HIGH,
     )
 
-    const moveAfterRecall = (value: string, position: 'start' | 'end') => {
+    // The caret lands at the END of a recalled prompt, in either direction: a
+    // recalled prompt is usually there to be edited or re-sent, and every
+    // shell history leaves the caret after the text. The ↑ gate in
+    // `navigateHistory` is what keeps a further ↑ walking older from there.
+    const moveAfterRecall = (value: string) => {
       requestAnimationFrame(() => {
         editor.update(() => {
-          const offset = position === 'start' ? 0 : value.length
           const selection = $createRangeSelection()
-          $setPointAtOffset(selection.anchor, offset)
-          $setPointAtOffset(selection.focus, offset)
+          $setPointAtOffset(selection.anchor, value.length)
+          $setPointAtOffset(selection.focus, value.length)
           $setSelection(selection)
         }, { discrete: true })
         editor.focus()
@@ -778,7 +781,15 @@ function InteractionPlugin({
       const current = $getRoot().getTextContent()
       const cursor = livePromptHistoryCursor(historyCursorRef.current, current)
       historyCursorRef.current = cursor
-      if (direction === 'up' && current !== '' && selection.start !== 0) return false
+      // Entering history, ↑ is claimed only from offset 0, so it never shadows
+      // caret movement through the user's own typed draft. Already browsing,
+      // recall parks the caret at the END of the entry, and the end is the
+      // position ↑/↓ step from; a caret the user moved INSIDE the text keeps
+      // its native movement, because the editor soft-wraps a long prompt that
+      // carries no newline at all and ↑ there must move up a row rather than
+      // swap the prompt out from under the caret.
+      if (direction === 'up' && current !== '' && selection.start !== 0 &&
+        !(cursor && selection.start === current.length)) return false
       // A held ↑ scrolling up through the user's own draft stops at its start;
       // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
       if (direction === 'up' && event.repeat && !cursor && current !== '') return false
@@ -787,8 +798,13 @@ function InteractionPlugin({
       if (!step) return false
       event.preventDefault()
       historyCursorRef.current = step.cursor
-      onChange(step.text)
-      moveAfterRecall(step.text, direction === 'up' ? 'start' : 'end')
+      // ↑ on the oldest entry resolves to the text already shown: consume the
+      // key so the caret does not jump, but leave the value alone. Same guard
+      // the textarea engine carries, so the two behave alike.
+      if (step.cursor === null || step.text !== current || cursor === null) {
+        onChange(step.text)
+        moveAfterRecall(step.text)
+      }
       return true
     }
     const unregisterArrowUp = editor.registerCommand(

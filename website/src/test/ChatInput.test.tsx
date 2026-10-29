@@ -941,6 +941,37 @@ describe('ChatInput', () => {
       expect(onChange).toHaveBeenLastCalledWith('second')
     })
 
+    // The composer is one auto-grown row, so a prompt with no newline in it
+    // still wraps across several rows. A caret the user moved into the text is
+    // theirs to move with ↑, not a history step.
+    it('leaves a caret moved inside a recalled prompt to native movement', () => {
+      const rafCbs: FrameRequestCallback[] = []
+      const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { rafCbs.push(cb); return 0 })
+      try {
+        const onChange = vi.fn()
+        const wrapped = 'a long prompt with no newline in it that wraps across several rows of the composer'
+        const wrapping = [{ text: 'older' }, { text: wrapped }]
+        const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={wrapping} value="" />)
+        const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        expect(onChange).toHaveBeenLastCalledWith(wrapped)
+        rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={wrapping} value={wrapped} />)
+        rafCbs.forEach(cb => cb(0))
+        expect(ta.selectionStart).toBe(wrapped.length)
+        // Mid-text: ↑ must move up a row, so the prompt stays put.
+        ta.setSelectionRange(20, 20)
+        onChange.mockClear()
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        expect(onChange).not.toHaveBeenCalled()
+        // Back at the end, the browsing position, ↑ steps older again.
+        ta.setSelectionRange(wrapped.length, wrapped.length)
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        expect(onChange).toHaveBeenLastCalledWith('older')
+      } finally {
+        rafSpy.mockRestore()
+      }
+    })
+
     it('ArrowUp is ignored when caret is mid-text and value non-empty', () => {
       const onChange = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="hello world" />)
@@ -1050,7 +1081,7 @@ describe('ChatInput', () => {
       expect(onChange).not.toHaveBeenCalled()
     })
 
-    it('moves caret to start after ArrowUp recall so repeated ↑ re-engages history', () => {
+    it('moves caret to the end after ArrowUp recall, and repeated ↑ still re-engages history', () => {
       const rafCbs: FrameRequestCallback[] = []
       const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { rafCbs.push(cb); return 0 })
       try {
@@ -1061,8 +1092,13 @@ describe('ChatInput', () => {
         // Commit the recalled value before the deferred caret-move runs (real browser ordering).
         rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third" />)
         rafCbs.forEach(cb => cb(0))
-        expect(ta.selectionStart).toBe(0)
-        expect(ta.selectionEnd).toBe(0)
+        // A recalled prompt is there to be edited or re-sent, so the caret lands
+        // after its text — the same place every shell history leaves it.
+        expect(ta.selectionStart).toBe('third'.length)
+        expect(ta.selectionEnd).toBe('third'.length)
+        // And ↑ steps older from there, without a trip back to offset 0.
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        expect(onChange).toHaveBeenLastCalledWith('second')
       } finally {
         rafSpy.mockRestore()
       }

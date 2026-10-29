@@ -775,8 +775,9 @@ describe('LexicalComposerInput', () => {
       )
     })
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
-    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 0, end: 0 }))
-    act(() => controlRef.current!.setSelection('second'.length))
+    // A recalled prompt is there to be edited or re-sent, so the caret lands
+    // after its text — the same place every shell history leaves it.
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 'second'.length, end: 'second'.length }))
     act(() => {
       editorRef.current!.dispatchCommand(
         KEY_ARROW_DOWN_COMMAND,
@@ -785,6 +786,76 @@ describe('LexicalComposerInput', () => {
     })
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('draft'))
     await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+  })
+
+  it('keeps walking older from the caret recall left at the end of the entry', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 'second'.length, end: 'second'.length }))
+    // No setSelection here on purpose: the second ↑ has to engage from where
+    // the first recall left the caret, not from offset 0.
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^first$/))
+  })
+
+  // The editor soft-wraps a long prompt carrying no newline, so a caret the
+  // user moved into the text is theirs to move with ↑, not a history step.
+  it('leaves a caret moved inside a recalled prompt to native movement', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    const wrapped = 'a long prompt with no newline in it that wraps across several rows'
+    render(
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['older', wrapped]} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(wrapped))
+    await waitFor(() => expect(controlRef.current!.getSelection()?.start).toBe(wrapped.length))
+    // Mid-text: ↑ must move up a row, so the prompt stays put and the key is
+    // left to Lexical.
+    act(() => controlRef.current!.setSelection(20))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    expect(screen.getByTestId('value')).toHaveTextContent(wrapped)
+    // Back at the end, the browsing position, ↑ steps older again.
+    act(() => controlRef.current!.setSelection(wrapped.length))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^older$/))
+  })
+
+  it('consumes ↑ on the oldest entry without moving the caret', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^first$/))
+    await waitFor(() => expect(controlRef.current!.getSelection()?.start).toBe('first'.length))
+    // Already oldest, with the caret at offset 0: the step resolves to the text
+    // on screen, so ↑ is consumed and the caret must stay at 0. Without the
+    // no-op guard the recall placement runs anyway and drags it to the end, so
+    // offset 0 is the position that tells the two apart — at the end both would
+    // leave the caret in the same place.
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await act(async () => {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    })
+    expect(screen.getByTestId('value')).toHaveTextContent(/^first$/)
+    expect(controlRef.current!.getSelection()).toEqual({ start: 0, end: 0 })
   })
 
   function pressArrow(editor: LexicalEditor, key: 'ArrowUp' | 'ArrowDown', init: KeyboardEventInit = {}): boolean {

@@ -29,24 +29,37 @@ export function usePromptHistory() {
   }) => {
     const ta = e.currentTarget
     const cur = current
-    // After recall, place the caret where the next arrow press will re-engage
-    // history immediately (↑ → start, ↓ → end). Deferred to next frame so the
+    // After recall, place the caret at the END of the recalled prompt, in
+    // either direction: a recalled prompt is usually there to be edited or
+    // re-sent, and every shell history (and the browser console) leaves the
+    // caret after the text. The ↑ gate below is what keeps a further ↑ walking
+    // to the next older entry from there. Deferred to next frame so the
     // controlled textarea has re-rendered with the new value first.
-    const moveCaretAfterRecall = (pos: 'start' | 'end') => {
+    const moveCaretAfterRecall = () => {
       requestAnimationFrame(() => {
         const el = inputRef.current
         if (!el) return
-        const p = pos === 'start' ? 0 : el.value.length
-        el.setSelectionRange(p, p)
+        el.setSelectionRange(el.value.length, el.value.length)
       })
     }
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
     const cursor = livePromptHistoryCursor(historyCursorRef.current, cur)
     historyCursorRef.current = cursor
     if (e.key === 'ArrowUp') {
-      // Only intercept when input is empty OR caret is collapsed at position 0.
-      const atStart = ta.selectionStart === 0 && ta.selectionEnd === 0
-      if (!atStart && cur !== '') return
+      // Entering history: only intercept when the input is empty OR the caret
+      // is collapsed at position 0, so ↑ never shadows caret movement through
+      // the user's own typed draft.
+      const collapsed = ta.selectionStart === ta.selectionEnd
+      const atStart = collapsed && ta.selectionStart === 0
+      // Already browsing: recall parks the caret at the END of the entry, and
+      // the end is the position ↑/↓ step from. A caret the user moved INSIDE
+      // the text keeps its native movement — this textarea is one auto-grown
+      // row (`rows={1}`, `resize-none`), so a prompt with no newline in it
+      // still wraps across several rows, and ↑ there must move up a row rather
+      // than swap the prompt out from under the caret. Offset 0 keeps stepping
+      // too: it is where recall used to park, and ↑ has nowhere above it to go.
+      const atEnd = collapsed && ta.selectionStart === cur.length
+      if (cur !== '' && !(atStart || (cursor && atEnd))) return
       // A held ↑ scrolling up through the user's own draft stops at its start;
       // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
       if (e.repeat && !cursor && cur !== '') return
@@ -63,7 +76,7 @@ export function usePromptHistory() {
     // key so the caret does not jump, but leave the value alone.
     if (step.cursor === null || step.text !== cur || cursor === null) {
       onChange(step.text)
-      moveCaretAfterRecall(e.key === 'ArrowUp' ? 'start' : 'end')
+      moveCaretAfterRecall()
     }
     e.preventDefault()
   }, [])
