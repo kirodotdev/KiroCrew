@@ -13404,6 +13404,11 @@
       "folder_renamed_to": "Dossier renommé en {{name}}",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Les membres de la crew d’un chat Crew Mode ne figurent pas dans cette liste ; le chat, oui.",
+      "group_by_kind": "Grouper par type",
+      "group_by_kind_hint": "Divise la liste en sections Crew Mode, Normal et Des coéquipiers. Ne masque rien.",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "Normal",
+      "kind_section_mate": "Des coéquipiers",
       "filter_crew_description": "Afficher uniquement les discussions Crew Mode"
     },
     "connectionsPage": {

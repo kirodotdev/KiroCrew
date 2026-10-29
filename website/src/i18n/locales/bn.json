@@ -13187,6 +13187,11 @@
       "folder_renamed_to": "ফোল্ডারের নাম পরিবর্তন করে {{name}} করা হয়েছে",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Crew Mode চ্যাটের crew সদস্যরা এই তালিকায় থাকে না; চ্যাটটি থাকে।",
+      "group_by_kind": "ধরন অনুযায়ী গোষ্ঠী করো",
+      "group_by_kind_hint": "তালিকাকে Crew Mode, সাধারণ এবং সঙ্গীদের থেকে বিভাগে ভাগ করো। কিছুই লুকায় না।",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "সাধারণ",
+      "kind_section_mate": "সঙ্গীদের থেকে",
       "filter_crew_description": "শুধু Crew Mode চ্যাট দেখাও"
     },
     "connectionsPage": {

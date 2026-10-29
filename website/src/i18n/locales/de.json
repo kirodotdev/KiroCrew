@@ -13187,6 +13187,11 @@
       "folder_renamed_to": "Ordner umbenannt in {{name}}",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Die Crew-Mitglieder eines Chats im Crew Mode stehen nicht in dieser Liste; der Chat selbst schon.",
+      "group_by_kind": "Nach Art gruppieren",
+      "group_by_kind_hint": "Teilt die Liste in die Bereiche Crew Mode, Normal und Von Crewmates. Blendet nichts aus.",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "Normal",
+      "kind_section_mate": "Von Crewmates",
       "filter_crew_description": "Nur Chats im Crew Mode anzeigen"
     },
     "connectionsPage": {

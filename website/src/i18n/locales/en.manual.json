@@ -6173,6 +6173,11 @@
       "conductor_tag": "conductor",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "A Crew Mode chat's crew members are not listed here; the chat is.",
+      "group_by_kind": "Group by kind",
+      "group_by_kind_hint": "Split the list into Crew Mode, Normal and From Mates sections. Hides nothing.",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "Normal",
+      "kind_section_mate": "From Mates",
       "filter_crew_description": "Show only Crew Mode chats"
     },
     "connectionsPage": {

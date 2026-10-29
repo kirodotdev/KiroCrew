@@ -13187,6 +13187,11 @@
       "folder_renamed_to": "फ़ोल्डर का नाम बदलकर {{name}} कर दिया गया",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Crew Mode चैट के crew सदस्य इस सूची में नहीं दिखते; चैट खुद दिखती है।",
+      "group_by_kind": "प्रकार के अनुसार समूह बनाओ",
+      "group_by_kind_hint": "सूची को Crew Mode, सामान्य और साथियों से अनुभागों में बाँटो। इससे कुछ भी नहीं छिपता।",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "सामान्य",
+      "kind_section_mate": "साथियों से",
       "filter_crew_description": "केवल Crew Mode चैट दिखाओ"
     },
     "connectionsPage": {

@@ -13621,6 +13621,11 @@
       "folder_renamed_to": "Папка переименована в {{name}}",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Участники команды чата в Crew Mode не показываются в этом списке; сам чат — да.",
+      "group_by_kind": "Группировать по типу",
+      "group_by_kind_hint": "Делит список на разделы Crew Mode, Обычные и От напарников. Ничего не скрывает.",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "Обычные",
+      "kind_section_mate": "От напарников",
       "filter_crew_description": "Показывать только чаты Crew Mode"
     },
     "connectionsPage": {

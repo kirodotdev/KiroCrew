@@ -10,6 +10,7 @@ import type { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import type { ScrollEdges } from '../../hooks/useScrollEdges'
 import type { RootState, useAppDispatch } from '../../store'
 import type { ChatFolder } from '../../types'
+import type { KindSections } from './kindSections'
 import type { SortKey } from '../chat/sessionOrder'
 import type { useSessionRowWindowRoot } from '../chat/sessionRowWindow'
 import type { useCollapsedCrewSpaces, useCollapsedCrews, useCrewEnable } from './CrewGroups'
@@ -292,6 +293,10 @@ export interface SidebarScope {
   toggleTagFilter: ReturnType<typeof useSessionFilterState>['toggleTagFilter']
   clearTagFilter: ReturnType<typeof useSessionFilterState>['clearTagFilter']
   foldersShelved: ReturnType<typeof useSessionFilterState>['foldersShelved']
+  groupByKind: ReturnType<typeof useSessionFilterState>['groupByKind']
+  toggleGroupByKind: ReturnType<typeof useSessionFilterState>['toggleGroupByKind']
+  /** "Group by kind" while it applies (./kindSections), or null. */
+  kindSections: KindSections | null
   setFoldersShelved: ReturnType<typeof useSessionFilterState>['setFoldersShelved']
   toggleFoldersShelved: ReturnType<typeof useSessionFilterState>['toggleFoldersShelved']
   toggleFilter: ReturnType<typeof useSessionFilterState>['toggleFilter']

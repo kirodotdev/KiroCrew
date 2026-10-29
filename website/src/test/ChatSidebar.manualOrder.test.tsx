@@ -779,3 +779,29 @@ describe('the Manual sort', () => {
     expect(order(['a', 'b'])).toEqual(['b', 'a'])
   })
 })
+
+describe('with "Group by kind" on', () => {
+  // a and c are normal chats, b a Crew Mode chat: the list draws b | a, c.
+  const MIXED_KINDS = [
+    slot('a', '2026-03-01T00:00:00Z'),
+    slot('b', '2026-02-01T00:00:00Z', { crew_mode_root: true } as Partial<ChatSlot>),
+    slot('c', '2026-01-01T00:00:00Z'),
+  ]
+  beforeEach(() => { localStorage.setItem('mc-session-group-by-kind', '1') })
+
+  it('takes no manual move on an unpinned row: no Alt+Arrow, no drop target, nothing written', async () => {
+    renderSidebar(MIXED_KINDS, 'manual')
+    expect(order(['a', 'b', 'c'])).toEqual(['b', 'a', 'c'])
+    const row = screen.getByText('a title').closest('[data-session-row]') as HTMLElement
+    // The row does not offer the chord, and pressing it is left to the page.
+    expect(row.getAttribute('aria-keyshortcuts')).toBeNull()
+    row.focus()
+    expect(fireEvent.keyDown(row, { key: 'ArrowDown', altKey: true })).toBe(true)
+    // Same-kind and cross-kind drops alike: the grouped order is not a manual one.
+    drop('a', onRow('c'))
+    drop('b', onRow('a'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    expect(manualWrites()).toEqual([])
+    expect(sortWrites()).toEqual([])
+  })
+})

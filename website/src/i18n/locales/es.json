@@ -13404,6 +13404,11 @@
       "folder_renamed_to": "Carpeta renombrada a {{name}}",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Los miembros de la crew de un chat en Crew Mode no aparecen en esta lista; el chat sí.",
+      "group_by_kind": "Agrupar por tipo",
+      "group_by_kind_hint": "Divide la lista en las secciones Crew Mode, Normal y De compañeros. No oculta nada.",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "Normal",
+      "kind_section_mate": "De compañeros",
       "filter_crew_description": "Mostrar solo chats de Crew Mode"
     },
     "connectionsPage": {

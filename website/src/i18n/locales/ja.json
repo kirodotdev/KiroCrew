@@ -12970,6 +12970,11 @@
       "folder_renamed_to": "フォルダー名を {{name}} に変更しました",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Crew Mode のチャットのクルーメンバーはこの一覧には出ません。チャット自体は出ます。",
+      "group_by_kind": "種類でグループ化",
+      "group_by_kind_hint": "リストを Crew Mode、通常、クルーメイトから の 3 つのセクションに分けます。何も非表示にしません。",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "通常",
+      "kind_section_mate": "クルーメイトから",
       "filter_crew_description": "Crew Mode のチャットだけを表示"
     },
     "connectionsPage": {

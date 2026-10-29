@@ -12970,6 +12970,11 @@
       "folder_renamed_to": "폴더 이름이 {{name}}(으)로 변경되었습니다",
       "filter_crew": "Crew Mode",
       "filter_crew_hint": "Crew Mode 채팅의 크루 멤버는 이 목록에 나오지 않습니다. 채팅 자체는 나옵니다.",
+      "group_by_kind": "종류별로 그룹화",
+      "group_by_kind_hint": "목록을 Crew Mode, 일반, 크루메이트에서 섹션으로 나눕니다. 아무것도 숨기지 않습니다.",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "일반",
+      "kind_section_mate": "크루메이트에서",
       "filter_crew_description": "Crew Mode 채팅만 보기"
     },
     "connectionsPage": {

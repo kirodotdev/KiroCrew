@@ -12970,6 +12970,11 @@
       "folder_renamed_to": "文件夹已重命名为 {{name}}",
       "filter_crew": "Crew Mode 对话",
       "filter_crew_hint": "Crew Mode 对话的 crew 成员不会出现在这个列表里；对话本身会出现。",
+      "group_by_kind": "按类型分组",
+      "group_by_kind_hint": "把列表分成 Crew Mode、普通、来自队友三个分区。不会隐藏任何会话。",
+      "kind_section_crew": "Crew Mode",
+      "kind_section_normal": "普通",
+      "kind_section_mate": "来自队友",
       "filter_crew_description": "只显示 Crew Mode 对话"
     },
     "connectionsPage": {
