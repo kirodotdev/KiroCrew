@@ -71,6 +71,7 @@ if TYPE_CHECKING:
         voice_runtime_workspace_conflict,
         wait_for_memory_preparation,
     )
+    from kiro_crew.remote_dispatch_mailbox import MailboxRequest
     from kiro_crew.session_agent_selection import SelectionChange
 
 
@@ -226,6 +227,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     busy, headroom = await create_admission(request, body)
     if busy is not None:
         return busy
+    # Remote dispatch (Feature Preview): a hub's work item this create binds, or
+    # None, which is also the answer with the preview off. Imported only for a body
+    # that names one, so a plain create and the boot path never load it.
+    work_item: MailboxRequest | None = None
+    if body.get("work_item") is not None:
+        from kiro_crew.dashboard.handlers.remote_work_item import work_item_for_create
+
+        work_item, work_item_refusal = await work_item_for_create(request, body)
+        if work_item_refusal is not None:
+            return work_item_refusal
     name = body.get("name")
     if name is not None and not isinstance(name, str):
         # `get_or_create_slot` normalizes the key with string operations, so a
@@ -981,6 +992,74 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     },
                     status=503,
                 )
+        if work_item is not None and not is_new_slot:
+            # A work item binds only a slot this create minted, never an open one.
+            return web.json_response(
+                {
+                    "error": "a create with a work_item makes a new session",
+                    "code": "work_item_needs_new_slot",
+                },
+                status=400,
+            )
+        if work_item is not None:
+            # The last step that can refuse the create, so nothing below (the
+            # folder claim, the metadata save) runs for a refused one. Bound before
+            # the first frame, so no client sees the worker unbound.
+            from kiro_crew.dashboard.handlers.remote_work_item import (
+                bind_work_item,
+                discard_work_item,
+            )
+
+            bound_item = work_item
+
+            async def _unbind_retracted_worker(
+                exc_type: type[BaseException] | None,
+                exc: BaseException | None,
+                tb: TracebackType | None,
+            ) -> bool:
+                # Registered before the bind and run before the mint's own unwind:
+                # a newborn retracted on the way out, a cancellation included, takes
+                # its mailbox item and binding with it. The discard touches only a
+                # binding this slot holds, so a refused or unfinished bind is a no-op.
+                if exc_type is not None and _retract_failed_newborn(state, slot):
+                    # One drained step: the discard, then the selection restore.
+                    await discard_work_item(
+                        slot.key,
+                        bound_item,
+                        then=lambda: drained_to_thread(
+                            restore_agent_selection, assignment_key, selection_change
+                        ),
+                    )
+                return False
+
+            creation_stack.push_async_exit(_unbind_retracted_worker)
+            refusal = await bind_work_item(request, slot.key, work_item)
+            if refusal is not None:
+                if _retract_failed_newborn(state, slot):
+                    await drained_to_thread(
+                        restore_agent_selection, assignment_key, selection_change
+                    )
+                return refusal
+            # A bound worker must survive a restart before its first message, or its
+            # item would outlive it; the birth line is what brings a slot back.
+            if not await _persist_birth_line(state, slot):
+                if _retract_failed_newborn(state, slot):
+                    await discard_work_item(
+                        slot.key,
+                        work_item,
+                        then=lambda: drained_to_thread(
+                            restore_agent_selection, assignment_key, selection_change
+                        ),
+                    )
+                else:
+                    slot._dirty = True
+                return web.json_response(
+                    {
+                        "error": "Could not save the new session. Try again.",
+                        "code": "worker_unpersisted",
+                    },
+                    status=503,
+                )
         if folder_applied:
             # Past the last step that can refuse the create, so the folder's
             # un-hide and claim are written only for a create that stands. A
@@ -1056,15 +1135,26 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         created["session_folder_notice"] = session_folder_notice
     if headroom is not None:
         created["headroom"] = headroom
+    if work_item is not None:
+        created["work_item_id"] = work_item.item_id
     return web.json_response(created)
 
 
 async def _persist_app_agent_owner(state: DashboardState, slot: _ChatSlot) -> bool:
     """Durably record *slot*'s app-agent binding before its create is answered.
 
-    A line-less newborn gets the full metadata line a first save would write;
-    a slot that already has a line takes the force save, whose merge carries
-    the binding. False when neither write committed.
+    The birth line carries the binding; see :func:`_persist_birth_line`.
+    """
+    return await _persist_birth_line(state, slot)
+
+
+async def _persist_birth_line(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Durably record *slot* before its create is answered, so a restart keeps it.
+
+    A message-less newborn otherwise has no metadata line, and a restart does not
+    bring it back. A line-less newborn gets the full metadata line a first save
+    would write; a slot that already has a line takes the force save. False when
+    neither write committed.
     """
     log = state.conversation_log
     if log is None:
@@ -1097,7 +1187,7 @@ async def _persist_app_agent_owner(state: DashboardState, slot: _ChatSlot) -> bo
         )
     except Exception:
         logger.warning(
-            "chat_slot_create: could not persist the app agent owner for slot=%s",
+            "chat_slot_create: could not persist the birth line for slot=%s",
             slot.key,
             exc_info=True,
         )

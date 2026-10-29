@@ -1461,6 +1461,17 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # supplied. It is also not model-reachable: no MCP tool routes to it,
         # because the deletion it performs is irreversible.
         "ledger_sweep.py",
+        # Remote dispatch's peer mailbox (rfc-conductor-remote-dispatch §2, §3),
+        # behind the ``work_ledger.remote_dispatch`` Feature Preview. The same
+        # principal argument as the Crew page below: its only callers are the
+        # OWNER's slot create and the owner-gated per-slot routes, reached by a hub
+        # over its proxy with the owner token. No agent session names a ledger
+        # through it: the board is ``hub:`` plus the hub's key, the item is bound to
+        # the slot this create just minted, and the per-slot routes resolve the
+        # item from that slot's own binding. The worker itself still reports
+        # through the agent routes above, by its own X-Session-Key.
+        "remote_dispatch_mailbox.py",
+        "dashboard/handlers/remote_work_item.py",
         # The Crew page's masked, cookie-authenticated projection and its action
         # route. A third seam, and the argument is about WHICH PRINCIPAL rather
         # than about convenience.

@@ -63,6 +63,20 @@ async def api_dashboard_card(request: web.Request) -> web.Response:
     return web.json_response(await lifecycle.read(slot))
 
 
+async def api_chat_slot_work_item_get(request: web.Request) -> web.Response:
+    """Remote dispatch's per-slot read, imported on first use, never at boot."""
+    from kiro_crew.dashboard.handlers import remote_work_item
+
+    return await remote_work_item.api_chat_slot_work_item_get(request)
+
+
+async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
+    """Remote dispatch's per-slot decision write, imported on first use, never at boot."""
+    from kiro_crew.dashboard.handlers import remote_work_item
+
+    return await remote_work_item.api_chat_slot_work_item_patch(request)
+
+
 def register(app: web.Application) -> None:
     """Register the chat routes on *app*."""
     # Chat
@@ -109,6 +123,10 @@ def register(app: web.Application) -> None:
     # the tunnel's send, so it is not a pure read of the disk.
     app.router.add_get("/api/chat/slots/{slot}/export", session_export.api_chat_slot_export)
     app.router.add_get("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary)
+    # Remote dispatch (Feature Preview): a hub reads and steers the work item this
+    # crew's slot was born bound to. 404 with the preview off.
+    app.router.add_get("/api/chat/slots/{slot}/work-item", api_chat_slot_work_item_get)
+    app.router.add_patch("/api/chat/slots/{slot}/work-item", api_chat_slot_work_item_patch)
     app.router.add_get("/api/chat/slots/{slot}/dashboard-card", api_dashboard_card)
     # Same path, POST: reading a summary must stay free of side effects, so
     # generating one is a separate verb rather than a query flag on the GET.

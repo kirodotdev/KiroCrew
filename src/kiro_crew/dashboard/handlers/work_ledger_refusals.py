@@ -34,6 +34,7 @@ _CODE_STATUS: dict[str, int] = {
     work_ledger.CODE_NO_LEDGER: 404,
     work_ledger.CODE_UNKNOWN_ITEM: 404,
     work_ledger.CODE_ALREADY_BOUND: 409,
+    work_ledger.CODE_DUPLICATE_ITEM: 409,
     work_ledger.CODE_ITEM_CLOSED: 409,
     work_ledger.CODE_ITEM_CAP_EXCEEDED: 409,
     work_ledger.CODE_GOAL_CONCURRENCY_CAP_REACHED: 409,

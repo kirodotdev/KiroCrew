@@ -398,6 +398,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "no_ledger": 404,
         "unknown_item": 404,
         "already_bound": 409,
+        "duplicate_item": 409,
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "goal_concurrency_cap_reached": 409,
