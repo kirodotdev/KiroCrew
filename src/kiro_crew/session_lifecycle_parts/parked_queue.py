@@ -164,6 +164,17 @@ def _park_queue(sessions: Any, key: str, entries: tuple[Any, ...]) -> None:
             del _parked_queue[oldest_key]
 
 
+def take_live_entries(session: Any) -> tuple[Any, ...]:
+    """Remove and return *session*'s live queue entries; cancelled ones stay to be unlinked."""
+    kept = tuple(entry for entry in session.queue if entry[0] not in session.cancelled)
+    if kept:
+        wanted = {id(entry) for entry in kept}
+        remaining = [entry for entry in session.queue if id(entry) not in wanted]
+        session.queue.clear()
+        session.queue.extend(remaining)
+    return kept
+
+
 def _folded(sessions: Any, key: str) -> str:
     """*key* under the registry's spelling, or unchanged when *sessions* cannot fold."""
     fold = getattr(sessions, "_fold_key", None)

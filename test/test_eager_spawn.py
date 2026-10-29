@@ -362,7 +362,9 @@ class TestEagerSpawn:
         state = _mock_state(slot)
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)
-        state.sessions.reset.assert_awaited_once_with("dashboard:t1", skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            "dashboard:t1", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         assert slot._pending_reset_history_key is None
         state.sessions.get_or_create.assert_awaited_once()
 

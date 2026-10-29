@@ -506,6 +506,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     load_window_off_loop,
     note_crew_log_class,
     parse_cls_meta,
+    record_project,
     request_slot_origin,
     row_mid,
 )

@@ -653,6 +653,8 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "set_compacting_callback": None,
     "unlanded_marker_pending": False,
     "stop_generation": 0,
+    "supersede_arm_for_new_slot": None,
+    "transfer_retire_arm": None,
 }
 #: The real in-memory link stores ``chat_test_helpers._make_state`` builds,
 #: carried onto the specced manager.

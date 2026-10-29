@@ -24,7 +24,7 @@ import importlib as _importlib
 import logging
 import sys as _sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
+from kiro_crew.config.paths import CWD_CLEARED, resolved_cwd
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
 from kiro_crew.metrics.sessions import discard_session_start, record_session_started
 from kiro_crew.runtime_ownership import PidRefcount
@@ -166,6 +167,22 @@ def widen_cold_start_semaphore(sem: PrioritySemaphore, width: int) -> None:
 
 
 @dataclass(slots=True)
+class RetireArm:
+    """One key's retirement arm, and the generation that outlives it."""
+
+    generation: int = 0
+    cwd: str | None = None
+    held_for_retry: bool = False
+    cleared_cwd: str = ""
+
+    def spend(self) -> None:
+        """Drop what the arm names. The generation is deliberately untouched."""
+        self.cwd = None
+        self.held_for_retry = False
+        self.cleared_cwd = ""
+
+
+@dataclass(slots=True)
 class SessionRegistryState:
     """Mutable state exclusively owned by the allocation boundary."""
 
@@ -229,6 +246,8 @@ class SessionRegistryState:
     #: left a process alive behind a record that said ``reaped``. Cleared by
     #: ``end_ending``, once the caller has written its record.
     refused_spawns: dict[str, int] = field(default_factory=dict)
+    # Keyed by string, not session, so a cold start that has not registered yet is covered.
+    retire_arms: dict[str, RetireArm] = field(default_factory=dict)
 
 
 class InboundCallbackReservation:
@@ -300,9 +319,12 @@ class _AllocationOwner(Protocol):
         *,
         wait_if_busy: bool = True,
         reservation: object | None = None,
+        cwd: str | None = None,
     ) -> bool: ...
 
     async def _evict_stale_session(self, key: str, session: Any) -> None: ...
+
+    def _has_attached_subagents(self, key: str) -> bool | Awaitable[bool]: ...
 
     async def open_task_session(
         self, parent_session_key: str, session_key: str, **kwargs: Any
@@ -451,6 +473,19 @@ class SessionAllocationService:
     def _continuable_keys(self, value: set[str]) -> None:
         self.state.continuable_keys = value
 
+    def _arm(self, folded: str) -> RetireArm:
+        """This key's record, created empty if absent. For a WRITE."""
+        return self.state.retire_arms.setdefault(folded, RetireArm())
+
+    def _arm_if_any(self, folded: str) -> RetireArm | None:
+        """This key's record, or ``None``. For a READ, which must not create one."""
+        return self.state.retire_arms.get(folded)
+
+    def _generation(self, folded: str) -> int:
+        """This key's monotonic counter, bumped every time its project changes. Zero if absent."""
+        arm = self._arm_if_any(folded)
+        return arm.generation if arm is not None else 0
+
     @property
     def _continuable_fallback(self) -> Callable[[str], bool] | None:
         return self.state.continuable_fallback
@@ -477,6 +512,95 @@ class SessionAllocationService:
 
     def has_session(self, key: str) -> bool:
         return self._owner._fold_key(key) in self._sessions
+
+    def spend_retire_arm(self, key: str) -> None:
+        """Drop *key*'s retirement arm, for a teardown that ENDS the slot generation."""
+        folded = self._owner._fold_key(key)
+        if (arm := self._arm_if_any(folded)) is not None:
+            arm.spend()
+            self._reap_arm_if_quiescent(folded)
+
+    def supersede_arm_for_new_slot(self, key: str) -> None:
+        """Release *key*'s arm because the slot that owned it is gone for good."""
+        folded = self._owner._fold_key(key)
+        arm = self._arm(folded)
+        arm.generation += 1
+        arm.spend()
+        self._reap_arm_if_quiescent(folded)
+
+    def _reap_arm_if_quiescent(self, folded: str) -> None:
+        """Drop a spent record once no start can still consult its generation."""
+        arm = self._arm_if_any(folded)
+        if arm is None or arm.cwd is not None or arm.held_for_retry:
+            return
+        if folded not in self._sessions and not self._allocation_reservations.get(folded):
+            del self.state.retire_arms[folded]
+
+    def discard_all_retire_arms(self) -> None:
+        """Drop every arm and generation, for a shutdown that retires all keys at once."""
+        self.state.retire_arms.clear()
+
+    def note_conversation_discarded(self, key: str) -> None:
+        """Bump this key's generation because its conversation was thrown away."""
+        folded = self._owner._fold_key(key)
+        arm = self._arm(folded)
+        arm.generation += 1
+        arm.held_for_retry = True
+
+    @staticmethod
+    def _arm_cwd_value(cwd: str | None, folded: str) -> str | None:
+        """The value an arm stores for *cwd*, keeping ``RetireArm.cwd``'s three answers apart."""
+        if cwd is None or cwd == CWD_CLEARED:
+            return cwd
+        return resolved_cwd(cwd, folded)
+
+    def _record_arm_cwd(self, folded: str, cwd: str | None) -> None:
+        """Record what an arm states, DROPPING the entry rather than leaving an earlier
+        change's directory to outlive the generation bump that supersedes it."""
+        self._arm(folded).cwd = self._arm_cwd_value(cwd, folded)
+        if cwd == CWD_CLEARED:
+            # Persisted too: the arm is in memory and would not survive a restart.
+            arm = self._arm(folded)
+            arm.cleared_cwd = self._owner._session_map.get_cwd(folded) or arm.cleared_cwd
+            self._owner._session_map.clear_cwd(folded)
+
+    def mark_retire_on_next_claim(self, key: str, cwd: str | None) -> int:
+        """Mark this key's session invalid for reuse without touching a running turn."""
+        folded = self._owner._fold_key(key)
+        generation = self._generation(folded) + 1
+        self._arm(folded).generation = generation
+        self._record_arm_cwd(folded, cwd)
+        session = self._sessions.get(folded)
+        if session is not None:
+            session.retire_on_arm = True
+        return generation
+
+    def transfer_retire_arm(self, from_key: str, to_key: str, cwd: str | None) -> None:
+        """Re-point an arm from an ABANDONED key onto the one the slot now runs on."""
+        source = self._owner._fold_key(from_key)
+        target = self._owner._fold_key(to_key)
+        target_arm = self._arm_if_any(target)
+        target_cwd = target_arm.cwd if target_arm is not None else None
+        if source == target and target_cwd == self._arm_cwd_value(cwd, target):
+            # The retry re-arms every few seconds; a bump would reject an in-flight start.
+            session = self._sessions.get(target)
+            if session is not None:
+                session.retire_on_arm = True
+            return
+        self.mark_retire_on_next_claim(to_key, cwd)
+        if source != target:
+            self.withdraw_retire_arm(from_key)
+
+    def withdraw_retire_arm(self, key: str) -> None:
+        """Undo what an arm set on a key the slot left: its mark, and a directory a clear removed."""
+        folded = self._owner._fold_key(key)
+        # Left in place, the abandoned key's next claim retires a session the slot has left.
+        if (arm := self._arm_if_any(folded)) is not None:
+            if arm.cleared_cwd:
+                self._owner._session_map.restore_cwd(folded, arm.cleared_cwd)
+            arm.spend()
+        if (abandoned := self._sessions.get(folded)) is not None:
+            abandoned.retire_on_arm = False
 
     def get_provider(self, key: str) -> LLMProvider | None:
         session = self._sessions.get(self._owner._fold_key(key))
@@ -746,6 +870,8 @@ class SessionAllocationService:
     # Claiming the live session for a key or cold-starting one:
     # ``kiro_crew.session_allocation_parts.get_or_create``.
     _reacquire_and_validate = _sa_get_or_create._reacquire_and_validate
+    _claim_verdict = _sa_get_or_create._claim_verdict
+    _attached_work_holds = _sa_get_or_create._attached_work_holds
     _release_reacquired = _sa_get_or_create._release_reacquired
     _evict_stale_session = _sa_get_or_create._evict_stale_session
     _is_member_key = staticmethod(_sa_get_or_create._is_member_key)
@@ -845,7 +971,7 @@ class SessionAllocationService:
                 if approval_policy:
                     existing.approval_policy = approval_policy
         if existing is not None:
-            if await owner._reacquire_and_validate(key, existing):
+            if await owner._reacquire_and_validate(key, existing, cwd=cwd):
                 return existing.provider, False, False
             await owner._evict_stale_session(key, existing)
 
@@ -955,7 +1081,7 @@ class SessionAllocationService:
                     "open_task_session: duplicate session teardown failed",
                     exc_info=True,
                 )
-            if await owner._reacquire_and_validate(key, session):
+            if await owner._reacquire_and_validate(key, session, cwd=cwd):
                 return session.provider, False, False
             await owner._evict_stale_session(key, session)
             maximum = self._deps.constants.won_race_max_retries

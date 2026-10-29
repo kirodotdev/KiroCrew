@@ -1279,6 +1279,9 @@ async def _close_slot(
     # it unless the key is still ours.
     if _slot_still_ours(state, name, slot):
         await state.sessions.remove(_history_key_for(name))
+        # remove() keeps the arm; re-asked after the await so a same-key recreate keeps its own.
+        if _slot_still_ours(state, name, slot):
+            state.sessions.supersede_arm_for_new_slot(_history_key_for(name))
         # Stop the archived session's remote workspace and keep it for retention:
         # background, best effort, a no-op without one. Inside the identity check,
         # so a replacement's is never touched.

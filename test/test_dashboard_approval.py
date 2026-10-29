@@ -467,7 +467,9 @@ class TestPendingProjectReset:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        state.sessions.reset.assert_any_await("dashboard:chat-1-test", skip_if_busy=True)
+        state.sessions.reset.assert_any_await(
+            "dashboard:chat-1-test", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         # reset() must appear before get_or_create() on the parent sessions mock.
         sess_calls = state.sessions.mock_calls
         reset_pos = next(i for i, c in enumerate(sess_calls) if c[0] == "reset")
@@ -518,7 +520,9 @@ class TestPendingProjectReset:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        state.sessions.reset.assert_any_await("dashboard:chat-1-test", skip_if_busy=True)
+        state.sessions.reset.assert_any_await(
+            "dashboard:chat-1-test", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         assert slot._pending_reset_history_key is None
 
 

@@ -44,7 +44,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
     from kiro_crew.dashboard.chat_turn.model_fallback import _app_allocation_kwargs
-    from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.session_reset import (
+        _allocation_cwd,
+        _consume_pending_reset,
+    )
     from kiro_crew.dashboard.chat_turn.turn_context import _require_session_memory_assignment
 
 # Debounce before a speculative spawn. Absorbs rapid consecutive signals
@@ -931,7 +934,7 @@ async def _spawn_admitted_prefetch(
                 # alias applied, so no override applies.
                 crew_agent=crew_alias,
                 model=_requested_model or None,
-                cwd=slot.project or None,
+                cwd=_allocation_cwd(slot),
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,

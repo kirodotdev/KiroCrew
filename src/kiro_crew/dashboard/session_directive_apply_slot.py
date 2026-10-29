@@ -32,6 +32,7 @@ logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
 
 
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
+    from kiro_crew.dashboard import state as dashboard_state
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.sandbox import voice_runtime_workspace_conflict
     from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
@@ -40,7 +41,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
     if clear or not project:
-        slot.project = ""
+        dashboard_state.record_project(slot, "")
         if old_project:
             slot._pending_reset_history_key = effective_session_key(slot)
         _push(state)
@@ -82,7 +83,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp)
     if overlap is not None:
         return f"Error: {overlap}"
-    slot.project = rp
+    dashboard_state.record_project(slot, rp)
     if rp != old_project:
         slot._pending_reset_history_key = effective_session_key(slot)
         try:

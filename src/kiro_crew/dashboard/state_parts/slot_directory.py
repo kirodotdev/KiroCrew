@@ -537,6 +537,13 @@ def get_or_create_slot(
     # its success path (see the comment there); do not change one side alone.
     if name in getattr(self, "_slots_under_construction", ()):
         raise ValueError(f"slot {name} is still being built; retry once it is ready")
+
+    # circular import: chat_utils imports state at module scope.
+    from kiro_crew.dashboard.chat_utils import _history_key_for
+
+    # A recycled key inherits no arm: close/sweep run remove(), which keeps it.
+    if self.sessions:
+        self.sessions.supersede_arm_for_new_slot(_history_key_for(name))
     requested_name = creation.requested_name
     minted_new = creation.minted_new
     slot = _ChatSlot(

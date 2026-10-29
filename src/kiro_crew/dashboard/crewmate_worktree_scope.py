@@ -87,8 +87,9 @@ async def scope_worker_turn(
     if found is None or found.cwd == project:
         return ""
     from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.state import record_project
 
-    slot.project = found.cwd
+    record_project(slot, found.cwd)
     key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
     if sessions is not None and sessions.get_provider(key) is not None:

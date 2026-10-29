@@ -432,6 +432,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.state import _safe_folder_tree  # noqa: F401
     from kiro_crew.dashboard.state import append_and_surface  # noqa: F401
     from kiro_crew.dashboard.state import load_window_off_loop  # noqa: F401
+    from kiro_crew.dashboard.state import record_project  # noqa: F401
     from kiro_crew.dashboard.stop_retry import allow_escalation  # noqa: F401
     from kiro_crew.effort import EFFORT_LEVELS  # noqa: F401
     from kiro_crew.effort import is_valid_effort  # noqa: F401

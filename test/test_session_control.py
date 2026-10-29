@@ -21,6 +21,7 @@ and the other verbs in ``test_session_control_read.py``, ``test_session_control_
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -691,3 +692,35 @@ def test_config_switch_off_refuses_everything(tmp_path, monkeypatch):
             state, caller_session_key=_key(caller), target="chat-2", operation="read"
         )
     assert "disabled" in exc.value.message
+
+
+def test_the_reap_spares_a_replacement_slots_arm(tmp_path, monkeypatch):
+    """The reap must re-check ownership AFTER the awaited remove, not before it."""
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-race")
+    monkeypatch.setattr(chat_handlers, "_retire_slot_nudge_loop", AsyncMock(return_value=None))
+    reaped: list[str] = []
+    sessions = MagicMock()
+    sessions.supersede_arm_for_new_slot = lambda key: reaped.append(key)
+
+    async def _recreate_during_remove(_key):
+        # A same-key recreate landing inside the await, the way POST /api/chat does: the
+        # replacement is a DIFFERENT slot object registered under the same name.
+        state._slots.pop("chat-race", None)
+        state.get_or_create_slot("chat-race")
+        # The MINT legitimately supersedes the previous occupant's arm through this same
+        # verb, so only what follows can be the close's own reap.
+        reaped.clear()
+        return None
+
+    sessions.remove = AsyncMock(side_effect=_recreate_during_remove)
+    state.sessions = sessions
+
+    asyncio.run(chat_handlers.close_slot(state, slot, slot.key))
+
+    assert reaped == [], (
+        "the close reaped an arm after a replacement slot took the key, so the "
+        f"replacement's own armed project is gone and its retry binds the old one; {reaped}"
+    )

@@ -273,9 +273,9 @@ class AcpRuntime:
         else:
             # config.paths is a stdlib-only leaf: importing it here can't
             # re-enter the config.loader -> providers.acp -> acp.client cycle.
-            from kiro_crew.config.paths import config_dir
+            from kiro_crew.config.paths import default_workspace_dir
 
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = default_workspace_dir()
         self._agent = agent
         # The name kiro-cli is asked for in place of ``agent`` -- on ``--agent`` and
         # in ``session/set_mode`` -- when they differ: an app's launch copy
