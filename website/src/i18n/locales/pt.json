@@ -19278,7 +19278,7 @@
       "entrance_hello": "Oi! Sou {{name}}.",
       "create_job_hint": "Palavras simples bastam. Se precisar rodar sozinho, seu colega pode configurar um agendamento com você depois de criado.",
       "create_roster_failed": "{{name}} foi criado, mas a lista não foi atualizada.",
-      "create_retry_roster": "Atualizar seus companheiros",
+      "create_retry_roster": "Atualizar a lista",
       "create_workspace_hint": "Escolha um espaço de trabalho existente apenas para compartilhar arquivos com outro colega.",
       "team_none": "Sem equipe",
       "team_crewmate_count_many": "{{count}} colegas",

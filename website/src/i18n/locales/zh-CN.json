@@ -18672,7 +18672,7 @@
       "entrance_hello": "嗨！我是 {{name}}。",
       "create_job_hint": "用平常的话写就行。如果要它自己运行，创建后你的队友可以和你一起设好日程。",
       "create_roster_failed": "{{name}} 已创建，但列表没有刷新。",
-      "create_retry_roster": "刷新队友",
+      "create_retry_roster": "刷新列表",
       "create_workspace_hint": "只有要与其他队友共享文件时，才选择已有的工作区。",
       "team_none": "无团队",
       "team_crewmate_count_other": "{{count}} 位队友",

@@ -634,7 +634,7 @@ describe('New mate dialog', () => {
     // Reported as the roster step failing, with its retry — never as "radar is gone".
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
-    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh your mates')
+    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh the list')
     expect(api.memberThread).not.toHaveBeenCalledWith('radar')
     expect(api.sendChat).not.toHaveBeenCalled()
     expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
@@ -942,7 +942,7 @@ describe('New mate dialog', () => {
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
     // The retry names the one step it repeats — never a second "Create".
-    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh your mates')
+    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh the list')
     expect(screen.queryByTestId('member-gone-notice')).toBeNull()
     expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
     // oncall's arrival open is the only thread POST; radar's never happened.
@@ -958,6 +958,37 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('radar'))
     await waitFor(() => expect(api.memberGreet).toHaveBeenCalledWith('radar'), PANE_READY)
     expect(screen.queryByTestId('member-post-create-error')).toBeNull()
+  })
+
+  it('the roster retry is a list re-read, not a greeting resend: its label reads the list, and a click sends no create and no message', async () => {
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    const createMock = api.createKirocrewAgent as ReturnType<typeof vi.fn>
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    // The first retry also fails, so the click is observed on its own: the
+    // notice comes back and no chat opens for radar.
+    membersMock.mockRejectedValueOnce(new Error('roster down')).mockRejectedValueOnce(new Error('roster down'))
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
+    const retry = screen.getByTestId('member-post-create-retry')
+    // The label names the list, never the crewmates themselves or a message.
+    expect(retry).toHaveTextContent(/^Refresh the list$/)
+    expect(retry).not.toHaveTextContent(/send|again|message|greet|mates?\b/i)
+    const creates = createMock.mock.calls.length
+    const reads = membersMock.mock.calls.length
+    const greets = (api.memberGreet as ReturnType<typeof vi.fn>).mock.calls.length
+    expect(creates).toBe(1)
+    fireEvent.click(retry)
+    await waitFor(() => expect(membersMock.mock.calls.length).toBeGreaterThan(reads))
+    await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
+    // Another roster read and nothing else: no second create, no
+    // greeting request, no chat message, no thread opened for radar.
+    expect(createMock).toHaveBeenCalledTimes(creates)
+    expect(api.memberGreet).toHaveBeenCalledTimes(greets)
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(api.memberThread).not.toHaveBeenCalledWith('radar')
   })
 
   it('a failed re-read over a roster with other mates can be dismissed, so the existing chats stay reachable below md', async () => {

@@ -353,7 +353,7 @@ for (const theme of ['dark', 'light']) {
   await notice.waitFor()
   await page.getByRole('dialog').waitFor({ state: 'detached' }) // exit motion
   check(`05-post-create-error-${theme} text`, await notice.getByText("Radar was created, but the list didn't refresh.").isVisible(), 'notice text')
-  check(`05-post-create-error-${theme} retry`, await notice.getByTestId('member-post-create-retry').isVisible() && (await notice.getByTestId('member-post-create-retry').textContent()) === 'Refresh your mates', 'Refresh your mates')
+  check(`05-post-create-error-${theme} retry`, await notice.getByTestId('member-post-create-retry').isVisible() && (await notice.getByTestId('member-post-create-retry').textContent()) === 'Refresh the list', 'Refresh the list')
   check(`05-post-create-error-${theme} no dismiss`, (await notice.getByRole('button', { name: /dismiss/i }).count()) === 0, 'a roster failure has no dismiss')
   const textBox = await notice.getByText("Radar was created, but the list didn't refresh.").boundingBox()
   const retryBox = await notice.getByTestId('member-post-create-retry').boundingBox()
@@ -420,7 +420,7 @@ for (const theme of ['dark', 'light']) {
   const dismiss = notice.getByRole('button', { name: /dismiss/i })
   const dismissBox = await dismiss.boundingBox()
   check(`${tag} dismiss on screen`, !!dismissBox && dismissBox.x >= 0 && dismissBox.x + dismissBox.width <= 390 && dismissBox.y + dismissBox.height <= 844, `dismiss box=${JSON.stringify(dismissBox)}`)
-  check(`${tag} retry`, (await notice.getByTestId('member-post-create-retry').textContent()) === 'Refresh your mates', 'Refresh your mates')
+  check(`${tag} retry`, (await notice.getByTestId('member-post-create-retry').textContent()) === 'Refresh the list', 'Refresh the list')
   await page.waitForTimeout(400)
   await assertTheme(page, theme, tag)
   await page.screenshot({ path: `${OUT}/${tag}.png` })

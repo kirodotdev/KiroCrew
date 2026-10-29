@@ -19278,7 +19278,7 @@
       "entrance_hello": "Salut ! Je suis {{name}}.",
       "create_job_hint": "Des mots simples suffisent. S’il doit tourner tout seul, ton coéquipier pourra régler un planning avec toi une fois créé.",
       "create_roster_failed": "{{name}} a été créé, mais la liste ne s'est pas actualisée.",
-      "create_retry_roster": "Actualiser tes coéquipiers",
+      "create_retry_roster": "Actualiser la liste",
       "create_workspace_hint": "Choisis un espace de travail existant uniquement pour partager des fichiers avec un autre coéquipier.",
       "team_none": "Sans équipe",
       "team_crewmate_count_many": "{{count}} coéquipiers",

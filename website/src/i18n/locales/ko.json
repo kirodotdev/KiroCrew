@@ -18672,7 +18672,7 @@
       "entrance_hello": "안녕하세요! 저는 {{name}}입니다.",
       "create_job_hint": "평소 말투로 적어도 돼요. 혼자 돌아가야 한다면, 만든 뒤 크루메이트가 함께 일정을 정해 줄 수 있어요.",
       "create_roster_failed": "{{name}}(이)가 만들어졌지만 목록이 새로 고쳐지지 않았습니다.",
-      "create_retry_roster": "크루메이트 새로고침",
+      "create_retry_roster": "목록 새로고침",
       "create_workspace_hint": "다른 크루메이트와 파일을 공유할 때만 기존 워크스페이스를 선택하세요.",
       "team_none": "팀 없음",
       "team_crewmate_count_other": "크루메이트 {{count}}명",

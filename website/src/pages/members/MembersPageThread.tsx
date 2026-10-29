@@ -647,8 +647,9 @@ export function MembersPageThreadColumn({
     >
       {/* The retry sits right after the text, not at the far edge of a
           stretched notice: the two read as one sentence, and its label
-          names the one step it repeats ("Refresh your crewmates") so it
-          cannot read as "create Radar again". The dismiss follows
+          names the one step it repeats ("Refresh the list": a re-read of
+          the roster list, not a restart of any crewmate) so it cannot read
+          as "create Radar again". The dismiss follows
           `postCreateDismissable`: over an empty cached roster there is
           none — closing it would put "No crewmates yet" under a crewmate
           that exists, and the retry is the only honest way off it; over a

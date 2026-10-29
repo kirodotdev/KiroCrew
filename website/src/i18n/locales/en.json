@@ -8061,7 +8061,7 @@
       "entrance_hello": "Hi! I'm {{name}}.",
       "create_job_hint": "Plain words are fine. If it should run on its own, your mate can set up a schedule with you once it's created.",
       "create_roster_failed": "{{name}} was created, but the list didn't refresh.",
-      "create_retry_roster": "Refresh your mates",
+      "create_retry_roster": "Refresh the list",
       "create_workspace_hint": "Pick an existing workspace only to share files with another mate.",
       "team_none": "No team",
       "team_crewmate_count_one": "{{count}} mate",

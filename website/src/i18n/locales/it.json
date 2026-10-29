@@ -19278,7 +19278,7 @@
       "entrance_hello": "Ciao! Sono {{name}}.",
       "create_job_hint": "Bastano parole semplici. Se deve funzionare da solo, il tuo compagno può impostare con te una pianificazione una volta creato.",
       "create_roster_failed": "{{name}} è stato creato, ma l'elenco non si è aggiornato.",
-      "create_retry_roster": "Aggiorna i tuoi compagni",
+      "create_retry_roster": "Aggiorna l'elenco",
       "create_workspace_hint": "Scegli un workspace esistente solo per condividere file con un altro compagno.",
       "team_none": "Nessun team",
       "team_crewmate_count_many": "{{count}} compagni",

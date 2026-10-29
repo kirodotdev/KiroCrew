@@ -18672,7 +18672,7 @@
       "entrance_hello": "こんにちは！私は {{name}} です。",
       "create_job_hint": "普段の言葉で大丈夫です。自動で動かしたい場合は、作成後にクルーメイトがあなたと一緒にスケジュールを設定できます。",
       "create_roster_failed": "{{name}} は作成されましたが、一覧を更新できませんでした。",
-      "create_retry_roster": "クルーメイトを更新",
+      "create_retry_roster": "一覧を更新",
       "create_workspace_hint": "他のクルーメイトとファイルを共有する場合のみ、既存のワークスペースを選択してください。",
       "team_none": "チームなし",
       "team_crewmate_count_other": "{{count}} 名のクルーメイト",

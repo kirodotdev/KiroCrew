@@ -18975,7 +18975,7 @@
       "entrance_hello": "Hi! Ich bin {{name}}.",
       "create_job_hint": "Einfache Worte reichen. Soll es von selbst laufen, kann dein Crewmate nach dem Erstellen mit dir einen Zeitplan einrichten.",
       "create_roster_failed": "{{name}} wurde erstellt, aber die Liste wurde nicht aktualisiert.",
-      "create_retry_roster": "Deine Crewmates aktualisieren",
+      "create_retry_roster": "Liste aktualisieren",
       "create_workspace_hint": "Wähle einen bestehenden Workspace nur, um Dateien mit einem anderen Crewmate zu teilen.",
       "team_none": "Kein Team",
       "team_crewmate_count_one": "{{count}} Crew-Kamerad",
