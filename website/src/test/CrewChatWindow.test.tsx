@@ -187,7 +187,17 @@ describe('CrewChatWindow', () => {
   it('offers voice input in the composer', async () => {
     detail = { running: false, messages: [{ role: 'user', content: 'hi', ts: 't1' }] }
     renderWindow()
-    expect(await screen.findByRole('button', { name: 'Voice input' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /^Voice input/ })).toBeInTheDocument()
+  })
+
+  // The window does not own the push-to-talk key (the main composer does), so
+  // its mic must not name the key: pressing it would dictate elsewhere.
+  it('does not name the push-to-talk key on its mic', async () => {
+    detail = { running: false, messages: [{ role: 'user', content: 'hi', ts: 't1' }] }
+    renderWindow()
+    const mic = await screen.findByRole('button', { name: 'Voice input' })
+    expect(mic).toHaveAttribute('title', 'Voice input')
+    expect(mic).not.toHaveAttribute('aria-keyshortcuts')
   })
 
   it('keeps Stop reachable while an approval is pending', async () => {

@@ -2190,6 +2190,7 @@
       "transcribing_please_wait": "Transcribing, please wait…",
       "tree_drop_folder_refused": "This folder can't be added: its path contains a space or @. Add its files one by one instead.",
       "voice_input": "Voice input",
+      "voice_input_with_key": "Voice input ({{name}})",
       "queue": "Queue",
       "queue_run_after_the_current_work_finishes_desc": "Run after the current work finishes",
       "alt_action_hint_queues": "{{chord}} queues this message instead",

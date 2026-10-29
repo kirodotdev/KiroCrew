@@ -340,7 +340,7 @@ describe('direct terminal commands', () => {
     expect(within(review).getAllByRole('button')).toEqual([run])
     expect(within(review).getByRole('status')).toHaveTextContent('Terminal panel · selected project')
     expect(run).toBeEnabled()
-    const mic = screen.getByRole('button', { name: 'Voice input' })
+    const mic = screen.getByRole('button', { name: /^Voice input/ })
     expect(review).not.toContainElement(mic)
     expect(mic).toBeEnabled()
     fireEvent.click(mic)

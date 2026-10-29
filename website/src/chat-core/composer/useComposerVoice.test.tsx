@@ -44,7 +44,7 @@ vi.mock('../../hooks/useVoiceInput', () => ({
   useVoiceInput: () => fx.engineFor(fx.state.renderingInstance),
   voiceInputSupported: true,
 }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
 vi.mock('../../api/client', () => ({
   api: { sttConfig: vi.fn().mockResolvedValue({ enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }) },
 }))

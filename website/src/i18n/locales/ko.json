@@ -6416,6 +6416,7 @@
       "use_a_skill": "스킬 사용",
       "used": "사용됨",
       "voice_input": "음성 입력",
+      "voice_input_with_key": "음성 입력 ({{name}})",
       "finishing": "마무리 중…",
       "keep_holding_to_record": "누른 상태로 녹음",
       "auto_compact_at": "자동 압축 실행 지점",

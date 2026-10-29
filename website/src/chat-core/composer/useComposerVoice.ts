@@ -1047,7 +1047,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // opens capture on the keydown itself, so there is no warm-up step to
   // schedule. Only the host that owns the binding (`pushToTalk`) is armed: N
   // composers each listening would open N captures on one keystroke.
-  usePushToTalk(
+  const { config: pttConfig } = usePushToTalk(
     {
       recording: voice.recording,
       // silent: a bare modifier is also an ordinary typing modifier, so a
@@ -1058,6 +1058,16 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     },
     { disabled: !voiceInputSupported || !host.pushToTalk, shiftDraftStop: submitOnRelease },
   )
+  // The key the mic may name: only on the composer the key is armed for, only
+  // while the key trigger is on, and only when a press would record. A keyboard
+  // start is silent, so with STT not ready the key does nothing and names
+  // nothing; a live recording keeps the name, since the key still stops it.
+  const pttBinding =
+    voiceInputSupported && host.pushToTalk && pttConfig.enabled
+      && ((sttConfigLoaded && sttEnabled && sttAvailable)
+        || (voice.sessionOwner === sessionId && voice.recording))
+      ? pttConfig.binding
+      : null
   // Stop any in-flight recording and clear the streaming prefix when the host's
   // session changes. The mic is a single shared device, so a recording can't
   // follow the user to another session; a BATCH transcript is still delivered
@@ -1205,6 +1215,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     micBusyElsewhereSession,
     /** True for a moment after a HELD transcript landed in this composer. */
     heldLanded,
+    /** The push-to-talk key the mic may name, or null (see `pttBinding`). */
+    pttBinding,
     /** `VoiceDisabledModal` state; the host renders the modal and routes its settings link. */
     setup: {
       open: voiceSetupOpen,
@@ -1262,6 +1274,9 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
     voiceBusyElsewhereSession: cv.micBusyElsewhereSession,
     /* A held dictation just landed here: the composer shows a brief cue. */
     voiceHeldLanded: cv.heldLanded,
+    /* The push-to-talk key the mic may name; null where pressing it would not
+       record here. */
+    voicePttBinding: cv.pttBinding,
     // The capture's own error wins: a microphone that never recorded outranks a
     // cleanup pass that did not run.
     voiceError: voice.error ?? polishError,

@@ -6758,6 +6758,7 @@
       "use_a_skill": "Использовать навык",
       "used": "Использовано",
       "voice_input": "Голосовой ввод",
+      "voice_input_with_key": "Голосовой ввод ({{name}})",
       "finishing": "Завершение…",
       "keep_holding_to_record": "Удерживайте, чтобы записать",
       "auto_compact_at": "Автосжатие при",

@@ -6644,6 +6644,7 @@
       "use_a_skill": "Usar una skill",
       "used": "Usado",
       "voice_input": "Entrada de voz",
+      "voice_input_with_key": "Entrada de voz ({{name}})",
       "finishing": "Finalizando…",
       "keep_holding_to_record": "Mantén pulsado para grabar",
       "auto_compact_at": "Compactación automática al",

@@ -6530,6 +6530,7 @@
       "use_a_skill": "Einen Skill verwenden",
       "used": "Verbraucht",
       "voice_input": "Spracheingabe",
+      "voice_input_with_key": "Spracheingabe ({{name}})",
       "finishing": "Wird beendet…",
       "keep_holding_to_record": "Zum Aufnehmen halten",
       "auto_compact_at": "Auto-Verdichtung bei",

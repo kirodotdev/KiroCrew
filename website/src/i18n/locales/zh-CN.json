@@ -6416,6 +6416,7 @@
       "use_a_skill": "使用技能",
       "used": "已用",
       "voice_input": "语音输入",
+      "voice_input_with_key": "语音输入（{{name}}）",
       "finishing": "收尾中…",
       "keep_holding_to_record": "按住才能录音",
       "auto_compact_at": "自动压缩触发值",

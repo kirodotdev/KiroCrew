@@ -182,7 +182,7 @@ export function HoldToTalkBar({ manualHeight, setHoldTarget, touchPtt, disabled,
 
 /** The mic: a record toggle, or on touch the switch between the keyboard and
  *  hold-to-talk (see `micIsModeSwitch` in `chat-input/voice.ts`). */
-export function MicButton({ voiceHoldMode, voiceRecording, micIsModeSwitch, transcribeInFlight, micHeldElsewhere, micBlocked, toggleVoiceMode, onVoiceToggle, onVoicePrewarm, disabled, optimizing, micLabel }: {
+export function MicButton({ voiceHoldMode, voiceRecording, micIsModeSwitch, transcribeInFlight, micHeldElsewhere, micBlocked, toggleVoiceMode, onVoiceToggle, onVoicePrewarm, disabled, optimizing, micLabel, micKeyShortcuts }: {
   voiceHoldMode: boolean
   voiceRecording: boolean
   micIsModeSwitch: boolean
@@ -195,6 +195,8 @@ export function MicButton({ voiceHoldMode, voiceRecording, micIsModeSwitch, tran
   disabled: boolean
   optimizing: boolean
   micLabel: string
+  /** The push-to-talk key as an `aria-keyshortcuts` value; absent when no key applies. */
+  micKeyShortcuts?: string
 }) {
   return (
     <button
@@ -239,6 +241,7 @@ export function MicButton({ voiceHoldMode, voiceRecording, micIsModeSwitch, tran
          read as "no idea why it's off" (UX review on #9787). */
       disabled={disabled || optimizing || (micIsModeSwitch ? false : micBlocked)}
       aria-label={micLabel}
+      aria-keyshortcuts={micKeyShortcuts}
       title={micLabel}
       {...uiLocation('composer.voice')}
     >

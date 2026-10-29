@@ -6530,6 +6530,7 @@
       "use_a_skill": "একটি স্কিল ব্যবহার করুন",
       "used": "ব্যবহৃত",
       "voice_input": "ভয়েস ইনপুট",
+      "voice_input_with_key": "ভয়েস ইনপুট ({{name}})",
       "finishing": "সম্পন্ন হচ্ছে…",
       "keep_holding_to_record": "রেকর্ড করতে চেপে ধরে রাখুন",
       "auto_compact_at": "অটো-কম্প্যাক্ট",

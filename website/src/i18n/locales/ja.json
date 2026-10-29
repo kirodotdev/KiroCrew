@@ -6416,6 +6416,7 @@
       "use_a_skill": "スキルを使用",
       "used": "使用済み",
       "voice_input": "音声入力",
+      "voice_input_with_key": "音声入力（{{name}}）",
       "finishing": "処理中…",
       "keep_holding_to_record": "押したままで録音",
       "auto_compact_at": "自動圧縮の実行値",

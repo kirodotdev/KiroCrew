@@ -6530,6 +6530,7 @@
       "use_a_skill": "स्किल का उपयोग करें",
       "used": "उपयोग",
       "voice_input": "वॉइस इनपुट",
+      "voice_input_with_key": "वॉइस इनपुट ({{name}})",
       "finishing": "पूरा हो रहा है…",
       "keep_holding_to_record": "रिकॉर्ड करने के लिए दबाए रखें",
       "auto_compact_at": "ऑटो-कॉम्पैक्ट",

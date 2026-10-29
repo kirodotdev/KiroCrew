@@ -6644,6 +6644,7 @@
       "use_a_skill": "Utiliser une compétence",
       "used": "Utilisé",
       "voice_input": "Saisie vocale",
+      "voice_input_with_key": "Saisie vocale ({{name}})",
       "finishing": "Finalisation…",
       "keep_holding_to_record": "Maintenir pour enregistrer",
       "auto_compact_at": "Compactage automatique à",
