@@ -9,7 +9,13 @@ compared against is pinned by ``TestSandboxEscapeSshSelfOwnHost`` in
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
@@ -708,6 +714,126 @@ class TestSandboxEscapeSshSelf:
         # ssh-family program must not slip the verb gate.
         assert _denied_by("/usr/bin/s?h localhost id") == self._RULE
         assert _denied_by("/usr/bin/s?h remote.example.com id") is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # ``s??`` names scp and ssh: as scp, ``localhost`` is a target.
+            "/usr/bin/s?? x localhost",
+            "s?? x localhost",
+            "s??.exe x localhost",
+            # ``s*`` names scp, sftp and ssh.
+            "/usr/bin/s* x ::1",
+            # ``[rs]s*`` names rsync and ssh: as rsync, every operand is checked.
+            "/usr/bin/[rs]s* x localhost",
+            # ``*)`` of a case arm sits in program position and names all four.
+            "ssh $(case x in \\#) :;; *) echo ::1;; esac) id",
+            # A copy of a multi-verb glob binary carries every verb it can name.
+            "cp /usr/bin/s?? /tmp/q && /tmp/q x localhost",
+        ],
+    )
+    def test_glob_naming_several_verbs_is_judged_as_every_verb(self, cmd):
+        # A glob that can name several ssh-family programs is read as each
+        # of them, toward deny: the verbs check different operands, so one
+        # arbitrary choice would let the others through.
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "/usr/bin/s?? remote.example.com id",
+            "/usr/bin/s* remote.example.com uptime",
+            "ls *",
+            "cp * /backup/",
+        ],
+    )
+    def test_glob_naming_several_verbs_stays_allowed_off_this_host(self, cmd):
+        assert _denied_by(cmd) is None
+
+    def test_glob_verbs_are_every_verb_in_sorted_order(self):
+        assert _argv_floor._ssh_family_verbs("/usr/bin/s??") == ("scp", "ssh")
+        assert _argv_floor._ssh_family_verbs("*") == ("rsync", "scp", "sftp", "ssh")
+        assert _argv_floor._ssh_family_verbs("/usr/bin/ssh.exe") == ("ssh",)
+        assert _argv_floor._ssh_family_verbs("l?") == ()
+        # The single-verb answer is the first in sorted order, never a set's.
+        assert _argv_floor._ssh_family_verb("s??") == "scp"
+        assert _argv_floor._ssh_family_verb("l?") is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo * s* *s* *p* [rs]*",
+            "ls -la * s* *s* *c* *p* ?*",
+            "rm -f * ?* ??* ???* ????*",
+        ],
+    )
+    def test_many_verb_capable_globs_in_data_stay_allowed(self, cmd):
+        assert _denied_by(cmd) is None
+
+    def test_nested_multi_verb_globs_cost_stays_linear(self, monkeypatch):
+        # Each glob is walked once per verb it can name, at its own token, so
+        # a nested remote-shell value adds its own walk rather than
+        # multiplying the outer one.
+        calls = []
+        real_frames = _argv_floor._self_token_frames
+
+        def _counting_frames(text):
+            calls.append(text)
+            return real_frames(text)
+
+        monkeypatch.setattr(_argv_floor, "_self_token_frames", _counting_frames)
+        globs = "s?? s* [rs]s* s?[hp] [sr]*[ph] s[cf]*"
+        inner = f"rsync -e 'rsync {globs} far:/a b' {globs} far:/a b"
+        cmd = f'rsync -e "{inner}" {globs} far:/a b'
+        assert not _argv_floor._is_ssh_to_self(cmd)
+        assert len(calls) < 200
+
+    def test_glob_verb_verdict_does_not_depend_on_the_hash_seed(self, tmp_path):
+        # frozenset iteration order follows PYTHONHASHSEED, which is fixed
+        # per process, so only fresh interpreters with different seeds can
+        # show an order-dependent verdict.
+        script = textwrap.dedent(
+            """
+            import json
+            import sys
+
+            from kiro_crew.security import argv_floor
+
+            argv_floor._OWN_HOST_NAMES_CACHE = frozenset()
+            argv_floor._OWN_HOST_RESOLVE_DONE = True
+            argv_floor._NETLINK_ADDRS_PUBLISHED = True
+            argv_floor._OWN_HOST_RESOLVE_NEXT_TRY = float("inf")
+            argv_floor._resolved_host_verdict = lambda host, **_kw: False
+            print(json.dumps([argv_floor._is_ssh_to_self(cmd) for cmd in sys.argv[1:]]))
+            """
+        )
+        cmds = [
+            "/usr/bin/s?? x localhost",
+            "/usr/bin/s* x ::1",
+            "ssh $(case x in \\#) :;; *) echo ::1;; esac) id",
+            "/usr/bin/s?? remote.example.com id",
+        ]
+        src_dir = str(Path(security.__file__).resolve().parents[2])
+        verdicts = set()
+        # Seed 0 picked scp and seeds 2 and 5 picked ssh before the fix.
+        for seed in (0, 2, 5):
+            env = dict(os.environ)
+            env["PYTHONHASHSEED"] = str(seed)
+            env["PYTHONPATH"] = os.pathsep.join(
+                part for part in (src_dir, env.get("PYTHONPATH", "")) if part
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script, *cmds],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=60,
+                cwd=str(tmp_path),
+                env=env,
+            )
+            assert result.returncode == 0, result.stderr
+            verdicts.add(tuple(json.loads(result.stdout.strip().splitlines()[-1])))
+        assert verdicts == {(True, True, True, False)}
 
     def test_glob_expandable_self_operand_is_denied(self):
         # The same expansion applies to operands: ``localho?t`` matches a

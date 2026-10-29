@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Iterator, Mapping
 
 # The reader names a test instruments on the facade are reached as attributes of
 # the reader module rather than bound here at import: the facade mirrors a patch
@@ -102,7 +103,7 @@ def _glob_can_name_ssh_verb(probe: str) -> bool:
         if not _GLOB_CHARS.intersection(word):
             continue
         base = word.rsplit("/", 1)[-1]
-        for verb in _SSH_FAMILY_VERBS:
+        for verb in _SSH_FAMILY_VERBS_ORDERED:
             if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
                 return True
     return False
@@ -117,6 +118,9 @@ _EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
 
 
 _SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
+# The same verbs in a fixed order, for any loop that must not depend on the
+# per-process hash seed (frozenset iteration order follows PYTHONHASHSEED).
+_SSH_FAMILY_VERBS_ORDERED: tuple[str, ...] = tuple(sorted(_SSH_FAMILY_VERBS))
 
 
 # Verbs that place a copy (or a link) of their SOURCE operand at their
@@ -548,23 +552,59 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     return _host_is_self(host, dns_fallback=host_position or scheme_seen or host != t)
 
 
-def _ssh_family_verb(token: str) -> "str | None":
-    """The ssh-family verb *token* invokes, or None.
+def _ssh_family_verbs(token: str) -> "tuple[str, ...]":
+    """Every ssh-family verb *token* can invoke, in sorted order; empty if none.
 
     Path-qualified (``/usr/bin/ssh``) and Windows (``ssh.exe``) spellings
     resolve to the bare verb.  A glob basename that CAN expand to one
-    (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.
+    (``s?h``, see ``_GLOB_CHARS``) resolves to every verb it can name:
+    ``s??`` names both ``scp`` and ``ssh``, and the walk judges the line as
+    each of them, toward deny.
     """
     base = _program_basename(_strip_redirect(token.strip("\"'")))
     if base.endswith(".exe"):
         base = base[: -len(".exe")]
     if base in _SSH_FAMILY_VERBS:
-        return base
+        return (base,)
     if _GLOB_CHARS.intersection(base):
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return verb
-    return None
+        return tuple(
+            verb
+            for verb in _SSH_FAMILY_VERBS_ORDERED
+            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base)
+        )
+    return ()
+
+
+def _ssh_family_verb(token: str) -> "str | None":
+    """The first verb ``_ssh_family_verbs`` gives for *token*, or None.
+
+    A glob naming several verbs has no single answer; the operand walk uses
+    ``_ssh_family_verbs`` and judges every one.  This answer is the first in
+    sorted order, so it never depends on set iteration order.
+    """
+    verbs = _ssh_family_verbs(token)
+    return verbs[0] if verbs else None
+
+
+def _frame_verb_choices(
+    tokens: "list[str]", bound_program_verbs: "Mapping[str, tuple[str, ...]]"
+) -> "Iterator[tuple[int, str, str | None]]":
+    """``(index, token, verb)`` for each token of a frame, once per verb it can be.
+
+    A token that names no ssh-family verb yields once with ``None``.  One that
+    can name several (a glob such as ``s??``, or a copy of one) yields once per
+    verb, so the walk checks its operands under each.  Lazy on purpose: a
+    copy binding the walk records at one token applies to the tokens after it.
+    """
+    for i, token in enumerate(tokens):
+        verbs = _ssh_family_verbs(token)
+        if not verbs and bound_program_verbs:
+            stripped_prog = token.strip("\"'")
+            verbs = bound_program_verbs.get(stripped_prog, ()) or bound_program_verbs.get(
+                _program_basename(stripped_prog), ()
+            )
+        for verb in verbs or (None,):
+            yield i, token, verb
 
 
 # ssh_config keywords that SET the destination.  ``-o hostname=…`` rewrites
@@ -1010,7 +1050,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # an ssh-family binary, bound to the verb they now carry.  Shared across
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
-    bound_program_verbs: "dict[str, str]" = {}
+    bound_program_verbs: "dict[str, tuple[str, ...]]" = {}
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
@@ -1047,13 +1087,11 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         xargs_prefix_index: "int | None" = None  # a bare ``xargs`` in this simple command
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
-        for i, token in enumerate(tokens):
-            verb = _ssh_family_verb(token)
-            if verb is None and bound_program_verbs:
-                stripped_prog = token.strip("\"'")
-                verb = bound_program_verbs.get(stripped_prog) or bound_program_verbs.get(
-                    _program_basename(stripped_prog)
-                )
+        # A token that can be several verbs is walked once per verb (see
+        # ``_frame_verb_choices``).  The verb branch below only reads the
+        # frame state, so repeating it for the same token is safe; a token
+        # that is no verb comes through exactly once.
+        for i, token, verb in _frame_verb_choices(tokens, bound_program_verbs):
             if verb is None:
                 stripped_tok = token.strip("\"'")
                 assign = _RSYNC_RSH_ASSIGN_RE.match(stripped_tok)
@@ -1120,11 +1158,11 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         operands.append(peeked)
                     if len(operands) >= 2:
                         for source in operands[:-1]:
-                            bound_verb = _ssh_family_verb(source)
-                            if bound_verb is not None:
+                            bound_verbs = _ssh_family_verbs(source)
+                            if bound_verbs:
                                 dest = operands[-1]
-                                bound_program_verbs[dest] = bound_verb
-                                bound_program_verbs[_program_basename(dest)] = bound_verb
+                                bound_program_verbs[dest] = bound_verbs
+                                bound_program_verbs[_program_basename(dest)] = bound_verbs
                                 break
                 cmd_start = _ends_argv(token) or (
                     cmd_start and _ENV_ASSIGN_PREFIX_RE.match(stripped_tok) is not None
