@@ -24,6 +24,7 @@ chokepoint's decline-not-raise guard covers the dashboard seam too.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -790,6 +791,34 @@ class TestGatewayReadsModeSurface:
         ev = _shell_permission_event(title="read repo status", raw_tool_params={"command": command})
         assert asyncio.run(approve_fn(ev)) is True  # answered by the prompt stub
         gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    def test_a_platform_scope_decline_warns_once_per_session_and_audits_each(
+        self, monkeypatch, caplog
+    ):
+        # A platform-scope refusal's text is one constant, so the warning is
+        # written once per session; each decline still gets its audit row.
+        name_grant._DECLINE_NOTICES.clear()
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "lookup not modelled")
+        _gateway, approve_fn = self._approve_fn(monkeypatch, refusal)
+        declines: list[dict] = []
+        monkeypatch.setattr(name_grant, "log_decline", lambda **kw: declines.append(kw))
+
+        async def _two_calls():
+            for rid in ("rq1", "rq2"):
+                await approve_fn(
+                    _shell_permission_event(title="head x", request_id=rid), "reads:once"
+                )
+
+        try:
+            with caplog.at_level(logging.WARNING):
+                asyncio.run(_two_calls())
+        finally:
+            name_grant._DECLINE_NOTICES.clear()
+        warnings = [
+            r for r in caplog.records if "declining a reads-mode auto-approve" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert [d["session_key"] for d in declines] == ["reads:once", "reads:once"]
 
 
 # ── stream_and_collect helper (cron / autonudge turns) ──────────────

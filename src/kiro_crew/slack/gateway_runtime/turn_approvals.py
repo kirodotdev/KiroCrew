@@ -229,11 +229,14 @@ def _interactive_approval(
                 # (consumes no event data) and stays unverified by design.
                 _ng_refusal = await name_grant.refusal_for_event(event)
                 if _ng_refusal is not None:
-                    logger.warning(
-                        "declining a reads-mode auto-approve: %s; the "
-                        "request falls through to the interactive prompt",
-                        _ng_refusal.log_text,
-                    )
+                    # Once per session for a platform-scope code (its text is a
+                    # constant); the audit row below is still written per call.
+                    if name_grant.should_log_decline(parent_session_key, _ng_refusal):
+                        logger.warning(
+                            "declining a reads-mode auto-approve: %s; the "
+                            "request falls through to the interactive prompt",
+                            _ng_refusal.log_text,
+                        )
                     name_grant.log_decline(
                         source="background",
                         session_key=parent_session_key,
@@ -616,11 +619,13 @@ async def _heartbeat_approval(
         if event.is_shell:
             _ng_refusal = await name_grant.refusal_for_event(event)
             if _ng_refusal is not None:
-                logger.warning(
-                    "declining a heartbeat shell auto-approve: %s; the request "
-                    "falls through to deny-by-default",
-                    _ng_refusal.log_text,
-                )
+                # Once per session for a platform-scope code; audited per call.
+                if name_grant.should_log_decline(HEARTBEAT_KEY, _ng_refusal):
+                    logger.warning(
+                        "declining a heartbeat shell auto-approve: %s; the request "
+                        "falls through to deny-by-default",
+                        _ng_refusal.log_text,
+                    )
                 name_grant.log_decline(
                     source="heartbeat",
                     session_key=HEARTBEAT_KEY,
