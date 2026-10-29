@@ -2,7 +2,7 @@ import { useRef, useCallback, type MutableRefObject } from 'react'
 import type { MoveSlotOptions } from '../../../hooks/useMoveSlotToFolder'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
-import { type FollowupItem, setPendingInput, clearFollowupCard, clearFolderSuggestion } from '../../../store/chatSlice'
+import { type FollowupItem, setPendingInput, dismissFollowupItem, clearFolderSuggestion } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
 import { mergeIntoDraft } from '../../../utils/chatDrafts'
 import { i18nT } from '../../../i18n/t'
@@ -36,7 +36,7 @@ export function useFollowupCardActions({
   // depend on (and re-create on) every card change.
   const followupTsRef = useRef<Record<string, { items: FollowupItem[]; ts: number }>>({})
   followupTsRef.current = followupTsBySlot
-  const followupAddToSession = useCallback((item: FollowupItem) => {
+  const followupAddToSession = useCallback((item: FollowupItem, index: number) => {
     if (!activeSlot) return
     // APPEND when the composer already holds unsent text: the pending-input path
     // replaces the draft and persists it, so a plain set would silently destroy
@@ -44,10 +44,10 @@ export function useFollowupCardActions({
     // composer value; `mergeIntoDraft` is shared with the error → agent hand-off
     // drain so the two paths cannot drift.
     dispatch(setPendingInput(mergeIntoDraft(inputRef.current, item.prompt)))
-    // Clear by the RENDERED card's ts, as the worktree action does: a newer card
-    // for this slot can land between render and click, and an unqualified clear
-    // would delete suggestions the user never saw.
-    dispatch(clearFollowupCard({ slot: activeSlot, ts: followupTsRef.current[activeSlot]?.ts }))
+    // Remove only this item, as Start and Skip do: the other suggestions are
+    // still worth offering. The RENDERED card's ts guards a newer card for this
+    // slot that landed between render and click, which this click never saw.
+    dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: followupTsRef.current[activeSlot]?.ts, item }))
   }, [dispatch, activeSlot, inputRef])
 
   // Folder suggestion: accepting reuses the ONE move path every other surface
@@ -92,7 +92,7 @@ interface FollowupStartsOptions {
   currentSlot: ChatSlot | undefined
   followupTsRef: MutableRefObject<Record<string, { items: FollowupItem[]; ts: number; }>>
   followupBranchFor: (item: FollowupItem) => string
-  openFollowupSession: (item: FollowupItem, target: { project?: string; folderId?: string | null; originSlot: string | null; originTs: number | undefined; fail: { notCreated: string; noSession: string; notOpened: string; notFocused: string; }; }) => Promise<void>
+  openFollowupSession: (item: FollowupItem, target: { project?: string; folderId?: string | null; originSlot: string | null; originTs: number | undefined; originIndex: number; fail: { notCreated: string; noSession: string; notOpened: string; notFocused: string; }; }) => Promise<void>
 }
 
 /**
@@ -110,19 +110,20 @@ export function useFollowupStarts({
   // `currentSlot` IS the spawning session, and its `folder_id` is undefined
   // when that session is itself unfiled — in which case the new session lands
   // top-level. No default folder is invented; unfiled stays unfiled. The card's
-  // ts is captured up front so completion clears only THIS card: a newer card
-  // can arrive for the same slot while the request is in flight, and the older
-  // action's completion must not clobber it.
-  const followupOrigin = useCallback(() => ({
+  // ts is captured up front so completion removes the item from THIS card only:
+  // a newer card can arrive for the same slot while the request is in flight,
+  // and the older action's completion must not touch it.
+  const followupOrigin = useCallback((index: number) => ({
     originSlot: activeSlot,
+    originIndex: index,
     originTs: activeSlot ? followupTsRef.current[activeSlot]?.ts : undefined,
     folderId: currentSlot?.folder_id,
   }), [activeSlot, currentSlot?.folder_id, followupTsRef])
 
-  const followupStartInWorktree = useCallback(async (item: FollowupItem) => {
+  const followupStartInWorktree = useCallback(async (item: FollowupItem, index: number) => {
     const repo = currentSlot?.project
     if (!repo) throw new Error(i18nT('pages.chatPage.this_session_has_no_project_directory_to_branch'))
-    const origin = followupOrigin()
+    const origin = followupOrigin(index)
     // Create the worktree FIRST: if git refuses (branch exists, not a repo),
     // we must not have already spawned an empty session the user has to clean
     // up. The card surfaces the thrown message inline.
@@ -149,9 +150,9 @@ export function useFollowupStarts({
   // default when it has none), with no git call at all. Pressing the button
   // again after a failure opens another chat, so the not-opened and
   // not-focused messages point at the sidebar instead of a retry.
-  const followupStartInNewChat = useCallback(async (item: FollowupItem) => {
+  const followupStartInNewChat = useCallback(async (item: FollowupItem, index: number) => {
     await openFollowupSession(item, {
-      ...followupOrigin(),
+      ...followupOrigin(index),
       project: currentSlot?.project || undefined,
       fail: {
         notCreated: i18nT('pages.chatPage.followup_chat_not_created'),

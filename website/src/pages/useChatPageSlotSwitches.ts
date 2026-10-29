@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, type MutableRefObject, type Dispatch, t
 import { useQuery } from '@tanstack/react-query'
 import { store, type AppDispatch, type AppStore } from '../store'
 import type { ErrorReport } from '../utils/errorReport'
-import { captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, switchSlot, createSlot, type FollowupItem, setPendingInput, clearFollowupCard, openActivityToTab, requestSlotFolderOpen } from '../store/chatSlice'
+import { captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, switchSlot, createSlot, type FollowupItem, setPendingInput, dismissFollowupItem, openActivityToTab, requestSlotFolderOpen } from '../store/chatSlice'
 import { api } from '../api/client'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
@@ -245,7 +245,8 @@ export function useOpenFollowupSession({
 }: OpenFollowupSessionOptions) {
   // The post-create half both spawn routes share: open a session (scoped to
   // `project` when there is one), hand it the prompt, take the user to it, and
-  // only then clear the card. Every step fails CLOSED with the caller's message
+  // only then remove THIS item from the origin card. The other suggestions stay
+  // on the card, so the user finds them again on returning to the origin session. Every step fails CLOSED with the caller's message
   // for that step, so a route can name what it already left behind (the
   // worktree route names the reusable worktree) and no failure ever prefills
   // an unrelated conversation.
@@ -256,10 +257,11 @@ export function useOpenFollowupSession({
       folderId?: string | null
       originSlot: string | null
       originTs: number | undefined
+      originIndex: number
       fail: { notCreated: string; noSession: string; notOpened: string; notFocused: string }
     },
   ) => {
-    const { project, folderId, originSlot, originTs, fail } = target
+    const { project, folderId, originSlot, originTs, originIndex, fail } = target
     let slotKey = ''
     try {
       // `activate: false` on purpose: the slot must be SCOPED to its directory
@@ -309,7 +311,10 @@ export function useOpenFollowupSession({
     }
     if (store.getState().chat.activeSlot !== slotKey) throw new Error(fail.notFocused)
     dispatch(setPendingInput(item.prompt))
-    if (originSlot) dispatch(clearFollowupCard({ slot: originSlot, ts: originTs }))
+    // `originTs` pins the card the click came from, so a newer card that landed
+    // while the create was in flight is left alone; `item` lets the reducer find
+    // this suggestion even if a Skip shifted its index meanwhile.
+    if (originSlot) dispatch(dismissFollowupItem({ slot: originSlot, index: originIndex, ts: originTs, item }))
   }, [dispatch, mode])
   return {
     openFollowupSession,
