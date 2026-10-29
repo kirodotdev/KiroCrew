@@ -164,13 +164,29 @@ Semantics, from `runner._RunContext.agent`:
 
 `label`, `phase`, `schema`, `model`, `agent`, `effort`, `cwd`, `session` and
 `nudge` are all passed to the injected `agent_fn` in one `opts` dict. The shipped
-adapters read `session`, `agent`, `model` and `cwd`; `label` and `phase` are
-consumed by the runner for the event stream; `schema` is consumed by the runner.
+adapters read `session`, `agent`, `model`, `cwd` and `effort`; `label` and `phase`
+are consumed by the runner for the event stream; `schema` is consumed by the runner.
 
-> Open question: `effort` and the per-call `nudge` dict are part of the frozen
-> signature and reach `opts`, but neither shipped `agent_fn`
-> (`agent_exec.build_agent_fn`, `agent_pool.build_pooled_agent_fn`) reads them, so
-> today they have no effect. Either wire them or document them as reserved.
+`effort` is the step's reasoning effort. Both shipped adapters
+(`agent_exec.build_agent_fn`, `agent_pool.build_pooled_agent_fn`) hand it to
+`get_or_create` as `reasoning_effort_override`, the same override `spawn_run`
+passes, so it outranks the crew pin and the configured default. It must be one of
+`kiro_crew.effort.EFFORT_LEVELS`; any other value fails the step
+(`WorkflowEffortInvalid`) before a session is allocated. Unset (`None` or `""`)
+passes nothing and the session resolves its effort as before. Effort applies
+when the step's session starts: the pooled adapter keys its warm sub-pools on
+`(agent, model, cwd, effort)` so a reused worker always runs at the effort the
+call asked for, and a named `session=` chain keeps the effort its first step
+started it with. A warm reuse's `new_conversation()` re-applies the model but
+not the effort, and a harness that takes effort as a per-session config option
+(KAS, Codex) pushes it only at cold start, so the worker pushes its effort again
+through `provider.change_effort` after each cheap reset; a push that raises takes
+the hard-reset fallback, which cold-starts with the override. There is no
+run-level effort default.
+
+> Open question: the per-call `nudge` dict is part of the frozen signature and
+> reaches `opts`, but neither shipped `agent_fn` reads it, so today it has no
+> effect. Either wire it or document it as reserved.
 
 ### Scheduling combinators
 
@@ -1350,7 +1366,7 @@ never spawns `kiro-cli` in tests. Two production adapters:
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker.
 
-  Per-call `agent` / `model` / `cwd` overrides each get their **own** warm
+  Per-call `agent` / `model` / `cwd` / `effort` overrides each get their **own** warm
   sub-pool, so a multi-specialist fan-out still gets warm reuse per specialist and
   a worker built for one identity never serves a call that asked for another.
   Distinct identities are capped at `max_identities` (default 8); beyond that a
