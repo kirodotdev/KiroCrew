@@ -194,6 +194,52 @@ scheduler cannot back one.
 
 ### Containment
 
+Owner: `shared_crew.containment`, reusing `sandbox_cgroup` and `sandbox_slice`.
+Each principal's runtimes start in `kirocrew-agents-<instance>-p<sha256(id)[:12]>.slice`,
+a child of the instance slice, sized by `systemctl --user set-property --runtime`
+(`principal_cpu_quota_percent`, `principal_memory_max_mb`, `principal_tasks_max`); the
+instance slice gets `crew_cpu_quota_percent`. `sandbox_slice.cgroup_scope_argv` picks
+the principal slice from the `principal_scope` context the gate sets around admitted
+work and around subagent run tasks. A principal slice nothing of its principal has
+used for `SLICE_IDLE_SECONDS` (600) is stopped and its runtime drop-ins removed
+(`systemctl --user stop` then `revert`), only while no runtime scope in it holds a
+process; the gateway's stop releases every one at once, including the slice of a turn the
+stop interrupted, repeating the sweep a bounded number of times
+(`SHUTDOWN_SWEEP_ROUNDS`) while a runtime scope it ended still empties, then the
+instance slice once its own control group is empty (`release_instance_slice`). The
+gateway's hard-exit path runs the same release after it reaps orphaned sessions, so a
+graceful shutdown that ran out of time does not skip it. Its start releases those an
+earlier process left (`AdmissionService.sweep_slices`, `shutdown_cleanup`,
+`release_stale_slices`). The slice is forgotten before it is stopped, so a spawn
+racing the release lands in the instance slice. A shared session's runtime is one process, so it
+stays in the slice of the initiator whose turn started it; later turns by others are
+bounded by admission counts, not that slice.
+
+The guarantee is `best_effort` and is reported that way: the kernel enforces the
+CPU, memory and pids ceilings for cooperative or buggy work, but every runtime runs as
+the gateway's uid, which can reach the user bus and the delegated subtree, so
+adversarial escape is not closed (`adversarial_escape_closed: false`). IO is not
+delegated on the supported profile and is `unavailable`. Disk is `app_accounting`:
+`shared_crew.accounting` charges accepted request bytes per principal to the durable
+`principal_storage` ledger and refuses past `principal_storage_bytes` with
+`storage_limit`; it is not a filesystem quota.
+
+`hard_limits` turns any missing prerequisite (`not_linux`, `systemd_run_untrusted`,
+`systemctl_untrusted`, `no_user_session`, `user_bus_unreachable`, `not_cgroup_v2`,
+`controllers_not_delegated`, `controllers_unreadable`, or `containment_probe_failed`
+when the probe or the startup check raised) into `containment_unavailable`
+(503) at admission. In hard mode slices must be enabled and both the Crew slice and
+the principal slice must apply; an accepted turn whose slice setup fails settles
+without running instead of starting in the instance slice. In either mode, an
+unreadable or malformed `config.json` keeps the limits already in force, and a
+process with no valid limits yet fails closed. With a prerequisite missing, `runtime_start` refuses every runtime spawn and `session/new`
+with `ContainmentUnavailable` (the backstop for entry points that do not reach the
+gate). With it off the gate admits and the capacity answer says what holds.
+`hard_limits` needs fair admission, which applies the limits: with
+`admission_enabled` off and `hard_limits` on, nothing would apply them, so the
+gateway fails closed with `admission_disabled` (every admission and every runtime
+start refused, logged at ERROR at start) rather than running unlimited.
+
 ### Defaults and API
 
 `dashboard.shared_crew` (`config.sections_shared_crew`), bounded at parse

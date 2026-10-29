@@ -146,6 +146,13 @@ def agents_dir_competing_claim(
     return _claim(agent, agents_dir, own_file)
 
 
+def session_start_concurrency() -> int:
+    """The configured ``agent.session_start_concurrency`` snapshot (off-loop caller)."""
+    from kiro_crew.acp.runtime_start import _resolve_session_start_concurrency as _resolve
+
+    return _resolve()
+
+
 TURN_STOP_REASON_CANCELLED = "cancelled"
 TURN_STOP_REASON_END_TURN = "end_turn"
 
@@ -158,6 +165,7 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "session_start_concurrency",
     "tool_row_text",
     "agents_dir_competing_claim",
     "ContextPromptProvider",

@@ -538,6 +538,16 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     # the SHARED slice MemoryHigh, which throttles every runtime together.
     memory_high_mb = _scope_memory_high_mb(max_mem_mb, limits_config)
     memory_high = [] if memory_high_mb is None else ["-p", f"MemoryHigh={memory_high_mb}M"]
+    # Under Shared Crew the scope joins its principal's slice, a child of the
+    # instance slice, so every ceiling above it keeps applying. The lookup is in
+    # memory; any failure takes the instance slice rather than costing the
+    # spawn its ceiling.
+    try:
+        from kiro_crew.shared_crew.containment import scope_parent_slice
+
+        parent_slice = scope_parent_slice() or _agents_slice_name()
+    except Exception:
+        parent_slice = _agents_slice_name()
     props = [
         "-p",
         f"TasksMax={max_procs}",
@@ -558,7 +568,7 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         "--user",
         "--scope",
         "-q",
-        f"--slice={_agents_slice_name()}",
+        f"--slice={parent_slice}",
         *props,
         "--",
         *argv,

@@ -1001,6 +1001,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # would be circular: it constructs the cgroup boundary agent spawns
         # are confined by.
         "sandbox_slice.py::ensure_agents_slice_limits",
+        # Shared Crew per-principal slices: `systemctl --user set-property
+        # --runtime <slice> CPUQuota=<N>% MemoryMax=<N>M MemorySwapMax=0
+        # TasksMax=<N>`, `start|stop <slice>` and `is-active <unit>`. The binary
+        # is resolved from trusted system directories, the unit name is minted
+        # by shared_crew.containment (sha256 hex of a principal id) and checked
+        # against a unit-name pattern, and every number comes from the bounded
+        # dashboard.shared_crew config -- nothing is agent-influenced. Like the
+        # aggregate ceiling above, it builds the boundary agents are confined by.
+        "shared_crew/containment.py::_run",
         # The agent-slice MemoryHigh reconciler. Fixed argv: `systemctl --user
         # set-property --runtime kirocrew-agents.slice MemoryHigh=<value>`, where
         # the binary is resolved with shutil.which (never a caller-supplied PATH)
