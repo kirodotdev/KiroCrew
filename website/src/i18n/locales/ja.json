@@ -6622,6 +6622,13 @@
       "reply": "返信…",
       "reply_2": "返信"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "音声でコメントを入力",
+      "mic_in_use": "マイクは別の場所で使用中",
+      "settings_unavailable": "音声設定を読み込めませんでした。",
+      "stop_dictation": "音声入力を停止",
+      "transcribing": "文字起こし中…"
+    },
     "commentThreads": {
       "add_to_chat": "チャットに追加",
       "cancel": "キャンセル",

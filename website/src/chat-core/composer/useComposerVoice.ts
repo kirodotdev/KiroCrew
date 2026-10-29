@@ -53,17 +53,19 @@ let micOwner: string | null = null
  *  holds the mic (a lone DM thread shows nothing else that is capturing). */
 let micOwnerSession: string | null = null
 const micSubs = new Set<() => void>()
-function setMicOwner(next: string | null, session: string | null = null): void {
+/** Exported so a non-composer mic (the comment boxes' dictation button) takes
+ *  the same one-at-a-time lock instead of capturing beside a composer. */
+export function setMicOwner(next: string | null, session: string | null = null): void {
   if (micOwner === next && micOwnerSession === session) return
   micOwner = next
   micOwnerSession = next === null ? null : session
   for (const fn of micSubs) fn()
 }
-function subscribeMic(fn: () => void): () => void {
+export function subscribeMic(fn: () => void): () => void {
   micSubs.add(fn)
   return () => { micSubs.delete(fn) }
 }
-const readMicOwner = () => micOwner
+export const readMicOwner = () => micOwner
 const readMicOwnerSession = () => micOwnerSession
 /** Test seam. */
 export function _resetMicOwner(): void { setMicOwner(null) }
@@ -96,6 +98,19 @@ export interface ComposerVoiceHost {
 }
 
 export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; code?: string; prereqs?: string[]; providers?: unknown[] }
+
+/**
+ * Whether dictation streams. The saved preference alone is not enough: a
+ * provider that cannot stream (an edition's batch-only provider) would be sent
+ * to /api/ws/stt and refused. Stream only when the served capability list names
+ * the selected provider; a gateway that serves no list keeps the preference.
+ */
+export function sttCanStream(cfg: SttConfig | undefined): boolean {
+  return !!cfg?.streaming && (
+    !Array.isArray(cfg?.streaming_providers)
+    || (typeof cfg?.provider === 'string' && cfg.streaming_providers.includes(cfg.provider))
+  )
+}
 
 /**
  * A deliberate finish (`StopIntent` 'finish') waiting for its transcript to
@@ -193,14 +208,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     queryKey: ['sttConfig'],
     queryFn: () => api.sttConfig() as Promise<SttConfig>,
   })
-  // The saved preference alone is not enough: a provider that cannot stream
-  // (an edition's batch-only provider) would be sent to /api/ws/stt and refused.
-  // Stream only when the served capability list names the selected provider; a
-  // gateway that serves no list keeps the preference as it was.
-  const sttStreaming = !!sttCfg?.streaming && (
-    !Array.isArray(sttCfg?.streaming_providers)
-    || (typeof sttCfg?.provider === 'string' && sttCfg.streaming_providers.includes(sttCfg.provider))
-  )
+  const sttStreaming = sttCanStream(sttCfg)
   const sttEnabled = !!sttCfg?.enabled
   // Whether a finished transcript is handed to a fast model for punctuation and
   // spacing. Read here rather than inside the replacement so the request is never

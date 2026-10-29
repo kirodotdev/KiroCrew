@@ -6622,6 +6622,13 @@
       "reply": "回复…",
       "reply_2": "回复"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "语音输入评论",
+      "mic_in_use": "麦克风正在别处使用",
+      "settings_unavailable": "无法加载语音设置。",
+      "stop_dictation": "停止语音输入",
+      "transcribing": "正在转写…"
+    },
     "commentThreads": {
       "add_to_chat": "添加到聊天",
       "cancel": "取消",

@@ -6738,6 +6738,13 @@
       "reply": "Antworten…",
       "reply_2": "Antworten"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "Kommentar diktieren",
+      "mic_in_use": "Mikrofon wird anderswo verwendet",
+      "settings_unavailable": "Spracheinstellungen konnten nicht geladen werden.",
+      "stop_dictation": "Diktat beenden",
+      "transcribing": "Wird transkribiert…"
+    },
     "commentThreads": {
       "add_to_chat": "Zum Chat hinzufügen",
       "cancel": "Abbrechen",

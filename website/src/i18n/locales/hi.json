@@ -6738,6 +6738,13 @@
       "reply": "उत्तर दें…",
       "reply_2": "उत्तर दें"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "टिप्पणी बोलकर लिखो",
+      "mic_in_use": "माइक कहीं और चल रहा है",
+      "settings_unavailable": "आवाज़ की सेटिंग लोड नहीं हो सकी।",
+      "stop_dictation": "बोलकर लिखना रोको",
+      "transcribing": "लिखा जा रहा है…"
+    },
     "commentThreads": {
       "add_to_chat": "चैट में जोड़ें",
       "cancel": "रद्द करो",

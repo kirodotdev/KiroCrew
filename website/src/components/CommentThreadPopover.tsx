@@ -5,6 +5,9 @@ import { CommentDraftReportProvider, CommentRow } from './CommentsSidebar'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { codeAnchorElement, onCodeAnchorsChange } from './codeComments'
+import { CommentVoiceButton } from './CommentVoiceButton'
+import ErrorNotice from './ErrorNotice'
+import { spliceDictationText } from '../lib/dictationText'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -60,6 +63,10 @@ export function CommentThreadPopover({
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   const [reply, setReply] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  // A notice about another thread's dictation does not belong here.
+  const [errorRoot, setErrorRoot] = useState(rootId)
+  if (errorRoot !== rootId) { setErrorRoot(rootId); setVoiceError(null) }
   const ime = useImeGuard()
   useAutoGrowTextarea(composerRef, reply, 160)
 
@@ -102,6 +109,9 @@ export function CommentThreadPopover({
     const left = Math.min(Math.max(GAP, aLeft), Math.max(GAP, vw - cardW(vw) - GAP))
     setPos({ top, left })
   }, [rect, rootId])
+
+  // A voice notice changes the card height without moving its anchor.
+  useLayoutEffect(() => { reposition() }, [voiceError, reposition])
 
   useLayoutEffect(() => {
     // Bring the markdown anchor into view before positioning.
@@ -218,6 +228,12 @@ export function CommentThreadPopover({
           ))}
         </div>
         <div className="border-t border-border p-2 shrink-0">
+          {/* No hand-off: the reply draft here is unsaved, and the agent
+              hand-off navigates to the chat, which would discard it. Pressing
+              the mic again is the retry. */}
+          {voiceError && (
+            <ErrorNotice variant="inline" className="mb-1" message={voiceError} onDismiss={() => setVoiceError(null)} />
+          )}
           <textarea
             ref={composerRef}
             value={reply}
@@ -232,7 +248,13 @@ export function CommentThreadPopover({
             }}
             className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
           />
-          <div className="flex justify-end mt-1">
+          <div className="flex items-center justify-end gap-1 mt-1">
+            {/* Keyed by thread: a dictation never lands in another thread's reply. */}
+            <CommentVoiceButton
+              key={rootId}
+              onError={setVoiceError}
+              onText={t => { setReply(prev => spliceDictationText(prev, t.trim(), null).value); composerRef.current?.focus() }}
+            />
             <button
               type="button"
               disabled={!reply.trim()}

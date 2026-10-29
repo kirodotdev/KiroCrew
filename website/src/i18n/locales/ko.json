@@ -6622,6 +6622,13 @@
       "reply": "답글…",
       "reply_2": "답글"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "음성으로 댓글 입력",
+      "mic_in_use": "마이크가 다른 곳에서 사용 중",
+      "settings_unavailable": "음성 설정을 불러오지 못했어요.",
+      "stop_dictation": "음성 입력 중지",
+      "transcribing": "받아쓰는 중…"
+    },
     "commentThreads": {
       "add_to_chat": "채팅에 추가",
       "cancel": "취소",

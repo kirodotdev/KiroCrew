@@ -6970,6 +6970,13 @@
       "reply": "Ответить…",
       "reply_2": "Ответить"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "Надиктовать комментарий",
+      "mic_in_use": "Микрофон занят",
+      "settings_unavailable": "Не удалось загрузить настройки голоса.",
+      "stop_dictation": "Остановить диктовку",
+      "transcribing": "Расшифровка…"
+    },
     "commentThreads": {
       "add_to_chat": "Добавить в чат",
       "cancel": "Отмена",

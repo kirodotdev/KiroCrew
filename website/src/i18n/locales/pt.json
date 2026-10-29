@@ -6854,6 +6854,13 @@
       "reply": "Responder…",
       "reply_2": "Responder"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "Ditar comentário",
+      "mic_in_use": "Microfone em uso em outro lugar",
+      "settings_unavailable": "Não foi possível carregar as configurações de voz.",
+      "stop_dictation": "Parar ditado",
+      "transcribing": "Transcrevendo…"
+    },
     "commentThreads": {
       "add_to_chat": "Adicionar à conversa",
       "cancel": "Cancelar",

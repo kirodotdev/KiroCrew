@@ -9,6 +9,8 @@ import { codePassagePosition, plainCodeFenceAtRangeStart, shadowSelectionRange }
 import { useImeGuard } from '../hooks/useImeGuard'
 import { measureAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import ErrorNotice from './ErrorNotice'
+import { CommentVoiceButton } from './CommentVoiceButton'
+import { spliceDictationText } from '../lib/dictationText'
 import { i18nT } from '../i18n/t'
 import { isEditableTarget } from '../utils/editableTarget'
 
@@ -571,6 +573,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // still under its drag handles (focus collapses them and summons the
   // keyboard). Those open the box unfocused; Enter, or a tap, moves in.
   const [composerAutoFocus, setComposerAutoFocus] = useState(true)
+  // Bumped on every open of the composer over a passage: the dictation key.
+  const [composerOpenSeq, setComposerOpenSeq] = useState(0)
   // The composer's textarea, for the Enter-to-focus path above.
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
   // Whether the input holds unsaved text. A click-away with a draft keeps the
@@ -729,6 +733,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // A notice from an earlier copy or post attempt does not belong to this selection.
       setCopyFailed(false)
       setSubmitFailed(false)
+      setComposerOpenSeq(n => n + 1)
       activeComposer.onOpen?.(text)
       restoreDraft(text)
     }
@@ -1112,6 +1117,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       setComposerAutoFocus(!isTouchDevice())
       setCopyFailed(false)
       setSubmitFailed(false)
+      setComposerOpenSeq(n => n + 1)
       activeComposer.onOpen?.(externalSelection.text)
       restoreDraft(externalSelection.text)
     }
@@ -1339,6 +1345,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
               submitting={submitting}
               submitFailed={submitFailed}
               onDismissSubmitFailed={dismissSubmitFailed}
+              voiceTarget={composerOpenSeq}
             />
           ) : (
           <div
@@ -1416,7 +1423,7 @@ const COMPOSER_MAX_INPUT_H = 160
  */
 /** The comment box itself, exported so a box drawn on an image opens the same
  *  composer a text selection does rather than a look-alike that drifts from it. */
-export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed, submitting, submitFailed, onDismissSubmitFailed, inputLabel }: {
+export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed, submitting, submitFailed, onDismissSubmitFailed, inputLabel, voiceTarget }: {
   inputRef: React.RefObject<HTMLTextAreaElement>
   autoFocus: boolean
   actions: SelectionAction[]
@@ -1442,6 +1449,9 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
   /** The input's accessible name. Defaults to the text-selection wording; a
    *  caller commenting on something other than selected text names its own. */
   inputLabel?: string
+  /** What the comment is about (a passage open, an image box). A new value
+   *  starts a fresh dictation session and drops one still in flight. */
+  voiceTarget?: string | number
 }) {
   const ime = useImeGuard()
   const stacked = useStackedComposer()
@@ -1476,6 +1486,20 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
     onGrow()
   }, [onGrow])
 
+  // Read when a transcript lands, which can be renders after the press.
+  const textRef = useRef(text)
+  textRef.current = text
+  // The input is read-only while the post is in flight, and a transcript that
+  // settles then is dropped too: written, it would land in the draft slot after
+  // the posted text and outlive the post as a draft of an already-stored comment.
+  const submittingRef = useRef(submitting)
+  submittingRef.current = submitting
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  // A notice about a dictation for another passage does not belong here.
+  const [errorTarget, setErrorTarget] = useState(voiceTarget)
+  if (errorTarget !== voiceTarget) { setErrorTarget(voiceTarget); setVoiceError(null) }
+  // Re-clamp after the notice changes the rendered box height.
+  useLayoutEffect(() => { onGrow() }, [voiceError, onGrow])
   const canSubmit = text.trim().length > 0 && !submitting
   // The button names the state while the host has the post in flight: a
   // spinner alone reads as "could be loading"; "Saving…" says wait, not retry.
@@ -1503,6 +1527,19 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
           has the post in flight, so a slow network reads as saving, not as a
           frozen box. */}
         {submitting ? <Loader2 size={13} className="animate-spin" data-testid="composer-submitting" /> : <MessageSquarePlus size={13} />}{submitLabel}</button>
+      {/* Dictation ADDS to the draft; the person still reads it and adds it.
+          Keyed by the passage, so a dictation started for one never lands in
+          the box after it moved to another. */}
+      <CommentVoiceButton
+        key={voiceTarget}
+        disabled={submitting}
+        onError={setVoiceError}
+        onText={t => {
+          if (submittingRef.current) return
+          onTextChange(spliceDictationText(textRef.current, t.trim(), null).value)
+          requestAnimationFrame(() => { const el = inputRef.current; if (el) { autoGrow(el); el.focus() } })
+        }}
+      />
       <div
         role="group"
         aria-label={i18nT('components.selectionToolbar.more_actions')}
@@ -1604,6 +1641,17 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
           className="basis-full"
           message={i18nT('components.selectionToolbar.copy_failed')}
           onDismiss={onDismissCopyFailed}
+        />
+      )}
+      {/* No hand-off: the comment draft in this box is unsaved, and the agent
+          hand-off navigates to the chat, which would discard it. Pressing the
+          mic again is the retry. */}
+      {voiceError && (
+        <ErrorNotice
+          variant="inline"
+          className="basis-full"
+          message={voiceError}
+          onDismiss={() => setVoiceError(null)}
         />
       )}
       {/* No hand-off here either: the text the post refused is still in this

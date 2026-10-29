@@ -4549,6 +4549,13 @@
       "reply": "Reply…",
       "reply_2": "Reply"
     },
+    "commentVoiceButton": {
+      "dictate_comment": "Dictate comment",
+      "mic_in_use": "Microphone in use elsewhere",
+      "settings_unavailable": "Couldn't load voice settings.",
+      "stop_dictation": "Stop dictation",
+      "transcribing": "Transcribing…"
+    },
     "commentThreads": {
       "add_to_chat": "Add to chat",
       "cancel": "Cancel",
