@@ -379,9 +379,15 @@ A slice-level breach OOM-kills *some* scope inside the slice, and the kernel pic
 victim — not necessarily the spawn that grew. To keep that diagnosable,
 `sandbox.check_agents_slice_pressure()` (polled from the resource-pressure sampler's worker
 thread) logs new `oom_kill` events with the victim scopes (each scope's own
-`memory.events.local`), the slice's `memory.current` versus `memory.max`, and whether the
-slice's own ceiling engaged (`memory.events.local max` on the slice) — the discriminator
-between an aggregate breach and a single scope hitting its own per-tree limit.
+`memory.events.local`), the slice's `memory.current` versus `memory.max`, and which limit
+fired. The slice's own `memory.events.local max` means the aggregate ceiling engaged. Failing
+that, a new hierarchical `oom` event means a scope hit its own per-tree limit, and the message
+names this gateway's configured per-scope `MemoryMax` (a scope keeps the value it started
+with, so this is configuration, not the victim's enforced limit). A new `oom_kill` with no
+`oom` event means no limit inside the slice was reached: the kernel counts `oom_kill` for any
+OOM killer, and an `oom` event raised above the slice does not reach it, so this is the
+host-wide OOM killer or a limit on an enclosing slice, and the kernel log says which. A
+victim scope already gone is pointed at the kernel log, which still names the killed process.
 
 A **task** breach has no comparable kernel event to observe: past `pids.max` the kernel
 fails `fork()` with `EAGAIN` in whichever scope asks next, logs nothing, and every agent

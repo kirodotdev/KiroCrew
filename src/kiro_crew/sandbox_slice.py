@@ -943,12 +943,22 @@ def check_agents_slice_pressure() -> str | None:
             pass
     events = _read_cgroup_counters(slice_dir / "memory.events")
     local = _read_cgroup_counters(slice_dir / "memory.events.local")
-    current = {"oom_kill": events.get("oom_kill", 0), "max": local.get("max", 0)}
+    # ``oom_kill`` counts processes killed by ANY OOM killer, the host-wide
+    # one included, while ``oom`` is raised only when a cgroup's own limit was
+    # reached. Both are hierarchical in ``memory.events``, so a kill with no
+    # ``oom`` event anywhere under the slice was the machine running out of
+    # memory, not a per-scope or slice ceiling.
+    current = {
+        "oom_kill": events.get("oom_kill", 0),
+        "oom": events.get("oom", 0),
+        "max": local.get("max", 0),
+    }
     if _SLICE_OOM_SEEN is None:
         _SLICE_OOM_SEEN = current
         return None
-    new_kills = current["oom_kill"] - _SLICE_OOM_SEEN["oom_kill"]
-    slice_max_hits = current["max"] - _SLICE_OOM_SEEN["max"]
+    new_kills = current["oom_kill"] - _SLICE_OOM_SEEN.get("oom_kill", 0)
+    limit_ooms = current["oom"] - _SLICE_OOM_SEEN.get("oom", 0)
+    slice_max_hits = current["max"] - _SLICE_OOM_SEEN.get("max", 0)
     _SLICE_OOM_SEEN = current
     if new_kills <= 0:
         return None
@@ -987,12 +997,34 @@ def check_agents_slice_pressure() -> str | None:
         mem_max = (slice_dir / "memory.max").read_text().strip()
     except OSError:
         mem_max = "?"
+    if slice_max_hits > 0:
+        cause = "yes"
+    elif limit_ooms > 0:
+        # The value the next scope from THIS gateway would get. A scope keeps
+        # the ceiling it was started with, and a co-resident gateway may use
+        # another config, so it is labelled as configuration, not as the
+        # victim's enforced limit.
+        per_scope_mb = _cgroup_limits_from_config()[1]
+        cause = (
+            "no (at least one scope hit its own per-tree limit; this gateway's "
+            f"configured per-scope MemoryMax={per_scope_mb}M)"
+        )
+    else:
+        # An ``oom`` event raised on a cgroup ABOVE the slice does not
+        # propagate down into it, so this case cannot tell the host-wide OOM
+        # killer from a limit on an enclosing slice; both name the victim in
+        # the kernel log.
+        cause = (
+            "no (no cgroup limit inside this slice was reached: the host-wide "
+            "kernel OOM killer or a limit above this slice fired; the kernel "
+            "log says which)"
+        )
+    reaped = "(already reaped; the kernel log names the killed process)"
     message = (
         f"cgroup OOM kill inside {_CGROUP_AGENTS_SLICE}: {new_kills} new kill(s); "
         f"slice memory.current={mem_current} memory.max={mem_max}; "
-        f"slice-level aggregate ceiling engaged: "
-        f"{'yes' if slice_max_hits > 0 else 'no (a scope hit its own per-tree limit)'}; "
-        f"scopes with recorded kills: {victims or '(already reaped)'}"
+        f"slice-level aggregate ceiling engaged: {cause}; "
+        f"scopes with recorded kills: {victims or reaped}"
     )
     logger.warning("%s", message)
     return message
