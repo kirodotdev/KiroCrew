@@ -10216,6 +10216,8 @@
       "scope_count_other": "{{count}} सदस्यों पर असर",
       "scope_label": "असर",
       "scope_only_this": "सिर्फ़ यह साथी बदलेगा।",
+      "goal_heartbeat_label": "इसे अपने आप आगे बढ़ाते रहो (हार्टबीट)",
+      "goal_heartbeat_note": "लगभग हर {{interval}} में चलता है। हर बार चलने पर क्रेडिट लगते हैं, और इसे कभी भी बंद कर सकते हो।",
       "addition_server": "{{name}} के वर्कर को {{server}} दो।",
       "addition_from_gateway": "यह गेटवे इसे पहले से चला रहा है, इसलिए कोई नया कोड नहीं आता।",
       "addition_from_registry": "इसे MCP रजिस्ट्री ({{id}}) से सिर्फ़ {{name}} के लिए इंस्टॉल किया जाता है।",

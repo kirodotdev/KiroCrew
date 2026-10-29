@@ -10070,6 +10070,8 @@
       "scope_count_other": "影响 {{count}} 个成员",
       "scope_label": "影响范围",
       "scope_only_this": "只改这个队友。",
+      "goal_heartbeat_label": "让它自己推进（心跳）",
+      "goal_heartbeat_note": "大约每 {{interval}} 运行一次。每次运行都会消耗额度，随时可以关掉。",
       "addition_server": "给 {{name}} 的工作者加上 {{server}}。",
       "addition_from_gateway": "这个网关已经在运行它，不会引入新代码。",
       "addition_from_registry": "它从 MCP 注册表（{{id}}）安装，只给 {{name}} 用。",

@@ -58,6 +58,10 @@ export interface CardChange {
   addition?: CardAddition
   /** A raw row a card with plain lines keeps behind its Details. */
   detail?: boolean
+  /** A goal card's Heartbeat checkbox row (`heartbeat_offer`): the minutes it runs every. */
+  interval?: number
+  /** The same row: the most runs a day at that interval. */
+  per_day?: number
 }
 
 /** One thing a capabilities card gives a crewmate's worker. */

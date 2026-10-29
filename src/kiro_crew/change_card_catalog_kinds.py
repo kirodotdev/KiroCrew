@@ -462,16 +462,20 @@ KINDS: dict[str, KindDef] = {
             "toward. Without `goal_id` the text is added as a new goal; with the id of "
             "one of its goals (goal_read lists them) "
             "it replaces that goal's text. Goals are stored in its goal record, never "
-            "in its rules.",
+            "in its rules. While its Heartbeat is off and was never declined, the card "
+            "carries a Heartbeat checkbox, `heartbeat` (default true): true turns the "
+            "Heartbeat on at its interval with the goal, false sets only the goal and "
+            "no later goal card offers it again.",
             _obj(
                 {
                     "member": _STR,
                     "long_term": {"type": "string", "maxLength": _LONG_TERM_GOAL_MAX},
                     "goal_id": {"type": "string", "maxLength": 9},
+                    "heartbeat": _BOOL,
                 },
                 ["member", "long_term"],
             ),
-            ("long_term",),
+            ("long_term", "heartbeat"),
         ),
         KindDef(
             KIND_CREWMATE_KEY_RESULTS,
@@ -1368,11 +1372,13 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
                 raise _fail("invalid_param", str(exc)) from None
         return out_caps
     if kind == KIND_CREWMATE_GOAL:
-        _only(p, {"member", "long_term", "goal_id"})
+        _only(p, {"member", "long_term", "goal_id", "heartbeat"})
         out_goal: dict[str, Any] = {
             "member": _member_name(p, "member"),
             "long_term": _goal_text(p, "long_term", max_len=_LONG_TERM_GOAL_MAX, multiline=True),
         }
+        if "heartbeat" in p:
+            out_goal["heartbeat"] = _clean_bool(p, "heartbeat")
         if "goal_id" in p:
             if not _goals.is_goal_id(p["goal_id"]):
                 raise _fail("invalid_param", "'goal_id' must be one of the crewmate's goal ids")

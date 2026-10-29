@@ -273,7 +273,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "out to add a goal; pass the id of one of your goals (goal_read lists "
                 "them) to replace its text. A few goals are easier to keep track of "
                 "than many, so when the list grows, suggest merging goals that overlap "
-                "rather than adding another; the user decides. " + _CARD_NOTE
+                "rather than adding another; the user decides. While your Heartbeat is "
+                "off and the user never declined it, the card also carries a Heartbeat "
+                "checkbox, on by default, so setting the goal and keeping it moving on "
+                "your own is one press: do not ask about the Heartbeat separately or "
+                "propose set_check_ins for it after this card. " + _CARD_NOTE
             ),
             "inputSchema": {
                 "type": "object",

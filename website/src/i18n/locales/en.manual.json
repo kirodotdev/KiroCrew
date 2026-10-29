@@ -4352,6 +4352,8 @@
       "scope_count_other": "Affects {{count}} members",
       "scope_label": "Affects",
       "scope_only_this": "Only this mate changes.",
+      "goal_heartbeat_label": "Keep this moving on its own (Heartbeat)",
+      "goal_heartbeat_note": "Runs about every {{interval}}. Each run uses credits, and you can turn it off any time.",
       "addition_server": "Give {{name}}’s worker {{server}}.",
       "addition_from_gateway": "This gateway already runs it, so no new code comes in.",
       "addition_from_registry": "It is installed from the MCP registry ({{id}}) for {{name}} only.",

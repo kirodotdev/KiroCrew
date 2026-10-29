@@ -374,7 +374,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                       </>}
                 </CardRow>
               )}
-              {spec && <spec.Body card={card} disabled={busy || expired} />}
+              {spec && <spec.Body card={card} disabled={busy || expired} preview={preview} />}
               <UserInputs fields={fields} values={inputs} disabled={busy || expired} onChange={(f, v) => setInputs(prev => ({ ...prev, [f]: v }))} />
             </div>
 

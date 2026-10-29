@@ -10216,6 +10216,8 @@
       "scope_count_other": "Betrifft {{count}} Mitglieder",
       "scope_label": "Betrifft",
       "scope_only_this": "Nur dieser Crewmate ändert sich.",
+      "goal_heartbeat_label": "Selbstständig vorantreiben (Herzschlag)",
+      "goal_heartbeat_note": "Läuft etwa alle {{interval}}. Jeder Lauf verbraucht Credits, und du kannst ihn jederzeit ausschalten.",
       "addition_server": "Gib dem Worker von {{name}} {{server}}.",
       "addition_from_gateway": "Dieses Gateway führt ihn schon aus, es kommt also kein neuer Code hinzu.",
       "addition_from_registry": "Er wird aus der MCP-Registry ({{id}}) nur für {{name}} installiert.",

@@ -63,6 +63,14 @@ _INTERRUPTED_MESSAGE = (
 )
 #: The fields :func:`kiro_crew.change_card_catalog.build_preview` derives, as
 #: :meth:`CardStore._apply_preview` stores them.
+#: A kind's editable fields as an earlier build stored them on its cards. Such a
+#: card still rebuilds (its plan is unchanged), so its history and Undo survive
+#: an upgrade; a ``crewmate.goal`` card from before its Heartbeat checkbox
+#: carries a snapshot with no ``heartbeat`` and so offers no checkbox either.
+_LEGACY_EDITABLE: dict[str, tuple[list[str], ...]] = {
+    catalog.KIND_CREWMATE_GOAL: (["long_term"],),
+}
+
 _DERIVED_KEYS = (
     "title",
     "risk",
@@ -224,7 +232,9 @@ def rebuild_record(rec: dict[str, Any]) -> dict[str, Any] | None:
         if k != "risk" and (k != "widen" or "widen" in rec)
     ):
         return None
-    if not _same(list(catalog.KINDS[kind].editable), rec.get("editable")):
+    if not _same(list(catalog.KINDS[kind].editable), rec.get("editable")) and not any(
+        _same(old, rec.get("editable")) for old in _LEGACY_EDITABLE.get(kind, ())
+    ):
         return None
     plan = rec.get("plan")
     if not isinstance(plan, dict):

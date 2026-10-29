@@ -375,6 +375,11 @@ def after_shows_the_write(
             want = p.get("long_term")
             if not isinstance(got, str):
                 return False
+            if len(ev) > 1:
+                # The card's second step turned the Heartbeat on: it must still be.
+                hb = after.get("heartbeat")
+                if not (isinstance(hb, dict) and hb.get("on") is True):
+                    return False
             return got == want or member_goals.scrub_text(got) == member_goals.scrub_text(want)
         got_items, want_items = after.get("key_results"), p.get("items")
         records = after.get(KR_RECORDS_KEY)
@@ -432,6 +437,11 @@ def comparable_state(kind: str, state: Any) -> Any:
     their readings: a fresh reading between preview, apply and Undo is not a
     conflict, but new ids or changed goal links are.
     """
+    if kind == catalog.KIND_CREWMATE_GOAL and isinstance(state, dict):
+        # The Heartbeat a goal card may offer is not the goal it writes: a switch
+        # flipped since is no conflict for the goal, and the card's own Heartbeat
+        # step is a compare-and-set of its own (``expected`` on the schedules route).
+        return {k: v for k, v in state.items() if k != "heartbeat"}
     if kind == catalog.KIND_CREWMATE_KEY_RESULTS and isinstance(state, dict):
         out = {k: v for k, v in state.items() if k != KR_RECORDS_KEY}
         records = state.get(KR_RECORDS_KEY)
@@ -639,6 +649,13 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         # Raw: a card Undo restores this text (REQ_CARD_RAW_RESTORE); the plan
         # and the change line carry it scrubbed.
         out["goals"] = [{"id": g["id"], "text": g["text"]} for g in rec["goals"]]
+        # What the card's Heartbeat checkbox needs: whether it may be offered
+        # (``member_goals.heartbeat_offer_open``) and the interval it would run at.
+        out["heartbeat"] = {
+            "on": bool(rec["schedules"].get(member_goals.CADENCE_HEARTBEAT)),
+            "interval": rec["schedules"].get("interval"),
+            "declined": rec.get("heartbeat_offer") == member_goals.HEARTBEAT_OFFER_DECLINED,
+        }
     elif kind == catalog.KIND_CREWMATE_CHECK_INS:
         out["has_goal"] = member_goals.has_goal(rec)
         out["schedules"] = {k: rec["schedules"].get(k) for k in catalog.CHECK_IN_FIELDS}
@@ -910,6 +927,12 @@ async def resumed_undo_is_stale(rec: dict[str, Any], index: int, *, state: Any, 
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         # Step 1 applies the preview step 0 just took; its token and revision
         # are what the capability route checks, so nothing else to compare.
+        return False
+    if kind == catalog.KIND_CREWMATE_GOAL:
+        # A goal card that also turned the Heartbeat on undoes in two steps:
+        # the Heartbeat off, then the goal. The goal write is a compare-and-set
+        # on the text the card wrote (``expected``), so it refuses a goal edited
+        # since on its own.
         return False
     # Every other kind undoes in one step, so a resumed step is never admitted.
     return True

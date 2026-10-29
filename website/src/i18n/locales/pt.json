@@ -10362,6 +10362,8 @@
       "scope_count_other": "Afeta {{count}} membros",
       "scope_label": "Afeta",
       "scope_only_this": "Só este colega muda.",
+      "goal_heartbeat_label": "Deixar isso avançar sozinho (Pulsação)",
+      "goal_heartbeat_note": "Roda mais ou menos a cada {{interval}}. Cada execução usa créditos, e você pode desativar quando quiser.",
       "addition_server": "Dê {{server}} ao trabalhador de {{name}}.",
       "addition_from_gateway": "Este gateway já o executa, então nenhum código novo entra.",
       "addition_from_registry": "Ele é instalado do registro MCP ({{id}}) só para {{name}}.",

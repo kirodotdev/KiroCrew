@@ -10070,6 +10070,8 @@
       "scope_count_other": "멤버 {{count}}명에게 영향을 줍니다",
       "scope_label": "영향 범위",
       "scope_only_this": "이 크루메이트만 바뀝니다.",
+      "goal_heartbeat_label": "스스로 계속 진행하기(하트비트)",
+      "goal_heartbeat_note": "약 {{interval}}마다 실행됩니다. 실행할 때마다 크레딧을 사용하며, 언제든지 끌 수 있습니다.",
       "addition_server": "{{name}}의 워커에 {{server}}을(를) 추가합니다.",
       "addition_from_gateway": "이 게이트웨이에서 이미 실행 중이라 새 코드가 들어오지 않습니다.",
       "addition_from_registry": "MCP 레지스트리({{id}})에서 {{name}} 전용으로 설치됩니다.",

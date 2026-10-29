@@ -10362,6 +10362,8 @@
       "scope_count_other": "Riguarda {{count}} membri",
       "scope_label": "Riguarda",
       "scope_only_this": "Cambia solo questo compagno.",
+      "goal_heartbeat_label": "Portalo avanti da solo (Battito)",
+      "goal_heartbeat_note": "Viene eseguito circa ogni {{interval}}. Ogni esecuzione usa crediti e puoi disattivarlo quando vuoi.",
       "addition_server": "Dai {{server}} al worker di {{name}}.",
       "addition_from_gateway": "Questo gateway lo esegue già, quindi non entra nuovo codice.",
       "addition_from_registry": "Viene installato dal registro MCP ({{id}}) solo per {{name}}.",

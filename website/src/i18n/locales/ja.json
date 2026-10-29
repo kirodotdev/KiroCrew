@@ -10070,6 +10070,8 @@
       "scope_count_other": "{{count}} 人のメンバーに影響します",
       "scope_label": "影響範囲",
       "scope_only_this": "変更されるのはこのクルーメイトだけです。",
+      "goal_heartbeat_label": "自分で進め続ける（ハートビート）",
+      "goal_heartbeat_note": "およそ {{interval}} ごとに実行します。実行のたびにクレジットを使います。いつでもオフにできます。",
       "addition_server": "{{name}} のワーカーに {{server}} を追加します。",
       "addition_from_gateway": "このゲートウェイですでに動いているため、新しいコードは入りません。",
       "addition_from_registry": "MCP レジストリ（{{id}}）から {{name}} 専用にインストールされます。",

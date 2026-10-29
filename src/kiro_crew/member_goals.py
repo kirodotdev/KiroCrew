@@ -132,6 +132,13 @@ CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY, CADENCE_MONTHLY, CADENCE_HEARTBEAT)
 #: 30-minute floor and an hourly default (RFC "Crewmate heartbeat", Cost and cache).
 HEARTBEAT_INTERVALS = (30, 60, 120, 240)
 DEFAULT_HEARTBEAT_INTERVAL = 60
+#: The user's answer to the Heartbeat checkbox on a ``crewmate.goal`` card, kept
+#: as the record's ``heartbeat_offer``: a decline is remembered, so no later goal
+#: card offers the Heartbeat again, and either answer tells the goal-setup turn
+#: that the card already settled it (:func:`heartbeat_offer_open`).
+HEARTBEAT_OFFER_ACCEPTED = "accepted"
+HEARTBEAT_OFFER_DECLINED = "declined"
+HEARTBEAT_OFFER_ANSWERS = (HEARTBEAT_OFFER_ACCEPTED, HEARTBEAT_OFFER_DECLINED)
 #: Report kinds: what a weekly and a monthly check-in each produce.
 REPORT_KINDS = (CADENCE_WEEKLY, CADENCE_MONTHLY)
 #: Cron day of week (0 = Sunday); Monday by default.
@@ -303,12 +310,20 @@ def empty_record() -> dict[str, Any]:
         "reports": [],
         "removed_key_result": None,
         "removed_goal": None,
+        "heartbeat_offer": None,
     }
 
 
 def has_goal(rec: dict[str, Any]) -> bool:
     """Whether *rec* holds at least one goal."""
     return bool(rec.get("goals"))
+
+
+def heartbeat_offer_open(rec: dict[str, Any]) -> bool:
+    """Whether a goal card may offer the Heartbeat: it is off and was never declined."""
+    return not (rec.get("schedules") or {}).get(CADENCE_HEARTBEAT) and (
+        rec.get("heartbeat_offer") != HEARTBEAT_OFFER_DECLINED
+    )
 
 
 def goal_ids(rec: dict[str, Any]) -> list[str]:
@@ -521,6 +536,8 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
                     k for k in (links if isinstance(links, list) else []) if isinstance(k, str)
                 ],
             }
+    if data.get("heartbeat_offer") in HEARTBEAT_OFFER_ANSWERS:
+        rec["heartbeat_offer"] = data["heartbeat_offer"]
     return rec
 
 
@@ -774,6 +791,7 @@ def set_goal(
     goal_id: str | None = None,
     expected: str | None = None,
     restore_from: str | None = None,
+    heartbeat_offer: str | None = None,
 ) -> dict[str, Any]:
     """Add a goal, or change or clear the goal *goal_id*.
 
@@ -792,13 +810,21 @@ def set_goal(
     pre-change text of that goal, read server-side from the card's private
     snapshot: the plan's body carries it scrubbed, and the raw text is what
     goes back.
+
+    *heartbeat_offer* is the user's answer to the goal card's Heartbeat
+    checkbox (:data:`HEARTBEAT_OFFER_ANSWERS`), stored in the same write as the
+    goal so the goal-setup turn that write starts already sees it.
     """
     clean = _clean_text(text, max_chars=GOAL_TEXT_MAX_CHARS, multiline=True, what="the goal")
     if goal_id is not None and not is_goal_id(goal_id):
         raise GoalError("invalid_goal_id", "a goal id is g and 8 hex digits")
+    if heartbeat_offer is not None and heartbeat_offer not in HEARTBEAT_OFFER_ANSWERS:
+        raise GoalError("invalid_heartbeat_offer", "heartbeat_offer is accepted or declined")
 
     def fn(rec: dict[str, Any]) -> dict[str, Any]:
         now = _now()
+        if heartbeat_offer is not None:
+            rec["heartbeat_offer"] = heartbeat_offer
         if goal_id is None:
             if expected is not None and (expected != "" or rec["goals"]):
                 raise GoalError("changed_meanwhile", "the goals were changed since this was shown")

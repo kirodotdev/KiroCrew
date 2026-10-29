@@ -10362,6 +10362,8 @@
       "scope_count_other": "Afecta a {{count}} miembros",
       "scope_label": "Afecta a",
       "scope_only_this": "Solo cambia este compañero.",
+      "goal_heartbeat_label": "Que avance por su cuenta (Latido)",
+      "goal_heartbeat_note": "Se ejecuta más o menos cada {{interval}}. Cada ejecución usa créditos y puedes desactivarlo cuando quieras.",
       "addition_server": "Da {{server}} al trabajador de {{name}}.",
       "addition_from_gateway": "Este gateway ya lo ejecuta, así que no entra código nuevo.",
       "addition_from_registry": "Se instala desde el registro MCP ({{id}}) solo para {{name}}.",

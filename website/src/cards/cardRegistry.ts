@@ -10,7 +10,7 @@ import { AlarmClock,
 } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import type { Card, CardChange, CardKind } from '../api/cards'
-import { NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
+import { GOAL_HEARTBEAT_FIELD, GoalBody, NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
 import { ImportFilesBody } from './ImportFilesBody'
 import { cardTimezone, fmtOneShot, isOneShot } from './oneShot'
 
@@ -66,7 +66,7 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'crewmate.goal': {
     icon: Goal, label: () => i18nT('components.changeCards.kind_crewmate_goal'),
-    primary: () => i18nT('components.changeCards.primary_crewmate_goal'), Body: OneCrewmateBody,
+    primary: () => i18nT('components.changeCards.primary_crewmate_goal'), Body: GoalBody,
   },
   'crewmate.key_results': {
     icon: Gauge, label: () => i18nT('components.changeCards.kind_crewmate_key_results'),
@@ -232,6 +232,8 @@ function oneShotChanges(card: Pick<Card, 'kind' | 'params' | 'changes' | 'once' 
 /** The card's change rows, a list setting's row named for the list it edits. */
 export function cardChanges(card: Pick<Card, 'kind' | 'params' | 'changes'> & Partial<Pick<Card, 'once' | 'timezone'>>): CardChange[] {
   if (isOneShot(card)) return oneShotChanges(card)
+  // A goal card's Heartbeat row is drawn as its checkbox (GoalBody), not a change line.
+  if (card.kind === 'crewmate.goal') return card.changes.filter(c => c.field !== GOAL_HEARTBEAT_FIELD)
   const wording = listOp(card)?.wording
   if (!wording || card.changes.length !== 1) return card.changes
   return [{ ...card.changes[0], label: wording.label() }]

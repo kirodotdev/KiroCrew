@@ -83,6 +83,7 @@ from kiro_crew.change_card_catalog_plans import (
     _create_schedule_index,
     _crewmate_put_body,
     _folder_steering_step,
+    _goal_heartbeat_offer,
     _goal_path,
     _key_results_path,
     _q,
@@ -292,7 +293,23 @@ def _build_undo(
                 ),
                 "",
             )
-        return [
+        plan = []
+        offer = _goal_heartbeat_offer(p, before)
+        if offer is not None and offer["checked"] and applied_steps > 1:
+            # The card turned the Heartbeat on too: off again first, while the
+            # goal it needs is still there, and only if it still reads on.
+            plan.append(
+                step(
+                    "PUT",
+                    _check_ins_path(str(slug)),
+                    {
+                        "member": p["member"],
+                        _goals.CADENCE_HEARTBEAT: False,
+                        "expected": {_goals.CADENCE_HEARTBEAT: True},
+                    },
+                )
+            )
+        plan.append(
             step(
                 "PUT",
                 _goal_path(str(slug)),
@@ -304,7 +321,8 @@ def _build_undo(
                     "expected": p["long_term"],
                 },
             )
-        ], None
+        )
+        return plan, None
     if kind == KIND_CREWMATE_KEY_RESULTS:
         slug = before.get("slug")
         if not slug:

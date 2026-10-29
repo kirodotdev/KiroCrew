@@ -607,8 +607,41 @@ def build_preview(
                 "after": p["long_term"],
             }
         ]
+        offer = _goal_heartbeat_offer(p, snapshot)
+        if offer is not None:
+            # The Heartbeat checkbox: the card's own row, drawn as a checkbox the
+            # user flips (a re-preview with ``heartbeat``), never as a change line.
+            every = offer["interval"]
+            out["changes"].append(
+                {
+                    "label": "Heartbeat (each run uses credits)",
+                    "field": GOAL_HEARTBEAT_FIELD,
+                    "after": offer["checked"],
+                    "interval": every,
+                    "per_day": _goals.wakes_per_day(every),
+                }
+            )
+            goal_body["heartbeat_offer"] = (
+                _goals.HEARTBEAT_OFFER_ACCEPTED
+                if offer["checked"]
+                else _goals.HEARTBEAT_OFFER_DECLINED
+            )
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         out["apply"] = [step("PUT", _goal_path(str(snapshot["slug"])), goal_body)]
+        if offer is not None and offer["checked"]:
+            # The same write a ``crewmate.check_ins`` card makes, through the same
+            # hooked schedules route, after the goal it needs is in place.
+            out["apply"].append(
+                step(
+                    "PUT",
+                    _check_ins_path(str(snapshot["slug"])),
+                    {
+                        "member": p["member"],
+                        _goals.CADENCE_HEARTBEAT: True,
+                        "expected": {_goals.CADENCE_HEARTBEAT: False, "interval": every},
+                    },
+                )
+            )
     elif kind == KIND_CREWMATE_KEY_RESULTS:
         if not snapshot.get("exists") or not snapshot.get("slug"):
             raise _fail("not_found", f"no mate named '{p['member']}'")
@@ -1327,6 +1360,27 @@ def _create_schedule_index(evidence: list[dict[str, Any]]) -> int:
     """
     legacy = len(evidence) > 1 and isinstance(evidence[1], dict) and "id" in evidence[1]
     return LEGACY_CREWMATE_CREATE_SCHEDULE_STEP if legacy else CREWMATE_CREATE_SCHEDULE_STEP
+
+
+#: The ``field`` of a ``crewmate.goal`` card's Heartbeat checkbox row.
+GOAL_HEARTBEAT_FIELD = "heartbeat_offer"
+
+
+def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """The goal card's Heartbeat checkbox, ``{checked, interval}``, or ``None`` for none.
+
+    Offered while the snapshot reads the Heartbeat off and never declined
+    (:func:`kiro_crew.member_goals.heartbeat_offer_open`). A snapshot taken
+    before the checkbox existed carries no ``heartbeat`` and offers nothing, so a
+    stored card rebuilds to the plan it was shown with.
+    """
+    hb = snapshot.get("heartbeat")
+    if not isinstance(hb, dict) or hb.get("on") or hb.get("declined"):
+        return None
+    every = hb.get("interval")
+    if not _goals.is_heartbeat_interval(every):
+        every = _goals.DEFAULT_HEARTBEAT_INTERVAL
+    return {"checked": p.get("heartbeat", True) is not False, "interval": every}
 
 
 def _goal_path(slug: str) -> str:

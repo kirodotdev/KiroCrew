@@ -10362,6 +10362,8 @@
       "scope_count_other": "Concerne {{count}} membres",
       "scope_label": "Concerne",
       "scope_only_this": "Seul ce coéquipier change.",
+      "goal_heartbeat_label": "Faire avancer ça tout seul (Battement)",
+      "goal_heartbeat_note": "S’exécute environ toutes les {{interval}}. Chaque exécution utilise des crédits, et tu peux le désactiver à tout moment.",
       "addition_server": "Donne {{server}} au travailleur de {{name}}.",
       "addition_from_gateway": "Cette passerelle l'exécute déjà, donc aucun nouveau code n'arrive.",
       "addition_from_registry": "Il est installé depuis le registre MCP ({{id}}) pour {{name}} seulement.",

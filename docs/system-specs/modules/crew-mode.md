@@ -1371,10 +1371,12 @@ it has no guide plan, and one such step refuses the whole guide. That reply ends
 When the user agrees, the mate reads its memory, the user's recent sessions and chat
 history, names two or three areas of what it saw that it could own, and asks which
 to track as its goal (or, with nothing to go on, what part of their work to hand
-it), naming only work it saw. On a pick it proposes the goal with `set_goal`. Saving
-the goal starts the ordinary goal setup, whose `[Goal set]` turn asks, while the
-Heartbeat is off, whether the mate should keep track of the goal on its own, and then
-hands the milestone research to a worker (see the goal-setup nudge below).
+it), naming only work it saw. On a pick it proposes the goal with `set_goal`, whose
+card carries the Heartbeat checkbox (checked by default) while the Heartbeat is off,
+so setting the goal and keeping it moving is one press. Saving the goal starts the
+ordinary goal setup, whose `[Goal set]` turn asks nothing more about the Heartbeat
+after a goal card, and then hands the milestone research to a worker (see the
+goal-setup nudge below).
 When the user answers with a name, that later turn says plainly that the mate now
 goes by it and calls the `kirocrew-mate` tool `update_self` with `display_name`
 (`POST /api/member/self/update`, `handlers/member_self.py`), which renames ONLY the calling
@@ -2373,7 +2375,28 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   (`duplicate_goal`). A goal is numbered by its place in the list, and that
   number is what the tab, the card and the mate's context all show. The
   mate only proposes one (`set_goal` -> a `crewmate.goal` card: add, or a
-  new text for one goal by id). A record written before goals were a list holds
+  new text for one goal by id). While the mate's Heartbeat is off and was never
+  declined (`member_goals.heartbeat_offer_open`, read off the raw record), the goal
+  card also carries a **Heartbeat checkbox**, checked by default: "Keep this
+  moving on its own (Heartbeat)", with a note naming the mate's own interval
+  ("Runs about every 1 hr", the default 60) and that each run uses credits and can
+  be turned off any time. It is the card's editable `heartbeat` param (default
+  true; the gateway sends it as a `heartbeat_offer` change row with `interval` and
+  `per_day`, which the dashboard draws as the checkbox in `GoalBody`, never as a
+  change line), and flipping it re-previews the card. Checked, the apply plan is
+  the goal write then the same schedules-route write a `crewmate.check_ins` card
+  makes (`heartbeat: true`, `expected: {heartbeat: false, interval}`), so the
+  Heartbeat turns on through the same hooked route and governance; its Undo turns
+  the Heartbeat off first (`expected: {heartbeat: true}`), then takes the goal
+  back. Unchecked, only the goal is written. Either way the goal write carries
+  `heartbeat_offer` (`accepted` / `declined`), stored as the record's
+  `heartbeat_offer` in the same write: a decline means no later goal card shows
+  the checkbox, and with the Heartbeat already on there is none either. A
+  Heartbeat accepted and later turned off is offered again. The Heartbeat state
+  is left out of the goal card's compared snapshot (`comparable_state`), since
+  its own step is a compare-and-set; a goal card stored before the checkbox has
+  no `heartbeat` in its snapshot, offers nothing, and still rebuilds
+  (`change_cards_records._LEGACY_EDITABLE`). A record written before goals were a list holds
   one `long_term` string: it reads as a one-goal list under
   `member_goals.LEGACY_GOAL_ID` and is written in the list shape on its next
   write;
@@ -2529,14 +2552,20 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   mate one hidden turn once its thread is idle (waiting at most ten
   minutes; a newer save, of that goal or another, replaces a waiting nudge).
   It names the goal that changed by number and id, lists every goal, and asks
-  the crewmate to say back that goal in a sentence and, while the Heartbeat is off,
+  the crewmate to say back that goal in a sentence. A goal set on a `crewmate.goal`
+  card already answered the Heartbeat on its checkbox (the record's
+  `heartbeat_offer`, written with the goal, so the nudge sees it even before the
+  card's Heartbeat step lands), and so does a Heartbeat that is on or was once
+  declined there: then it asks nothing else (`goal_setup.kickoff_ask_nothing`), and
+  never proposes a second `set_check_ins` card for the Heartbeat. Only a goal saved
+  on the Goals tab with the Heartbeat off and unanswered makes it
   ask once in plain words whether to keep track of the goal on its own between
   chats (a wake every so often that keeps the work moving while the user is away,
   the chat quiet, the Dashboard tab showing what it did, each run using credits),
   naming the Heartbeat only after the user answers, since they do not know the word
   yet; on yes it proposes `set_check_ins` with the Heartbeat on
   (`goal_setup.kickoff_heartbeat_tools`, or without the mate tools a pointer to the
-  Schedules tab; with the Heartbeat on it asks nothing else). It then hands the research to ONE
+  Schedules tab). `set_check_ins` stays the way to change the Heartbeat later. It then hands the research to ONE
   worker session (`session_create`, a self-contained brief with `session_send`)
   and end the turn so the chat stays free -- nothing waits or polls -- then
   propose milestones with `set_key_results` (each linked with `goal_ids`) when
@@ -2724,7 +2753,9 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   docs/request-for-change; its switch is the Schedules tab's row, not a Goals
   tab check-in), off by default and
   disabled without a goal like the other three. A record written before it reads
-  with `heartbeat` off and `interval` 60. Its `interval` is one of
+  with `heartbeat` off and `interval` 60, and with no `heartbeat_offer` (the
+  answer to a goal card's Heartbeat checkbox, `accepted` or `declined`; any
+  other stored value reads as none). Its `interval` is one of
   `member_goals.HEARTBEAT_INTERVALS` (30, 60, 120, 240 minutes; anything
   else is refused `invalid_interval`, and a stored value outside the list reads
   as 60), and its one schedule (`goal-heartbeat:<slug>`, removed with the
