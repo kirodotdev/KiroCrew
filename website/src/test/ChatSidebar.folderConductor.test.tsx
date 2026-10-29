@@ -271,19 +271,18 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('the folder menu item', () => {
-  it('names the FOLDER, and says what the chat it opens is to it', async () => {
+  it('names the FOLDER in one line: "Chat with <folder>"', async () => {
     // The label names the folder the menu was opened on -- the thing the reader
     // has in front of them -- not the conductor's own session title, which they
-    // have not necessarily seen. And not "Chat with conductor" either: that word
-    // on its own told a first-time reader nothing, which is what the second line
-    // is for.
+    // have not necessarily seen. It is one line with no lineage explanation and
+    // no word for "folder", since the reader is already on the folder row.
     const utils = renderSidebar()
     openFolderMenu(LANE)
     const item = menuItem(LANE)
     expect(item).not.toBeNull()
-    expect(item!.textContent).toContain('remote-crew')
+    expect(item!.textContent!.trim()).toBe('Chat with remote-crew')
     expect(item!.textContent).not.toContain('Remote crew rollout')
-    expect(item!.textContent).toContain('started this folder')
+    expect(item!.textContent).not.toContain('started this folder')
     await settle(utils)
   })
 
