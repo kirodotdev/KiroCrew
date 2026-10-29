@@ -3838,7 +3838,11 @@ the pin, and `installed_bundle()` looks up exactly that version's directory --
 under the data home's `engines/kas` first, then under the desktop app's staged
 copy when the Electron shell exported one (`KIROCREW_BUNDLED_KAS_DIR`, set by
 `gateway-env.js` only when the build staged the pin for this architecture,
-without running it at boot; `packaging/build-desktop.sh`, `BUNDLE_KAS`). An operator's
+without running it at boot; `packaging/build-desktop.sh`, `BUNDLE_KAS`), or that
+the Docker image names as an `ENV` (`docker/Dockerfile` points it at
+`/usr/local/share/kirocrew/kas` on every build and, with `--build-arg
+BUNDLE_KAS=1`, stages the pin there with the same installer; off by default while
+the route is, which leaves the directory empty and the lookup finding nothing). An operator's
 own install therefore wins over the app's copy, the precedence `KIROCREW_KIRO_BIN`
 has over the bundled kiro-cli, and `InstalledKasBundle.bundled` says which one
 answered. A

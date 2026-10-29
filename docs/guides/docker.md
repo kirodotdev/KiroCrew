@@ -439,6 +439,44 @@ requires BuildKit — the default builder since Docker 23. On an older engine
 (where the classic builder rejects `RUN --mount` with `Unknown flag: mount`),
 prefix the build with `DOCKER_BUILDKIT=1`.
 
+### Baking in the KAS engine (`BUNDLE_KAS`)
+
+The `agent.kas_bundle` route runs Kiro Crew's own pinned KAS engine instead of
+going through kiro-cli. By default the image does not carry that engine, and
+turning the route on needs `docker exec <container> kirocrew kas install` first,
+which downloads about 55 MB into the home volume. To build an image with the
+engine already inside:
+
+```
+docker build -f docker/Dockerfile --build-arg BUNDLE_KAS=1 -t kirocrew:dev-kas .
+```
+
+The build runs the backend's own installer (`acp.kas_bundle.install_bundle`,
+the same code `kirocrew kas install` and the desktop build run) against the
+version this release pins (`KAS_PIN_VERSION` in `acp/kas_pin.py`) and refuses a
+manifest whose bytes do not hash to `KAS_PIN_MANIFEST_SHA256`. The engine lands
+in `/usr/local/share/kirocrew/kas`, outside the home volume and owned by root,
+so a mounted home cannot shadow or rewrite it. The build then reads the tree
+back as the `kirocrew` user and fails if the gateway could not use it.
+
+The image sets `KIROCREW_BUNDLED_KAS_DIR=/usr/local/share/kirocrew/kas` as an
+`ENV`, the variable the desktop app sets for its own copy, so the gateway and
+every `docker exec` command see it. The backend reads it as a second root after
+the home volume's own `kirocrew kas install`, so an engine you install yourself
+still wins. `docker exec <container> kirocrew kas status` reports the baked copy
+as `(built into the app)`. On an image built without `BUNDLE_KAS=1` the
+directory exists but is empty, and nothing reads as built in. The route itself
+stays off until you turn it on:
+
+```
+docker exec <container> kirocrew config set agent.kas_bundle true
+docker restart <container>
+```
+
+`BUNDLE_KAS` defaults to `0` because the route is still in shadow testing
+(`agent.kas_bundle` defaults to `false`) and the extracted engine adds about
+370 MB to the image.
+
 ## Troubleshooting
 
 For solutions to common Docker deployment issues — port binding, permission
