@@ -102,7 +102,7 @@ describe('SessionTabStrip mouse drag', () => {
 
   it('claims both drawer swipe directions', () => {
     const { strip } = renderStrip()
-    expect(strip.parentElement?.parentElement).toHaveAttribute('data-owns-swipe', 'left right')
+    expect(strip.closest('[data-owns-swipe]')).toHaveAttribute('data-owns-swipe', 'left right')
   })
 
   it('keeps the pointer-close width freeze on reorderable tabs', () => {
