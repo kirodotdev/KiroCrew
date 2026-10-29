@@ -1,0 +1,184 @@
+{
+  "fixture": "backend/renew-crew-lease.refusals",
+  "kind": "backend-refusal",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "10.1",
+  "status": "provisional",
+  "summary": "RenewCrewLease refusals as the backend model returns them, each old code's mapping, and what the Crew does.",
+  "provisional": [
+    {
+      "field": "envelope",
+      "why": "awsJson1_0 per the backend model. That the server routes on X-Amz-Target at POST / is pending the backend team, contract section 13 item 18."
+    },
+    {
+      "field": "httpStatus",
+      "why": "The statuses are the model's httpError values. Whether the service honors them on awsJson1_0 is pending, contract section 13 item 5."
+    },
+    {
+      "field": "sign-in failure",
+      "why": "The bearer authentication layer answers before the operation. Its status and body are not in the model, contract section 13 item 5."
+    },
+    {
+      "field": "typed states without a model reason",
+      "why": "ENDPOINT_MISMATCH, HOSTING_NOT_ALLOWED, CREW_IDENTITY_DISABLED and VERSION_UNSUPPORTED have no reason in the model. Pending the backend team, contract section 13 item 24."
+    },
+    {
+      "field": "takeoverAfter",
+      "why": "An absolute time in the model. The Crew's wait rule is pending the backend team, contract section 13 item 23."
+    }
+  ],
+  "planPosition": [
+    "The Crew reads the exception from __type, dropping any namespace before # and anything after :.",
+    "The takeover wait: takeoverAfter minus the HTTP Date header of the same response, clamped to 1 to 120 seconds. 120 seconds when the Date header is missing or unreadable."
+  ],
+  "operation": "RenewCrewLease",
+  "refusals": [
+    {
+      "exception": "AccessDeniedException",
+      "reason": "RemoteAccessDisabled",
+      "httpStatus": 403,
+      "oldCode": "REMOTE_ACCESS_DISABLED",
+      "modelStatus": "In the model.",
+      "when": "The organization does not allow remote access. No token.",
+      "callerDoes": "Stop connecting. Show the reason in Settings. Try again on the next sign-in or setting change, and at most every 15 minutes.",
+      "example": {
+        "__type": "AccessDeniedException",
+        "message": "The organization does not allow remote access.",
+        "reason": "RemoteAccessDisabled"
+      }
+    },
+    {
+      "exception": "IdentityInUseException",
+      "httpStatus": 409,
+      "oldCode": "IDENTITY_IN_USE",
+      "modelStatus": "In the model, with takeoverAfter, the earliest time this instance can take over.",
+      "pending": "contract section 13 item 23",
+      "when": "A team Crew's lease is held by a different instance and is still live.",
+      "callerDoes": "Don't connect. Wait takeoverAfter minus the response's Date header, clamped to 1 to 120 seconds, then renew. Never compare takeoverAfter with the device's clock. The host shows identity in use.",
+      "exampleHeaders": {
+        "Date": "Mon, 02 Nov 2026 17:00:00 GMT"
+      },
+      "example": {
+        "__type": "IdentityInUseException",
+        "message": "Another instance holds the lease.",
+        "takeoverAfter": 1793638864
+      }
+    },
+    {
+      "exception": null,
+      "httpStatus": null,
+      "oldCode": "ENDPOINT_MISMATCH",
+      "modelStatus": "No reason in the model. It can arrive only as a ValidationException, with a reason the Crew cannot tie to this case.",
+      "pending": "contract section 13 item 24",
+      "when": "relay.endpointId is not the one the backend derives for this caller and instance.",
+      "callerDoes": "On a ValidationException to a renewal that carried relay.endpointId, drop the stored endpointId and renew once without it. A second ValidationException stops, as below.",
+      "example": null
+    },
+    {
+      "exception": null,
+      "httpStatus": null,
+      "oldCode": "HOSTING_NOT_ALLOWED",
+      "modelStatus": "No reason in the model. Today it shows as an AccessDeniedException with no Crew reason, or as a sign-in failure for a credential type the operation doesn't accept.",
+      "pending": "contract section 13 items 21 and 24",
+      "when": "This sign-in cannot host a Crew.",
+      "callerDoes": "No handling of its own while the model has no reason for it. The Crew can't tell it apart from the refusal it arrives as, so it follows that row: the AccessDeniedException row, or the sign-in failure row.",
+      "example": null
+    },
+    {
+      "exception": null,
+      "httpStatus": null,
+      "oldCode": "CREW_IDENTITY_DISABLED",
+      "modelStatus": "No reason in the model. Today it may show as an AccessDeniedException with reason CrewAccessNotGranted, which the model says covers a Crew identity that is not active, or as a ResourceNotFoundException.",
+      "pending": "contract section 13 item 24",
+      "when": "The team Crew's identity is disabled or deleted, or its key was rotated.",
+      "callerDoes": "No handling of its own while the model has no reason for it. As an AccessDeniedException with reason CrewAccessNotGranted, the Crew follows the AccessDeniedException row. As a ResourceNotFoundException, it follows that row. The host connection closes when its token expires.",
+      "example": null
+    },
+    {
+      "exception": null,
+      "httpStatus": null,
+      "oldCode": "VERSION_UNSUPPORTED",
+      "modelStatus": "No reason in the model. It can arrive only as a ValidationException.",
+      "pending": "contract section 13 item 24",
+      "when": "protocolVersion is below the backend's minimum.",
+      "callerDoes": "Covered by the ValidationException row. The relay's own hello refusal, version_unsupported with close 4401, still says an upgrade is needed.",
+      "example": null
+    },
+    {
+      "exception": "AccessDeniedException",
+      "reason": null,
+      "httpStatus": 403,
+      "oldCode": null,
+      "modelStatus": "In the model, with or without a reason.",
+      "when": "Any other access refusal, including reason CrewAccessNotGranted.",
+      "callerDoes": "Stop. Show that this sign-in can't host the Crew now. Try again on the next sign-in or setting change, and at most every 15 minutes.",
+      "example": {
+        "__type": "AccessDeniedException",
+        "message": "Access denied.",
+        "reason": "CrewAccessNotGranted"
+      }
+    },
+    {
+      "exception": "ResourceNotFoundException",
+      "httpStatus": 404,
+      "oldCode": null,
+      "modelStatus": "In the model. What it means on this operation is pending.",
+      "pending": "contract section 13 item 24",
+      "when": "The backend found no Crew for this caller, for example a deleted team Crew identity.",
+      "callerDoes": "Stop until Remote Control restarts.",
+      "example": {
+        "__type": "ResourceNotFoundException",
+        "message": "Not found."
+      }
+    },
+    {
+      "exception": "ValidationException",
+      "httpStatus": 400,
+      "oldCode": null,
+      "modelStatus": "In the model. reason is one of the model's ValidationExceptionReason values.",
+      "when": "The request failed validation.",
+      "callerDoes": "Log the message and reason. Apply the ENDPOINT_MISMATCH row once if it fits, otherwise stop and show that the Crew needs an update.",
+      "example": {
+        "__type": "ValidationException",
+        "message": "Invalid input.",
+        "reason": "FieldValidationFailed"
+      }
+    },
+    {
+      "exception": "ThrottlingException",
+      "httpStatus": 429,
+      "oldCode": "RATE_LIMITED",
+      "modelStatus": "In the model. It carries no wait time, so retryAfterSeconds is gone.",
+      "when": "Too many calls for this caller.",
+      "example": {
+        "__type": "ThrottlingException",
+        "message": "Too many calls for this caller."
+      },
+      "callerDoes": "Retry with the renewal retry steps and full jitter, section 11.2."
+    },
+    {
+      "exception": "InternalServerException",
+      "httpStatus": 500,
+      "oldCode": null,
+      "modelStatus": "In the model.",
+      "when": "The backend failed.",
+      "example": {
+        "__type": "InternalServerException",
+        "message": "The backend failed."
+      },
+      "callerDoes": "Retry with the renewal retry steps and full jitter, section 11.2."
+    },
+    {
+      "exception": null,
+      "httpStatus": null,
+      "oldCode": "SIGN_IN_EXPIRED",
+      "modelStatus": "Not in the model. The bearer authentication layer refuses the credential before the operation runs. Its status and body are open. 401 is expected but not confirmed.",
+      "pending": "contract section 13 item 5",
+      "when": "The caller's own credential was refused.",
+      "example": null,
+      "callerDoes": "Refresh the sign-in or credential. A personal Crew asks the owner to sign in again."
+    }
+  ]
+}

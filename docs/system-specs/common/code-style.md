@@ -44,6 +44,7 @@ Paths below are relative to `src/kiro_crew/`.
 | Base agent config | `config/defaults.json` | `tools`, `allowedTools`, `resources`, `hooks`, model. Packaged as package data, so editing it needs no code change. |
 | Managed MCP server specs | `agent.py` | `_MANAGED_MCP_SERVERS`: which servers are auto-registered and refreshed while preserving user customizations. |
 | AgentCore policy-field validators | `platform/agentcore_schema.py` | `AGENTCORE_GATEWAY_URL_MAX`, `WORKLOAD_NAME_MIN` / `WORKLOAD_NAME_MAX`, `normalize_agentcore_gateway_url`, `normalize_agentcore_workload_name`. AWS-free so governance can parse a policy without the optional extra. |
+| Kiro relay protocol v1 | `relay_client/protocol.py` | Every frame size, timeout, close code and error code of the relay's host leg (`PING_INTERVAL_SECONDS`, `SILENCE_REPLACE_SECONDS`, `BACKOFF_STEPS_SECONDS`, `MAX_TEXT_FRAME_BYTES`, `CLOSE_*`, `ERR_*`). `test/test_relay_client_protocol.py` pins them to the copied contract fixtures. The relay's provisional names (`HOST_URL_TEMPLATE`, `CREW_DOMAIN_TEMPLATE`) are settings defaults in `relay_client/provider.py`. |
 | Built-in skills | `builtin_skills/<name>/SKILL.md` | Frontmatter (`always`, `triggers`, `dir`) is the skill's own contract. This is the only tree copied into a user's `~/.kiro/crew/skills/`, so a skill any shipped feature, tool or doc references MUST live here. The top-level `skills/` tree is repo-checkout-only and reaches no installed user. |
 
 Other style rules:

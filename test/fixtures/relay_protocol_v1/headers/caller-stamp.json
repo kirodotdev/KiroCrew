@@ -1,0 +1,51 @@
+{
+  "fixture": "headers/caller-stamp",
+  "kind": "header-rule",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "9",
+  "status": "decided",
+  "summary": "How the person reaches the Crew: the relay names them in its own frame, and the relay client stamps x-kiro-relay-user.",
+  "provisional": [],
+  "planPosition": [],
+  "rule": "The relay puts the verified Kiro user ID in the request head's user field, never in a header a client could send. The relay client sets x-kiro-relay-user on the request it hands to the Crew's web server, overwriting any value. The Crew honors the header only on requests from its relay client, in process or over a local channel authenticated with a secret the Crew holds, and strips it from everything else. On the local and Tailscale paths the Crew never honors it. On a personal Crew it honors it only when it names the owner. On a team Crew it takes the person as named.",
+  "cases": [
+    {
+      "name": "relayed request",
+      "head": {
+        "type": "request",
+        "id": 7,
+        "method": "GET",
+        "path": "/api/me",
+        "query": "",
+        "headers": {
+          "accept": "application/json"
+        },
+        "streaming": true,
+        "user": "u-0001.example-owner"
+      },
+      "toCrewWebServer": {
+        "accept": "application/json",
+        "x-kiro-relay-user": "u-0001.example-owner"
+      }
+    },
+    {
+      "name": "local request carrying the header",
+      "path": "local or Tailscale",
+      "in": {
+        "x-kiro-relay-user": "u-0001.example-owner"
+      },
+      "crewDoes": "strips it and treats the request as not relayed"
+    },
+    {
+      "name": "personal Crew, a user who is not the owner",
+      "head": {
+        "user": "u-0003.example-stranger"
+      },
+      "crewDoes": "refuses. The relay should never send this, so it is a second check"
+    }
+  ],
+  "header": "x-kiro-relay-user",
+  "value": "The person's stable Kiro user ID, never an email address or a display name."
+}

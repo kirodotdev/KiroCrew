@@ -1,0 +1,38 @@
+{
+  "fixture": "frames/request-end",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.1",
+  "status": "decided",
+  "summary": "The end of a request body.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "request-end",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"request-end\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The request's stream id."
+    }
+  },
+  "valid": [
+    {
+      "name": "end",
+      "message": {
+        "type": "request-end",
+        "id": 8
+      }
+    }
+  ],
+  "invalid": []
+}
