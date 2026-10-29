@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -180,6 +181,22 @@ def _request(body: dict) -> tuple[Any, MagicMock]:
     return request, mgr
 
 
+def _real_request(body: dict) -> tuple[Any, Any]:
+    """Like ``_request``, but on a real manager whose runs never start."""
+    mgr = _mgr()
+    mgr._run = AsyncMock()  # type: ignore[method-assign]
+    state = SimpleNamespace(subagents=mgr, conversation_log=MagicMock())
+    request = MagicMock()
+    request.app = {"state": state}
+    request.headers = {}
+
+    async def _json() -> dict:
+        return body
+
+    request.json = _json
+    return request, mgr
+
+
 class TestSpawnEndpoint:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -194,17 +211,17 @@ class TestSpawnEndpoint:
     async def test_an_admitted_backend_reaches_spawn(self, selectable, name, reaches):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = _request({"task": "x", "backend": name})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["backend"] == reaches
+        request, mgr = _real_request({"task": "x", "backend": name})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).backend == reaches
 
     @pytest.mark.asyncio
     async def test_no_backend_reaches_spawn_as_none(self, selectable):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = _request({"task": "x"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["backend"] is None
+        request, mgr = _real_request({"task": "x"})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).backend is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", ["goose", "nonesuch"])
@@ -614,36 +631,24 @@ class TestFollowUps:
     async def test_a_retry_runs_on_the_original_backend(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.subagent import SubagentInfo
 
-        old = SimpleNamespace(
+        mgr = _mgr()
+        mgr._run = AsyncMock()  # type: ignore[method-assign]
+        mgr._agents["a1"] = SubagentInfo(
             id="a1",
             task="t",
             _raw_task="t",
             parent_session_key="dash:1",
-            agent="",
-            max_turns=0,
-            cwd="",
-            model="",
-            reasoning_effort="",
             backend="claude",
-            approval_mode="",
-            silent=False,
-            delegation={},
-            include_memory=True,
-            include_lessons=True,
-            include_project=True,
-            memory_store="",
-            crew="",
             done=True,
-            outcome="failed",
+            error="boom",
             execution_context=ExecutionContext(None, MemoryStoreRef("default"), "template", "k"),
         )
-        mgr = MagicMock()
-        mgr.get.return_value = old
-        mgr.spawn.return_value = SimpleNamespace(id="a2", done=False, error="")
         request = MagicMock()
         request.app = {"state": SimpleNamespace(subagents=mgr)}
         request.headers = {}
         request.match_info = {"agent_id": "a1"}
-        await api_spawn_retry(request)
-        assert mgr.spawn.call_args.kwargs["backend"] == "claude"
+        resp = await api_spawn_retry(request)
+        retried = mgr.get(json.loads(resp.text)["id"])
+        assert retried.backend == "claude"
