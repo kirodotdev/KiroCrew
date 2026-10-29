@@ -15,6 +15,7 @@ describe('CrewModeMarks', () => {
     render(<CrewEyebrow />)
     const eyebrow = screen.getByTestId('crew-eyebrow')
     expect(eyebrow.className).toContain('crew-eyebrow-text')
+    expect(eyebrow.className).toContain('tracking-[1px]')
     expect(eyebrow.textContent).toBe('Crew Mode')
   })
 
