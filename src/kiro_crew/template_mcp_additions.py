@@ -604,15 +604,15 @@ def _now() -> str:
 def _locked() -> Iterator[None]:
     """In-process lock plus a cross-process advisory lock on a sidecar file."""
     with _lock:
-        from kiro_crew.platform_compat import file_lock
+        from kiro_crew.platform_compat import file_lock, open_create_or_existing
 
         lock_path = record_path().with_suffix(".json.lock")
         # ``0700`` under any umask: the record directory is owner-only, and this is
         # usually the first thing to create it.
         mkdirs_owner_only(lock_path.parent)
-        fd = os.open(
+        fd = open_create_or_existing(
             lock_path,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
             0o600,
         )
         try:

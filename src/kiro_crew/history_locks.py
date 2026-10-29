@@ -349,7 +349,7 @@ def _try_acquire_named_sidecar(
             return False
         if not platform_compat.IS_POSIX or _sidecar_still_named(state[0], lock_path):
             return True
-        fresh = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        fresh = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
         with guard:
             stale, state[0] = state[0], fresh
 
