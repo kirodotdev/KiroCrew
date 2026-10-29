@@ -217,6 +217,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Remote-dispatch preview (RFC conductor-remote-dispatch §2b): an owner's
+    # work-item create on a crew short of memory, CPU or disk is refused before
+    # anything is read or minted, and every owner create reply carries the
+    # snapshot. Preview off, or any other caller: (None, None).
+    from kiro_crew.dashboard.remote_dispatch_headroom import create_admission
+
+    busy, headroom = await create_admission(request, body)
+    if busy is not None:
+        return busy
     name = body.get("name")
     if name is not None and not isinstance(name, str):
         # `get_or_create_slot` normalizes the key with string operations, so a
@@ -1045,6 +1054,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     created = _created_slot_row(state, request, slot)
     if session_folder_notice:
         created["session_folder_notice"] = session_folder_notice
+    if headroom is not None:
+        created["headroom"] = headroom
     return web.json_response(created)
 
 

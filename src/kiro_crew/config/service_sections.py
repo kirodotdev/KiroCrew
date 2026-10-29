@@ -343,7 +343,8 @@ class WatchdogConfig:
 
 @dataclass
 class WorkLedgerConfig:
-    """Work-ledger nesting (``work_ledger_records.MAX_DEPTH``, read through ``may_conduct``)."""
+    """Work-ledger nesting (``work_ledger_records.MAX_DEPTH``, read through ``may_conduct``)
+    and the remote-dispatch preview (``dashboard.remote_dispatch_headroom``)."""
 
     max_depth: int = field(
         default=WORK_MAX_DEPTH_DEFAULT,
@@ -358,6 +359,36 @@ class WorkLedgerConfig:
             "is 27), so raise it only where concurrency is already capped per level. "
             "Lowering it does not touch ledgers already open: new ledgers and new items "
             "at the levels it removes are refused.",
+        ),
+    )
+    remote_dispatch: bool = field(
+        default=False,
+        metadata=_meta(
+            "Remote dispatch (preview)",
+            "Preview: lets a conductor on another machine place work items on this "
+            "crew. When true, GET /api/chat/headroom answers this machine's free "
+            "memory, CPU load and free scratch disk to the owner, and an owner session "
+            "create that carries a work item is refused as crew_busy when one of them is short. Off (the "
+            "default): the route answers 404 and no create is checked. Read on every "
+            "request, so no restart is needed.",
+        ),
+    )
+    remote_dispatch_memory_gb: float = field(
+        default=2.0,
+        metadata=_meta(
+            "Remote dispatch memory estimate (GB)",
+            "Free memory one dispatched worker needs. A work-item create is refused "
+            "as crew_busy when less is free. Used only with remote_dispatch on; a "
+            "value that is not a positive number uses the default.",
+        ),
+    )
+    remote_dispatch_disk_gb: float = field(
+        default=10.0,
+        metadata=_meta(
+            "Remote dispatch disk estimate (GB)",
+            "Free scratch disk one dispatched worker needs. A work-item create is "
+            "refused as crew_busy when less is free. Used only with remote_dispatch "
+            "on; a value that is not a positive number uses the default.",
         ),
     )
 

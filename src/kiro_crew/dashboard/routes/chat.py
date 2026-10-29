@@ -36,6 +36,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_unresolve,
 )
 from kiro_crew.dashboard.handlers.worktree import api_worktree_create
+from kiro_crew.dashboard.remote_dispatch_headroom import api_chat_headroom
 from kiro_crew.dashboard.slot_ownership import slot_not_found
 
 
@@ -79,6 +80,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/source/pull-request/submit-review", api_pull_request_submit_review)
     app.router.add_post("/api/source/issue", api_issue_source)
     app.router.add_post("/api/source/contributors", api_app_contributors)
+    # Remote-dispatch preview: this crew's headroom for a conductor elsewhere.
+    # Owner only; 404 while work_ledger.remote_dispatch is off.
+    app.router.add_get("/api/chat/headroom", api_chat_headroom)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
     app.router.add_post("/api/chat/slots/cleanup", chat.api_chat_slots_cleanup)
