@@ -530,24 +530,6 @@ def build_cron_ack_block(job_id: str) -> list[dict]:
     ]
 
 
-def build_subagent_ack_block(subagent_id: str) -> list[dict]:
-    """Build a Slack Block Kit acknowledge button for subagent notifications."""
-    return [
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "✅ Acknowledge"},
-                    "action_id": f"{SUBAGENT_ACK_ACTION_PREFIX}{subagent_id}",
-                    "value": subagent_id,
-                    "style": "primary",
-                }
-            ],
-        }
-    ]
-
-
 def build_link_dashboard_button() -> dict:
     """Single button element for linking a Slack thread to the dashboard."""
     return {

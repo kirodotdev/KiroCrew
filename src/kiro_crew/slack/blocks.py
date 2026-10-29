@@ -98,34 +98,6 @@ def session_task_card(
     return blocks
 
 
-def confirmation_dialog(
-    title: str, text: str, confirm_text: str, deny_text: str, action_prefix: str = "mc_stop"
-) -> list[dict]:
-    """Section with confirm/deny action buttons."""
-    return [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{title}*\n{text}"},
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": confirm_text},
-                    "action_id": f"{action_prefix}_confirm",
-                    "style": "danger",
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": deny_text},
-                    "action_id": f"{action_prefix}_cancel",
-                },
-            ],
-        },
-    ]
-
-
 def command_hint_block(command: str, description: str) -> dict:
     """Single section block showing a command and its description."""
     return {
