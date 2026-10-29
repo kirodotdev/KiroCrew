@@ -219,11 +219,14 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         # When agent_sequence has multiple agents, run them sequentially
         # with per-agent session keys and per-job env vars.
         if agent_sequence_dispatches(cap.cron_agents):
-            return await self._cron_run_sequence(job, cap)
+            dispatch = self._cron_run_sequence(job, cap)
+        else:
+            # ── Single-agent path (existing behavior) ──
+            # Per-job env vars (single-agent path) travel via extra_env passthrough
+            dispatch = self._cron_run_single(job, cap, retry=_cron_callback)
+        from kiro_crew.shared_crew.admission_entry import admitted_cron_dispatch
 
-        # ── Single-agent path (existing behavior) ──
-        # Per-job env vars (single-agent path) travel via extra_env passthrough
-        return await self._cron_run_single(job, cap, retry=_cron_callback)
+        return await admitted_cron_dispatch(job, dispatch)
 
     self._cron_reconciled = False
     self._cron_armed = False

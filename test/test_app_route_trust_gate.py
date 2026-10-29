@@ -416,7 +416,10 @@ async def test_dashboard_user_still_resolves_every_approval(state):
     async with _serve(state) as client:
         for approval_id in ("7", "9", "spawn:dash"):
             resp = await client.post(f"/api/approvals/{approval_id}/approve", params=_q())
-            assert (resp.status, await resp.json()) == (200, {"ok": True})
+            body = await resp.json()
+            # The answer also names the Shared Crew decision it settled.
+            assert (resp.status, body.get("ok")) == (200, True)
+            assert set(body) <= {"ok", "decision"}
         assert native.result() == "approved"
         assert app_owned.result() == "approved"
         assert await await_until(task) is True

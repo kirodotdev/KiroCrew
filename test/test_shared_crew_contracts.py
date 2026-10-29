@@ -1,10 +1,42 @@
-"""Shared Crew contract records: round trips, legacy reads and forward compatibility."""
+"""Shared Crew contract records: round trips, legacy reads, forward compatibility,
+and the operation state machine."""
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import pytest
 
 from kiro_crew.shared_crew import SCHEMA_VERSION, ContractError
+from kiro_crew.shared_crew.admission import (
+    CAPACITY_HOLDING,
+    TASKQ_STATE_MAP,
+    TERMINAL,
+    TRANSITIONS,
+    AcceptedWork,
+    AdmissionRequest,
+    CapacityResponse,
+    CapacityScope,
+    InvalidTransition,
+    OperationKind,
+    OperationState,
+    ReasonCode,
+    RuntimeOwnershipRef,
+    ScopeUsage,
+    StaleRevision,
+    error_body,
+    http_status,
+    idempotency_scope,
+    is_legal_transition,
+    retry_after_header,
+)
+from kiro_crew.shared_crew.collab import (
+    DecisionKind,
+    DecisionState,
+    ResolveOutcome,
+    SharedDecision,
+    classify_response,
+)
 from kiro_crew.shared_crew.contracts import (
     SESSION_ATTRIBUTION_META_KEY,
     UNKNOWN_PRINCIPAL_ID,
@@ -28,6 +60,7 @@ from kiro_crew.shared_crew.contracts import (
     principal_id_for,
     principal_or_unknown,
 )
+from kiro_crew.taskq import model as taskq_model
 
 ALICE = Principal(
     id=principal_id_for("tailscale", "example.ts.net", "alice@example.com"),
@@ -46,6 +79,22 @@ BOB = Principal(
     subject="bob@example.com",
     provenance=Provenance.TAILSCALE_DIRECT,
 )
+
+
+def _work(state: OperationState = OperationState.QUEUED, **kw: object) -> AcceptedWork:
+    base: dict[str, object] = dict(
+        work_id="w1",
+        scope=idempotency_scope(ALICE.id, "chat-1", "key-00000001"),
+        budget_key=ALICE.id,
+        session_key="chat-1",
+        operation=OperationKind.CHAT_TURN,
+        state=state,
+        revision=0,
+        accepted_at=100.0,
+        expires_at=200.0,
+    )
+    base.update(kw)
+    return AcceptedWork(**base)  # type: ignore[arg-type]
 
 
 class TestPrincipal:
@@ -214,3 +263,158 @@ class TestSessionQuery:
     def test_unknown_and_principal_filters(self) -> None:
         assert SessionQuery.from_query({"creator": "unknown"}).matches(Principal.unknown(), ALICE)
         assert SessionQuery.from_query({"creator": BOB.id}).matches(BOB, ALICE)
+
+
+class TestStateMachine:
+    def test_every_state_has_a_row(self) -> None:
+        assert set(TRANSITIONS) == set(OperationState)
+
+    def test_terminal_states_have_no_exit(self) -> None:
+        for state in TERMINAL:
+            assert TRANSITIONS[state] == frozenset()
+
+    def test_rejected_only_from_submitted(self) -> None:
+        sources = {s for s, targets in TRANSITIONS.items() if OperationState.REJECTED in targets}
+        assert sources == {OperationState.SUBMITTED}
+
+    def test_queued_work_cannot_start_running_without_admission(self) -> None:
+        assert not is_legal_transition(OperationState.QUEUED, OperationState.RUNNING)
+
+    def test_running_work_cannot_become_cancelled_without_cancelling(self) -> None:
+        assert not is_legal_transition(OperationState.RUNNING, OperationState.CANCELLED)
+
+    def test_every_taskq_state_is_mapped(self) -> None:
+        assert set(TASKQ_STATE_MAP) == set(taskq_model.STATES)
+        for queue_state in taskq_model.TERMINAL:
+            assert TASKQ_STATE_MAP[queue_state] in TERMINAL
+
+    def test_accepted_work_never_holds_unaccepted_states(self) -> None:
+        for state in (OperationState.SUBMITTED, OperationState.REJECTED):
+            with pytest.raises(ContractError):
+                _work(state)
+
+    def test_advance_bumps_revision(self) -> None:
+        nxt = _work().advance(OperationState.ADMITTED, expected_revision=0)
+        assert (nxt.state, nxt.revision) == (OperationState.ADMITTED, 1)
+
+    def test_advance_refuses_stale_revision(self) -> None:
+        with pytest.raises(StaleRevision) as exc:
+            _work(revision=3).advance(OperationState.ADMITTED, expected_revision=2)
+        assert exc.value.code == "stale_revision"
+
+    def test_advance_refuses_illegal_transition(self) -> None:
+        with pytest.raises(InvalidTransition):
+            _work().advance(OperationState.COMPLETED, expected_revision=0)
+
+    def test_capacity_holding_states_are_not_terminal(self) -> None:
+        assert not CAPACITY_HOLDING & TERMINAL
+
+    def test_accepted_work_round_trip_and_extra(self) -> None:
+        work = _work(
+            OperationState.RUNNING,
+            reason=ReasonCode.CANCELLED_BY_USER,
+            runtime=RuntimeOwnershipRef(execution_id="e1", lease="l", tenancy_epoch=2),
+            extra={"lane_c_field": 1},
+        )
+        raw = work.to_dict()
+        assert raw["lane_c_field"] == 1
+        assert AcceptedWork.from_dict(raw) == work
+
+    def test_public_dict_hides_scope_and_lease(self) -> None:
+        public = _work(
+            runtime=RuntimeOwnershipRef(execution_id="e", lease="secret")
+        ).to_public_dict()
+        assert "scope" not in public and "runtime" not in public and "budget_key" not in public
+
+
+class TestAdmission:
+    def test_request_round_trip(self) -> None:
+        req = AdmissionRequest(
+            idempotency_key="key-00000001",
+            budget_key=ALICE.id,
+            session_key="chat-1",
+            operation=OperationKind.SUBAGENT,
+            submitted_at=1.0,
+            expires_at=2.0,
+            parent_execution_id="e0",
+        )
+        assert req.to_dict()["parent_execution_id"] == "e0"
+
+    def test_idempotency_scope_separates_principals_and_sessions(self) -> None:
+        a = idempotency_scope(ALICE.id, "s1", "key-00000001")
+        assert a != idempotency_scope(BOB.id, "s1", "key-00000001")
+        assert a != idempotency_scope(ALICE.id, "s2", "key-00000001")
+
+    @pytest.mark.parametrize("bad", ["short", "has space1234", "x" * 129])
+    def test_malformed_idempotency_key_refused(self, bad: str) -> None:
+        with pytest.raises(ContractError):
+            idempotency_scope(ALICE.id, "s", bad)
+
+    def test_expiry_before_submit_refused(self) -> None:
+        with pytest.raises(ContractError):
+            AdmissionRequest(
+                idempotency_key="key-00000001",
+                budget_key=ALICE.id,
+                session_key="s",
+                operation=OperationKind.CHAT_TURN,
+                submitted_at=2.0,
+                expires_at=1.0,
+            )
+
+    def test_capacity_round_trip_and_error_envelope(self) -> None:
+        cap = CapacityResponse(
+            principal=ScopeUsage(active=2, queued=1, active_limit=2, queue_limit=4),
+            crew=ScopeUsage(active=3, active_limit=8),
+            enforcement=EnforcementLevel.HARD,
+            limiting_scope=CapacityScope.PRINCIPAL,
+            reason=ReasonCode.PRINCIPAL_ACTIVE_LIMIT,
+            retry_after_seconds=5,
+        )
+        assert "eta" not in str(cap.to_dict())
+        body = error_body(ReasonCode.PRINCIPAL_ACTIVE_LIMIT, "busy", capacity=cap)
+        assert body["code"] == "principal_active_limit" and body["error"] == "busy"
+        assert http_status(ReasonCode.PRINCIPAL_ACTIVE_LIMIT) == 429
+        assert retry_after_header(cap) == {"Retry-After": "5"}
+        assert retry_after_header(None) == {}
+
+    def test_every_reason_has_an_http_status(self) -> None:
+        for reason in ReasonCode:
+            assert 400 <= http_status(reason) < 600
+
+
+class TestSharedDecision:
+    def _pending(self) -> SharedDecision:
+        return SharedDecision(
+            decision_id="d1",
+            kind=DecisionKind.APPROVAL,
+            session_key="chat-1",
+            state=DecisionState.PENDING,
+            revision=0,
+            initiator=ALICE,
+            created_at=1.0,
+        )
+
+    def test_first_response_wins_then_replay_then_conflict(self) -> None:
+        pending = self._pending()
+        assert classify_response(pending, "resp-1") is ResolveOutcome.WON
+        resolved = replace(
+            pending,
+            state=DecisionState.RESOLVED,
+            revision=1,
+            responder=BOB,
+            response_id="resp-1",
+            outcome="allow_once",
+            resolved_at=2.0,
+        )
+        assert classify_response(resolved, "resp-1") is ResolveOutcome.REPLAYED
+        assert classify_response(resolved, "resp-2") is ResolveOutcome.ALREADY_RESOLVED
+        assert SharedDecision.from_dict(resolved.to_dict()) == resolved
+        assert resolved.to_public_dict()["responder"]["id"] == BOB.id
+
+    def test_resolved_without_responder_refused(self) -> None:
+        with pytest.raises(ContractError):
+            replace(self._pending(), state=DecisionState.RESOLVED)
+
+    def test_expired_is_not_pending(self) -> None:
+        expired = replace(self._pending(), state=DecisionState.EXPIRED)
+        assert classify_response(expired, "r") is ResolveOutcome.NOT_PENDING

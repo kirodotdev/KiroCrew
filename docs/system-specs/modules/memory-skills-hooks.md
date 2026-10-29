@@ -3587,9 +3587,15 @@ a dedup, `kept_stored_clause` for the one `unchanged` case that is not a byte-id
 re-submit), plus `superseded` — the rules this call DELETED. The outcome vocabulary is
 shared with `LessonStore.save_or_enrich()`, which already returned the first three
 words, so both stores describe the same events the same way — but only the vocabulary is
-shared, not the dedup policy: the JSONL store matches on exact rule text plus scope and
-has no rule that supersedes, so it keeps both a general rule and the narrower rule
-containing it.
+shared, not the dedup policy: the JSONL store matches on exact rule text plus scope, so it
+keeps both a general rule and the narrower rule containing it. Its one supersede rule is
+for preferences: an explicit `save_or_enrich()` insert of a `preference` lesson replaces
+the stored `preference` lessons in the same scope whose keywords overlap it by at least
+half of the larger set (the vector store's topic-overlap rule, `lesson_keywords`), so two
+contradicting preferences are never both in effect (newest wins). A finding (`on_topic`)
+never replaces a standing or unstated row. The automatic writers (`save()`) never
+supersede. The replaced rule texts reach the caller through `superseded_out` and the
+route reports them as `superseded`, the same as a vector-store supersede.
 
 The distinction matters because two outcomes mean "your lesson did not land"
 (`refused`, `deduped`) while two mean "your lesson is fine, there was nothing to do"
@@ -3643,6 +3649,18 @@ The dashboard Memory tab clears its draft and refreshes the list only for `inser
 or `enriched`; `unchanged` clears the draft but reports that it was already stored,
 while `deduped` and `refused` preserve the draft and surface the reason so it can be
 reworded instead of presenting a rejected write as success.
+
+**Who wrote a lesson.** `POST /api/lessons` derives the writer on the server
+(`shared_crew.memory_changes.writer_principal`): the verified actor of a person's own
+dashboard request, else the author of the latest user turn in the calling session (the
+turn whose agent called `learn_add`), else no one. A known writer is stored on the row as
+`written_by` (`{id, kind, name}`, no issuer, subject or login) by both stores; an
+exact-rule enrichment names the person who changed it last. A row with no writer, which
+every lesson written before this field carries, keeps its old shape and reads as before.
+The field is a label; no read path gates on it. The size gate measures it at its
+serialized size, so it never shrinks the rule capacity. A write that superseded lessons
+is audited and, in a shared Crew, announced (see Shared Crew,
+[Memory changes](shared-crew.md#memory-changes)).
 
 **Write sources**:
 1. **`learn_add` MCP tool** (immediate): user says "remember X" → LLM calls tool → `POST /api/lessons` → `write_lesson()`

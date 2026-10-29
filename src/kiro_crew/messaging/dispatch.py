@@ -493,7 +493,7 @@ class ChannelTurns:
         grant = None if guest else self._approvals.grant
         effective_decider = decider if asker.can_prompt else None
         session_key = asker.session_key
-        return await self._run(
+        return await self._run_admitted(
             asker,
             text,
             renderer,
@@ -606,6 +606,14 @@ class ChannelTurns:
             )
         except Exception:
             logger.debug("%s: success audit failed", channel, exc_info=True)
+
+    async def _run_admitted(
+        self, asker: Asker, text: str, source: RendererSource, **kwargs: Any
+    ) -> TurnOutcome:
+        """Run one turn through Shared Crew fair admission; :meth:`_run` while it is off."""
+        from kiro_crew.messaging.channel_fair_admission import run_admitted
+
+        return await run_admitted(self, asker, text, source, **kwargs)
 
     async def _run(
         self,
@@ -1450,7 +1458,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         surface=turn.after_persist,
         restricted=_restricted,
     )
-    await turns._run(
+    await turns._run_admitted(
         Asker(
             turn.session_key,
             turn.conversation_id,

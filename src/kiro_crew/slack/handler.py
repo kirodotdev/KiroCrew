@@ -296,6 +296,9 @@ from kiro_crew.slack.handler_runtime.delivery import (  # noqa: F401
 from kiro_crew.slack.handler_runtime.dispatch import (  # noqa: F401
     _dispatch_before_turn,
     _handle_sessions_command,
+    _is_bang_command,
+    _is_control_message,
+    _message_command_text,
     maybe_handle_keyword_command,
 )
 from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
@@ -937,6 +940,19 @@ async def handle_message(
     attachment files the original text refers to -- their cleanup runs when the
     OUTER call's task ends, after this nested call has returned.
     """
+    # Shared Crew fair admission: with it on, a model message re-enters this
+    # handler inside its admitted run. Control commands keep their sender gates.
+    _sc_args = dict(locals())
+    from kiro_crew.shared_crew import turn_gate as _sc_turn_gate
+
+    if (
+        _compaction_replay is None
+        and not _is_control_message(text)
+        and not _sc_turn_gate.in_channel_turn()
+        and await _sc_turn_gate.admission_on()
+    ):
+        await _sc_turn_gate.run_slack_message(handle_message, _sc_args)
+        return
     Stats().inc_message_received()
     _t0 = time.monotonic()
     # reply_ts is the true Slack thread timestamp (used for posting replies and

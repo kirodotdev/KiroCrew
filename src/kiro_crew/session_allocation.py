@@ -1200,9 +1200,12 @@ class SessionAllocationService:
                 # Off this synchronous call, as ``wake_other_drains`` requires.
                 channels = [entry_channel(e[2]) for e in session.queue]
                 if any(channels):
-                    task = asyncio.ensure_future(
-                        wake_other_drains(waker="", session_key=key, channels=channels)
-                    )
+                    from kiro_crew.shared_crew.turn_gate import independent_turn
+
+                    with independent_turn():
+                        task = asyncio.ensure_future(
+                            wake_other_drains(waker="", session_key=key, channels=channels)
+                        )
                     self._owner._background_tasks.add(task)
                     task.add_done_callback(self._owner._background_tasks.discard)
 

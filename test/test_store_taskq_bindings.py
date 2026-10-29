@@ -127,11 +127,19 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "restamp_accepted_by": ("function", "b00a4740ad36", "store"),
     "run": ("coroutine", "73fb713b0e67", "store"),
     "state_of": ("function", "b76f80fb2e09", "store_reads"),
+    "storage_bytes": ("function", "898eb304ecf8", "store_work"),
+    "storage_charge": ("function", "431f7367ff03", "store_work"),
     "transition": ("function", "133959325b30", "store"),
     "update_wait": ("function", "233981a63998", "store_waits"),
     "waiting_rows": ("function", "ab9ff9d81fb7", "store_waits"),
     "wake_wait": ("function", "05452748d518", "store_waits"),
     "window": ("property", "fa6cfecd5574", "store"),
+    "work_by_scope": ("function", "a77debf4dcba", "store_work"),
+    "work_compare_and_set": ("function", "18dedc32d302", "store_work"),
+    "work_get": ("function", "730e45f2e0da", "store_work"),
+    "work_insert_or_get": ("function", "c97b5dd8ed08", "store_work"),
+    "work_purge": ("function", "5bad78d2e1c5", "store_work"),
+    "work_rows": ("function", "f26ed91926c1", "store_work"),
 }
 
 #: Every module-level name the one-module ``store.py`` bound. The facade still binds each.
@@ -641,7 +649,7 @@ def test_an_owner_that_logs_uses_the_store_logger(owner: str) -> None:
 #: Every class an owner defines -> the ``__module__`` it carries. ``TaskStoreUnavailable``
 #: keeps the facade's name, because a traceback and ``subagent._describe_exception`` render
 #: a raised class as ``module.qualname``.
-_CLASS_MODULES = {"TaskStoreUnavailable": _FACADE}
+_CLASS_MODULES = {"TaskStoreUnavailable": _FACADE, "WorkRow": "kiro_crew.taskq.store_work"}
 
 
 def test_each_class_an_owner_defines_carries_its_frozen_module() -> None:

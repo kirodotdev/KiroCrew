@@ -258,7 +258,19 @@ async def test_app_on_its_own_slot_keeps_agent_and_theme_writes(state) -> None:
 #: app's send never creates a user slot). A settings-bearing field names a value
 #: the slot keeps; the sample is one that would change ``_user_slot``.
 _TURN_ONLY_BODY_KEYS = frozenset(
-    {"message", "slot", "meta", "steer", "memory_mode", "mode", "responsive"}
+    {
+        "message",
+        "slot",
+        "meta",
+        "steer",
+        "memory_mode",
+        "mode",
+        "responsive",
+        # First submit wins: the revision the send is based on, and Send now
+        # (which only turns steering off). Neither changes a slot setting.
+        "base_revision",
+        "send_now",
+    }
 )
 _SETTINGS_BODY_KEYS: dict[str, object] = {
     "agent": "researcher",

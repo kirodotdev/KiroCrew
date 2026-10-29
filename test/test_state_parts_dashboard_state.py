@@ -589,7 +589,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, ask_id: 'str', answers: 'dict[str, str] | None', *, reason: 'str "
-        "| None' = None) -> 'bool'",
+        "| None' = None, responder: 'Any' = None, response_id: 'str' = '') -> 'bool'",
     ),
     "resolve_skill_review_notifications": (
         "function",

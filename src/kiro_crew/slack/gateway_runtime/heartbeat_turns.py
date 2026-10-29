@@ -340,9 +340,26 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
         except Exception:
             logger.warning("Heartbeat: cycle-end recycle failed", exc_info=True)
 
+    async def _admitted_heartbeat_task(task_text: str, deliver: str) -> str | None:
+        # Shared Crew fair admission: a heartbeat is Crew automation. A refused
+        # task is skipped this beat (None, like a task that produced nothing).
+        from kiro_crew.shared_crew.admission import OperationKind
+        from kiro_crew.shared_crew.turn_gate import run_admitted
+
+        return await run_admitted(
+            _heartbeat_task(task_text, deliver),
+            session_key=HEARTBEAT_KEY,
+            text=task_text,
+            automation=True,
+            operation=OperationKind.BACKGROUND,
+            refused=lambda reason: logger.info(
+                "Heartbeat task skipped by fair admission (%s)", getattr(reason, "value", reason)
+            ),
+        )
+
     self.heartbeat_svc = HeartbeatService(
         memory=memory,
-        on_task=_heartbeat_task,
+        on_task=_admitted_heartbeat_task,
         consolidator=self.consolidator,
         on_cycle_end=_on_cycle_end,
     )

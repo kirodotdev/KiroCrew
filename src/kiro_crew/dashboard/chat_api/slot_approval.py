@@ -844,6 +844,16 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     action = body.get("action", "rejected")
     original_action = action
     request_id = body.get("request_id", "")
+    # ``response_id`` names this one click, so a retry of it replays the same
+    # outcome and a different collaborator's late click gets the winner back.
+    # Imported here: owner functions run on the handlers module's globals.
+    from kiro_crew.shared_crew import decisions as shared_decisions
+
+    response_id, response_id_ok = shared_decisions.read_response_id(body)
+    if not response_id_ok:
+        return web.json_response(
+            {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
+        )
     if request_app and original_action == "yolo":
         return _deny_app_yolo(request_app, "tool_approval:yolo")
     # A FRESH grant read: the body upload above can take long enough for the
@@ -882,6 +892,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             or native_future.done()
             or slot.approval_instance(request_id) != request_mid
         ):
+            settled = shared_decisions.settled_reply(
+                state,
+                slot.key,
+                request_id,
+                response_id,
+                shared_decisions.request_principal(request),
+            )
+            if settled is not None:
+                return shared_decisions.respond(settled)
             return web.json_response(
                 {"error": "no pending approval", "code": "approval_not_pending"}, status=404
             )
@@ -1118,10 +1137,36 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # the cross-slot approval the session-identity owner scan above prevents.
         # State-level futures have no per-slot trust semantics, so the bool
         # coercion loses nothing.
-        if not strict_native and request_id and state.resolve_state_approval(request_id, approved):
-            return web.json_response({"ok": True})
+        if not strict_native and request_id:
+            state_reply = shared_decisions.resolve_state_approval(
+                state, request, request_id, approved, resolved, response_id
+            )
+            if state_reply is not None:
+                return shared_decisions.respond(state_reply)
+        settled = shared_decisions.settled_reply(
+            state,
+            slot.key,
+            request_id,
+            response_id,
+            shared_decisions.request_principal(request),
+        )
+        if settled is not None:
+            return shared_decisions.respond(settled)
         return web.json_response({"error": "no pending approval"}, status=404)
-    fut.set_result(resolved)
+    if request_id:
+        resolution = shared_decisions.resolve_slot_approval(
+            state, request, owner, request_id, fut, resolved, response_id
+        )
+        if not resolution.applied:
+            lost = shared_decisions.lost_race_reply(resolution, response_id)
+            if lost is not None:
+                return shared_decisions.respond(lost)
+            return web.json_response(
+                {"error": "no pending approval", "code": "approval_not_pending"}, status=404
+            )
+    else:
+        fut.set_result(resolved)
+        resolution = None
     # Persist resolved state into the permission message so it survives tab
     # switches — on the owner slot, whose messages hold the permission card.
     # Flagging the slot dirty is required for it to survive a RESTART too: the
@@ -1149,6 +1194,8 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 "slot": owner.key,
             },
         )
+    if resolution is not None and resolution.decision is not None:
+        shared_decisions.broadcast_decision(state, resolution.decision)
     state.push_slots_update()
     # SEL audit (best-effort — must not block the UI-unblocking path above)
     try:
@@ -1160,4 +1207,6 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         )
     except Exception:
         logger.warning("SEL audit failed for approval %s", request_id, exc_info=True)
+    if resolution is not None and resolution.decision is not None:
+        return web.json_response({"ok": True, "decision": resolution.decision.to_public_dict()})
     return web.json_response({"ok": True})

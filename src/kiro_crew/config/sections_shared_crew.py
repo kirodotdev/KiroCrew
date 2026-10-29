@@ -37,7 +37,6 @@ class SharedCrewConfig:
         default=False,
         metadata=_meta(
             "Fair Admission",
-            "Not active in this build yet. "
             "Charge every turn, subagent, task, workflow and cron run to the person "
             "who started it, and admit work through per-person and Crew-wide limits "
             "with a fair queue. Off by default: a single-operator Crew keeps its "
@@ -48,7 +47,6 @@ class SharedCrewConfig:
         default=4,
         metadata=_meta(
             "Active Work Per Person",
-            "Not active in this build yet. "
             "Root executions (turns, tasks, workflows, cron runs) one person may run "
             "at once, across all tabs, devices and sessions.",
         ),
@@ -57,7 +55,6 @@ class SharedCrewConfig:
         default=0,
         metadata=_meta(
             "Active Work Crew-Wide",
-            "Not active in this build yet. "
             "Root executions the whole Crew runs at once. 0 uses the session start "
             "gate's automatic width for this host.",
         ),
@@ -66,7 +63,6 @@ class SharedCrewConfig:
         default=True,
         metadata=_meta(
             "Per-Person Slices",
-            "Not active in this build yet. "
             "While fair admission is on, start each person's agent runtimes in that "
             "person's own systemd slice so their CPU, memory and process counts are "
             "bounded together. Linux with cgroup v2 delegation only.",
@@ -76,7 +72,6 @@ class SharedCrewConfig:
         default=False,
         metadata=_meta(
             "Require Enforced Limits",
-            "Not active in this build yet. "
             "Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable "
             "user bus, or memory and pids delegation is missing, instead of running "
             "without per-person limits. Needs fair admission on: with fair admission "
@@ -116,7 +111,6 @@ class SharedCrewConfig:
         default=10,
         metadata=_meta(
             "Typing Lock Idle Window",
-            "Not active in this build yet. "
             "Seconds a collaborator may pause typing before the other collaborators' "
             "composers unlock. While someone types in a shared session, everyone "
             "else's composer is read-only until that person sends, clears the "
@@ -245,6 +239,31 @@ def effective_limits(cfg: SharedCrewConfig, *, auto_crew_concurrency: int) -> Ef
     )
 
 
+def load_shared_crew_config() -> SharedCrewConfig:
+    """Read the effective ``dashboard.shared_crew`` section. Synchronous file I/O."""
+    import json
+
+    from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+    from kiro_crew.config.resolution import _deep_merge
+
+    raw: dict[str, Any] = {}
+    for path in (config_path(), config_local_path()):
+        try:
+            document = json.loads(read_config_text(path))
+        except FileNotFoundError:
+            continue
+        if not isinstance(document, dict):
+            raise ValueError("config must be an object")
+        raw = _deep_merge(raw, document)
+    dashboard = raw.get("dashboard", {})
+    if not isinstance(dashboard, dict):
+        raise ValueError("dashboard must be an object")
+    section = dashboard.get("shared_crew", {})
+    if not isinstance(section, dict):
+        raise ValueError("dashboard.shared_crew must be an object")
+    return shared_crew_config_from(section)
+
+
 __all__ = [
     "EffectiveLimits",
     "SHARED_CREW_BOUNDS",
@@ -252,5 +271,6 @@ __all__ = [
     "SHARED_CREW_FLAGS",
     "SharedCrewConfig",
     "effective_limits",
+    "load_shared_crew_config",
     "shared_crew_config_from",
 ]

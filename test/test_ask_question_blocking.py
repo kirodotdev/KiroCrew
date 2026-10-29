@@ -667,8 +667,10 @@ class _HandlerState(_State):
     def withdraw_agent_ask(self, ask_id, session_key):
         return QuestionCoordinator.withdraw_agent_ask(self, ask_id, session_key)
 
-    def resolve_question(self, ask_id, answers, *, reason=None):
-        return QuestionCoordinator.resolve(self, ask_id, answers, reason=reason)
+    def resolve_question(self, ask_id, answers, *, reason=None, responder=None, response_id=""):
+        return QuestionCoordinator.resolve(
+            self, ask_id, answers, reason=reason, responder=responder, response_id=response_id
+        )
 
 
 def _request(st, body, *, session=SK, internal=True, ask_id=None):

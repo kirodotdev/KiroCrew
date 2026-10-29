@@ -517,6 +517,7 @@ class _TurnExit:
         "outcome",
         "reached_provider",
         "responsive_owner",
+        "stop_reason",
         "turn_id",
     )
 
@@ -531,6 +532,8 @@ class _TurnExit:
         self.outcome: _TurnOutcome | None = None
         self.reached_provider = False
         self.responsive_owner: Any = None
+        # The terminal event's stop reason; None while the turn reached none.
+        self.stop_reason: str | None = None
 
 
 async def _end_turn_tail(

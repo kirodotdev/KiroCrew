@@ -473,7 +473,58 @@ def _turn_target(status: dict, provisioner_id: str = "") -> str:
 
 
 async def api_crew_turn(request: web.Request) -> web.StreamResponse:
-    """POST /api/instances/{id}/crew-turn — one turn against a headless crew.
+    """POST /api/instances/{id}/crew-turn, admitted by Shared Crew fair admission.
+
+    The route's own gates (the instances guard, owner-only) run first. The
+    forwarded turn is model work run on the caller's behalf, so it is then
+    charged to the caller like a chat send and holds a slot until the crew's
+    answer was forwarded. A refusal answers the dashboard's coded 429/503
+    envelope and sends nothing to the crew.
+    """
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers_instances import _guard
+    from kiro_crew.shared_crew.admission import OperationKind, ReasonCode, error_body, http_status
+    from kiro_crew.shared_crew.admission_gate import (
+        TASK_STORE_UNAVAILABLE_CODE,
+        Admission,
+        actor_budget,
+        coded_json_response,
+    )
+    from kiro_crew.shared_crew.turn_gate import capacity_note, run_admitted
+
+    denied = _guard(request, "crew_turn")
+    if denied is not None:
+        return denied
+    # Owner-only, the same bar as the proxy and the capability reads: this runs
+    # with the owner's AWS credentials and sends the crew's control secret, so an
+    # authenticated non-owner (a Slack-minted dashboard subject) must not reach it.
+    if not is_owner_dashboard_request(request):
+        _audit(_AUDIT_OP, "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew chat is owner-only")
+
+    refusal: list[ReasonCode | str | None] = []
+    response = await run_admitted(
+        _crew_turn(request),
+        session_key=f"remote:{request.match_info.get('id', '')}",
+        budget_key=actor_budget(request),
+        operation=OperationKind.REMOTE,
+        refused=refusal.append,
+    )
+    if response is not None:
+        return response
+    why = refusal[0] if refusal else None
+    if why == TASK_STORE_UNAVAILABLE_CODE:
+        unavailable = Admission(None, "rejected", store_unavailable=True)
+        return coded_json_response(unavailable.refusal_body(), status=unavailable.refusal_status())
+    reason = why if isinstance(why, ReasonCode) else ReasonCode.CREW_ACTIVE_LIMIT
+    return coded_json_response(
+        error_body(reason, capacity_note(reason)), status=http_status(reason)
+    )
+
+
+async def _crew_turn(request: web.Request) -> web.StreamResponse:
+    """One turn against a headless crew.
 
     Body: ``{"thread": "<id>", "message": "<text>", "stream": <bool>}``.
 
@@ -487,19 +538,7 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
     OpenAI-shaped chunks. The relay is deliberately thin -- it re-frames nothing
     and interprets nothing -- so a caller reads what the crew said.
     """
-    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-    from kiro_crew.dashboard.handlers_instances import _guard, _registry, _status_for
-
-    denied = _guard(request, "crew_turn")
-    if denied is not None:
-        return denied
-    # Owner-only, the same bar as the proxy and the capability reads: this runs
-    # with the owner's AWS credentials and sends the crew's control secret, so an
-    # authenticated non-owner (a Slack-minted dashboard subject) must not reach it.
-    if not is_owner_dashboard_request(request):
-        _audit(_AUDIT_OP, "denied", error="non-owner identity rejected")
-        return _owner_denial_response(request, "remote-crew chat is owner-only")
+    from kiro_crew.dashboard.handlers_instances import _registry, _status_for
 
     state: "DashboardState" = request.app["state"]
     instance_id = request.match_info.get("id", "")

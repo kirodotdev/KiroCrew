@@ -53,6 +53,7 @@ def test_registrar_tuple_is_explicit_and_not_alphabetical() -> None:
         "taskrunner",
         "connections",
         "system",
+        "shared_crew",
     )
     assert list(routes_pkg.REGISTRAR_NAMES) != sorted(routes_pkg.REGISTRAR_NAMES), (
         "the registrar order must stay the table's original order, not alphabetical"
@@ -195,6 +196,30 @@ async def test_route_table_ordering_invariants(tmp_path: Path, monkeypatch: Any)
                 )
     assert pattern_hits == [], (
         "patterns registered after a different matching pattern:\n" + "\n".join(pattern_hits)
+    )
+
+
+def test_shared_crew_slice_matches_each_lane_registrar() -> None:
+    """The slice's literal Shared Crew routes are exactly what each module registers."""
+    from aiohttp import web
+
+    from kiro_crew.dashboard.routes import shared_crew
+    from kiro_crew.shared_crew import routes_admission, routes_capabilities, routes_collab
+
+    def table(*registrars: Any) -> list[tuple[str, str, Any]]:
+        app = web.Application()
+        for register in registrars:
+            register(app)
+        return [
+            (route.method, route.resource.canonical, route.handler)
+            for route in app.router.routes()
+            if route.resource is not None
+        ]
+
+    assert table(shared_crew.register) == table(
+        routes_admission.register,
+        routes_collab.register,
+        routes_capabilities.register,
     )
 
 

@@ -4364,7 +4364,9 @@ the issue time. The wire format and the verifier's steps are in
 4. `none` for every other request.
 
 The proxy strips any caller-sent `X-KiroCrew-Proxy` and `X-KiroCrew-Principal`
-for every app, opted in or not, so a backend sees only the gateway's values. An
+for every app, opted in or not, so a backend sees only the gateway's values. It
+also drops every relay identity header (`x-kiro-relay-*`, matched by prefix in any
+case), so no backend receives one. An
 app that does not opt in receives no principal header. A
 signer refusal returns 502 `proxy_principal_sign_failed` rather than forwarding
 an opted-in request without its claim.

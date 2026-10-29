@@ -402,6 +402,14 @@ async def api_spawn(request: web.Request) -> web.Response:
         batch_total = max(0, min(body_int(body.get("batch_total", 0) or 0), 1000))
     except (TypeError, ValueError):
         batch_total = 0
+    # Fair admission (Shared Crew): a child of whatever runs in the parent
+    # session, charged to that work's initiator. Refused before the manager
+    # counts the submission, so the refusal carries no ``counted``.
+    from kiro_crew.shared_crew.admission_entry import admit_subagent
+
+    child_admission = await admit_subagent(request, state, parent_session)
+    if child_admission.rejected:
+        return child_admission.refusal_response()
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
@@ -432,6 +440,10 @@ async def api_spawn(request: web.Request) -> web.Response:
         _parent_spawn_policy=parent_spawn_policy,
         _parent_project_dirs=parent_dirs,
     )
+    if not info or (info.done and info.error):
+        await child_admission.abandon()
+    else:
+        await child_admission.attach_child(info.id, session_key=f"subagent:{info.id}")
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
         # refused for capacity — tell the client so it does NOT reconcile
@@ -665,6 +677,11 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     # `continue_conversation` is synchronous. Doing it here keeps the gateway
     # responsive even when the recorded path lives on a stalled mount.
     resumed_cwd = await asyncio.to_thread(state.subagents.recorded_cwd, conv_id)
+    from kiro_crew.shared_crew.admission_entry import admit_subagent
+
+    child_admission = await admit_subagent(request, state, parent_session)
+    if child_admission.rejected:
+        return child_admission.refusal_response()
     info = await _continue_on_loop(
         state,
         conv_id,
@@ -676,6 +693,16 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         cwd=resumed_cwd,
         _memory_mode=admitted_mode,
     )
+    if not info or (info.done and info.error):
+        await child_admission.abandon()
+    else:
+        # A continuation runs on its conversation's session key
+        # (``subagent:<original-id>``), so that is the key its nested spawns name.
+        await child_admission.attach_child(
+            info.id,
+            session_key=getattr(info, "conversation_key", "") or f"subagent:{info.id}",
+            also=(f"subagent:{info.id}",),
+        )
     if not info:
         return web.json_response(
             {

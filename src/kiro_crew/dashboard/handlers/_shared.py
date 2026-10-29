@@ -86,6 +86,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _store_name,
         _store_tier_lock,
         _store_unavailable,
+        lesson_store_owner_only,
         markdown_memory_for_store,
         memory_startup_refusal,
         release_markdown_memory_store,

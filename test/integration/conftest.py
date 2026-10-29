@@ -832,6 +832,10 @@ def _reset_home_bound_globals() -> None:
         with contextlib.suppress(Exception):
             live_nudge.stop()
         autonudge._INSTANCE = None
+    # Shared crew: the boot's admission host hooks.
+    from kiro_crew.shared_crew import admission_gate as shared_crew_admission
+
+    shared_crew_admission.install_host_hooks(None)
 
 
 def home_bound_globals_are_clear() -> bool:

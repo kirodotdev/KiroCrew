@@ -89,7 +89,7 @@ async def _run_turn(
     reply_thread: int | None,
     interpret_commands: bool,
     drain: bool,
-) -> None:
+) -> bool:
     """Run one model turn for a message ``handle_message`` admitted, then drain.
 
     By here the message has passed governance, admission and activation, is
@@ -288,7 +288,7 @@ async def _run_turn(
         # reached the mention gate.
         text = frame_reply_context_for_message(msg, text, session_key=session_key)
         if not text:
-            return
+            return False
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
         await facade.publish_turn_identity(self.sessions, session_key)
@@ -713,6 +713,7 @@ async def _run_turn(
     # necessarily the person who queued during it.
     if drain:
         await self._drain_queue(session_key)
+    return True
 
 
 def _persist_turn(

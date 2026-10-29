@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -453,6 +454,89 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             len(entries),
         )
     return entries
+
+
+async def drain_restored_parked_sends(state: Any) -> None:
+    """Resume accepted parked sends after slot restore, through the ordinary drain.
+
+    Ordinary restored cards still wait for a person. A durable parked work row
+    proves this card was accepted for dispatch; it grants no authority to its
+    restored metadata. The drain revalidates containment and admits it afresh.
+    """
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.shared_crew import admission_gate, host_hooks
+    from kiro_crew.shared_crew.admission import OperationState, ReasonCode
+    from kiro_crew.shared_crew.admission_entry import queued_work_ids
+
+    service = admission_gate.installed_service()
+    if service is None or not service.enabled:
+        return
+    await service.ensure_ready()
+    await host_hooks.deliver_owed_notes(state)
+    accepted: dict[str, frozenset[str]] = {}
+    for slot in list(state._slots.values()):
+        queue_ids: set[str] = set()
+        for entry in list(slot._queue):
+            if not entry.get(RESTORED_QUEUE_KEY):
+                continue
+            for work_id in queued_work_ids([entry]):
+                work = await service.current_work(work_id)
+                if (
+                    work is not None
+                    and work.session_key == effective_session_key(slot)
+                    and work.extra.get(admission_gate.PARKED_KEY)
+                    and work.runtime is None
+                    and work.state is OperationState.CANCELLED
+                    and work.reason in (None, ReasonCode.CANCELLED_BY_USER)
+                ):
+                    queue_ids.add(entry["id"])
+                    break
+        if queue_ids:
+            accepted[slot.key] = frozenset(queue_ids)
+    from kiro_crew.dashboard.chat_runner import _RESTORED_DRAIN_IDS
+    from kiro_crew.memory_startup import memory_startup_preparing
+
+    token = _RESTORED_DRAIN_IDS.set(accepted)
+    try:
+        keys = list(accepted)
+        memory_task = state.memory_startup_task
+        if keys and (
+            (memory_task is None and memory_startup_preparing())
+            or (memory_task is not None and not memory_task.done())
+        ):
+            task = asyncio.create_task(_drain_after_memory_task_publication(state, keys))
+            state._background_tasks.add(task)
+            task.add_done_callback(state._background_tasks.discard)
+        else:
+            await _drain_parked_queues(state, keys)
+    finally:
+        _RESTORED_DRAIN_IDS.reset(token)
+
+
+# Startup publishes the memory task after restoring slots; there is no event for that assignment.
+_MEMORY_TASK_POLL_SECONDS = 0.1
+
+
+async def _drain_after_memory_task_publication(state: Any, keys: list[str]) -> None:
+    """Hand restored sends to the ordinary memory wait once startup publishes its task."""
+    from kiro_crew import shutdown_event
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+    from kiro_crew.memory_startup import memory_startup_preparing
+
+    while state.memory_startup_task is None and memory_startup_preparing():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=_MEMORY_TASK_POLL_SECONDS)
+            return
+        except asyncio.TimeoutError:
+            pass
+    if state.memory_startup_task is not None:
+        try:
+            await asyncio.shield(state.memory_startup_task)
+        except Exception:
+            logger.warning("Memory preparation failed; restored sends remain queued", exc_info=True)
+            return
+    await _drain_parked_queues(state, keys)
 
 
 def _delivery_key(content: str) -> str:

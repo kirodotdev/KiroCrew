@@ -28,6 +28,7 @@ from kiro_crew.security.readonly_bash import (
     is_read_only_bash,
     unsafe_bash_reason,
 )
+from kiro_crew.shared_crew.decisions import open_slot_approval, settle_slot_approval
 from kiro_crew.slack.handler import resolve_linked_approval
 from kiro_crew.trust_patterns import approval_command, approval_display_command
 from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
@@ -280,6 +281,9 @@ async def _on_permission_prompt(
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str] = loop.create_future()
     slot.register_approval(str(event.request_id), fut, permission_row)
+    _decision_id = (
+        "" if "resolved" in perm_meta else open_slot_approval(state, slot, str(event.request_id))
+    )
     # Push via global SSE AFTER registering the future, so the
     # slot dict reflects pending_approval=true and Board cards
     # move into the Blocked lane without a browser refresh.
@@ -551,6 +555,8 @@ async def _on_permission_prompt(
             except Exception:
                 logger.debug("Failed to render approval card", exc_info=True)
         _owns_approval = slot.unregister_approval(str(event.request_id), fut)
+        if _owns_approval and _decision_id:
+            settle_slot_approval(state, _decision_id, fut, withdrawn=_host_cancelled)
         # The decision is final here and nowhere earlier: every path
         # out of the await above converges on this ``finally`` -- the
         # human's answer, the window expiring, the no-budget decline,

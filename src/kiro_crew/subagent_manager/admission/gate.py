@@ -1497,11 +1497,14 @@ class _GateMixin(ManagerComponent):
             and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
         )
 
+        # Shared Crew: each run's runtime starts in its initiator's containment slice.
+        from kiro_crew.shared_crew.containment import start_run_task as _start_run_task
+
         if self._manager._is_yolo and self._manager._is_yolo():
-            self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
+            self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
         elif approval_mode == "auto":
-            self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
+            self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
             sel().log_tool_invocation(
                 session_key=info.parent_session_key,
@@ -1511,7 +1514,7 @@ class _GateMixin(ManagerComponent):
                 metadata={"subagent_id": agent_id, "reason": "approval_mode_auto"},
             )
         elif parent_trusted:
-            self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
+            self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
             sel().log_tool_invocation(
                 session_key=info.parent_session_key,
@@ -1522,7 +1525,7 @@ class _GateMixin(ManagerComponent):
             )
         elif self._manager._ctx_builder and self._manager._ctx_builder.hooks:
             if self._manager._ctx_builder.hooks.auto_approve_subagent_spawn is True:
-                self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
+                self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
                 self._manager._log_spawned(info)
                 sel().log_tool_invocation(
                     session_key=info.parent_session_key,

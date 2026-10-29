@@ -326,6 +326,98 @@ def _person_crew_worker_root(request: web.Request, state: Any, slot: Any, app: s
         return ""
 
 
+def _send_id_of(user_meta: dict | None) -> str:
+    return (normalize_send_id(user_meta.get("sendId")) or "") if user_meta else ""
+
+
+def _committed_if_accepted(request: web.Request, resp: Any, user_meta: dict | None) -> Any:
+    """Record the claimed send when *resp* accepted it; a refusal gives the claim back."""
+    from kiro_crew.shared_crew import send_race
+
+    if getattr(resp, "status", 500) < 400:
+        send_race.commit_request(request, message_id=_send_id_of(user_meta))
+    return resp
+
+
+def _composer_locked_answer(
+    request: web.Request, state: Any, slot: Any, steer: object
+) -> web.StreamResponse | None:
+    """409 ``composer_locked`` when someone else holds the session's typing lease.
+
+    Only a dashboard user's send is held: an app or automation send has no
+    composer and no lease. A steer into a running turn passes, so a locked
+    collaborator can still steer or stop the turn that is running.
+    """
+    if not request.get("is_dashboard_user", False):
+        return None
+    if steer and getattr(slot, "turn_running", False):
+        return None
+    from kiro_crew.shared_crew import typing_lease
+    from kiro_crew.shared_crew.identity import actor_of
+
+    body = typing_lease.refuse_if_locked(state, slot.key, actor_of(request).principal)
+    if body is None:
+        return None
+    return web.json_response(
+        {
+            "error": body["error"],
+            "code": body["code"],
+            "session_key": body["session_key"],
+            "holder": body["holder"],
+            "lease": body["lease"],
+        },
+        status=409,
+    )
+
+
+async def _settle_send_race(
+    request: web.Request, state: Any, slot: Any, body: dict, message: str
+) -> web.StreamResponse | None:
+    """Claim the session's next send revision for this send, or answer it.
+
+    None means the claim is granted and stored on the request: the branch that
+    records the send commits it, and the claim is given back when the request's
+    handler task ends without recording it (``send_race.Claim.owner``). A
+    lost race answers 409 ``send_race`` naming the winner; a retry of a send this
+    principal already won with answers that send and accepts nothing.
+    """
+    from kiro_crew.shared_crew import admission_entry, send_race
+    from kiro_crew.shared_crew.identity import actor_of
+
+    try:
+        base = send_race.base_revision_of(body.get("base_revision"))
+    except send_race.BaseRevisionError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_base_revision"}, status=400)
+    registry = send_race.send_race_for(state)
+    result = await registry.claim(
+        slot.key,
+        principal=actor_of(request).principal,
+        base_revision=base,
+        idempotency_key=admission_entry.explicit_idempotency_key(request),
+    )
+    if isinstance(result, send_race.Conflict):
+        lost = send_race.conflict_body(result, session_key=slot.key)
+        return web.json_response(
+            {
+                "error": lost["error"],
+                "code": lost["code"],
+                "session_key": lost["session_key"],
+                "current_revision": lost["current_revision"],
+                "winner": lost["winner"],
+            },
+            status=409,
+        )
+    if isinstance(result, send_race.Replay):
+        recorded = await admission_entry.chat_replay(
+            request, session_key=effective_session_key(slot), slot_key=slot.key, message=message
+        )
+        if recorded is not None:
+            return admission_entry.chat_replay_response(recorded, slot_key=slot.key)
+        return web.json_response(send_race.replay_body(result, slot_key=slot.key))
+    request[send_race.CLAIM_REQUEST_KEY] = result.claim
+    return None
+
+
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE.
 
@@ -416,7 +508,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # enters, so every downstream user of `user_meta` -- the dispatch row, the
         # busy-slot queue entry, the sub-agent hold -- is covered by one gate
         # rather than each remembering.
-        user_meta = {k: v for k, v in user_meta.items() if k not in RESERVED_ROW_META_KEYS}
+        # The message author is the server's to name (see the stamp below).
+        from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
+
+        user_meta = {
+            k: v
+            for k, v in user_meta.items()
+            if k not in RESERVED_ROW_META_KEYS and k != MESSAGE_AUTHOR_META_KEY
+        }
         # The whole-message quote is bounded HERE, once, for every path below:
         # the immediate row persists `user_meta` verbatim, so a bound applied
         # only where the queue paths read it would leave that row unbounded.
@@ -637,6 +736,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # send a turn and nothing else.
     may_configure = not request_app or bool(getattr(slot, "_app", ""))
     steer = body.get("steer") if may_configure else None
+    # Send now, after losing a send race, is a new submission that waits its turn
+    # like any send: it never steers a running turn.
+    if body.get("send_now") is True:
+        steer = None
     if not may_configure:
         # The dedicated agent route refuses an app on a slot it does not own, and
         # persona consent is the user's own grant from the consent modal. Refused
@@ -859,11 +962,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # No agent on slot, no agent in request — nothing to enforce.
         pass
 
-    if _send_writes_persona(body):
-        slot.color_theme = color_theme
-        slot.theme_consent = theme_consent
-        slot.theme_consent_sha = theme_consent_sha
-
     if not message:
         # One guard, above every dispatch branch. An empty wire text reaches
         # here only from programmatic callers (app tokens, curl, integrations)
@@ -912,6 +1010,27 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             )
         request[_CREW_PERSON_STEER] = (_crew_root, slot.key, message)
 
+    # The typing lease (Shared Crew): while another collaborator is typing in
+    # this session, a send from anyone else is refused with the typist named,
+    # and the sender keeps the draft. Steering a running turn is never refused.
+    _locked = _composer_locked_answer(request, state, slot, steer)
+    if _locked is not None:
+        return _locked
+
+    # First submit wins (Shared Crew): settle this send against the session's
+    # send revision before any branch can queue, steer or start it. A loser is
+    # refused here with the winner named, and its tab keeps the draft.
+    from kiro_crew.shared_crew import send_race as _send_race
+
+    _race_answer = await _settle_send_race(request, state, slot, body, message)
+    if _race_answer is not None:
+        return _race_answer
+
+    if _send_writes_persona(body):
+        slot.color_theme = color_theme
+        slot.theme_consent = theme_consent
+        slot.theme_consent_sha = theme_consent_sha
+
     from kiro_crew.dashboard import responsive_chat
 
     _responsive_eligible = False
@@ -928,7 +1047,21 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             ),
         )
         if _responsive_eligible and (not steer or not slot.turn_running):
-            return await responsive_chat.accept(request, slot, message, user_meta)
+            return _committed_if_accepted(
+                request, await responsive_chat.accept(request, slot, message, user_meta), user_meta
+            )
+
+    # Shared Crew: a retry under a key already accepted answers its recorded work
+    # and writes nothing (no row, no queue entry, no turn), whichever way the
+    # first send went, so a retry can never run a prompt twice.
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+    from kiro_crew.shared_crew import admission_entry as _sc_entry
+
+    _replay = await _sc_entry.chat_replay(
+        request, session_key=effective_session_key(slot), slot_key=slot.key, message=message
+    )
+    if _replay is not None:
+        return _sc_entry.chat_replay_response(_replay, slot_key=slot.key)
 
     if slot.turn_running or slot._turn_admission_reserved:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
@@ -969,7 +1102,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             if slot.task is not _turn_before:
                 _auto_queues = False
                 _auto_strip = None
-        if steer and not request_app and not _auto_queues:
+        # A turn still waiting for fair admission has not started: steering it would
+        # deliver this text outside admission, so the send queues instead.
+        from kiro_crew.shared_crew.admission_entry import admission_pending
+
+        _admission_pending = admission_pending(slot.key)
+        if steer and not request_app and not _auto_queues and not _admission_pending:
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -1017,14 +1155,20 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 # records, or a Stop drops); the RPC can return before either ran.
                 crew_steer_discarded(slot, message)
             if outcome == STEER_STEERED:
+                _send_race.commit_request(request, message_id=_send_id_of(user_meta))
                 return web.json_response({"ok": True, "steered": True})
             if outcome == STEER_REQUEUED:
                 # The turn's teardown moved it into the queue while the steer RPC
                 # was suspended — queueing again would deliver the same text twice.
+                _send_race.commit_request(request, message_id=_send_id_of(user_meta))
                 return web.json_response({"ok": True, "queued": True})
             if _responsive_eligible:
-                return await responsive_chat.accept(
-                    request, slot, message, user_meta, steer_first=False
+                return _committed_if_accepted(
+                    request,
+                    await responsive_chat.accept(
+                        request, slot, message, user_meta, steer_first=False
+                    ),
+                    user_meta,
                 )
             # steer requested but unavailable -> fall through to queue below.
         # Queue the message - return JSON immediately (no SSE needed).
@@ -1045,6 +1189,20 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # The attachment lists (`meta.files` / `meta.dirs`) ride the same way:
         # the renderer resolves `[attached_file N]` markers against them, and a
         # drained row without them truncates a spaced path at its first space.
+        # The server-derived author rides the entry to the drain, which writes
+        # it on the row and charges the drained turn to that person.
+        from kiro_crew.shared_crew.attribution import author_meta as _author_meta
+        from kiro_crew.shared_crew.identity import actor_of as _queued_actor_of
+
+        # Fair admission bounds the queued message like any other: the sender's
+        # and the Crew's queue depth and the request size, charged to the sender.
+        _queued_admission = await _sc_entry.admit_queued_send(
+            request, session_key=effective_session_key(slot), slot_key=slot.key, message=message
+        )
+        if _queued_admission.rejected:
+            return _queued_admission.refusal_response()
+        if _queued_admission.replayed:
+            return _sc_entry.chat_replay_response(_queued_admission, slot_key=slot.key)
         qid = queue_for_next_turn(
             state,
             slot,
@@ -1072,8 +1230,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # when this turn ends. An `auto` send Jev chose to queue is a real
             # queue and waits like one.
             steer_intent=bool(steer) and not request_app and not _auto_queues,
+            author=None if request_app else _author_meta(_queued_actor_of(request)),
         )
-        return web.json_response({"ok": True, "queued": True, "queue_id": qid})
+        _sc_entry.stamp_queued_work(slot, qid, _queued_admission)
+        _send_race.commit_request(request, message_id=qid)
+        if not _queued_admission.passthrough:
+            # The admission await may have outlived the running turn's handoff:
+            # the guarded drain starts the entry if the slot went idle meanwhile.
+            await _drain_parked_queues(state, [slot.key])
+        return web.json_response(
+            {"ok": True, "queued": True, "queue_id": qid},
+            headers=_sc_entry.admission_headers(_queued_admission),
+        )
 
     # Queue a message typed while background sub-agents are still running for
     # this slot. The slot.running queue path above covers the mid-turn case;
@@ -1100,6 +1268,15 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
+        # Same fair-admission bound as the busy-slot queue above.
+        _held_admission = await _sc_entry.admit_queued_send(
+            request, session_key=effective_session_key(slot), slot_key=slot.key, message=message
+        )
+        if _held_admission.rejected:
+            return _held_admission.refusal_response()
+        if _held_admission.replayed:
+            return _sc_entry.chat_replay_response(_held_admission, slot_key=slot.key)
+
         # Same entry-meta contract as the busy-slot branch: the client's `sendId`
         # and attachment lists ride on the queue entry so the drained row
         # carries them.
@@ -1116,11 +1293,21 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # the app winning as on the other two arms: a script cron's send is
             # `cron`, an app's is `app` whatever else the request carries.
             _hold_meta[TURN_ACTOR_META_KEY] = "app" if request_app else "cron"
+        else:
+            # The server-derived author rides the entry like the busy-slot
+            # branch's: the drain writes it on the row and charges the turn.
+            from kiro_crew.shared_crew.attribution import author_meta as _hold_author_meta
+            from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
+            from kiro_crew.shared_crew.identity import actor_of as _hold_actor_of
+
+            _hold_meta[MESSAGE_AUTHOR_META_KEY] = _hold_author_meta(_hold_actor_of(request))
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
             directive_user_origin=not bool(request_app),
         )
+        _sc_entry.stamp_queued_work(slot, qid, _held_admission)
+        _send_race.commit_request(request, message_id=qid)
         _redacted = queued_text_for_display(message, user_origin=not bool(request_app))
         warn_if_not_durable(slot._queue, qid, slot.key)
         # Start the durable write here too, not only in the busy-slot branch.
@@ -1148,6 +1335,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         state.broadcast_ws("queue_push", _hold_push)
         if _behind_parked:
             await _start_next_queued_turn(state, slot)
+        elif not _held_admission.passthrough:
+            # The admission await may have outlived the sub-agent hold.
+            await _drain_parked_queues(state, [slot.key])
         # Same receipt contract as the busy-slot queue branch: `queue_id` binds
         # the sender's pre-send composer state to this exact entry. An entry the
         # durable bounds refuse is reported in the log by the call above, not on
@@ -1176,6 +1366,41 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if refusal is not None:
         return refusal
 
+    # Fair admission (Shared Crew), charged to the initiator and decided before the
+    # user row is recorded, so a refusal leaves nothing behind. The reservation
+    # holds the slot across the await: a concurrent send queues behind this one.
+    from kiro_crew.shared_crew import admission_entry
+
+    _prior_reserved = slot._turn_admission_reserved
+    slot._turn_admission_reserved = True
+    try:
+        if admission_entry.admission_enforced():
+            # The session is on disk before its work is: a crash right after the
+            # accept cannot leave a work record for a session that is gone.
+            from kiro_crew.shared_crew.host_hooks import ensure_slot_recorded
+
+            if not await ensure_slot_recorded(state, slot):
+                from kiro_crew.shared_crew.admission_gate import Admission
+
+                slot._has_reader = False
+                return Admission(None, "rejected", store_unavailable=True).refusal_response()
+        turn_admission = await admission_entry.admit_chat_turn(
+            request,
+            session_key=effective_session_key(slot),
+            slot_key=slot.key,
+            message=message,
+            send_id=_send_id_of(user_meta),
+        )
+    finally:
+        slot._turn_admission_reserved = _prior_reserved
+    if turn_admission.rejected:
+        slot._has_reader = False
+        return turn_admission.refusal_response()
+    if turn_admission.replayed:
+        # A concurrent send under the same key was accepted first.
+        slot._has_reader = False
+        return admission_entry.chat_replay_response(turn_admission, slot_key=slot.key)
+
     # No per-message browse marker: browsing is a capability, not a per-turn
     # gate. The agent drives a browser by running `playwright-cli` shell
     # commands, so the capability is simply whether that binary is on PATH. The
@@ -1183,146 +1408,174 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # (the system prompt and the kirocrew-commands / web-browse skills tell it
     # how), so the backend injects nothing here.
 
-    # A slot created by this send binds to its member's private store BEFORE
-    # the user row is appended: a store failure then returns with nothing
-    # persisted, and the assignment snapshot (agent, project, workspace,
-    # session, message count) proves no other request rebound the slot while
-    # the store was being resolved.
-    if created_in_send:
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    # Until the runner is spawned, every exit still owes the accepted work a settlement.
+    turn_dispatched = False
+    _reserve_turn_admission = not request_app
+    try:
+        # A slot created by this send binds to its member's private store BEFORE
+        # the user row is appended: a store failure then returns with nothing
+        # persisted, and the assignment snapshot (agent, project, workspace,
+        # session, message count) proves no other request rebound the slot while
+        # the store was being resolved.
+        if created_in_send:
+            from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
-        if is_owner_dashboard_request(request):
-            async with slot._lock:
-                assignment = (
-                    slot.agent,
-                    slot.project,
-                    slot.workspace,
-                    effective_session_key(slot),
-                    len(slot.messages),
-                )
-                selection_change = None
-                try:
-                    cfg = await asyncio.to_thread(KiroCrewConfig.load)
-                    assigned_store = await pin_private_agent_store(
-                        state, assignment[3], assignment[0], cfg, memory_mode=slot.memory_mode
-                    )
-                    chosen = await asyncio.to_thread(
-                        resolve_agent_bindings,
-                        cfg,
-                        assignment[0],
-                        assignment[1] or None,
-                        validate_memory_files=False,
-                    )
-                    selection_change = await _record_explicit_agent_selection(
-                        assignment[3],
-                        assignment[0],
-                        chosen,
-                        config=cfg,
-                        memory_mode=slot.memory_mode,
-                        app=slot._app or "",
-                    )
-                except Exception as exc:
-                    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
-
-                    return _store_unavailable_response(slot.memory_store, exc)
-                if (
-                    state._slots.get(slot.key) is not slot
-                    or slot.running
-                    or assignment
-                    != (
+            if is_owner_dashboard_request(request):
+                async with slot._lock:
+                    assignment = (
                         slot.agent,
                         slot.project,
                         slot.workspace,
                         effective_session_key(slot),
                         len(slot.messages),
                     )
-                ):
-                    await drained_to_thread(
-                        restore_agent_selection, assignment[3], selection_change
-                    )
-                    return web.json_response(
-                        {
-                            "error": "Could not save the member assignment. Try again.",
-                            "code": "session_rebound",
-                        },
-                        status=409,
-                    )
-                if assigned_store:
-                    slot.memory_store = assigned_store
+                    selection_change = None
+                    try:
+                        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                        assigned_store = await pin_private_agent_store(
+                            state, assignment[3], assignment[0], cfg, memory_mode=slot.memory_mode
+                        )
+                        chosen = await asyncio.to_thread(
+                            resolve_agent_bindings,
+                            cfg,
+                            assignment[0],
+                            assignment[1] or None,
+                            validate_memory_files=False,
+                        )
+                        selection_change = await _record_explicit_agent_selection(
+                            assignment[3],
+                            assignment[0],
+                            chosen,
+                            config=cfg,
+                            memory_mode=slot.memory_mode,
+                            app=slot._app or "",
+                        )
+                    except Exception as exc:
+                        from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 
-    # A dashboard's busy snapshot can suppress its optimistic user bubble even
-    # when this send starts a turn. Echo correlated sends BEFORE starting the
-    # reply so every pane sees the user row in order, independently of when the
-    # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
-    # callers without a correlation id keep their existing delivery contract.
-    _user_row_meta = _redact_meta(user_meta) if user_meta else {}
-    if user_meta and not request_app and isinstance(user_meta.get("quote"), dict):
-        # The human's own quote record stays as typed, like the row's content
-        # it must byte-match (`_redact_meta_for_role` keeps the same rule on
-        # every later persist and emit); an app's was redacted at the bound.
-        _user_row_meta["quote"] = user_meta["quote"]
-    if not request_app:
-        # A PERSON typed this. Marked explicitly rather than inferred, because the
-        # row's role and presentation class cannot tell it apart from a turn the
-        # gateway drives on its own (see history.HUMAN_TURN_META_KEY). An app
-        # token reaches this same handler, so the marker rides the same
-        # app-origin signal as `user_origin` and `turn_actor` above: an app's
-        # send is not a human turn and must not advance the ranking stamp.
-        _user_row_meta[HUMAN_TURN_META_KEY] = True
-    else:
-        # The queued path stamps the same actor on its entry, which the drain
-        # unions onto the row; the title counter reads it off either row.
-        _user_row_meta[TURN_ACTOR_META_KEY] = "app"
-    _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
-    _user_mid = _user_row.get("meta", {}).get("mid")
-    if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
-        # Raw user content belongs on the per-client slot-authorized WS path.
-        # The global SSE queues have no slot gate. In-band sends keep
-        # their existing stream contract and must not gain an extra WS echo.
-        # An app's turn on a user's session always reaches the user's open tabs,
-        # whose composer never drew it.
-        state.broadcast_ws(
-            "chat_message",
-            chat_message_frame({**_user_row, "slot": slot.key}, include_metadata=True),
+                        return _store_unavailable_response(slot.memory_store, exc)
+                    if (
+                        state._slots.get(slot.key) is not slot
+                        or slot.running
+                        or assignment
+                        != (
+                            slot.agent,
+                            slot.project,
+                            slot.workspace,
+                            effective_session_key(slot),
+                            len(slot.messages),
+                        )
+                    ):
+                        await drained_to_thread(
+                            restore_agent_selection, assignment[3], selection_change
+                        )
+                        return web.json_response(
+                            {
+                                "error": "Could not save the member assignment. Try again.",
+                                "code": "session_rebound",
+                            },
+                            status=409,
+                        )
+                    if assigned_store:
+                        slot.memory_store = assigned_store
+
+        # A dashboard's busy snapshot can suppress its optimistic user bubble even
+        # when this send starts a turn. Echo correlated sends BEFORE starting the
+        # reply so every pane sees the user row in order, independently of when the
+        # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
+        # callers without a correlation id keep their existing delivery contract.
+        _user_row_meta = _redact_meta(user_meta) if user_meta else {}
+        if user_meta and not request_app and isinstance(user_meta.get("quote"), dict):
+            # The human's own quote record stays as typed, like the row's content
+            # it must byte-match (`_redact_meta_for_role` keeps the same rule on
+            # every later persist and emit); an app's was redacted at the bound.
+            _user_row_meta["quote"] = user_meta["quote"]
+        if not request_app:
+            # A PERSON typed this. Marked explicitly rather than inferred, because the
+            # row's role and presentation class cannot tell it apart from a turn the
+            # gateway drives on its own (see history.HUMAN_TURN_META_KEY). An app
+            # token reaches this same handler, so the marker rides the same
+            # app-origin signal as `user_origin` and `turn_actor` above: an app's
+            # send is not a human turn and must not advance the ranking stamp.
+            _user_row_meta[HUMAN_TURN_META_KEY] = True
+        else:
+            # The queued path stamps the same actor on its entry, which the drain
+            # unions onto the row; the title counter reads it off either row.
+            _user_row_meta[TURN_ACTOR_META_KEY] = "app"
+        # Shared Crew attribution: the server names the author from the actor the
+        # auth middleware published, never from the body, and the first accepted
+        # message of a never-stamped slot records its creator. Function-local
+        # because this module's functions run on the chat_handlers facade globals.
+        from kiro_crew.shared_crew.attribution import stamp_creator_if_fresh, stamp_message_author
+        from kiro_crew.shared_crew.audit import schedule_action_audit
+        from kiro_crew.shared_crew.contracts import ActionOutcome, ActionType
+        from kiro_crew.shared_crew.identity import actor_of
+
+        _actor = actor_of(request)
+        stamp_message_author(_user_row_meta, _actor)
+        stamp_creator_if_fresh(
+            slot,
+            _actor,
+            prior_user_turns=sum(1 for m in slot.messages if m.get("role") == "user"),
         )
+        _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
+        _send_race.commit_request(
+            request, message_id=str(_user_row.get("meta", {}).get("mid") or _send_id_of(user_meta))
+        )
+        schedule_action_audit(
+            ActionType.MESSAGE,
+            session_key=slot.key,
+            initiator=_actor,
+            outcome=ActionOutcome.ACCEPTED,
+            target=str(_user_row.get("meta", {}).get("mid") or ""),
+        )
+        _user_mid = _user_row.get("meta", {}).get("mid")
+        if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
+            # Raw user content belongs on the per-client slot-authorized WS path.
+            # The global SSE queues have no slot gate. In-band sends keep
+            # their existing stream contract and must not gain an extra WS echo.
+            # An app's turn on a user's session always reaches the user's open tabs,
+            # whose composer never drew it.
+            state.broadcast_ws(
+                "chat_message",
+                chat_message_frame({**_user_row, "slot": slot.key}, include_metadata=True),
+            )
 
-    # Note: untitled slots display as "New Session…" via _ChatSlot.display_title
-    # (serialization layer), so there's no bare chat-N flash to patch here. The
-    # LLM titling is kicked off below, before _run_chat.
+        # Note: untitled slots display as "New Session…" via _ChatSlot.display_title
+        # (serialization layer), so there's no bare chat-N flash to patch here. The
+        # LLM titling is kicked off below, before _run_chat.
 
-    # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
-    responsive_chat.notify_user_input(request, slot)
+        # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
+        responsive_chat.notify_user_input(request, slot)
 
-    # Drain stale pending messages from previous turns that completed
-    # after their SSE reader disconnected. Must happen BEFORE _run_chat
-    # so we don't discard the new turn's output.
-    slot.drain()
+        # Drain stale pending messages from previous turns that completed
+        # after their SSE reader disconnected. Must happen BEFORE _run_chat
+        # so we don't discard the new turn's output.
+        slot.drain()
 
-    # Kick off LLM titling now, from the first user message, so the title lands
-    # *during* the first turn instead of waiting for the whole response to
-    # finish (chat_done). Runs on an isolated background kiro-cli session
-    # concurrent with the turn. No-ops once titled / in-flight; the instant
-    # 60-char provisional stays as the fallback if the LLM SKIPs or errors.
-    # Not from an app's text on a user's session: the user's own turns name it.
-    if may_configure and not slot._titled and not slot._title_in_flight:
-        _tt = asyncio.create_task(_maybe_auto_title(state, slot))
-        # Expose the handle so chat_done's chained title→refresh pass can wait
-        # for this attempt to settle (see _title_then_refresh in chat_runner).
-        slot._title_task = _tt
-        state._background_tasks.add(_tt)
-        _tt.add_done_callback(state._background_tasks.discard)
+        # Kick off LLM titling now, from the first user message, so the title lands
+        # *during* the first turn instead of waiting for the whole response to
+        # finish (chat_done). Runs on an isolated background kiro-cli session
+        # concurrent with the turn. No-ops once titled / in-flight; the instant
+        # 60-char provisional stays as the fallback if the LLM SKIPs or errors.
+        # Not from an app's text on a user's session: the user's own turns name it.
+        if may_configure and not slot._titled and not slot._title_in_flight:
+            _tt = asyncio.create_task(_maybe_auto_title(state, slot))
+            # Expose the handle so chat_done's chained title→refresh pass can wait
+            # for this attempt to settle (see _title_then_refresh in chat_runner).
+            slot._title_task = _tt
+            state._background_tasks.add(_tt)
+            _tt.add_done_callback(state._background_tasks.discard)
 
-    # Auto-tag: derive a tag from the session's project directory (deterministic,
-    # no LLM). Fire-and-forget, same pattern as auto-title.
-    if not getattr(slot, "_auto_tagged", False):
-        _at = asyncio.create_task(maybe_auto_tag(state, slot))
-        state._background_tasks.add(_at)
-        _at.add_done_callback(state._background_tasks.discard)
+        # Auto-tag: derive a tag from the session's project directory (deterministic,
+        # no LLM). Fire-and-forget, same pattern as auto-title.
+        if not getattr(slot, "_auto_tagged", False):
+            _at = asyncio.create_task(maybe_auto_tag(state, slot))
+            state._background_tasks.add(_at)
+            _at.add_done_callback(state._background_tasks.discard)
 
-    _reserve_turn_admission = not request_app
-    if _reserve_turn_admission:
-        slot._turn_admission_reserved = True
-    try:
+        if _reserve_turn_admission:
+            slot._turn_admission_reserved = True
         # Optional Slack thread for a NEW session (slack.auto_link_sessions), made
         # here rather than in the turn: the runner's echo below reads the link at
         # turn start, so the link has to exist before dispatch or the first message
@@ -1349,6 +1602,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # A send queued behind it during the hold starts now, as it would at
             # the end of a stopped turn.
             if slot._stop_generation != _stop_gen_before_hold:
+                # Release capacity before the drain tries to admit its next turn.
+                await turn_admission.abandon()
                 # The reservation stays up across the drain's awaits (the
                 # `finally` below drops it), so a send arriving meanwhile queues
                 # instead of dispatching a second turn beside the drained one.
@@ -1391,15 +1646,36 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _turn_kwargs["_attachments"] = _accepted_attachments
             # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
             _turn_kwargs["_attachment_meta"] = _accepted_attachment_meta
-        task = spawn_guarded_turn(
-            state,
-            slot,
-            state.run_background_turn(slot, _run_chat(state, slot, message, **_turn_kwargs)),
-        )
+        # The turn task inherits its sender as initiator, so a turn running
+        # outside admitted work is still found and stopped when the owner
+        # removes that person (``access_set.stop_work``).
+        from kiro_crew.shared_crew.admission_gate import actor_budget as _turn_actor_budget
+        from kiro_crew.shared_crew.turn_gate import initiated_by as _turn_initiated_by
+
+        with _turn_initiated_by("" if request_app else _turn_actor_budget(request)):
+            task = spawn_guarded_turn(
+                state,
+                slot,
+                admission_entry.admitted_or_direct(
+                    slot.key,
+                    turn_admission,
+                    state.run_background_turn(
+                        slot, _run_chat(state, slot, message, **_turn_kwargs)
+                    ),
+                    still_live=lambda: slot_is_live(state, slot),
+                    on_ended=state.push_slots_update,
+                ),
+            )
+        turn_dispatched = True
         slot.task = task
     finally:
-        if _reserve_turn_admission:
-            slot._turn_admission_reserved = False
+        try:
+            if not turn_dispatched:
+                slot._has_reader = False
+                await turn_admission.abandon()
+        finally:
+            if _reserve_turn_admission:
+                slot._turn_admission_reserved = False
     state.push_slots_update()
 
     if ws_mode:
@@ -1411,9 +1687,15 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _receipt: dict[str, Any] = {"ok": True, "slot": slot.key}
         if _user_mid:
             _receipt["mid"] = _user_mid
+        _admission_receipt = admission_entry.admission_receipt(turn_admission)
+        if _admission_receipt is not None:
+            _receipt["admission"] = _admission_receipt
+            if turn_admission.queued:
+                return web.json_response(_receipt, status=202)
         return web.json_response(_receipt)
 
     resp = web.StreamResponse()
+    resp.headers.update(admission_entry.admission_headers(turn_admission))
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
