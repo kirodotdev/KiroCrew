@@ -268,8 +268,6 @@ def crew_steer_consumed(state: Any, slot: Any, message: str) -> None:
     if marker is None:
         return
     try:
-        import asyncio
-
         from kiro_crew.dashboard.handlers import crew_workers
 
         task = asyncio.get_running_loop().create_task(

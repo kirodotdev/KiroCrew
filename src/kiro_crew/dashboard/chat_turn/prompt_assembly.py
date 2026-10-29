@@ -936,6 +936,19 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 memory_store=memory_store,
                 execution_context=execution_context,
             )
+        # Skill triggers read only what the person asked: none of the context
+        # prepended above, and nothing at all on a turn whose text the person
+        # did not write (a recovery or Continue continuation, the synthesis
+        # prompt, an MCP App's message). A sub-agent completion is the parent's
+        # own work coming back, so its echoed task and result trigger nothing
+        # either. A loop's wake matches the loop's own message, not the cycle
+        # header.
+        if _is_synthetic or turn._turn_actor == "subagent":
+            _trigger_text = ""
+        elif turn._skill_trigger_text is None:
+            _trigger_text = _jev_route_text
+        else:
+            _trigger_text = turn._skill_trigger_text
         # The budgets that cut a block record the cut as they write its notice;
         # the collection gathers them for the ``context/composed`` _turn_dispatch_gates writes.
         # It opens around the build alone, so only THIS turn's composition lands in
@@ -984,22 +997,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 needs_reinjection=_needs_reinjection,
                 steering_dirs=_folder_steering_dirs,
                 context_provider=client,
-                # Skill triggers read only what the person asked: none of
-                # the context prepended above, and nothing at all on a turn
-                # whose text the person did not write (a recovery or Continue
-                # continuation, the synthesis prompt, an MCP App's message). A
-                # sub-agent completion is the parent's own work coming back, so
-                # its echoed task and result trigger nothing either. A loop's
-                # wake matches the loop's own message, not the cycle header.
-                skill_trigger_text=(
-                    ""
-                    if _is_synthetic or turn._turn_actor == "subagent"
-                    else (
-                        _jev_route_text
-                        if turn._skill_trigger_text is None
-                        else turn._skill_trigger_text
-                    )
-                ),
+                skill_trigger_text=_trigger_text,
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)
