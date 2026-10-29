@@ -311,8 +311,9 @@ export default function SidePanel({
   // present in the strip.
   // A Crew Mode root or one of its workers: its panel offers Workers, and the
   // tab is put on its strip whenever the session is shown (a fresh browser, a
-  // reload, a reopened browser tab), without taking focus. Closing it holds
-  // until the next visit; the + menu brings it back at any time.
+  // reload, a reopened browser tab). It is the tab the panel opens on until the
+  // user picks another; a picked tab keeps focus. Closing it holds until the
+  // next visit; the + menu brings it back at any time.
   const crewMode = useAppSelector(st => {
     const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
     return !!(row?.crew_mode_root || row?.crew_root)
