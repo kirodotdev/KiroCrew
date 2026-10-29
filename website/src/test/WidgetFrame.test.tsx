@@ -321,6 +321,11 @@ describe('WidgetFrame theme passthrough', () => {
 })
 
 describe('WidgetFrame openInNewTab', () => {
+  // Both actions wait for the runtime read to settle, so a click test starts
+  // from a settled one. Tests about the read itself drop it first.
+  beforeEach(() => {
+    queryClient.setQueryData(['tailwind-runtime'], '/*settled*/')
+  })
   function captureWrapperHtml(container: HTMLElement): string {
     // Spy on Blob to grab the wrapper HTML the openInNewTab handler builds.
     let wrapper = ''
@@ -405,6 +410,124 @@ describe('WidgetFrame openInNewTab', () => {
     // Wrapper iframe is sandboxed (defense-in-depth, even though blob origin
     // is already null).
     expect(iframe.getAttribute('sandbox')).toBe('allow-scripts')
+  })
+
+  // The popped-out tab and the saved file are blob/file documents: their own
+  // request for the linked runtime carries no cookie, so a cookie-authenticating
+  // proxy refuses it. Both carry the runtime the dashboard read instead.
+  const RUNTIME = '/*tw-runtime*/globalThis.__tw=1;'
+  async function withRuntimeRead(ui: ReactNode) {
+    queryClient.removeQueries({ queryKey: ['tailwind-runtime'] })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(RUNTIME, { status: 200 })))
+    const rendered = wrap(ui)
+    await waitFor(() => expect(queryClient.getQueryData(['tailwind-runtime'])).toBe(RUNTIME))
+    return rendered
+  }
+  function runtimeIn(doc: string): { inline: boolean; linked: boolean } {
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    const scripts = Array.from(parsed.querySelectorAll('script'))
+    return {
+      inline: scripts.some((s) => s.textContent === RUNTIME),
+      linked: scripts.some((s) => (s.getAttribute('src') ?? '').endsWith('/vendor/tailwindcss-browser.js')),
+    }
+  }
+
+  it('the popped-out tab carries the runtime inside its frame instead of linking it', async () => {
+    try {
+      const { container } = await withRuntimeRead(<WidgetFrame html='<p class="p-4">hi</p>' title="T" />)
+      const parsed = new DOMParser().parseFromString(captureWrapperHtml(container), 'text/html')
+      const inner = parsed.querySelector('iframe')!.getAttribute('srcdoc') ?? ''
+      expect(runtimeIn(inner)).toEqual({ inline: true, linked: false })
+      // The frame on the page keeps its link (the gateway serves that document).
+      expect(runtimeIn(getSrcdoc(container))).toEqual({ inline: false, linked: true })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('the downloaded file carries the runtime inside it', async () => {
+    try {
+      const { container } = await withRuntimeRead(<WidgetFrame html='<p class="p-4">hi</p>' title="T" />)
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://localhost:6776/test')
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+      _lastBlobContent = ''
+      ;(container.querySelector('button[aria-label="Download as HTML"]') as HTMLButtonElement).click()
+      expect(runtimeIn(_lastBlobContent)).toEqual({ inline: true, linked: false })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a failed read leaves the popped-out frame linking the runtime', async () => {
+    try {
+      queryClient.removeQueries({ queryKey: ['tailwind-runtime'] })
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('denied', { status: 403 })))
+      const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+      await waitFor(() => expect(queryClient.getQueryState(['tailwind-runtime'])?.status).toBe('error'))
+      const parsed = new DOMParser().parseFromString(captureWrapperHtml(container), 'text/html')
+      const inner = parsed.querySelector('iframe')!.getAttribute('srcdoc') ?? ''
+      expect(runtimeIn(inner)).toEqual({ inline: false, linked: true })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps both actions disabled until the runtime read settles', async () => {
+    try {
+      queryClient.removeQueries({ queryKey: ['tailwind-runtime'] })
+      let release: (r: Response) => void = () => {}
+      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { release = resolve })))
+      const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+      const open = container.querySelector('button[aria-label="Open in new tab"]') as HTMLButtonElement
+      const download = container.querySelector('button[aria-label="Download as HTML"]') as HTMLButtonElement
+      await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+      expect(open.disabled).toBe(true)
+      expect(download.disabled).toBe(true)
+      await act(async () => { release(new Response(RUNTIME, { status: 200 })) })
+      await waitFor(() => expect(open.disabled).toBe(false))
+      expect(download.disabled).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a failed read re-enables both actions', async () => {
+    try {
+      queryClient.removeQueries({ queryKey: ['tailwind-runtime'] })
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('denied', { status: 403 })))
+      const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+      await waitFor(() => expect(queryClient.getQueryState(['tailwind-runtime'])?.status).toBe('error'))
+      expect((container.querySelector('button[aria-label="Open in new tab"]') as HTMLButtonElement).disabled).toBe(false)
+      expect((container.querySelector('button[aria-label="Download as HTML"]') as HTMLButtonElement).disabled).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a failed read says the popout and download may be unstyled, with the agent hand-off', async () => {
+    try {
+      queryClient.removeQueries({ queryKey: ['tailwind-runtime'] })
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('denied', { status: 403 })))
+      const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+      const notice = await waitFor(() => {
+        const el = container.querySelector('[data-testid="widget-frame-runtime-error"]')
+        if (!el) throw new Error('no runtime notice')
+        return el as HTMLElement
+      })
+      expect(notice.textContent).toContain(i18nT('components.widgetFrame.runtime_unavailable'))
+      expect(notice.closest('[role="alert"]') ?? notice.querySelector('[role="alert"]')).not.toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a successful read shows no runtime notice', async () => {
+    try {
+      const { container } = await withRuntimeRead(<WidgetFrame html="<p>hi</p>" title="T" />)
+      expect(container.querySelector('[data-testid="widget-frame-runtime-error"]')).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('gives the popped-out tab its own link bridge, outside the sandboxed frame', () => {
