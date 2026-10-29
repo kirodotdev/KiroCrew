@@ -102,7 +102,9 @@ async def _bind_member_workspace(
     slot.workspace = member_workspace
     slot.project = project
     if old_project != project:
-        slot._pending_reset_history_key = effective_session_key(slot)
+        from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+        arm_project_reset(state, slot, effective_session_key(slot))
     slot._dirty = True
     state.push_slots_update()
 

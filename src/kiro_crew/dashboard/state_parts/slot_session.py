@@ -7,7 +7,7 @@ bookkeeping, deferred resets, eager spawn and the MCP report.
 
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
-Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``,
+Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, ``_created_by``,
 ``_created_by_sid``, ``_crew_log_opened_sid``, ``_crew_log_pending_channel``,
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
@@ -26,7 +26,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
-``jev_route``, ``memory_store``, ``project``,
+``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
 
@@ -42,6 +42,7 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.dashboard.transcript_binding import TranscriptBinding
 from kiro_crew.history import MEMORY_MODES
 
 if TYPE_CHECKING:
@@ -219,7 +220,8 @@ def init_session_fields(self: _ChatSlot) -> None:
     # assignment. Only a protected binding or an explicit owner pick clears
     # that admission boundary; this marker is not persisted in the transcript.
     self._memory_assignment_from_history = False
-    self.project = ""
+    # A private binding until ``bind_transcript`` joins it to a live alias group.
+    self._binding = TranscriptBinding()
     # Relay-archive binding, read off disk. ``executor`` is "local" for every
     # ordinary slot; "remote" marks a chat an older build ran on the peer
     # ``instance_id`` (its slot ``remote_slot``). Such a slot is read-only:

@@ -501,8 +501,9 @@ def _read_app_agent_owner(r: _Read) -> None:
 
 
 def _read_project(r: _Read) -> None:
-    if r.meta.get("project"):
-        r.slot.project = r.meta["project"]
+    from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
+
+    seed_project_from_disk(r.state, r.slot, r.meta.get("project") or "")
 
 
 def _read_executor(r: _Read) -> None:
@@ -1476,6 +1477,10 @@ def apply(
     for row in FIELDS:
         if row.read is not None and purpose.purpose in row.purposes:
             row.read(read)
+    # The link row has run, so the history key is final: join a live alias on it.
+    from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+    bind_transcript(state, slot)
     # The line's creator, for display on every purpose. Not ``_created_by``, whose
     # purposes stay as the ``created_by`` row declares: the line is agent-editable,
     # so this copy only places a Crew Mode worker under its root in the person's

@@ -645,6 +645,11 @@ def get_or_create_slot(
             if isinstance(resolved, str) and is_channel_session_key(resolved):
                 slot.linked_session_key = resolved
                 self.note_crew_log_class(slot)
+    # The history key is final now: share the binding of any live alias on it, so
+    # this slot and its peers hold one project directory for their one session.
+    from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+    bind_transcript(self, slot)
     try:
         if self.sessions:
             from kiro_crew.dashboard.chat_utils import effective_session_key

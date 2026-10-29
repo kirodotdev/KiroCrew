@@ -499,8 +499,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             """
             if slot.workspace is committed_workspace:  # type: ignore[union-attr]
                 slot.workspace = prior_workspace  # type: ignore[union-attr]
-            if slot.project is committed_project:  # type: ignore[union-attr]
-                slot.project = prior_project  # type: ignore[union-attr]
+            from kiro_crew.dashboard.transcript_binding import rollback_project
+
+            rollback_project(slot, committed_project, prior_project)
             slot._dirty = True  # type: ignore[union-attr]
 
         # skip_if_busy: message dispatch does not take slot._lock, so a send
@@ -748,8 +749,9 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 logger.warning("Failed to save recent project", exc_info=True)
             # A detached slot cannot arm a reset for its same-name successor.
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
-                if slot.project is committed_project:
-                    slot.project = old_project
+                from kiro_crew.dashboard.transcript_binding import rollback_project
+
+                rollback_project(slot, committed_project, old_project)
                 return _slot_not_found()
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
@@ -772,8 +774,9 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 # this field without the lock, and a same-value write must not
                 # be mistaken for this handler's own commit) and answer the
                 # same 409 the sibling switch handlers use.
-                if slot.project is committed_project:
-                    slot.project = old_project
+                from kiro_crew.dashboard.transcript_binding import rollback_project
+
+                rollback_project(slot, committed_project, old_project)
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -824,6 +827,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # an arm that races a cold start stays queued for the next consume
             # rather than clobbering a correct session.
             if arm_reset:
-                slot._pending_reset_history_key = session_key
+                from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+                arm_project_reset(state, slot, session_key)
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})

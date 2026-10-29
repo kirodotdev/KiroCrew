@@ -263,6 +263,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "pending_has_consumer": ("property", False, False, "(self) -> 'bool'"),
     "pin_completed_todo_rows": ("function", False, False, "(self) -> 'None'"),
     "purge_chunks": ("function", False, False, "(self) -> 'int'"),
+    "project": ("property", False, False, "(self) -> 'str'"),
     "push_wire_frame": ("function", False, False, "(self, cls: 'str', content: 'str') -> 'None'"),
     "queue_append": (
         "function",
@@ -401,6 +402,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_approval_stopped": ("value", "set()"),
     "_artifact": ("value", "''"),
     "_auto_tagged": ("value", "False"),
+    "_binding": ("type", "kiro_crew.dashboard.transcript_binding.TranscriptBinding"),
     "_batch_rejected": ("value", "False"),
     "_batch_rejected_cause": ("value", "''"),
     "_buffers": ("type", "kiro_crew.dashboard.slot_buffers.SlotBufferCoordinator"),
@@ -672,7 +674,6 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "muted": ("value", "False"),
     "mutes_opened": ("value", "False"),
     "pinned": ("value", "False"),
-    "project": ("value", "''"),
     "remote_slot": ("value", "''"),
     "replays": ("type", "kiro_crew.dashboard.recovery_replays.RecoveryReplays"),
     "segment_message_id": ("value", "''"),

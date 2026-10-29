@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.git_repo_touches import TouchCandidates
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
     from kiro_crew.dashboard.steer_retract import SteerClear, SteerRetract
+    from kiro_crew.dashboard.transcript_binding import TranscriptBinding
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.trust_patterns import GrantDeadline
 
@@ -86,7 +87,7 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_binding",
         "created_at",
         "_messages",
         "_lazy_window",
@@ -401,7 +402,7 @@ class _ChatSlot:
     _turn_timeout_hydrated: bool
     memory_store: str
     _memory_assignment_from_history: bool
-    project: str
+    _binding: TranscriptBinding
     executor: str
     instance_id: str
     remote_slot: str
@@ -709,6 +710,22 @@ class _ChatSlot:
         # legacy sessions; the identity COMPARISON still requires a non-empty
         # ``created_at`` on both sides.
         self._disk_meta_observed: bool = False
+
+    @property
+    def project(self) -> str:
+        """The session's project directory, held in the binding aliases share.
+
+        Live slots on one transcript run one session with one working directory, so
+        they hold one value: a write on any of them is the group's write
+        (``dashboard/transcript_binding.py``).
+        """
+        return self._binding.project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        from kiro_crew.dashboard.transcript_binding import write_project
+
+        write_project(self._binding, value)
 
     @property
     def reasoning_effort(self) -> str:

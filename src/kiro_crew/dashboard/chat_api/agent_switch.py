@@ -931,8 +931,10 @@ async def switch_slot_agent(
                     slot._fallback_pick_gen = prior_fallback_pick_gen
             if committed_workspace is not None and slot.workspace is committed_workspace:
                 slot.workspace = pre_await_workspace
-            if committed_project is not None and slot.project is committed_project:
-                slot.project = pre_await_project
+            if committed_project is not None:
+                from kiro_crew.dashboard.transcript_binding import rollback_project
+
+                rollback_project(slot, committed_project, pre_await_project)
             if committed_memory_store is not None and slot.memory_store is committed_memory_store:
                 slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's

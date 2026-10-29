@@ -92,7 +92,9 @@ async def scope_worker_turn(
     key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
     if sessions is not None and sessions.get_provider(key) is not None:
-        slot._pending_reset_history_key = key
+        from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+        arm_project_reset(state, slot, key)
     slot._dirty = True
     push = getattr(state, "push_slots_update", None)
     if push is not None:

@@ -75,6 +75,7 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
+from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
 from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.history_projection import METADATA_LINE_CORRUPT
 from kiro_crew.loop_lock import LoopBoundLock
@@ -633,8 +634,7 @@ def surface_channel_session(
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):
         slot.memory_store = str(meta["memory_store"])
-    if meta.get("project"):
-        slot.project = meta["project"]
+    seed_project_from_disk(state, slot, meta.get("project") or "")
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
     # Persisted tags are applied on EVERY surface, not just first filing: the
