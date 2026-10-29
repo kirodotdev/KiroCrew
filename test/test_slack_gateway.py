@@ -540,10 +540,13 @@ class TestInteractiveApproval:
         event.title = "cmd"
         event.tool_input = ""
         event.tool_purpose = ""
+        # The prompt answers "deny", so a True result could only come from implicit trust.
+        ds.request_approval = AsyncMock(return_value=False)
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
             with patch("kiro_crew.sel.sel") as mock_sel:
                 mock_sel.return_value.log_api_access = MagicMock()
-                await callback(event, "")
+                result = await callback(event, "")
+        assert result is False
         ds.request_approval.assert_awaited_once()
         assert ds.request_approval.await_args.args[:3] == ("req-6", "cron", "cmd")
 

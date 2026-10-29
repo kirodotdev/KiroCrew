@@ -222,6 +222,7 @@ class TestLifecycleOnTheSlot:
         remember_slack_options(state, key, self._posted())
 
         await expire_slack_options(state, key)
+        assert _recs(state, slot) == ()
         await expire_slack_options(state, key)
 
         assert state.slack_client.update_message.await_count == 1

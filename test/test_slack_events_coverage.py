@@ -225,22 +225,30 @@ class TestHandleAgent:
         assert "Only the owner" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_off_resets_default_agent(self):
+    async def test_off_resets_default_agent(self, monkeypatch):
+        from kiro_crew.config.loader_locations import config_path
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(handler, "_cached_default_agent", "scout")
         respond = AsyncMock()
         with patch("kiro_crew.slack.handler.is_owner", return_value=True):
-            with patch("kiro_crew.slack.handler._set_default_agent") as setter:
-                await ev._handle_agent(_make_orch(), "U_OWNER", "off", respond)
-        setter.assert_called_once_with("")
+            await ev._handle_agent(_make_orch(), "U_OWNER", "off", respond)
+        assert json.loads(config_path().read_text())["agent"]["default_agent"] == ""
+        assert handler._get_default_agent() == ""
         assert "Reset to default agent" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_known_agent_switches(self):
+    async def test_known_agent_switches(self, monkeypatch):
+        from kiro_crew.config.loader_locations import config_path
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(handler, "_cached_default_agent", None)
         respond = AsyncMock()
         with patch("kiro_crew.slack.handler.is_owner", return_value=True):
             with patch("kiro_crew.slack.handler._resolve_agent_name", return_value="scout"):
-                with patch("kiro_crew.slack.handler._set_default_agent") as setter:
-                    await ev._handle_agent(_make_orch(), "U_OWNER", "Scout", respond)
-        setter.assert_called_once_with("scout")
+                await ev._handle_agent(_make_orch(), "U_OWNER", "Scout", respond)
+        assert json.loads(config_path().read_text())["agent"]["default_agent"] == "scout"
+        assert handler._get_default_agent() == "scout"
         assert "Switched to agent" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
@@ -456,8 +464,10 @@ class TestHandleAllowlistCmd:
     @pytest.mark.asyncio
     async def test_multi_user_is_refused(self):
         respond = AsyncMock()
-        await ev._handle_allowlist_cmd(_make_orch(), "U_OWNER", "add U2", respond)
+        orch = _make_orch()
+        await ev._handle_allowlist_cmd(orch, "U_OWNER", "add U2", respond)
         assert "Multi-user access is disabled" in respond.call_args[0][0]
+        assert orch._allowed_users == {"U_OWNER"}
 
 
 class TestHandleChannelCmd:

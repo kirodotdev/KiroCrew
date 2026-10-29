@@ -593,10 +593,9 @@ class TestHookIntegration:
         assert not any(r[1]["emoji"] == "eyes" for r in reacts)
 
     @pytest.mark.asyncio
-    async def test_auto_reply_records_agent_in_first_turn(self):
+    async def test_auto_reply_records_agent_in_first_turn(self, tmp_path):
         """Hook auto-reply path forwards the resolved agent to save_conversation_turn."""
-        from unittest.mock import MagicMock
-
+        from kiro_crew.history import ConversationLog
         from kiro_crew.slack.handler import _hydrated_sessions
 
         slack = MockSlackClient()
@@ -605,8 +604,7 @@ class TestHookIntegration:
             auto_replies=[AutoReplyHook(pattern="ping", reply="pong", exact=True)]
         )
         ctx = ContextBuilder(hooks=HookManager(hooks_cfg))
-        log = MagicMock()
-        log.get_metadata.return_value = {}
+        log = ConversationLog(base_dir=tmp_path)
 
         # Set a thread agent override for this session
         _thread_agents["thread1"] = "ops"
@@ -625,31 +623,26 @@ class TestHookIntegration:
                 conversation_log=log,
             )
 
-            # save_conversation_turn should have been called with agent="ops"
-            log.append.assert_any_call(
-                "thread1",
-                "user",
-                "ping",
-                source_thread="thread1",
-                source_user="U1",
-                agent="ops",
-            )
+            # The first turn creates the transcript under the thread's agent override.
+            user_rows = [r for r in log.read_messages("thread1") if r["role"] == "user"]
+            assert [r["content"] for r in user_rows] == ["ping"]
+            assert log.get_metadata("thread1")["agent"] == "ops"
         finally:
             _hydrated_sessions.discard("thread1")
             _thread_agents.pop("thread1", None)
 
     @pytest.mark.asyncio
-    async def test_spawn_command_records_agent_in_first_turn(self):
+    async def test_spawn_command_records_agent_in_first_turn(self, tmp_path):
         """Spawn command intercept forwards the resolved agent to save_conversation_turn."""
         from unittest.mock import MagicMock
 
+        from kiro_crew.history import ConversationLog
         from kiro_crew.slack.handler import _hydrated_sessions
         from kiro_crew.subagent import SubagentManager
 
         slack = MockSlackClient()
         sessions = FakeSessionManager()
-        log = MagicMock()
-        log.get_metadata.return_value = {}
+        log = ConversationLog(base_dir=tmp_path)
 
         # Use channel_agent (simulates per-channel override)
         _hydrated_sessions.add("thread2")
@@ -672,15 +665,10 @@ class TestHookIntegration:
                 channel_agent="research",
             )
 
-            # save_conversation_turn should have been called with agent="research"
-            log.append.assert_any_call(
-                "thread2",
-                "user",
-                "spawn do stuff",
-                source_thread="thread2",
-                source_user="U1",
-                agent="research",
-            )
+            # The first turn creates the transcript under the channel's agent.
+            user_rows = [r for r in log.read_messages("thread2") if r["role"] == "user"]
+            assert [r["content"] for r in user_rows] == ["spawn do stuff"]
+            assert log.get_metadata("thread2")["agent"] == "research"
         finally:
             _hydrated_sessions.discard("thread2")
             _thread_agents.pop("thread2", None)

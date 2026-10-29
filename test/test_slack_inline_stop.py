@@ -255,6 +255,8 @@ class TestHandleInlineStop:
             mock_sel.return_value.log_tool_invocation = MagicMock()
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
             assert mock_orch.sessions.stop_turn.await_args.kwargs.get("force") is None
+            # The decline was shown, so the presser's repeat is armed.
+            assert sl._stop_declined_markers != {}
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
             assert mock_orch.sessions.stop_turn.await_args.kwargs["force"] is True
             assert mock_orch.sessions.stop_turn.await_args.kwargs["preserve_queue"] is True
