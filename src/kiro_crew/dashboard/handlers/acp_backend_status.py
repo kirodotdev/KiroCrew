@@ -174,12 +174,11 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
         INSTALLED,
         MISSING,
         card_payload,
-        declaration_for,
         signs_in_separately,
     )
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_INDEPENDENT_SETUP
+    from kiro_crew.agent_sdk.host_auth import sign_in_remedy
 
-    auth = declaration_for(state.backend)
     return {
         # The config-file spelling, so a row id is exactly what the panel PATCHes
         # into ``agent.acp_backend`` (Kiro CLI is ``"kiro"``, never ``""``).
@@ -218,7 +217,7 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
         # identifier has no frontend reader and is not sent -- a field can
         # return with its first consumer.
         "auth": {
-            "sign_in_remedy": auth.sign_in_remedy,
+            "sign_in_remedy": sign_in_remedy(state.backend),
             "signs_in_separately": signs_in_separately(state.backend),
         },
         # The card. Every line is keyed by a machine id whose LABEL is the

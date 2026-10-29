@@ -245,19 +245,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_status import (  # noqa: F401
         _LEGACY_IDLE_OPERATION,
-        _LOGIN_TAIL,
         _MAX_VISIBLE_DETAIL,
         _POWERSHELL_SINGLE_QUOTES,
-        _SSO_LOGIN_TAIL,
         BUNDLED_CLI_UPDATE_REFUSAL,
         FAKE_ACP_TEST_MODE_ENV,
-        KIRO_CLI_LOGIN_COMMAND,
-        KIRO_CLI_SSO_LOGIN_COMMAND,
         KIRO_CLI_UPDATE_COMMAND,
         OFFICIAL_INSTALL_DOCS_URL,
         PrerequisiteStatus,
         _cmd_launcher_prefix,
-        _is_off_path_override,
         _platform_label,
         _powershell_single_quoted,
         _sanitize_detail,
@@ -337,6 +332,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         find_kiro_cli_candidates,
         is_bundled_kiro_cli,
         known_kiro_cli_dirs,
+    )
+    from kiro_crew.kiro_cli_bundle import (  # noqa: F401
+        _LOGIN_TAIL,
+        _SSO_LOGIN_TAIL,
+        KIRO_CLI_LOGIN_COMMAND,
+        KIRO_CLI_SSO_LOGIN_COMMAND,
+        _is_off_path_override,
+        login_commands,
     )
     from kiro_crew.mcp_cleanup import (  # noqa: F401
         mcp_entry_is_registry_governed,

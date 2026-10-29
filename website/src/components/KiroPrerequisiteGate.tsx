@@ -372,16 +372,34 @@ function splitSharedCommandPrefix(a: string, b: string): [string, string, string
  * the differing tail carries the weight, and ONE hint before both boxes explains
  * what the path is before a first-time reader meets it.
  */
+/**
+ * The executable the desktop app stages as its own Kiro CLI, as the bundled
+ * sign-in commands name it (`kiro_cli_bundle.BUNDLED_KIRO_CLI_ENTRY` and
+ * `BUNDLED_KIRO_CLI_WINDOWS_ENTRY` on the gateway). Code constants, not catalog
+ * values, so a translation cannot change the file name the hint points at.
+ */
+const BUNDLED_KIRO_CLI_ENTRY = 'kiro-cli-chat'
+const BUNDLED_KIRO_CLI_WINDOWS_ENTRY = 'kiro-cli.exe'
+
 function SignInCommands({ status }: { status: KiroPrerequisiteStatus }) {
   const [shared, personalTail, ssoTail] = status.bundled_cli
     ? splitSharedCommandPrefix(status.login_command, status.sso_login_command)
     : ['', status.login_command, status.sso_login_command]
   const prefix = shared ? <span className="text-muted">{shared}</span> : null
+  // On Windows the muted run is a PowerShell wrapper around the bundled
+  // executable, so the hint says what that wrapper is instead of calling it a path.
+  const windows = status.platform === 'Windows'
   return (
     <div className="mt-3 space-y-3">
       {status.bundled_cli && (
         <p className="text-[12px] leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint')}
+          {windows
+            ? i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint_windows', {
+              binary: BUNDLED_KIRO_CLI_WINDOWS_ENTRY,
+            })
+            : i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint', {
+              binary: BUNDLED_KIRO_CLI_ENTRY,
+            })}
         </p>
       )}
       <div>

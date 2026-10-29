@@ -14,45 +14,17 @@ from pathlib import Path
 from kiro_crew import identity_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.env import augmented_path
+from kiro_crew.kiro_cli_bundle import (  # noqa: F401 - re-exported surface
+    BUNDLED_KIRO_CLI_ENTRY,
+    BUNDLED_KIRO_CLI_WINDOWS_ENTRY,
+    BUNDLED_KIRO_DIR_ENV,
+    bundled_kiro_cli_dir,
+    bundled_kiro_cli_entry,
+    is_bundled_kiro_cli,
+)
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 KIRO_CLI_NAME = "kiro-cli"
-
-#: The directory holding the kiro-cli copy the desktop app ships inside its own
-#: resources. The Electron shell sets it at gateway spawn
-#: (``website/electron/gateway-env.js``) only when the payload actually shipped;
-#: ``packaging/build-desktop.sh`` stages it. Set by the process that starts the
-#: gateway, like ``KIROCREW_KIRO_BIN``, never by a directory an agent can plant
-#: a file in -- which is what lets :func:`pin_kiro_cli` trust it while it still
-#: refuses the inherited ``PATH``. A directory rather than a binary because the
-#: Electron side only stats the directory it staged; the name of the entry
-#: binary inside it lives on this side, in :func:`bundled_kiro_cli_entry`.
-BUNDLED_KIRO_DIR_ENV = "KIROCREW_BUNDLED_KIRO_DIR"
-
-#: The executable the bundled directory is entered through: the chat binary,
-#: not the ``kiro-cli`` launcher. The launcher resolves ``kiro-cli-chat`` via
-#: ``$HOME/.local/bin`` and ``PATH`` and never looks in its own directory, so a
-#: bundle entered through it would silently run whatever copy the USER has
-#: installed and, on a clean machine, fail with "failed to launch
-#: kiro-cli-chat" -- while the launcher answers ``--version`` and ``whoami``
-#: itself, so those probes pass. ``kiro-cli-chat`` is the process every session
-#: is anyway, accepts every subcommand used here (``acp``, ``login``, ``whoami``,
-#: ``mcp``, ``agent``, ``settings``, ``--version``) and finds its own helpers
-#: through its own executable path, so it is self-contained.
-BUNDLED_KIRO_CLI_ENTRY = "kiro-cli-chat"
-BUNDLED_KIRO_CLI_WINDOWS_ENTRY = "kiro-cli.exe"
-
-
-def bundled_kiro_cli_entry(platform_name: str) -> str:
-    """Return the executable staged for *platform_name*.
-
-    Windows' MSI carries one self-contained ``kiro-cli.exe``. POSIX releases
-    stage ``kiro-cli-chat`` directly because their launcher does not resolve a
-    sibling chat binary.
-    """
-    if platform_name == "win32":
-        return BUNDLED_KIRO_CLI_WINDOWS_ENTRY
-    return BUNDLED_KIRO_CLI_ENTRY
 
 
 def chat_sibling(binary: str, platform_name: str | None = None) -> str | None:
@@ -518,39 +490,6 @@ def _open_state_db_readonly(path: Path) -> sqlite3.Connection | None:
 
 def _unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
-
-
-def bundled_kiro_cli_dir(environ: Mapping[str, str]) -> str | None:
-    """The desktop app's bundled kiro-cli directory, or ``None`` when not bundled.
-
-    Whitespace-only and unset both read as "not bundled": a blank value is what
-    an unbundled build leaves behind, never a directory to search.
-    """
-    bundled = environ.get(BUNDLED_KIRO_DIR_ENV, "").strip()
-    return bundled or None
-
-
-def is_bundled_kiro_cli(binary: str, environ: Mapping[str, str]) -> bool:
-    """Whether *binary* is the desktop app's own bundled kiro-cli.
-
-    True only when a bundled directory is declared AND the binary's directory
-    is that directory, compared as normalised strings. The resolver builds the
-    bundled candidate from the same directory string
-    (:func:`find_kiro_cli_candidates`), so a textual compare is exact for
-    anything it produced; a symlinked ``KIROCREW_KIRO_BIN`` override that
-    points into the bundle reads as "not bundled", which keeps the operator's
-    binary on its normal update path. Pure string work -- no ``resolve()``, no
-    stat -- so it is safe to call on the event loop.
-
-    Provenance callers key off this: the setup gate serves the bundled copy's
-    absolute path as the sign-in command (it is not on the user's shell PATH),
-    and the self-update paths skip it (it lives inside a signed, read-only app
-    bundle and is replaced by the next app update, never in place).
-    """
-    bundled_dir = bundled_kiro_cli_dir(environ)
-    if not bundled_dir or not binary:
-        return False
-    return os.path.normpath(os.path.dirname(binary)) == os.path.normpath(bundled_dir)
 
 
 def _windows_program_files(environ: Mapping[str, str]) -> str:
