@@ -12,7 +12,8 @@ Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_remote_workspace_agents``, ``_session_label_elements``, ``_wire_mode_id``, ``_work_dir``,
+``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -170,6 +171,10 @@ async def load_session(
         )
         mcp_servers = await self._unpooled_control_planes(pooled, active_agent, session_work_dir)
         mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        # After the token stamp, so a label element never carries the token.
+        mcp_servers = await self._session_label_elements(
+            mcp_servers, active_agent, session_work_dir, session_key
+        )
     member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.

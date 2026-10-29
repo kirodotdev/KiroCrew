@@ -129,6 +129,8 @@ class AcpRuntime:
     _confirm_member_projection = _rt_setup._confirm_member_projection
     _own_stub_session = _rt_setup._own_stub_session
     _unpooled_control_planes = _rt_setup._unpooled_control_planes
+    _kiro_native_spec_lookup = _rt_setup._kiro_native_spec_lookup
+    _session_label_elements = _rt_setup._session_label_elements
     _copy_native_launch_sources = _rt_setup._copy_native_launch_sources
     _guard_unresolved_mcp_refs = _rt_setup._guard_unresolved_mcp_refs
     _start_mount_check = _rt_setup._start_mount_check

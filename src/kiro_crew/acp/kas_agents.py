@@ -82,6 +82,11 @@ from kiro_crew.acp.kas_permissions import (
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
 )
+from kiro_crew.acp.session_label import (
+    SESSION_LABEL_ENV,
+    SESSION_LABEL_MARKER,
+    declares_session_label,
+)
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
@@ -631,7 +636,9 @@ def _project_mcp_servers(
       reason managed env is projected at all: without it the shims read a
       different data home than the gateway. A managed entry still lives in a
       user-editable agent file, so a hand-added literal under a managed name is
-      withheld like any other.
+      withheld like any other. A non-managed entry that opts into the session
+      label (:mod:`kiro_crew.acp.session_label`) gains exactly that one value,
+      after the strip.
 
     * **a muted server** — an entry carrying ``disabled: true`` is not declared at
       all. KAS's wire schema accepts the field and its mapper then drops it
@@ -766,6 +773,10 @@ def _project_mcp_servers(
             continue
         projected = {k: v for k, v in entry.items() if k not in _WRAPPER_MARKERS}
         projected.pop("autoApprove", None)
+        # Read before it is dropped: Crew's own opt-in marker means nothing to the
+        # backend, and an unknown field can fail a strict wire schema.
+        labelled = not managed and declares_session_label(projected)
+        projected.pop(SESSION_LABEL_MARKER, None)
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
         if discarded:
             # Read off the PROJECTED entry, not the spec's: a key this function
@@ -797,6 +808,10 @@ def _project_mcp_servers(
                 projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port
             if session_key:
                 projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
+        elif labelled and session_key:
+            # The opted-in label and nothing else (acp.session_label): set after the
+            # credential strip, so it is the one Crew-authored value this entry gains.
+            projected.setdefault("env", {})[SESSION_LABEL_ENV] = session_key
         if withheld:
             logger.info(
                 "agent %r: not relaying %s for MCP server %r — the field can carry "

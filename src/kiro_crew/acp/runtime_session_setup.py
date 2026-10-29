@@ -13,8 +13,8 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_bound_workspace_fd``,
-``_expect_mcp_reports``, ``_launch_agent``, ``_launch_copy_spec``, ``_mcp_gateway_overlay``,
-``_mcp_gateway_socket``, ``_member_context``,
+``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
+``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
 ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
 ``_native_skill_projection``, ``_session_queues``, ``_tool_search_wire``, ``_wire_mode_id``,
 ``_work_dir``.
@@ -723,6 +723,31 @@ async def _own_stub_session(
     return entries, token
 
 
+def _kiro_native_spec_lookup(
+    self: AcpRuntime, agent: str | None
+) -> tuple[str | None, str | None, dict[str, Any]]:
+    """``(spec_agent, lookup_name, spec_kwargs)``: how a session reads the spec kiro-cli runs.
+
+    The spec kiro-cli runs: a launch copy for this runtime's own agent, read by the
+    copy's name, never through a view built by a name lookup that could reach the
+    checkout's same-named spec. *spec_kwargs* is the ``spec_override`` keyword the
+    session_mcp readers take, empty when the reader resolves the spec by name.
+    """
+    spec_agent = self._wire_mode_id(agent or self._agent)
+    projection = getattr(self, "_native_skill_projection", None)
+    spec_kwargs: dict[str, Any] = (
+        {"spec_override": projection.specs.get(spec_agent)} if projection is not None else {}
+    )
+    if self._launch_agent and spec_agent == self._launch_agent:
+        # The copy as read by its path at spawn, whether or not a projection runs:
+        # a name lookup here would reach a checkout's spec of the copy's name.
+        if self._launch_copy_spec is None:
+            raise AcpRuntimeError("the app agent's launch copy was not read at spawn")
+        spec_kwargs = {"spec_override": self._launch_copy_spec}
+    lookup = spec_agent if spec_agent != (agent or self._agent) else agent
+    return spec_agent, lookup, spec_kwargs
+
+
 async def _unpooled_control_planes(
     self: AcpRuntime, entries: list[dict[str, Any]], agent: str | None, work_dir: str | Path
 ) -> list[dict[str, Any]]:
@@ -731,23 +756,11 @@ async def _unpooled_control_planes(
     if self.acp_backend == ACP_BACKEND_KIRO:
         from kiro_crew.acp.session_mcp import kiro_control_plane_servers
 
-        # The spec kiro-cli runs: a launch copy for this runtime's own agent,
-        # read by the copy's name, never through a view built by a name lookup
-        # that could reach the checkout's same-named spec.
-        spec_agent = self._wire_mode_id(agent or self._agent)
+        spec_agent, lookup, projection_kwargs = self._kiro_native_spec_lookup(agent)
         projection = getattr(self, "_native_skill_projection", None)
-        projection_kwargs: dict[str, Any] = (
-            {"spec_override": projection.specs.get(spec_agent)} if projection is not None else {}
-        )
-        if self._launch_agent and spec_agent == self._launch_agent:
-            # The copy as read by its path at spawn, whether or not a projection runs:
-            # a name lookup here would reach a checkout's spec of the copy's name.
-            if self._launch_copy_spec is None:
-                raise AcpRuntimeError("the app agent's launch copy was not read at spawn")
-            projection_kwargs = {"spec_override": self._launch_copy_spec}
         mount = await asyncio.to_thread(
             kiro_control_plane_servers,
-            spec_agent if spec_agent != (agent or self._agent) else agent,
+            lookup,
             work_dir=work_dir,
             existing_names={str(entry.get("name")) for entry in entries},
             **projection_kwargs,
@@ -790,6 +803,39 @@ async def _unpooled_control_planes(
                     "restrictions. Check the agent's kirocrew-core server configuration."
                 )
         return [*entries, *mount.elements]
+    return entries
+
+
+async def _session_label_elements(
+    self: AcpRuntime,
+    entries: list[dict[str, Any]],
+    agent: str | None,
+    work_dir: str | Path,
+    session_key: str,
+) -> list[dict[str, Any]]:
+    """*entries* plus the label elements of this session's opted-in servers.
+
+    Called AFTER :meth:`_own_stub_session`, never before: that method stamps the
+    session token onto every element it is handed, and the token is the authority
+    a label element must not carry (:mod:`kiro_crew.acp.session_label`). Kiro only,
+    for the reason :meth:`_unpooled_control_planes` gives: the shared process has
+    no session-valued environment, and every other host reaches its servers through
+    a projection of its own. Returns *entries* unchanged with no *session_key*, so
+    a warm-pool session's servers start unlabelled rather than mislabelled.
+    """
+    if self.acp_backend == ACP_BACKEND_KIRO and session_key:
+        from kiro_crew.acp.session_label import kiro_session_label_elements
+
+        _spec_agent, lookup, spec_kwargs = self._kiro_native_spec_lookup(agent)
+        labelled = await asyncio.to_thread(
+            kiro_session_label_elements,
+            lookup,
+            work_dir=work_dir,
+            session_key=session_key,
+            existing_names={str(entry.get("name")) for entry in entries},
+            **spec_kwargs,
+        )
+        return [*entries, *labelled]
     return entries
 
 

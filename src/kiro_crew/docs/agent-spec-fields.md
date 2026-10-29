@@ -473,7 +473,7 @@ unconfirmed.
 
 | Field | Type | Effect |
 |---|---|---|
-| `mcpServers` | object | Name → server entry. The keys become the roster's server chips (`_mcp_server_names`). A local entry may carry `command`, `args`, `type`, `env`, `timeout`, `disabled`, `disabledTools` and `autoApprove`. |
+| `mcpServers` | object | Name → server entry. The keys become the roster's server chips (`_mcp_server_names`). A local entry may carry `command`, `args`, `type`, `env`, `timeout`, `disabled`, `disabledTools` and `autoApprove`, and Kiro Crew's own opt-in `x-kirocrew-session-label` (a per-session `KIROCREW_SESSION_LABEL` for a server Crew does not own; the App Kit manifest reference documents it). |
 | `includeMcpJson` | bool | Whether the backend also loads its global `mcp.json`. Crew's own generated specs pin `false` (shipped in `defaults.json` and re-pinned by `_refresh_dynamic_fields`), so for those a spec's own `mcpServers` is the complete set. Absent, kiro-cli reads it as `true` and KAS's own disk schema as `false`, so Crew projects it only when the spec states a bool and synthesizes no default for either host — KAS's wire schema has none, and its tool filter resolves an absent flag to `false` itself. |
 | `includePowers` | bool | Whether the backend also unions in its Powers tools. Same shape and same absent-default rule as `includeMcpJson`. It widens which tools are VISIBLE, not which are auto-approved: a tool it reveals still has no `permissions` rule, so KAS resolves the call to `ask`. |
 

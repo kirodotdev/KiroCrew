@@ -17,7 +17,8 @@ Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_d
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_remote_session_servers``, ``_remote_workspace_agents``,
-``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_session_label_elements``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
+``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -226,6 +227,10 @@ async def create_session(
                 pooled, agent or self._agent, session_work_dir
             )
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            # After the token stamp, so a label element never carries the token.
+            mcp_servers = await self._session_label_elements(
+                mcp_servers, agent or self._agent, session_work_dir, session_key
+            )
     else:
         # An explicit array is the caller's own composition (a mirror's
         # projection, a test double); it is not this method's to re-key, and it
