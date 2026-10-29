@@ -242,6 +242,16 @@
       "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Shortcuts settings", "route": "/settings/shortcuts" }
+    },
+    {
+      "id": "voice-dictation-key",
+      "feature": "Voice Dictation",
+      "title": "Dictate without clicking the mic",
+      "body": "Clicking the microphone in the message box is not the only way to dictate — a key does it too, and it is on by default. **Settings › Voice** names the key, explains how tapping and holding it work, and lets you pick a different one.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Voice settings", "route": "/settings/voice?highlight=voice.use-a-key-to-start-dictation" }
     }
   ]
 }
