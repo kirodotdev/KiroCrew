@@ -372,6 +372,16 @@ describe('evaluateAutoPin — the race-proof core', () => {
       expect(r).toEqual({ pin: false, stick: false, target: 600 })
     })
 
+    it('IDLE + resting: a tail regrow larger than half the viewport is still content\'s gap', () => {
+      // A catch-up after a dropped socket replaces the half-streamed reply with
+      // its full text in one commit, so the gap under a still reader can be
+      // most of a viewport (measured 246-459px on an 844px phone). The size of
+      // the gap does not change who opened it: resting on our write, carried.
+      const regrown = { scrollTop: 600, scrollHeight: 1300, clientHeight: 400 } // 300px below the fold
+      const r = evaluateAutoPin({ stick: true, geom: regrown, lastWriteTop: 600, runActive: false })
+      expect(r).toEqual({ pin: true, stick: true, target: 900 })
+    })
+
     it('resting within the self-scroll epsilon still counts (sub-pixel jitter)', () => {
       const jitter = { scrollTop: 481, scrollHeight: 1000, clientHeight: 400 }
       const r = evaluateAutoPin({ stick: true, geom: jitter, lastWriteTop: 480, runActive: false })
