@@ -5,7 +5,7 @@ import { i18nT } from '../i18n/t'
  * in the POST body — never catalog values, because a translated identifier is
  * not a protocol token.
  */
-export type KasLoginProvider = 'google' | 'github' | 'builder_id' | 'idc'
+export type KasLoginProvider = 'google' | 'github' | 'builder_id' | 'idc' | 'external_idp'
 
 // Display name for the provider a sign-in is running under (the device view's
 // eyebrow interpolates it). Routed through the catalog like every other label
@@ -20,6 +20,8 @@ export function providerLabel(provider: KasLoginProvider): string {
       return i18nT('components.kasLogin.provider_builder_id')
     case 'idc':
       return i18nT('components.kasLogin.provider_company_sso')
+    case 'external_idp':
+      return i18nT('components.kasLogin.provider_organization_idp')
   }
 }
 
@@ -38,7 +40,8 @@ export function providerLabelFromWire(stored: string | null | undefined): string
   if (key === 'google') return providerLabel('google')
   if (key === 'github') return providerLabel('github')
   if (key === 'builderid' || key === 'builder_id') return providerLabel('builder_id')
-  if (key === 'enterprise' || key === 'idc' || key === 'externalidp') return providerLabel('idc')
+  if (key === 'enterprise' || key === 'idc') return providerLabel('idc')
+  if (key === 'externalidp' || key === 'external_idp') return providerLabel('external_idp')
   return stored ?? ''
 }
 
@@ -69,7 +72,7 @@ export function accountProviderLabel(accountType?: string, startUrl?: string): s
       ? i18nT('app.builder_id')
       : rawType?.toLowerCase().replace(/[^a-z0-9]/g, '') === 'externalidp'
         // The organization's own sign-in: the sign-in flow's plain-language
-        // name for it ("Company SSO"), never the protocol's.
+        // name for it ("Organization identity provider"), never the protocol's.
         ? providerLabelFromWire('externalidp')
         : rawType
           ? humanizeProviderId(rawType)
