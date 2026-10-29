@@ -296,6 +296,27 @@ merge (counts add, the later use wins), and the next save writes the merged map.
 The root ranks from the LIVE query, not a debounced copy, so a fast typist never sees rows
 that answer an older prefix.
 
+### Sessions search: open sessions first
+
+With a query, the sessions view sorts its hits in three keys, in order
+(`createSessionsProvider` in `components/commandPalette/providers/sessionsProvider.ts`):
+
+1. sessions open in this dashboard right now, above history;
+2. then the match score;
+3. then the backend's own order.
+
+An empty query is not re-sorted, so the backend's recency order stands. "Open" means the hit's
+key, with its `dashboard_` prefix removed (`normalizeKey`), is the key of a live dashboard slot
+(`openSessionKeys` in `useCommandBarOverlayEngines.ts`). A remote instance's row never counts as
+open. A history key that does not name a live slot, such as a cron session's, stays in the
+history tier; #25460 tracks marking open rows on the server instead.
+
+The open set is part of the search's cache key (`openSessionsKey` in
+`useCommandBarOverlaySlots.ts`), so opening or closing a session re-runs the search and re-ranks
+the rows. While only the open set changes, `placeholderData` keeps the old rows on screen; a new
+query drops them. The highlight stays on the same row index, so a re-rank can move it to a
+different session.
+
 ### A stale Enter is latched, not acted on and not dropped
 
 Every SCOPED view ranks from the debounced query, because each one reaches the network, so for
