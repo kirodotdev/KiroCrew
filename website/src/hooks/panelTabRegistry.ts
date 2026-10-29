@@ -32,6 +32,8 @@ export interface AppPanelTabDecl {
 export interface PanelTabAppRecord {
   name: string
   enabled?: boolean
+  /** Set when the gateway skipped this built-in at boot: it has no routes, so it is not live. */
+  unavailable?: { reason: string }
   manifest?: {
     contributes?: { panelTabs?: AppPanelTabDecl[] }
   }
@@ -115,7 +117,7 @@ export function resolvePanelTabs(apps: readonly PanelTabAppRecord[]): PanelTabDe
   // the strip order must be the same answer for every viewer.
   const sorted = [...list].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   for (const app of sorted) {
-    if (!app.enabled) continue
+    if (!app.enabled || app.unavailable) continue
     // A hand-edited app.json can carry `"panelTabs": {}` — an object satisfies the
     // optional-chain and the `?? []` default, then `.slice` is not a function. The
     // manifest normalizer does not coerce `contributes`, so the shape is checked here.

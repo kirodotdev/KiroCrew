@@ -15,6 +15,7 @@ import os
 
 from aiohttp import web
 
+from kiro_crew.apps.builtin_unavailable import record_unavailable_builtin
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
@@ -261,6 +262,8 @@ def register(app: web.Application) -> None:
                 type(exc).__name__,
                 exc,
             )
+            # The App Store reads this to show the app as unavailable, with why.
+            record_unavailable_builtin(app, _builtin_name, exc)
             continue
         if _register is not None:
             _register(app)

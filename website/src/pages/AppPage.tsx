@@ -43,7 +43,9 @@ export default function AppPage() {
         // Native builtin apps have a registered surface at their bare route —
         // redirect there. Builtins that ship a dynamic UI bundle (manifest.ui.entry)
         // have no native surface and render via AppHost below, like installed apps.
-        if (data?.origin === 'builtin' && !data?.manifest?.ui?.entry && data?.manifest?.ui?.pages?.[0]?.route) {
+        // A builtin skipped at boot has no routes behind that surface, so it stays
+        // here and AppHost shows why it is unavailable.
+        if (data?.origin === 'builtin' && !data?.unavailable && !data?.manifest?.ui?.entry && data?.manifest?.ui?.pages?.[0]?.route) {
           redirecting = true
           navigate(data.manifest.ui.pages[0].route, { replace: true })
           return
