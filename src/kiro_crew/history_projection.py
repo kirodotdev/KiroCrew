@@ -49,26 +49,18 @@ from kiro_crew.history_projection_contract import (
     TranscriptRevisionChanged,
     _history_facade,
 )
+from kiro_crew.history_rewrite import _stat_or_none, rewrite_metadata_line, rewrite_transcript
 from kiro_crew.jsonl_util import (
     bounded_raw_records,
     raise_if_splitlines_boundary,
     strict_raw_records_with_offsets,
 )
-from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.preview_text import speech_preview
 from kiro_crew.transcript_count import count_messages, message_row
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
-
-
-def _stat_or_none(path: Path) -> "os.stat_result | None":
-    """``path``'s stat, or ``None`` when it cannot be taken (the carry is then skipped)."""
-    try:
-        return path.stat()
-    except OSError:
-        return None
 
 
 def _split_transcript_head(data: bytes) -> tuple[list[str], bool]:
@@ -379,9 +371,16 @@ class SessionMetadataProjection:
         self._log.update_metadata(key, {"title": title})
 
     def update_metadata(self, key: str, fields: dict) -> None:
-        """Merge fields under the same lock used by transcript writers."""
-        with self._log._locked(key):
-            self._log._update_metadata_locked(key, fields)
+        """Merge fields into the metadata line, renaming under the transcript writers' lock.
+
+        The replacement is built and synced before the lock is taken
+        (:func:`~kiro_crew.history_rewrite.rewrite_metadata_line`), so appenders do
+        not wait on the flush; a write that landed in between is merged again under
+        the lock.
+        """
+        rewrite_metadata_line(
+            self._log, key, lambda _path, text: self._metadata_replacement(key, text, fields)
+        )
         if "tab_id" in fields:
             self._log.invalidate_tab_id_cache()
 
@@ -485,11 +484,41 @@ class SessionMetadataProjection:
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
         before = _stat_or_none(path)
-        lines = _split_transcript_bytes(path.read_bytes()) if path.exists() else []
-        # For an undecodable first line this is the one-byte placeholder, shorter
-        # than the real bytes, so the index carry's size proof fails and the next
-        # page read rebuilds the index instead of shifting it by a wrong delta.
-        old_head = lines[0] if lines else ""
+        # An undecodable first line comes back as a blank placeholder, so the
+        # corrupt-line rewrite below can replace it (see _split_transcript_bytes).
+        text = "".join(_split_transcript_bytes(path.read_bytes())) if path.exists() else None
+        content = self._metadata_replacement(key, text, fields)
+        if content is None:
+            return False
+        # Synced before the rename: only line 0 changed, but the file renamed into
+        # place carries every row of the conversation. The helper writes every byte
+        # (a short write cannot publish a prefix of the transcript) and renames
+        # through the shared retrying replace that a concurrent Windows reader
+        # needs, keeping the file owner-only on every root (eval workspaces too).
+        rewrite_transcript(path, content)
+        _history_facade()._restore_mtime(path, previous_mtime)
+        if before is not None and text:
+            # A first-line rewrite: move the page index onto the new file. For an
+            # undecodable first line the old head is the one-byte placeholder,
+            # shorter than the real bytes, so the carry's size proof fails and the
+            # next page read rebuilds the index instead of shifting it wrongly.
+            self._log._read_projection.carry_index_over_head_rewrite(
+                key,
+                before,
+                text.splitlines(keepends=True)[0],
+                content.decode("utf-8").splitlines(keepends=True)[0],
+            )
+        self._log._invalidate_cache(key)
+        return True
+
+    def _metadata_replacement(self, key: str, text: str | None, fields: dict) -> bytes | None:
+        """The transcript *text* with *fields* merged into line 0, or ``None`` to leave it.
+
+        Shared by :meth:`_update_metadata_locked` and :meth:`update_metadata`, so both
+        apply the same upsert, corrupt-line and legacy-file rules. The result is
+        bytes, so no newline translation happens on Windows.
+        """
+        lines = text.splitlines(keepends=True) if text is not None else []
         healing_corrupt_line = False
         if lines:
             try:
@@ -510,9 +539,9 @@ class SessionMetadataProjection:
                     "memory_mode": STRICTEST_MEMORY_MODE,
                 }
             if not isinstance(metadata, dict):
-                return False
+                return None
             if metadata.get("_type") != "metadata":
-                return False
+                return None
         else:
             self._log._dir.mkdir(parents=True, exist_ok=True)
             metadata = {
@@ -527,23 +556,7 @@ class SessionMetadataProjection:
             metadata["memory_mode"] = STRICTEST_MEMORY_MODE
             metadata.pop("memory_store", None)
         lines[0] = json.dumps(metadata) + "\n"
-
-        # This hot one-line edit remains crash-atomic without paying for an
-        # fsync while every other writer of the session is excluded.
-        # ``atomic_write`` writes every byte (a short write cannot publish a
-        # prefix of the transcript) and renames through the retrying replace
-        # that a concurrent Windows reader needs. The mode is owner-only on
-        # every root, as the transcript's first write sets it: a transcript can
-        # live outside the data home (an eval workspace), where the default
-        # would follow the umask and widen the rewritten file.
-        atomic_write(path, "".join(lines).encode("utf-8"), mode=OWNER_ONLY_FILE_MODE)
-        _history_facade()._restore_mtime(path, previous_mtime)
-        if before is not None:
-            self._log._read_projection.carry_index_over_head_rewrite(
-                key, before, old_head, lines[0]
-            )
-        self._log._invalidate_cache(key)
-        return True
+        return "".join(lines).encode("utf-8")
 
     def mtime_of(self, key: str) -> float | None:
         """Return a session file mtime without reading its contents."""
@@ -590,7 +603,9 @@ class SessionMetadataProjection:
             metadata.pop("closed", None)
             metadata.pop("closed_at", None)
             lines[0] = json.dumps(metadata) + "\n"
-            atomic_write(path, "".join(lines), fsync=False, newline="")
+            # Synced: the replacement carries every row, not just the cleared flag.
+            # Bytes, so no newline translation turns the LF ends into CRLF on Windows.
+            rewrite_transcript(path, "".join(lines).encode("utf-8"))
             _history_facade()._restore_mtime(path, previous_mtime)
             if before is not None:
                 self._log._read_projection.carry_index_over_head_rewrite(

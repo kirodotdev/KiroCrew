@@ -169,7 +169,7 @@ class TestMigrateChannelTranscripts:
             raise OSError("disk full")
 
         calls: list[int] = []
-        monkeypatch.setattr("kiro_crew.channel_transcript_migration.atomic_write", _boom)
+        monkeypatch.setattr("kiro_crew.channel_transcript_migration.rewrite_transcript", _boom)
 
         assert migrate_channel_transcripts(log) == 0
 

@@ -1885,7 +1885,32 @@ archived instead of being permanently deleted:
   The parent is synced even when the directory already exists, because an
   earlier call may have created it and failed that sync. Every trigger archives
   lines its transcript rewrite is about to remove, so the archive must reach
-  disk first.
+  disk first. A failed write or sync removes the file that call created before
+  raising (best effort; a failed removal is logged and the sync error is still
+  raised), so a lasting fault leaves no archive copy per retry.
+- **Durable replace**: every write that renames a new copy over a whole
+  transcript syncs its data first, because an unsynced replacement can come
+  back empty after a power loss and the kept rows are in no other file. The
+  history store's writers go through `history_rewrite.rewrite_transcript`,
+  which has no `fsync` switch: rotation, compaction, `mark_consolidated`, the
+  consolidation sub-offset, `update_metadata`, `clear_closed`, and the agent
+  selection rollback. That holds for the metadata-only rewrites too, since they
+  replace the whole file. The three hot ones (`mark_consolidated`, the
+  sub-offset write and `update_metadata`) go through
+  `history_rewrite.rewrite_metadata_line`, which stages and syncs the
+  replacement before taking the session lock, then under the lock renames it
+  only if the file still holds exactly the bytes the edit was built from (and
+  the key still names the same path). Anything else, an append or another
+  rewrite in between, discards the staged copy and rebuilds the edit under the
+  lock, synced there. So appenders never wait on the flush, and no row or field
+  that landed in between is lost. The directory is synced after the lock is
+  released, best effort, since the rename has already happened. The dashboard
+  save in `chat_persistence.py` calls `atomic_write(..., fsync=True)` itself.
+  The channel transcript migration syncs the directory (`fsync_dir`) before
+  every orphan delete, including a retry whose merge is unchanged and so skips
+  the write, because the orphan holds the only other copy. On macOS `os.fsync` does not issue
+  `F_FULLFSYNC`, so the drive's write cache is not flushed; that is the
+  repo-wide `atomic_write` policy, not specific to transcripts.
 - **Fail closed**: an archive failure never lets the rewrite drop the rows.
   Rotation declines to rotate, compaction (`rewrite_session`) raises with the
   transcript untouched, the dashboard rewrite path raises so the save writes

@@ -9,7 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_meta_cache``.
 
-Instance fields read: ``_read_projection``.
+Instance fields read: none.
 """
 
 from __future__ import annotations
@@ -18,15 +18,16 @@ import json
 import logging
 import math
 import time as _time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.history_consolidation import (
     _CONSOLIDATION_META_KEYS,
     _CONSOLIDATION_SUBOFFSET_META_KEYS,
     AttemptedSpan,
 )
-from kiro_crew.history_files import _restore_mtime, _safe_mtime, transcript_lock_stems
+from kiro_crew.history_files import transcript_lock_stems
+from kiro_crew.history_rewrite import rewrite_metadata_line
 from kiro_crew.history_schema import metadata_now_iso
 
 if TYPE_CHECKING:
@@ -186,19 +187,17 @@ def mark_consolidated(
     them from memory/history extraction). When neither trips, the offset is
     applied as-is.
     """
-    # Serialize behind the cross-process lock and resolve/re-read under it so
-    # a concurrent append or restore cannot redirect this key after its path
-    # was chosen.
-    with self._locked(key):
-        path = self._path(key)
-        if not path.exists():
-            return
-        prev_mtime = _safe_mtime(path)
-        before = path.stat()
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    # rewrite_metadata_line runs this on an unlocked read, then renames under
+    # the cross-process lock only if the file (and the path for this key) is
+    # still exactly what it read; otherwise it runs it again under the lock, so
+    # a concurrent append or restore cannot be lost or redirect the write.
+    def build(path: Path, text: str | None) -> bytes | None:
+        if text is None:
+            return None
+        lines = text.splitlines(keepends=True)
         if not lines:
-            return
-        old_head = lines[0]
+            return None
         meta = json.loads(lines[0])
         # Reconcile the caller's absolute *offset* against the messages
         # actually present now. Line 0 is the metadata line; every other
@@ -283,29 +282,18 @@ def mark_consolidated(
         for _sub_key in _CONSOLIDATION_SUBOFFSET_META_KEYS:
             meta.pop(_sub_key, None)
         lines[0] = json.dumps(meta) + "\n"
-        # Reduce lock hold for this one-line metadata rewrite: skip the
-        # fsync (fsync=False). ``last_consolidated`` is recoverable
-        # bookkeeping — if a crash loses it we simply re-consolidate a few
-        # messages — so paying a disk flush while holding the cross-process
-        # lock (blocking every other writer of this session) isn't worth it.
-        # ``newline=""``: the lines hold the LF ends the transcript is written with,
-        # and a translating write would turn every one into CRLF on Windows.
-        atomic_write(path, "".join(lines), fsync=False, newline="")
-        # Housekeeping bookkeeping — must not advance the session's mtime
-        # (see _restore_mtime). Otherwise consolidation floats stale sessions
-        # to the top of list_sessions on every gateway restart.
-        _restore_mtime(path, prev_mtime)
-        # A first-line rewrite: move the page index onto the new file so the next
-        # history page does not frame the whole transcript again.
-        self._read_projection.carry_index_over_head_rewrite(key, before, old_head, lines[0])
-        # Invalidate while still holding the lock. Outside it there is a
-        # window where the file is already rewritten but the generation has
-        # not moved, so a concurrent fold / snippet / metadata read could
-        # publish before the local invalidation. Every other preserved-mtime
-        # writer already invalidates inside its locked section;
-        # _invalidate_cache is pure in-memory work, so this adds no I/O
-        # under the cross-process flock.
-        self._invalidate_cache(key)
+        # Synced, although only line 0 changed: the replacement carries every
+        # row of the conversation, and an unsynced file renamed over the old
+        # one can come back empty after a power loss. The helper syncs it
+        # before taking the lock, keeps the session's mtime (consolidation is
+        # housekeeping and must not float stale sessions to the top of
+        # list_sessions), and invalidates the cache while still holding the
+        # lock, so no concurrent read publishes the old line under the new
+        # generation. Bytes, so no newline translation turns the LF ends into CRLF on
+        # Windows.
+        return "".join(lines).encode("utf-8")
+
+    rewrite_metadata_line(self, key, build)
 
 
 def advance_consolidation_sub_offset(
@@ -321,8 +309,9 @@ def advance_consolidation_sub_offset(
     past the whole message only once its last slice succeeds, through
     :meth:`mark_consolidated`.
 
-    Three guards, all under the one lock, keep the sub-offset from ever
-    resuming into content it does not describe:
+    Three guards, each judged on the exact bytes the locked rename replaces
+    (see :func:`~kiro_crew.history_rewrite.rewrite_metadata_line`), keep the
+    sub-offset from ever resuming into content it does not describe:
 
     * The session must still exist (``_update_metadata_locked`` upserts, so
       writing a deleted session would resurrect it as metadata-only).
@@ -339,16 +328,13 @@ def advance_consolidation_sub_offset(
     slice reached; it is stamped with *generation* so a later rotation
     invalidates it the same way the attempt stamps are invalidated.
     """
-    with self._locked(key):
-        path = self._path(key)
-        if not path.exists():
-            return
-        prev_mtime = _safe_mtime(path)
-        before = path.stat()
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    def build(path: Path, text: str | None) -> bytes | None:
+        if text is None:
+            return None
+        lines = text.splitlines(keepends=True)
         if not lines:
-            return
-        old_head = lines[0]
+            return None
         meta = json.loads(lines[0])
         current_generation = int(meta.get("rotation_generation", 0) or 0)
         if current_generation != generation:
@@ -360,7 +346,7 @@ def advance_consolidation_sub_offset(
                 current_generation,
                 key,
             )
-            return
+            return None
         try:
             current_offset = int(meta.get("last_consolidated", 0) or 0)
         except (TypeError, ValueError, OverflowError):
@@ -374,7 +360,7 @@ def advance_consolidation_sub_offset(
                 current_offset,
                 key,
             )
-            return
+            return None
         meta["consolidation_sub_offset"] = max(0, int(sub_offset))
         meta["consolidation_sub_offset_generation"] = generation
         # A slice that reached its durable sub-offset is a span that ended —
@@ -390,15 +376,13 @@ def advance_consolidation_sub_offset(
             meta.pop(_acct_key, None)
         meta["updated_at"] = metadata_now_iso()
         lines[0] = json.dumps(meta) + "\n"
-        # Same cheap, mtime-preserving, no-fsync write as mark_consolidated:
-        # a lost sub-offset only re-slices the head from its start, which is
-        # correct behaviour, so it is not worth a disk flush under the lock.
-        # ``newline=""``: the lines hold the LF ends the transcript is written with,
-        # and a translating write would turn every one into CRLF on Windows.
-        atomic_write(path, "".join(lines), fsync=False, newline="")
-        _restore_mtime(path, prev_mtime)
-        self._read_projection.carry_index_over_head_rewrite(key, before, old_head, lines[0])
-        self._invalidate_cache(key)
+        # Same mtime-preserving, synced whole-file write as mark_consolidated,
+        # synced before the lock is taken: a lost sub-offset would only
+        # re-slice the head, but the replacement carries every row. Bytes, as in
+        # mark_consolidated.
+        return "".join(lines).encode("utf-8")
+
+    rewrite_metadata_line(self, key, build)
 
 
 def unconsolidated_count(self: ConversationLog, key: str) -> int:
