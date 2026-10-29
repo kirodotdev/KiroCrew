@@ -4,6 +4,7 @@ delivery-sink fan-out (including the zero-push-on-silenced/passive regression)."
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import random
 from unittest.mock import MagicMock
@@ -750,3 +751,34 @@ def test_web_push_imports_without_resolve_result(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert hasattr(module, "PublicAddressResolver")
+
+
+@pytest.mark.asyncio
+async def test_fan_out_task_survives_a_gc_pass(monkeypatch, tmp_path):
+    """The scheduled push task is held until it finishes.
+
+    The loop keeps only a weak reference to a task. A send parked on a future
+    nothing else references forms an unreachable cycle with its task, so a
+    ``gc.collect()`` destroys the task mid-run unless the state holds it.
+    """
+    import asyncio
+    import gc
+
+    state = _make_state(monkeypatch, tmp_path)
+    state.bind_serving_loop(asyncio.get_running_loop())
+
+    async def _parked(note):
+        await asyncio.get_running_loop().create_future()
+
+    monkeypatch.setattr(state, "_send_web_push_all", _parked)
+    state._fan_out_web_push({"title": "t"})
+    await asyncio.sleep(0)  # let the task start and park on its future
+    gc.collect()
+
+    parked = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "_parked"]
+    assert len(parked) == 1, "the push task was garbage-collected mid-run"
+    assert parked[0] in state._background_tasks
+    parked[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await parked[0]
+    assert parked[0] not in state._background_tasks

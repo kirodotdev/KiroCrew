@@ -756,7 +756,10 @@ def _fan_out_web_push(self: DashboardState, note: dict[str, Any]) -> None:
     """
     running = self._running_loop()
     if running is not None:
-        running.create_task(self._send_web_push_all(note))
+        # Held until done: the loop keeps only a weak reference to a task.
+        task = running.create_task(self._send_web_push_all(note))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return
     loop = self.serving_loop
     if loop is None or loop.is_closed():

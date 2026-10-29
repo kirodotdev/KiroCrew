@@ -67,6 +67,11 @@ logger = logging.getLogger(__name__)
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _SESSION_TTL_SECONDS = 600
 
+#: Strong references to the expired clients' close tasks. The event loop keeps
+#: only a weak reference to a task, so one nothing holds can be garbage-collected
+#: before ``close()`` finishes. Each task removes itself when it is done.
+_CLOSE_TASKS: set[asyncio.Task[Any]] = set()
+
 
 def _render_qr_data_uri(scan_data: str) -> str:
     """Encode ``scan_data`` (the iLink login URL) into a PNG data URI.
@@ -89,7 +94,9 @@ def _prune_sessions() -> None:
             if client is not None:
                 # best-effort close; the event loop owns the coroutine
                 try:
-                    asyncio.create_task(client.close())
+                    task = asyncio.create_task(client.close())
+                    _CLOSE_TASKS.add(task)
+                    task.add_done_callback(_CLOSE_TASKS.discard)
                 except Exception:
                     pass
             _SESSIONS.pop(sid, None)
