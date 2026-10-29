@@ -16237,6 +16237,10 @@
         "backfill_folder_gone_nothing_filed": "{{folder}} 폴더가 실행 중에 삭제되어 아무것도 정리되지 않았습니다. 먼저 이 설정을 저장해 다시 만드세요."
       },
       "browserPanel": {
+        "public_registry_refused_message": "공개 npm 레지스트리({{url}})도 요청을 거부했습니다(npm {{code}}). 이 컴퓨터의 프록시나 네트워크 정책이 차단하고 있을 수 있습니다. 사용 중인 npm 레지스트리에 다시 로그인한 후 다시 설치하세요.",
+        "registry_auth_message": "npm이 구성된 npm 레지스트리({{registry}}, npm {{code}})에 로그인하지 못했습니다. 로그인이 만료되었을 가능성이 높습니다. 해당 레지스트리에 다시 로그인한 후 다시 설치하거나, 공개 npm 레지스트리({{url}})에서 한 번 설치하세요. npm 설정은 바뀌지 않으며, 공개 레지스트리는 그 한 번의 설치에만 사용됩니다.",
+        "registry_auth_message_unknown": "npm이 구성된 npm 레지스트리에 로그인하지 못했습니다(npm {{code}}). 로그인이 만료되었을 가능성이 높습니다. 해당 레지스트리에 다시 로그인한 후 다시 설치하거나, 공개 npm 레지스트리({{url}})에서 한 번 설치하세요. npm 설정은 바뀌지 않으며, 공개 레지스트리는 그 한 번의 설치에만 사용됩니다.",
+        "retry_public_registry": "공개 npm 레지스트리에서 설치",
         "use_builtin_label": "내장 브라우저 사용",
         "use_builtin_desc": "{{productName}}의 내장 패널에서 페이지를 엽니다. 끄면 playwright-cli로 탐색합니다.",
         "browsing": "브라우징",

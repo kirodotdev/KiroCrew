@@ -16803,6 +16803,10 @@
         "backfill_folder_gone_nothing_filed": "A pasta {{folder}} foi removida enquanto isto era executado, por isso nada foi arquivado. Primeiro salve estas configurações para criá-la novamente."
       },
       "browserPanel": {
+        "public_registry_refused_message": "O registro npm público ({{url}}) também recusou a solicitação (npm {{code}}). Um proxy ou uma política de rede nesta máquina pode estar bloqueando. Entre novamente no seu próprio registro npm e instale de novo.",
+        "registry_auth_message": "O npm não conseguiu entrar no seu registro npm configurado ({{registry}}, npm {{code}}). O login provavelmente expirou. Entre novamente nesse registro e instale de novo, ou instale uma vez a partir do registro npm público ({{url}}). Suas configurações do npm não mudam: só essa instalação usa o registro público.",
+        "registry_auth_message_unknown": "O npm não conseguiu entrar no seu registro npm configurado (npm {{code}}). O login provavelmente expirou. Entre novamente nesse registro e instale de novo, ou instale uma vez a partir do registro npm público ({{url}}). Suas configurações do npm não mudam: só essa instalação usa o registro público.",
+        "retry_public_registry": "Instalar do registro npm público",
         "use_builtin_label": "Usar o navegador integrado",
         "use_builtin_desc": "Abre as páginas no painel integrado do {{productName}}. Desative para navegar com o playwright-cli.",
         "browsing": "Navegação",

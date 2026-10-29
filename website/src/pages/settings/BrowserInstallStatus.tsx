@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle2, Loader2 } from 'lucide-react'
+import { CheckCircle2, Loader2, RotateCcw } from 'lucide-react'
 
 import type { BrowserEngine, BrowserInstallJob } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Btn } from '../../components/ui'
 import { fmtDuration } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
@@ -74,6 +75,31 @@ function finishedHeadline(job: BrowserInstallJob): string {
   return i18nT('pages.settings.browserPanel.outcome_failed')
 }
 
+/** The registry the opt-in retry installs from; a parameter, never catalog
+ *  text, so translations cannot alter it. Mirrors the gateway's
+ *  `npm_registry_auth.PUBLIC_NPM_REGISTRY`. */
+const PUBLIC_NPM_REGISTRY = 'https://registry.npmjs.org/'
+
+/**
+ * The panel's own words for an npm registry refusal, or `null` for any other
+ * failure. The gateway's detail is English and repeats npm's raw advice; the
+ * code and its parameters let the reader see it in their own language.
+ */
+function registryRefusalText(job: BrowserInstallJob): string | null {
+  // Without the code the panel would have to invent one; the gateway's own
+  // detail is shown instead.
+  const code = job.error_params?.npm_code
+  if (!code) return null
+  if (job.error_code === 'public_registry_refused') {
+    return i18nT('pages.settings.browserPanel.public_registry_refused_message', { code, url: PUBLIC_NPM_REGISTRY })
+  }
+  if (job.error_code !== 'registry_auth') return null
+  const registry = job.error_params?.registry
+  return registry
+    ? i18nT('pages.settings.browserPanel.registry_auth_message', { registry, code, url: PUBLIC_NPM_REGISTRY })
+    : i18nT('pages.settings.browserPanel.registry_auth_message_unknown', { code, url: PUBLIC_NPM_REGISTRY })
+}
+
 /**
  * The one place install progress and outcome are shown.
  *
@@ -89,6 +115,8 @@ export function BrowserInstallStatus({
   receivedAt,
   statusError,
   allowHandoff,
+  onRetryPublicRegistry,
+  retryBlockedText = null,
 }: {
   activity: InstallActivity | null
   finished: BrowserInstallJob | null
@@ -101,6 +129,11 @@ export function BrowserInstallStatus({
   /** False while an unsaved token draft is on the panel: the hand-off navigates
    *  away and would discard it. */
   allowHandoff: boolean
+  /** Starts the opt-in CLI install from the public npm registry. Offered only
+   *  after the operator's own registry refused the install. */
+  onRetryPublicRegistry?: () => void
+  /** Why an install cannot start right now; disables the retry. */
+  retryBlockedText?: string | null
 }) {
   const running = activity !== null
   const [now, setNow] = useState(() => Date.now())
@@ -181,10 +214,30 @@ export function BrowserInstallStatus({
            withheld while a token draft would be lost to the navigation. */
         <ErrorNotice
           title={finishedHeadline(shownFinished)}
-          message={shownFinished.error_detail || i18nT('pages.settings.browserPanel.failure_no_detail')}
+          message={
+            registryRefusalText(shownFinished) ??
+            (shownFinished.error_detail || i18nT('pages.settings.browserPanel.failure_no_detail'))
+          }
           messagePlacement="below"
-          messageClassName="font-mono whitespace-pre-wrap break-words"
+          messageClassName={
+            registryRefusalText(shownFinished) === null ? 'font-mono whitespace-pre-wrap break-words' : undefined
+          }
           askAgent={allowHandoff}
+          footer={
+            shownFinished.kind === 'cli_setup' &&
+            shownFinished.error_code === 'registry_auth' &&
+            onRetryPublicRegistry ? (
+              <Btn
+                onClick={onRetryPublicRegistry}
+                disabled={retryBlockedText !== null}
+                title={retryBlockedText ?? undefined}
+                data-testid="browser-install-retry-public-registry"
+              >
+                <RotateCcw size={13} className="lucide-inline" />
+                {i18nT('pages.settings.browserPanel.retry_public_registry')}
+              </Btn>
+            ) : undefined
+          }
         />
       )}
       {showLegacyError && (

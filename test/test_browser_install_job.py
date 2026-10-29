@@ -31,6 +31,7 @@ _JOB_KEYS = {
     "elapsed_s",
     "error_code",
     "error_detail",
+    "error_params",
 }
 
 

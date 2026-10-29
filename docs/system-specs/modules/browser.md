@@ -264,8 +264,9 @@ a second tab therefore sees the same operation, engine, stage and elapsed time.
 | `engine` | the engine an `engine_download` fetches; `null` for `cli_setup` |
 | `status` | `running`, `succeeded`, `failed`, `interrupted` |
 | `stage` | `preparing`, `installing_cli`, `downloading_browser`, `installing_skills`, `finishing` |
-| `error_code` | `step_failed`, `timeout`, `exception`, `interrupted`, or `null` |
+| `error_code` | `step_failed`, `timeout`, `exception`, `interrupted`, `registry_auth`, `public_registry_refused`, or `null` |
 | `error_detail` | the decisive step's output, redacted in full and then cut to 2000 characters |
+| `error_params` | for `registry_auth` / `public_registry_refused`: `registry` (scheme, host and port only, or `null` when npm could not name it) and `npm_code` (`E401` or `E403`); `null` otherwise |
 
 - The job is published (`running`, `preparing`) before its worker starts, so no
   poll can observe the slot busy with nothing to show.
@@ -280,6 +281,23 @@ a second tab therefore sees the same operation, engine, stage and elapsed time.
 - `POST /api/browser/install` joins a running `cli_setup` job. Any other running
   job answers **409** `install_already_running` with that job's snapshot, from
   either endpoint; the owner check and the 400s for a malformed body run first.
+- **Registry refusals.** When the npm step fails and npm's own first
+  `npm error code` line (or `npm ERR! code` on older npm) is `E401` or `E403`,
+  the step names the registry npm used for the package (`@playwright:registry`,
+  then `registry`, read with `npm config get`) and replaces npm's text with a
+  plain message; the job reports `registry_auth`. Only the registry's scheme,
+  host and port are shown, because a registry URL can carry a token in its user
+  info, path or query. Any other npm failure keeps npm's output. The owner of
+  this logic is `browser_cli/npm_registry_auth.py`.
+- **Opt-in public registry.** `POST /api/browser/install` takes an optional body
+  `{"registry": "public"}`: that one install passes `--registry
+  https://registry.npmjs.org/` and `--@playwright:registry=` the same URL to npm,
+  and changes nothing in the operator's npm configuration. No body, `{}` or an
+  unreadable body is the ordinary install; any other `registry` value is
+  **400** `unknown_registry`. The panel offers this only after `registry_auth`;
+  a refusal on the public registry reports `public_registry_refused` and offers
+  no further retry. The option is ignored when the request joins a running
+  `cli_setup` job (the panel disables the button while any job runs).
 - `installing` and `last_error` are kept for older clients and are derived from
   the job.
 - Job state is in memory. A restarted gateway reports `install_job: null`, never

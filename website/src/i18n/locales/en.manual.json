@@ -8859,6 +8859,10 @@
       },
       "browserPanel": {
         "attach_title": "Use your own logged-in browser",
+        "public_registry_refused_message": "The public npm registry ({{url}}) refused the request too (npm {{code}}). A proxy or network policy on this machine may block it. Sign in to your own npm registry again, then install again.",
+        "registry_auth_message": "npm could not sign in to your configured npm registry ({{registry}}, npm {{code}}). The login there has probably expired. Sign in to that registry again and install again, or install once from the public npm registry ({{url}}). Your npm settings stay as they are: only that one install uses the public registry.",
+        "registry_auth_message_unknown": "npm could not sign in to your configured npm registry (npm {{code}}). The login there has probably expired. Sign in to that registry again and install again, or install once from the public npm registry ({{url}}). Your npm settings stay as they are: only that one install uses the public registry.",
+        "retry_public_registry": "Install from the public npm registry",
         "token_stored": "saved",
         "install_steps_intro": "Installing runs three steps.",
         "step_npm": "Install @playwright/cli globally with npm.",

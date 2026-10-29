@@ -79,9 +79,22 @@ export interface BrowserInstallJob {
   finished_at: string | null
   /** Server-computed at response time; the panel ticks it forward locally. */
   elapsed_s: number
-  error_code: 'step_failed' | 'timeout' | 'exception' | 'interrupted' | null
+  /** `registry_auth`: the operator's own npm registry refused the CLI install
+   *  (npm E401/E403), so the panel offers the opt-in public-registry retry.
+   *  `public_registry_refused`: that retry was refused too. */
+  error_code:
+    | 'step_failed'
+    | 'timeout'
+    | 'exception'
+    | 'interrupted'
+    | 'registry_auth'
+    | 'public_registry_refused'
+    | null
   /** Redacted, then truncated, by the gateway. */
   error_detail: string | null
+  /** Values the translated message for `error_code` names. Absent from an older
+   *  gateway; `null` for codes that carry none. */
+  error_params?: { registry: string | null; npm_code: string | null } | null
 }
 
 /**
@@ -223,7 +236,10 @@ export function createBrowserAndComputerUseEndpoints({ get, post, put, j }: Clie
     setBrowserToken: (token: string) => put('/api/browser/token', { token }).then(j) as Promise<{ok: boolean; token: boolean}>,
     // Both reject a busy slot with 409 `install_already_running`; the active job
     // rides on that rejection and `browserInstallConflictJob` reads it back.
-    installBrowserCli: () => post('/api/browser/install', {}).then(j) as Promise<BrowserInstallData>,
+    // `registry: 'public'` is the operator's opt-in retry after their own npm
+    // registry refused the install; without it npm uses their configuration.
+    installBrowserCli: (opts?: { registry?: 'public' }) =>
+      post('/api/browser/install', opts?.registry ? { registry: opts.registry } : {}).then(j) as Promise<BrowserInstallData>,
     installBrowserEngine: (engine: BrowserEngine) => post('/api/browser/engine', { engine }).then(j) as Promise<BrowserInstallData>,
     getBrowserView: () => get('/api/browser/view').then(j) as Promise<BrowserViewData>,
     startBrowserView: () => post('/api/browser/view/start', {}).then(j) as Promise<BrowserViewData>,
