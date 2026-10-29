@@ -195,6 +195,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         ledger_wake,
         session_ledger,
         work_ledger,
+        work_preview,
     )
     from kiro_crew.constants import (  # noqa: F401
         env_file_display,
@@ -232,6 +233,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.validation import (  # noqa: F401
         WORK_LEDGER_READ_SCHEMA,
         WORK_LEDGER_RECORD_SCHEMA,
+        WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
         WORK_REPORT_SCHEMA,
         ValidationError,
         validate_tool_args,

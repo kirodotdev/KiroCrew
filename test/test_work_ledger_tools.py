@@ -27,6 +27,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew import validation
 from kiro_crew import work_ledger as wl
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.work_vocab import worker_statuses
 
 #: The real implementation, captured before the autouse fixture stubs the name.
 #: A test that drives the true branch has to reach past its own default.
@@ -998,7 +999,14 @@ def test_the_schema_caps_restate_the_stores_own():
     pr = next(f for f in report.fields if f.name == "pr")
     assert (pr.min_val, pr.max_val) == (wl.MIN_PR, wl.MAX_PR)
     status = next(f for f in report.fields if f.name == "status")
-    assert status.allowed == wl.WORKER_STATUSES
+    assert status.allowed == frozenset(worker_statuses(False))
+    preview = validation.WORK_REPORT_REMOTE_DISPATCH_SCHEMA
+    assert next(f for f in preview.fields if f.name == "status").allowed == wl.WORKER_STATUSES
+    # Every field but ``status`` is the very same spec, so the two cannot drift.
+    assert [f for f in preview.fields if f.name != "status"] == [
+        f for f in report.fields if f.name != "status"
+    ]
+    assert preview.custom_validator is report.custom_validator
 
     record = validation.WORK_LEDGER_RECORD_SCHEMA
     assert next(f for f in record.fields if f.name == "title").max_len == wl.MAX_TITLE_CHARS

@@ -13,6 +13,7 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
+from kiro_crew import work_preview
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.session_ledger import _store_name
 from kiro_crew.work_ledger_records import (
@@ -41,7 +42,6 @@ from kiro_crew.work_ledger_records import (
     SCHEMA_VERSION,
     TERMINAL_ITEM_STATES,
     VERDICTS,
-    WORKER_STATUSES,
     ConductorRecord,
     WorkItem,
     WorkLedgerError,
@@ -85,7 +85,7 @@ from kiro_crew.work_ledger_store import (
     read_conductor,
     read_work_item,
 )
-from kiro_crew.work_vocab import WORK_REASON_STATUSES
+from kiro_crew.work_vocab import WORK_REASON_STATUSES, worker_statuses
 
 # --------------------------------------------------------------------------- #
 # Bindings. One file per worker, written only by a conductor's ``bind`` action, and
@@ -737,7 +737,12 @@ def apply_worker_report(
     :func:`_coalesce_progress` — but the item's own fields always hold the newest
     report.
     """
-    checked_status = _require_choice(status, WORKER_STATUSES, "status", CODE_INVALID_STATUS)
+    # The statuses this report may be WRITTEN with: ``reply`` only under the
+    # remote-dispatch preview, so with it off the refusal is exactly the old one.
+    # Checked before the item is read, so a ``reply`` on a closed item is refused
+    # ``item_closed`` with the preview on and ``invalid_status`` with it off.
+    admitted = frozenset(worker_statuses(work_preview.remote_dispatch()))
+    checked_status = _require_choice(status, admitted, "status", CODE_INVALID_STATUS)
     checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary")
     checked_artifacts = _require_artifacts(artifacts)
     checked_pr = _require_pr(pr)

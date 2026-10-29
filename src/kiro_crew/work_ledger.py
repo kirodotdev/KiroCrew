@@ -1228,6 +1228,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
+    from kiro_crew import work_preview  # noqa: F401
     from kiro_crew.atomic_write import read_bytes_with_retry  # noqa: F401
     from kiro_crew.config.paths import data_home  # noqa: F401
     from kiro_crew.platform_compat import (  # noqa: F401
@@ -1256,4 +1257,5 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         WORK_VERDICTS,
         WORK_WORKER_STATUSES,
         work_event_id,
+        worker_statuses,
     )

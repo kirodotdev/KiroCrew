@@ -368,6 +368,7 @@ Each cycle:
    | `done` | the worker CLAIMS acceptance is met | verify (step 3) |
    | `blocked` | an external dependency stopped the work | clear it or re-plan around it; when you answer the worker, `session_send` it, then `work_ledger_record` `action=decide` |
    | `question` | your own decision is needed | `session_send` the answer, then `work_ledger_record` `action=decide`; `session_read_message` the reply |
+   | `reply` | only while the `work_ledger.remote_dispatch` preview is on: the worker's answer to a follow-up you sent it | relay the summary to the worker that asked; run no acceptance, since it claims nothing finished. A `reply` replaces the item's status like any report, so verify a `done` before you send its worker a follow-up |
 
    `blocked` and `question` differ by who must act. That is why they are separate
    values, and why you must not treat one as the other.

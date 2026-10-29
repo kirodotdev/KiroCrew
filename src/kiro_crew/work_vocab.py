@@ -37,7 +37,11 @@ WORK_ACTIONS: tuple[str, ...] = (
 )
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
-WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question")
+#: Every status a worker report may CARRY, so every reader of a stored report (the
+#: crew-log entry types, the fold, the metrics series, the boards) knows each one.
+#: Which of them a report may be WRITTEN with is :func:`worker_statuses`: ``reply``
+#: is admitted only while :data:`WORK_REMOTE_DISPATCH_SETTING` is on.
+WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question", "reply")
 #: Worker statuses whose ARRIVAL needs the conductor, and the whole set that wakes
 #: it: ``done`` is a claim it must verify, ``blocked`` an external dependency it must
 #: clear, ``question`` a decision only it can make. ``progress`` is deliberately
@@ -49,7 +53,19 @@ WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "questio
 #: must not grow imports, and ``conductor_wake`` is reachable from the gateway's boot
 #: path. Two spellings of this set would let a trigger push for news the gate then
 #: refuses, which is precisely the wake nobody can see is wasted.
-WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
+#:
+#: ``reply`` is a worker's answer to a follow-up the conductor sent it
+#: (rfc-conductor-remote-dispatch §3b): it claims nothing finished and needs no
+#: evidence, but the conductor is waiting to relay it. Both readers decide through
+#: :func:`wake_statuses`, which drops it while the preview is off.
+WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question", "reply")
+#: The statuses only the remote-dispatch Feature Preview admits. With
+#: :data:`WORK_REMOTE_DISPATCH_SETTING` off, a report carrying one is refused as an
+#: unknown status and no wake reads it, exactly as before the status existed.
+WORK_REMOTE_DISPATCH_STATUSES: tuple[str, ...] = ("reply",)
+#: The config key of the remote-dispatch Feature Preview (default off), read per call
+#: by ``work_preview.remote_dispatch``.
+WORK_REMOTE_DISPATCH_SETTING: str = "work_ledger.remote_dispatch"
 #: When a ``blocked`` or ``question`` report waits on a person, as data rather than
 #: prose: ``approval`` (a tool approval timed out or waits) or ``needs_human`` (only a
 #: person can unblock it). A work-ledger watch whose open items all carry one,
@@ -109,6 +125,20 @@ WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "close": ("state", "decision"),
     "accept": ("acceptance",),
 }
+
+
+def worker_statuses(remote_dispatch: bool) -> tuple[str, ...]:
+    """The statuses a ``work_report`` may be written with, in declaration order."""
+    if remote_dispatch:
+        return WORK_WORKER_STATUSES
+    return tuple(s for s in WORK_WORKER_STATUSES if s not in WORK_REMOTE_DISPATCH_STATUSES)
+
+
+def wake_statuses(remote_dispatch: bool) -> tuple[str, ...]:
+    """The worker statuses whose arrival wakes the conductor, in declaration order."""
+    if remote_dispatch:
+        return WORK_WAKE_STATUSES
+    return tuple(s for s in WORK_WAKE_STATUSES if s not in WORK_REMOTE_DISPATCH_STATUSES)
 
 
 # --------------------------------------------------------------------------

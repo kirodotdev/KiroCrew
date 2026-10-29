@@ -29,7 +29,7 @@ import work_ledger_helpers
 from work_ledger_helpers import CONDUCTOR, WORKER, _bytes_on_disk, _new_item
 
 from kiro_crew import work_ledger as wl
-from kiro_crew.work_vocab import WORK_CLOSED_WINDOW
+from kiro_crew.work_vocab import WORK_CLOSED_WINDOW, worker_statuses
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _isolated_home = work_ledger_helpers._isolated_home
@@ -49,7 +49,9 @@ def test_verdicts_are_accept_evals_five_values():
 
 
 def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
-    assert wl.WORKER_STATUSES == {"progress", "done", "blocked", "question"}
+    """Four a report may be written with; ``reply`` is stored only under the preview."""
+    assert wl.WORKER_STATUSES == {"progress", "done", "blocked", "question", "reply"}
+    assert set(worker_statuses(False)) == {"progress", "done", "blocked", "question"}
 
 
 def test_event_kinds_are_exactly_seven():
