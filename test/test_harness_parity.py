@@ -68,6 +68,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_MATE_WORKER_KIT,
+    ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
@@ -292,24 +293,48 @@ def test_member_capabilities_are_opt_in() -> None:
     assert ACP_BACKENDS_MEMBER_TOOL_LIMITS == frozenset({ACP_BACKEND_KIRO})
 
 
-def test_the_mate_worker_kit_is_opt_in() -> None:
-    """H6: a crewmate's worker runs with its kit only on a backend that opted in.
+def test_the_mate_worker_takes_the_member_rule() -> None:
+    """H6: a crewmate's worker runs only where its per-session spec is carried.
 
-    Both providers answer by membership, and the allocation refuses a worker on
-    any other backend before spawn, so no harness inherits "runs the worker" from
-    a set it was never added to and none runs the worker on its bare base.
+    The allocation refuses a worker with the member chat's two codes, so a harness
+    runs the worker only by being in ``ACP_BACKENDS_MATE_WORKER_KIT`` (member hosts
+    that carry the per-session spec; not kiro-cli, which reads ``--agent`` off disk)
+    and, for a crewmate whose file turns off single tools, in
+    ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`` (KAS, which carries them as the
+    worker spec's ``excludedTools``).
     """
+    from kiro_crew import mate_worker as mate_worker_mod
     from kiro_crew.acp.session_provider import AcpSessionProvider
     from kiro_crew.session_allocation_parts import get_or_create
 
     for provider in (providers_acp.AcpProvider, AcpSessionProvider):
         source = inspect.getsource(provider.mate_worker_kit_supported.fget)
         assert "in ACP_BACKENDS_MATE_WORKER_KIT" in source
-    assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset({ACP_BACKEND_KAS})
+    assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
+    assert ACP_BACKENDS_MATE_WORKER_KIT <= ACP_BACKENDS_MEMBER_CAPABILITIES
+    assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MATE_WORKER_KIT
+    # The worker's prompt rides the context block exactly where the host's mirror
+    # projects no spec prompt; KAS's wire spec carries it.
+    from kiro_crew.providers.mirrors.base import Concern, Disposition
+    from kiro_crew.providers.mirrors.registry import mirror_for
+
+    assert ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT <= ACP_BACKENDS_MATE_WORKER_KIT
+    for backend in ACP_BACKENDS_MATE_WORKER_KIT:
+        mirror = mirror_for(backend)
+        withheld = (
+            mirror is not None
+            and mirror.rulings()[Concern.PROMPT].disposition is Disposition.WITHHELD
+        )
+        assert withheld is (backend in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT), backend
     allocation = inspect.getsource(get_or_create)
-    assert "is_crewmate_worker_session(key)" in allocation
+    assert "if is_crewmate_worker_session(key):" in allocation
     assert "provider.mate_worker_kit_supported is not True" in allocation
-    assert 'CapabilityStartupError("worker_kit_harness_unsupported")' in allocation
+    assert 'CapabilityStartupError("capability_harness_unsupported")' in allocation
+    assert "if provider.mate_worker_tool_limits_supported is not True:" in allocation
+    assert 'CapabilityStartupError("capability_tool_limits_unsupported")' in allocation
+    for backend in ACP_BACKENDS_KNOWN:
+        refused = mate_worker_mod.worker_kit_backend_refusal(backend)
+        assert (refused is None) is (backend in ACP_BACKENDS_MATE_WORKER_KIT), backend
 
 
 def test_steer_is_opt_in() -> None:
@@ -573,6 +598,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         ("ACP_BACKENDS_MEMBER_CAPABILITIES", ACP_BACKENDS_MEMBER_CAPABILITIES),
         ("ACP_BACKENDS_MEMBER_TOOL_LIMITS", ACP_BACKENDS_MEMBER_TOOL_LIMITS),
         ("ACP_BACKENDS_MATE_WORKER_KIT", ACP_BACKENDS_MATE_WORKER_KIT),
+        ("ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT", ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
         ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", ACP_BACKENDS_STEER_CONCURRENT_PROMPT),

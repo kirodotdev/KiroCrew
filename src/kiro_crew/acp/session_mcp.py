@@ -659,6 +659,39 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
     return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
 
 
+def _crewmate_worker_spec(
+    agent: str | None,
+    spec: dict[str, Any] | None,
+    session_key: str,
+    *,
+    tool_limits_honoured: bool = False,
+) -> dict[str, Any] | None:
+    """*spec*, or for a crewmate's worker session the worker spec it runs on.
+
+    The on-disk ``kirocrew-mate-worker`` is the base every crewmate's worker shares;
+    the session's own worker is that base plus its crewmate's file
+    (``mate_worker.worker_session_spec``, read from the session's execution record,
+    the seam KAS's projection reads too). Every later read below is of THIS spec, so
+    the array, the withhold set and the per-tool restrictions are the worker's own.
+    Any other agent, or no session key, keeps *spec*. A worker session whose base
+    is absent or unreadable raises :class:`~kiro_crew.mate_worker.WorkerKitUnreadable`
+    (fail closed, as KAS's projection does) rather than run without its kit. On a
+    host that does not honour single-tool limits (*tool_limits_honoured* False, the
+    default), a crewmate file that sets any refuses with
+    ``capability_tool_limits_unsupported``, judged on the read this spec is built from.
+    """
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT, WorkerKitUnreadable, worker_session_spec
+
+    if agent != MATE_WORKER_AGENT or not session_key:
+        return spec
+    if not isinstance(spec, dict):
+        raise WorkerKitUnreadable(
+            f"worker session {session_key}: the worker base spec {MATE_WORKER_AGENT!r} is "
+            f"missing or unreadable, so the worker would run without its kit"
+        )
+    return worker_session_spec(dict(spec), session_key, refuse_tool_limits=not tool_limits_honoured)
+
+
 def _session_spec_and_snapshot_for(
     agent: str, work_dir: str | Path | None = None
 ) -> tuple[dict[str, Any] | None, Any]:
@@ -1054,6 +1087,8 @@ def session_mcp_projection(
     *,
     stub_server_names: Collection[str] = (),
     work_dir: str | Path | None = None,
+    session_key: str = "",
+    worker_tool_limits_honoured: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1077,6 +1112,9 @@ def session_mcp_projection(
     run it off the event loop.
     """
     spec, snapshot = _session_spec_and_snapshot_for(agent, work_dir) if agent else (None, None)
+    spec = _crewmate_worker_spec(
+        agent, spec, session_key, tool_limits_honoured=worker_tool_limits_honoured
+    )
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings

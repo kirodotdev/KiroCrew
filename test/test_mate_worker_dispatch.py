@@ -20,7 +20,11 @@ from chat_test_helpers import _make_state
 from member_memory_helpers import forget_declared_stores, write_member_home
 
 from kiro_crew import mate_worker
-from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN, ACP_BACKENDS_MATE_WORKER_KIT
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_MATE_WORKER_KIT,
+)
 from kiro_crew.config import loader
 from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
@@ -341,18 +345,37 @@ def test_a_worker_slot_made_again_on_an_ordinary_template_leaves_at_the_commit(
     assert _selected(key) == ACP_BACKEND_KIRO
 
 
-def test_a_worker_on_a_backend_that_cannot_carry_its_kit_is_refused(
+def test_a_worker_on_a_backend_that_loads_no_member_spec_is_refused(
     crewmate, tmp_path, no_known_workers
 ):
-    _set_backends(tmp_path, default="kiro", member="claude")
+    """The member chat's refusal and code: goose loads no saved member spec."""
+    _set_backends(tmp_path, default="kiro", member="goose")
     state, caller, _execution = crewmate
     before = set(state._slots)
 
     with pytest.raises(sc.SessionControlError) as refused:
         _create(state, caller)
 
-    assert refused.value.code == "worker_kit_harness_unsupported"
-    assert "claude" in str(refused.value) and "kas" in str(refused.value)
+    assert refused.value.code == "capability_harness_unsupported"
+    assert "goose" in str(refused.value) and "kas" in str(refused.value)
+    assert set(state._slots) == before  # nothing was allocated
+
+
+def test_a_worker_that_lands_on_kiro_cli_is_refused(
+    crewmate, tmp_path, no_known_workers, monkeypatch
+):
+    """kiro-cli loads member specs but reads ``--agent`` off disk, where the worker
+    spec is not, so a worker that lands there (KAS not selectable) is refused."""
+    _set_backends(tmp_path, default="kiro", member="kiro")
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda _agent: ACP_BACKEND_KIRO)
+    state, caller, _execution = crewmate
+    before = set(state._slots)
+
+    with pytest.raises(sc.SessionControlError) as refused:
+        _create(state, caller)
+
+    assert refused.value.code == "capability_harness_unsupported"
+    assert "(kiro)" in str(refused.value) and "kas" in str(refused.value)
     assert set(state._slots) == before  # nothing was allocated
 
 
@@ -379,8 +402,8 @@ def test_only_the_crewmates_worker_record_routes_to_its_backend(no_known_workers
 
 @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
 def test_every_backend_carries_the_kit_or_refuses_the_worker(backend, monkeypatch, tmp_path):
-    """No backend runs a crewmate's worker on the bare base: either its projection
-    carries the per-session spec, the crewmate's switched-off tool withheld, or the
+    """No backend runs a crewmate's worker on the bare base: either it carries the
+    per-session spec, and that spec carries the crewmate's switched-off tool, or the
     worker is refused with a remedy."""
     refusal = mate_worker.worker_kit_backend_refusal(backend)
     if backend not in ACP_BACKENDS_MATE_WORKER_KIT:

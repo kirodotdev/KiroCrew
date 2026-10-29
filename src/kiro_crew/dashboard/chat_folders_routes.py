@@ -11,6 +11,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_folders_icons import (
     _CHAT_FOLDER_ICON_EPOCHS,
     _CHAT_FOLDER_PENDING_ICON_TASKS,
@@ -318,12 +319,12 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "order" in body:
         # A non-numeric, null, or non-finite order is caller error, not a server
         # fault: int() would raise and surface as a 500 (no middleware maps
-        # handler exceptions). OverflowError covers JSON infinities such as
-        # 1e309, which int() rejects with neither TypeError nor ValueError.
-        # Skip the field instead, matching api_chat_tag_update.
+        # handler exceptions). body_int turns a JSON infinity such as 1e309
+        # into a ValueError. Skip the field instead, matching
+        # api_chat_tag_update.
         try:
-            changes["order"] = int(body["order"])
-        except (TypeError, ValueError, OverflowError):
+            changes["order"] = body_int(body["order"])
+        except (TypeError, ValueError):
             pass
     if "default_agent" in body:
         val = body["default_agent"]

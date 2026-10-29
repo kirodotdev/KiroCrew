@@ -688,6 +688,14 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     # too, so an answer fully flushed before the last tool (empty
     # `assistant_text`) still publishes.
     _mirror_reply_text, _mirror_final_segment = _turn_full_reply_text(turn)
+    if not _mirror_reply_text.strip() and turn._terminal_directive_applied:
+        # A quiet end (``nothing_to_do``) is the turn's answer. The dashboard
+        # shows it on the tool card, but the thread's only trace would be a task
+        # step folded inside the collapsed stream, so a quiet patrol cycle reads
+        # there as one that never ran. Post the outcome line as the reply. It
+        # asks nothing, so no options control is minted from it.
+        _mirror_reply_text = turn._terminal_directive_text
+        _mirror_final_segment = ""
     if (
         _mirror_reply_text
         and state.slack_client
@@ -804,4 +812,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     # segment after the last tool call.
     if not is_slash:
         _xs_reply = _cross_surface_reply_text(_turn_reply_segments(turn), turn.assistant_text)
+        if not _xs_reply.strip() and turn._terminal_directive_applied:
+            # Same quiet end as the Slack leg above: the outcome line is the reply.
+            _xs_reply = turn._terminal_directive_text
         await _deliver_cross_surface_reply(state, session_key, _xs_reply, slot=slot)

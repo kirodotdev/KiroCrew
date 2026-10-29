@@ -337,8 +337,8 @@ class TestChatFolderOrderIsNotA500:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("bad_order", ["abc", None, [], {}, "1.5", 1e309, -1e309, "nan"])
     async def test_bad_order_does_not_500(self, tmp_path, monkeypatch, bad_order):
-        """1e309 parses to float('inf'), and int(inf) raises OverflowError -- which
-        is neither TypeError nor ValueError, so it needs its own entry."""
+        """1e309 parses to float('inf'), which body_int turns into a ValueError
+        where int(inf) would raise OverflowError."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)

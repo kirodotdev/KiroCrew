@@ -2,9 +2,11 @@
 
 ## Overview
 
-Pre-send prompt optimization is an explicit compose-bar action. When enabled for a `ChatInput` host, `Cmd/Ctrl+Shift+Enter` and the sparkle button rewrite the draft for scope, specificity, and structure before it is sent to the agent. `optimizePrompt` (`usePromptOptimizer`, `website/src/components/chat-input/optimizer.ts`) never sends the result; it writes the rewrite back to the draft for review, editing, or discard.
+Pre-send prompt optimization is an explicit compose-bar action. When enabled for a `ChatInput` host, `Cmd/Ctrl+Shift+Enter` and the sparkle button rewrite the draft for clarity and structure before it is sent to the agent. `optimizePrompt` (`usePromptOptimizer`, `website/src/components/chat-input/optimizer.ts`) never sends the result; it writes the rewrite back to the draft for review, editing, or discard.
 
-There is no client- or server-side heuristic that decides whether a nonempty prompt merits optimization. `handle_optimize` returns empty drafts directly, while `OPTIMIZER_SYSTEM` instructs the model to leave prompts that are already specific, scoped, and actionable unchanged. The handler also marks a case-insensitive match as unchanged, so cosmetic casing cannot replace a draft.
+There is no client- or server-side heuristic that decides whether a nonempty prompt merits optimization. `handle_optimize` returns empty drafts directly, while `OPTIMIZER_SYSTEM` instructs the model to leave prompts that are already clear unchanged. The handler also marks a case-insensitive match as unchanged, so cosmetic casing cannot replace a draft.
+
+A rewrite restates the user's ask and adds nothing to it. `OPTIMIZER_SYSTEM` lets it replace hedging with direct verbs, split a compound ask into one numbered step per thing asked, and add its preserve-existing-behavior clause when the task modifies existing work. It does not add requirements, tests, examples, edge cases or output formats, does not answer, diagnose or start solving the task, and leaves an open request (explore, look into) open. The examples in the prompt are what the model copies, so `TestOptimizerPromptContract` checks every example rewrite uses only its draft's words plus that clause, and that an open explore request and an already specific coding ask are kept unchanged.
 
 ## Backend
 

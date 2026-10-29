@@ -16,6 +16,7 @@ import { type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Glass from '../../components/Glass'
+import HeaderControl from './HeaderControl'
 import CrewmateSwitcher, { CrewmateUnreadColumn } from './CrewmateSwitcher'
 import { createPortal } from 'react-dom'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -116,10 +117,12 @@ export function MembersPageThreadHeader({
           faceOnStageFor={entranceFaceHidden ? active.name : ''}
         />
         </div>
-        <Glass
-          as="button"
-          variant="chip"
-          radius={999}
+        <HeaderControl
+          inBar={headerInBar}
+          chipClassName="md:hidden glass-hover inline-flex items-center justify-center w-8 h-8 rounded-full text-text cursor-pointer"
+          // In the shell bar it is the Sessions bar's own drawer toggle, bare
+          // and the same size; over the pane it stays a Glass chip.
+          barClassName="md:hidden mc-touch-hit p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0"
           // Back to the roster. On a phone the roster is the drawer over
           // this chat, so the control slides it in and nothing unmounts.
           // Otherwise, when this entry was pushed from the roster on
@@ -142,7 +145,6 @@ export function MembersPageThreadHeader({
             if (!schedAtStakeRef.current()) { go(); return }
             void schedGuardRef.current().then((ok) => { if (ok) go() })
           }}
-          className="md:hidden glass-hover inline-flex items-center justify-center w-8 h-8 rounded-full text-text cursor-pointer"
           aria-label={t('pages.membersPage.toggle_roster')}
           data-testid="member-back"
           aria-expanded={rosterDrawerAvailable ? rosterDrawerOpen : undefined}
@@ -151,9 +153,9 @@ export function MembersPageThreadHeader({
           {/* On a phone this opens the roster drawer, so it wears the
               Sessions page's own drawer toggle, not a back arrow. */}
           {rosterDrawerAvailable
-            ? (rosterDrawerOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />)
+            ? (rosterDrawerOpen ? <PanelLeftLight size={headerInBar ? 18 : 16} /> : <PanelLeftSolid size={headerInBar ? 18 : 16} />)
             : <ArrowLeft size={16} className="lucide-inline" />}
-        </Glass>
+        </HeaderControl>
       </div>
       {/* The identity pill is one centred Glass chip holding the face,
           name and activity line. It opens Profile, not the editor; the
@@ -269,15 +271,15 @@ export function MembersPageThreadHeader({
             would otherwise be announced on every change. It is in the
             reading order for a reader who asks. */}
         <span className="sr-only" data-testid="member-pill-activity-sr">{pillActivity.label}{isLoopOn(active) ? ` · ${t('pages.membersPage.loop_on')}` : ''}</span>
-        {/* Glass, like the switcher opposite (#18325): on the floating
-            header a bare icon sat on scrolled text. */}
+        {/* A Glass chip over the pane, like the switcher opposite
+            (#18325): there a bare icon sat on scrolled text. Bare in the
+            shell bar, like the bell beside it and the Sessions bar. */}
         {showOpener && (
-          <Glass
-            as="button"
-            variant="chip"
-            radius={999}
+          <HeaderControl
+            inBar={headerInBar}
+            chipClassName="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
+            barClassName="mc-touch-hit p-2 rounded-md shrink-0 text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none"
             onClick={togglePanel}
-            className="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
             aria-pressed={panelVisible}
             aria-controls="member-side-panel"
             aria-label={t('pages.membersPage.panel_toggle')}
@@ -285,8 +287,8 @@ export function MembersPageThreadHeader({
             data-testid="member-panel-toggle"
             {...uiLocation('members.details')}
           >
-            <PanelRightSolid size={15} />
-          </Glass>
+            <PanelRightSolid size={headerInBar ? 18 : 15} />
+          </HeaderControl>
         )}
       </div>
       {/* The unread column (issue #19045), hanging under the switcher

@@ -78,6 +78,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
+    drain_when_free,
     entry_channel,
     entry_person_origin,
     owner_token,
@@ -1340,6 +1341,24 @@ class TeamsDispatcher:
             # Whether a person sent any entry this turn collapses.
             person = False
             async with self._queue.lock:
+                # Another turn holds this session's lease (a dashboard, cron or
+                # auto-nudge turn, or another channel's under a unified scope).
+                # Replaying now only reaches the busy path, which queues the text
+                # again for this loop to dequeue straight back, flipping the receipt
+                # to "Now answering" each lap with no turn started. Leave the queue
+                # in order and drain once the lease is free.
+                if self.sessions.is_busy(session_key):
+                    drain_when_free(
+                        channel=_CHANNEL,
+                        session_key=session_key,
+                        is_busy=self.sessions.is_busy,
+                    )
+                    logger.debug(
+                        "teams: session %s is held by another turn; its queue drains "
+                        "once the lease is free",
+                        session_key,
+                    )
+                    return
                 remainder: list[tuple[str, str, dict]] = []
                 defer_rest = False
                 while True:

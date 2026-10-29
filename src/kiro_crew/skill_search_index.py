@@ -60,6 +60,7 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.memory_recall import recall_terms
 from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
+from kiro_crew.sqlite_wal import enable_wal
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +367,7 @@ class SkillSearchIndex:
                 )
                 # WAL so a reader is never blocked by the indexing writer; NORMAL
                 # because a lost commit only costs a re-index.
-                conn.execute("PRAGMA journal_mode=WAL")
+                enable_wal(conn, timeout_secs=_BUSY_TIMEOUT_SECS)
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.executescript(_DDL)
                 signature = tokenizer_signature()

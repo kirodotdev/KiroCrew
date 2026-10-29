@@ -389,7 +389,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_LEGACY_DEFAULT_MAX", "value", "int"),
         ("_available_memory_gb", "function", "() -> 'float'"),
-        ("_windows_available_memory_gb", "function", "() -> 'float'"),
+        ("_host_available_gb", "function", "() -> 'float'"),
         ("_macos_vm_reclaimable_pages", "function", "() -> 'Optional[int]'"),
         ("_macos_available_memory_gb", "function", "() -> 'float'"),
         ("_CGROUP_UNLIMITED", "value", "int"),

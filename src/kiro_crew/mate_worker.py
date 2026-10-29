@@ -484,13 +484,17 @@ def _with_global_tool_offs(base: dict[str, Any], additions: dict[str, Any]) -> d
     return out
 
 
-def resolve_worker_spec(base: dict[str, Any], member_id: str | None) -> dict[str, Any]:
+def resolve_worker_spec(
+    base: dict[str, Any], member_id: str | None, *, refuse_tool_limits: bool = False
+) -> dict[str, Any]:
     """The worker spec a session of *member_id*'s worker runs on.
 
     *base* has its prompt literal. No member, or a member not on its own file, gives
     the governed base less its revocations. A binding on its own file whose file is
     absent or shadowed, or an unreadable file or record, raises
-    :class:`WorkerKitUnreadable` (fail closed).
+    :class:`WorkerKitUnreadable` (fail closed). With *refuse_tool_limits* (a host
+    that cannot honour single-tool limits), a file that sets any refuses with
+    ``capability_tool_limits_unsupported``, judged on the same read the merge uses.
     """
     from kiro_crew import mate_approval_revocations as revocations
 
@@ -534,6 +538,10 @@ def resolve_worker_spec(base: dict[str, Any], member_id: str | None) -> dict[str
             f"crewmate {member_id!r}: its worker file {name!r} cannot be read, so its "
             f"worker would run without the crewmate's own limits; fix or re-save the file"
         ) from exc
+    if refuse_tool_limits and tool_limits_of(mate_spec):
+        from kiro_crew.session_capabilities import CapabilityStartupError
+
+        raise CapabilityStartupError("capability_tool_limits_unsupported")
     additions = worker_additions(base, mate_spec)
     # An approval the owner took away in Approvals stays away, base-granted or not.
     return revocations.strip(
@@ -680,12 +688,17 @@ def note_worker_session(session_key: str, execution: Any) -> bool:
     return True
 
 
-def worker_session_spec(literal_base: dict[str, Any], session_key: str) -> dict[str, Any]:
+def worker_session_spec(
+    literal_base: dict[str, Any], session_key: str, *, refuse_tool_limits: bool = False
+) -> dict[str, Any]:
     """The spec a crewmate's worker session on *session_key* runs: base plus its kit.
 
     The harness-neutral seam; *literal_base* has its prompt literal. The crewmate
     comes from the session's own execution record, never a supplied name; a session
-    with no record or no member is refused (:class:`WorkerKitUnreadable`). Blocking.
+    with no record or no member is refused (:class:`WorkerKitUnreadable`). KAS's
+    projection reads it, and so does the session MCP projection the member-capable
+    mirrored hosts read (``acp.session_mcp.session_mcp_projection``, keyed by the
+    session). Blocking.
     """
     from kiro_crew.execution_context import read_session_execution
 
@@ -708,6 +721,8 @@ def worker_session_spec(literal_base: dict[str, Any], session_key: str) -> dict[
         raise WorkerKitUnreadable(
             f"worker session {session_key}: it names no crewmate, so whose limits apply is unknown"
         )
+    if refuse_tool_limits:
+        return resolve_worker_spec(literal_base, member_id, refuse_tool_limits=True)
     return resolve_worker_spec(literal_base, member_id)
 
 
@@ -739,6 +754,61 @@ def worker_kit_backend_refusal(backend: str) -> str | None:
         f"servers and switched-off tools for one session; set agent.member_acp_backend "
         f"to {able}"
     )
+
+
+def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
+    """What crewmate *member_id*'s own file narrows for its worker, sorted.
+
+    The member rule on the file (``tool_limited_servers``: an entry's
+    ``disabledTools``), plus every entry of its own ``excludedTools`` (as a copied
+    kit keeps them): the server an ``@server`` / ``@server/tool`` names, or the
+    native tool itself. The worker spec carries all of them as ``excludedTools``
+    (:func:`worker_additions`), which only ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``
+    honour. A server the file mutes whole is not counted. Blocking.
+    """
+    from kiro_crew.agent_sdk import agent_specs
+    from kiro_crew.config import paths as paths_mod
+
+    name = mate_file_for_member(member_id) if member_id else ""
+    if not name:
+        return ()
+    try:
+        spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
+    except agent_specs.AgentSpecUnreadable:
+        return ()
+    return tool_limits_of(spec)
+
+
+def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
+    """What crewmate file *spec* narrows for its worker (see
+    :func:`crewmate_tool_limited_servers`), from this one parse."""
+    from kiro_crew.agent_capabilities import tool_limited_servers
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    limited = set(tool_limited_servers(spec))
+    servers = _servers(spec.get("mcpServers"))
+    for ref in _strings(spec.get("excludedTools")):
+        server = _server_of(ref)
+        if not server:
+            # A native tool: the mirrored hosts project no exclusion for it either.
+            if ref.strip():
+                limited.add(ref.strip())
+        elif not (server in servers and mcp_entry_is_muted(servers[server])):
+            limited.add(server)
+    return tuple(sorted(limited))
+
+
+def worker_prompt_in_context_block(session_key: str) -> bool:
+    """Whether worker *session_key* gets its prompt only from the context block.
+
+    Answered by the session's own live provider, recorded at allocation
+    (``mate_worker_prompt_in_context``, membership of its backend in
+    ``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``), never by the config, which
+    can name another backend while this session runs.
+    """
+    from kiro_crew.members import crewmate_worker_prompt_in_context
+
+    return crewmate_worker_prompt_in_context(session_key)
 
 
 def member_worker_spec(member: str) -> dict[str, Any]:

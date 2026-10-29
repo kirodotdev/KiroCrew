@@ -1569,6 +1569,19 @@ class TestDashboardConfigPut:
             assert resp.status == 400
             assert "must be an integer" in (await resp.json())["error"]
 
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_restore_window_minutes_rejects_infinite(self, config_client_app, raw):
+        """JSON reads ``1e999`` as an infinite float: the same 400, never a 500."""
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.put(
+                "/api/dashboard/config",
+                data=f'{{"restore_window_minutes": {raw}}}',
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            assert "must be an integer" in (await resp.json())["error"]
+
     @pytest.mark.asyncio
     async def test_enum_fields_reject_unknown_values(self, config_client_app):
         async with TestClient(TestServer(config_client_app)) as client:

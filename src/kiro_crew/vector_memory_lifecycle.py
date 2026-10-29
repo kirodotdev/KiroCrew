@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import memory_record_metadata as record_meta
-from kiro_crew import memory_schema, memory_stores, platform_compat
+from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 
 if TYPE_CHECKING:
@@ -277,7 +277,9 @@ def _init_database(self: VectorMemoryStore) -> None:
     prepare_owner_only_sqlite(self._db_path)
     self._db = sqlite3.connect(str(self._db_path), check_same_thread=False, isolation_level=None)
     self._db.row_factory = sqlite3.Row
-    self._db.execute("PRAGMA journal_mode=WAL")
+    self._db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    # The switch into WAL is not covered by busy_timeout; see kiro_crew.sqlite_wal.
+    sqlite_wal.enable_wal(self._db, timeout_secs=_BUSY_TIMEOUT_MS / 1000)
     # synchronous stays at the sqlite default (FULL). NORMAL would drop the
     # per-commit fsync, but under WAL that only survives a process crash --
     # an OS crash or power loss can still lose the unsynced WAL tail, and
@@ -285,7 +287,6 @@ def _init_database(self: VectorMemoryStore) -> None:
     # rows. The write-volume problem it was meant to address is handled by
     # debouncing the last_accessed_at touch instead, which removes the
     # commits rather than weakening the ones that remain.
-    self._db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
 
     # Schema setup reads first and writes only when something is pending. The
     # first pass runs with no transaction, so the schema step of an up-to-date

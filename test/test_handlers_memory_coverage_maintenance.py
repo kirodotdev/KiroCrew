@@ -338,6 +338,8 @@ class TestPromote:
             '{"min_count": -1e999}',
             '{"min_count": [3]}',
             '{"min_count": null}',
+            # A JSON integer past float range: float() raises OverflowError.
+            '{"min_sim": 1' + "0" * 400 + "}",
         ],
     )
     async def test_infinite_or_non_number_min_count_is_400(self, raw: str) -> None:
