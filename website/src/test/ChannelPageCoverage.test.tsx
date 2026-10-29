@@ -5,7 +5,7 @@
 // the message list (MessageBubble, mentions, approval cards, thread replies), the
 // agents sidebar (state/listen badges, the listen-mode menu, dismiss, Add Agent),
 // the New Channel dialog and its preset picker, the close-channel flow, the
-// error modal fed by `apiError`, the two empty states, and the seven branches of
+// inline error notice fed by `apiError`, the two empty states, and the seven branches of
 // the `kirocrew-channel` window-event handler that stands in for the WebSocket.
 //
 // Conventions follow ChannelPage.clearContext.test.tsx: the api client is the
@@ -568,6 +568,10 @@ describe('ChannelPage — Add Agent form', () => {
     expect(notice).toHaveTextContent('Failed to add agent')
     expect(notice).toHaveTextContent('agent cap reached')
     expect(screen.queryByText('Limit Reached')).not.toBeInTheDocument()
+    // Inline, not an overlay: the failure must not block the page behind a
+    // dialog or the old raw `fixed inset-0 bg-black/50` backdrop.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(document.querySelector('.bg-black\\/50')).toBeNull()
     expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
   })
 
@@ -651,8 +655,7 @@ describe('ChannelPage — New Channel dialog', () => {
     await userEvent.click(screen.getByRole('button', { name: '+ New' }))
     await screen.findByRole('dialog', { name: 'New channel' })
     // The old overlay was a raw `fixed inset-0 bg-black/50` div; the shared
-    // Modal renders its own backdrop instead. (The error modal still carries
-    // the raw class until #5570 lands, but it is not mounted here.)
+    // Modal renders its own backdrop instead.
     expect(document.querySelector('.bg-black\\/50')).toBeNull()
     // Escape dismissal is what the hand-rolled overlay lacked — Modal owns it.
     fireEvent.keyDown(window, { key: 'Escape' })
