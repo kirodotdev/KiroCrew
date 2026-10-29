@@ -50,10 +50,11 @@ def _fake_resource(monkeypatch: pytest.MonkeyPatch, **members: Any) -> None:
     monkeypatch.setattr(pc, "resource", types.SimpleNamespace(**defaults), raising=False)
 
 
-def _memory_info_dll(working_set: int, *, ok: bool = True, peak: int = 0) -> Any:
+def _memory_info_dll(working_set: int, *, ok: bool = True, peak: int = 0, private: int = 0) -> Any:
     def _get_memory_info(_handle: Any, counters: Any, _cb: Any) -> int:
         counters._obj.WorkingSetSize = working_set
         counters._obj.PeakWorkingSetSize = peak
+        counters._obj.PagefileUsage = private
         return 1 if ok else 0
 
     return types.SimpleNamespace(GetProcessMemoryInfo=_Fn(_get_memory_info))
@@ -455,6 +456,117 @@ class TestProcRssTree:
         monkeypatch.setattr(pc, "proc_rss_bytes_for_pid", lambda _pid: None)
         monkeypatch.setattr(pc, "close_process_handle", lambda _h: None)
         assert pc.proc_rss_tree_mb_for_pid(500) is None
+
+
+class TestProcPrivateBytes:
+    def test_none_off_windows(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.proc_private_bytes_for_pid(9) is None
+
+    def test_windows_reads_the_commit_charge(self, monkeypatch):
+        kernel32 = types.SimpleNamespace(OpenProcess=_const(77), CloseHandle=_const(True))
+        _fake_windows(
+            monkeypatch,
+            kernel32=kernel32,
+            psapi=_memory_info_dll(4096, private=10 * 1024 * 1024),
+        )
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        assert pc.proc_private_bytes_for_pid(9) == 10 * 1024 * 1024
+
+    def test_windows_unopenable_pid_is_unknown(self, monkeypatch):
+        kernel32 = types.SimpleNamespace(OpenProcess=_const(0), CloseHandle=_const(True))
+        _fake_windows(monkeypatch, kernel32=kernel32, psapi=_memory_info_dll(4096))
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        assert pc.proc_private_bytes_for_pid(9) is None
+
+
+class TestProcHandleCount:
+    @staticmethod
+    def _win(monkeypatch, count, *, open_handle=77, ok=True):
+        kernel32 = types.SimpleNamespace(
+            OpenProcess=_const(open_handle),
+            CloseHandle=_const(True),
+            GetProcessHandleCount=_Fn(
+                lambda _h, out: (setattr(out._obj, "value", count), 1 if ok else 0)[1]
+            ),
+        )
+        _fake_windows(monkeypatch, kernel32=kernel32)
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+
+    def test_none_off_windows(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.proc_handle_count_for_pid(9) is None
+
+    @pytest.mark.parametrize("bad", [0, 1, -5, True])
+    def test_reserved_or_malformed_pids_are_refused(self, monkeypatch, bad):
+        assert pc.proc_handle_count_for_pid(bad) is None
+
+    def test_reads_the_handle_count(self, monkeypatch):
+        self._win(monkeypatch, 471000)
+        assert pc.proc_handle_count_for_pid(9) == 471000
+
+    def test_failed_query_is_unknown(self, monkeypatch):
+        self._win(monkeypatch, 1, ok=False)
+        assert pc.proc_handle_count_for_pid(9) is None
+
+    def test_unopenable_pid_is_unknown(self, monkeypatch):
+        self._win(monkeypatch, 1, open_handle=0)
+        assert pc.proc_handle_count_for_pid(9) is None
+
+
+class TestProcPrivateTreeAndHandles:
+    def test_off_windows(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.proc_private_tree_mb_for_pid(9) is None
+        assert pc.proc_handle_tree_max_for_pid(9) is None
+
+    def test_sums_private_bytes_over_the_validated_tree(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 900)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (500, 1, None))
+        monkeypatch.setattr(pc, "descendant_termination_handles", lambda _pid, **_k: {501: 901})
+        monkeypatch.setattr(
+            pc, "proc_private_bytes_for_pid", {500: 1024 * 1024, 501: 3 * 1024 * 1024}.get
+        )
+        monkeypatch.setattr(pc, "close_process_handle", lambda _h: None)
+        assert pc.proc_private_tree_mb_for_pid(500) == pytest.approx(4.0)
+
+    def test_handle_tree_reports_the_busiest_process(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 900)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (500, 1, None))
+        monkeypatch.setattr(pc, "descendant_termination_handles", lambda _pid, **_k: {501: 901})
+        monkeypatch.setattr(pc, "proc_handle_count_for_pid", {500: 460, 501: 471000}.get)
+        monkeypatch.setattr(pc, "close_process_handle", lambda _h: None)
+        assert pc.proc_handle_tree_max_for_pid(500) == 471000
+
+    def test_members_are_read_while_their_handles_are_still_open(self, monkeypatch):
+        """A closed handle frees the PID for reuse, so no read may follow a close."""
+        events: list[tuple[str, int]] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 900)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (500, 1, None))
+        monkeypatch.setattr(pc, "descendant_termination_handles", lambda _pid, **_k: {501: 901})
+
+        def _read(member):
+            events.append(("read", member))
+            return 1024 * 1024
+
+        monkeypatch.setattr(pc, "proc_private_bytes_for_pid", _read)
+        monkeypatch.setattr(pc, "close_process_handle", lambda h: events.append(("close", h)))
+        assert pc.proc_private_tree_mb_for_pid(500) == pytest.approx(2.0)
+        assert events == [("read", 500), ("read", 501), ("close", 901), ("close", 900)]
+
+    def test_an_entirely_unreadable_tree_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 900)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (500, 1, None))
+        monkeypatch.setattr(pc, "descendant_termination_handles", lambda _pid, **_k: {})
+        monkeypatch.setattr(pc, "proc_private_bytes_for_pid", lambda _pid: None)
+        monkeypatch.setattr(pc, "proc_handle_count_for_pid", lambda _pid: None)
+        monkeypatch.setattr(pc, "close_process_handle", lambda _h: None)
+        assert pc.proc_private_tree_mb_for_pid(500) is None
+        assert pc.proc_handle_tree_max_for_pid(500) is None
 
 
 class TestProcCpuSeconds:

@@ -186,7 +186,11 @@ class SessionConfig:
             "Recycle a session when its process tree resident memory exceeds "
             "this many MiB (default 4096). 0 disables; the internal background "
             "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
-            "flight) are never recycled.",
+            "flight) are never recycled. On Windows the figure is the larger of "
+            "the tree's working set and its committed private bytes, because a "
+            "leak that commits gigabytes can keep a small working set. On Windows "
+            "any session tree whose busiest process holds more than 50,000 "
+            "handles is warned about (not recycled), even when this is 0.",
         ),
     )
     reconcile_max_kills: int = field(
