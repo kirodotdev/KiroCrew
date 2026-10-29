@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for "Start in new worktree" inheriting the spawning
+ * Screenshot harness for "Start in a separate copy" inheriting the spawning
  * session's sidebar folder (#6347).
  *
  * Runs the REAL built SPA (website/dist) against a static file server with every
@@ -13,7 +13,7 @@
  * after the page has rendered.
  *
  * The story in one image: the spawning session ("Add rate limiting to uploads")
- * is filed under the "Kiro Crew" project folder. Clicking "Start in new worktree"
+ * is filed under the "Kiro Crew" project folder. Clicking "Start in a separate copy"
  * creates the sibling worktree and opens a new session. With the fix, the create
  * call carries the spawning session's folder_id, so the server returns the new
  * slot ALREADY filed under "Kiro Crew" and the sidebar renders it nested there
@@ -196,7 +196,7 @@ async function main() {
     await shot(`01-origin-filed-${theme}`)
     // 2. Trigger the worktree action from the follow-up card.
     await pushCard([ITEM])
-    await page.getByRole('button', { name: /Start in new worktree/ }).first().click()
+    await page.getByRole('button', { name: /Start in a separate copy/ }).first().click()
     await page.waitForTimeout(1800)
     // 3. After: the new worktree session is nested under the SAME folder,
     //    not orphaned at the sidebar's top level.

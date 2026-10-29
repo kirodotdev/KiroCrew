@@ -214,7 +214,7 @@ async function main() {
   scene.worktreeError = 'Branch already exists: feat/ws-rate-limit'
   await load('dark')
   await pushCard([ITEMS[0]])
-  await page.getByRole('button', { name: /Start in new worktree/ }).first().click()
+  await page.getByRole('button', { name: /Start in a separate copy/ }).first().click()
   await page.waitForTimeout(1500)
   await band('06-worktree-error-dark-crop')
 

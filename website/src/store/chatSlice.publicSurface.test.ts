@@ -78,7 +78,7 @@ const THUNKS: Record<string, string> = {
 const FUNCTIONS = [
   'abortActiveOlderFetch', 'batchedTextAboveFloor', 'beginSideQueueEdit', 'capturePendingAskId', 'clampToolOutput',
   'countMatchedFetchLimit', 'finishSideQueueEdit', 'floorForGen', 'forgetSideSteerSubmittedText', 'hasUnidentifiedDurableRow', 'hydrateQueuedBubbles', 'isActiveSubagent', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
-  'captureForkOrigin', 'forkMayOpen', 'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'listForkedSlot', 'mcpAppKey', 'missedChunkMarker', 'normalizeQueueEntries',
+  'captureForkOrigin', 'deleteSlotCallerReported', 'forkMayOpen', 'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'listForkedSlot', 'mcpAppKey', 'missedChunkMarker', 'normalizeQueueEntries',
   'noteSideQueueCancelWaiting', 'noteSideQueueDroppedByClose', 'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryBanner', 'queueEntryPastes', 'queueEntryQuote', 'raiseChunkSeq', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'resumeStillOpening', 'setSideQueueEditDraft',
   'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',
   'selectProjectChipLocked', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSidebarApprovalCounts', 'selectSidebarAutomationRunningKeys',

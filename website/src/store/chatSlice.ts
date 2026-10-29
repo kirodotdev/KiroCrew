@@ -616,6 +616,20 @@ function closeRefusalCode(err: unknown): string | null {
   }
 }
 
+// Keys whose next close reports its own refusal, so `deleteSlot` raises no
+// sidebar close-refused notice for it. Taken (read and cleared) synchronously
+// when that close starts, so the mark covers exactly one close, including the
+// notice an uncoded refusal raises only after its recovery refetch.
+const callerReportedCloses = new Set<string>()
+
+/** Close `key` as `deleteSlot` does, but leave a refusal to the caller, which
+ *  reports it itself: the follow-up start's kept-session notice says the same
+ *  thing with what to do next, so the sidebar notice would be a second report. */
+export function deleteSlotCallerReported(dispatch: (action: ReturnType<typeof deleteSlot>) => ReturnType<ReturnType<typeof deleteSlot>>, key: string) {
+  callerReportedCloses.add(key)
+  return dispatch(deleteSlot(key))
+}
+
 export const deleteSlot = createAsyncThunk<
   string,
   string,
@@ -629,8 +643,10 @@ export const deleteSlot = createAsyncThunk<
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
     const confirmationsAtStart = root.dashboard.closeConfirmations?.[key] ?? 0
-    // A new close press retires the last refusal's notice.
-    if (root.chat.closeRefused || root.dashboard.closeRestored) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    const callerReports = callerReportedCloses.delete(key)
+    // A new close press retires the last refusal's notice. A caller-reported
+    // close is not a press, so another session's notice stays up.
+    if (!callerReports && (root.chat.closeRefused || root.dashboard.closeRestored)) dispatch({ type: 'chat/setCloseRefused', payload: null })
     // Read before the optimistic removal takes the row away. An untitled row stores
     // null, not the localized label: the notice outlives a language switch.
     const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
@@ -733,7 +749,9 @@ export const deleteSlot = createAsyncThunk<
       // Uncoded: the server may have popped the key, so only the refetch decides.
       dispatch(releaseCloseHold({ key, requestId, distrustInFlight: uncoded }))
       const recovery = dispatch(fetchSlots())
-      if (uncoded) {
+      if (callerReports) {
+        // The caller shows its own notice for this refusal.
+      } else if (uncoded) {
         const notice = () => dispatch({ type: 'chat/setCloseRefused', payload: { key, title: refusedTitle, reason: 'failed' } })
         const shouldNotice = (readFailed: boolean) => {
           const dashboard = (getState() as RootState).dashboard
