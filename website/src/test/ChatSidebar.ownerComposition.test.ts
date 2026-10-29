@@ -111,9 +111,8 @@ describe('the facade composition', () => {
   const CALL_ORDER = [
     'useSessionSources', 'useDebouncedSessionSearch', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
     'useSessionFilterState', 'useSessionStatusFilters', 'useHistoryPane', 'useSessionCleanup', 'useBulkModelSwitch', 'usePinnedSessionOrder',
-    'useManualSessionOrder',
     'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarTags',
-    'useSidebarModels', 'useBoardColumns', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
+    'useSidebarModels', 'useBoardColumns', 'useManualSessionOrder', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
     'useColumnMatches', 'useFolderVisibility', 'useStaleMoveWatcher', 'useSearchMatches',
     'useCollapsedCrews', 'useCollapsedCrewSpaces', 'useCrewEnable', 'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
     'useFolderFilterReveal', 'useConductorLane', 'useLaneCycle', 'useSidebarScrollPeek', 'useShortcutOrder',

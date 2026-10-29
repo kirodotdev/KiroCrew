@@ -7,7 +7,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
-import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
+import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, GROUP_BY_KIND_LS_KEY, readStoredGroupByKind, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
@@ -215,6 +215,15 @@ export function useSessionFilterState() {
   const toggleFoldersShelved = useCallback(() => {
     setFoldersShelved(v => { const next = !v; safeSetItem(FOLDERS_SHELVED_LS_KEY, next ? '1' : '0'); return next })
   }, [])
+  // "Group by kind": a view-only option that splits the session list into
+  // Crew Mode / Normal / From crewmates sections. Shown in the tree lane (the
+  // default, where it groups the top-level unfiled list) and the flat lane.
+  // Off by default, persisted as the same '1'/'0' boolean string as
+  // `foldersShelved` above.
+  const [groupByKind, setGroupByKind] = useState(readStoredGroupByKind)
+  const toggleGroupByKind = useCallback(() => {
+    setGroupByKind(v => { const next = !v; safeSetItem(GROUP_BY_KIND_LS_KEY, next ? '1' : '0'); return next })
+  }, [])
   // Chips whose HIDE state is on: their matching rows are dropped from the list.
   // Include chips OR together ("unread or pinned"), but a hide is an AND over
   // the result, so "Unread + hide In progress" reads as unread sessions that are
@@ -332,7 +341,7 @@ export function useSessionFilterState() {
     activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
-    toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
+    toggleFoldersShelved, groupByKind, toggleGroupByKind, toggleFilter, disableFilter, enableFilter,
     hiddenFilters, toggleHideFilter, clearHiddenFilters,
     filterModelKeys, filterModelsExcluded, toggleModelFilter, setModelFilterExcluded, clearModelFilter,
   }

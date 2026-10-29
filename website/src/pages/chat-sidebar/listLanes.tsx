@@ -23,6 +23,7 @@ import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
 import { COLLAPSE_FLOOR_ATTR } from './collapseFloor'
 import { PinnedSessionDivider, dateSegment } from './chrome'
+import { groupFlatByKind, sessionKind, KIND_LABEL_KEY } from './kindGroups'
 import type { LaneRows } from './laneRows'
 import type { FolderBlocks } from './folderBlocks'
 import type { SidebarScope } from './scope'
@@ -68,6 +69,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
   const { activeDrag, activeSlot, allHiddenFolders, chatDropTarget, citedCreatorExists, conductorExpanded,
     conductorMatching, conductorRows, dndSensors, flatSlots, folderCreateError, folderCreateMountAbsent,
     folderDragWithheld, folderNameMatchIds, folderReorderable, folderSubtrees, folders,
+    kindGroupingActive, installedAgents,
     handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragOver, handleSidebarDragStart,
     heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, isActiveRow, laneRowWindow, laneScrollMemory,
     laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef,
@@ -348,9 +350,25 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 // guard as the history pane), and pinned rows render first
                 // without segments since pinning overrides date order.
                 const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
+                // "Group by kind" (flat lane only, opt-in): the unpinned tail is
+                // re-bucketed into Crew Mode / Normal / From crewmates sections,
+                // and the per-row segment becomes the KIND label instead of the
+                // date one. View only -- `groupFlatByKind` keeps the leading pinned
+                // block in place (the pinned band is untouched) and preserves the
+                // active sort order WITHIN each section. An empty section produces
+                // no rows and so no header. Off, `displaySlots` is `flatSlots`
+                // unchanged and the date segments render exactly as before.
+                const kindOf = (s: Slot) => sessionKind(s, installedAgents)
+                const displaySlots = kindGroupingActive
+                  ? groupFlatByKind(flatSlots, sidebarRows.isPinned, kindOf)
+                  : flatSlots
                 // Hoisted above the hold so the pixel anchor can count header heights.
-                const baseSeg = (s: Slot) => (isDateSort && !sidebarRows.isPinned(s) ? dateSegment(slotActivityTs(s)) : '')
-                const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(flatSlots, 'flat', 'flat', baseSeg)
+                const baseSeg = (s: Slot) => {
+                  if (sidebarRows.isPinned(s)) return ''
+                  if (kindGroupingActive) return i18nT(KIND_LABEL_KEY[kindOf(s)])
+                  return isDateSort ? dateSegment(slotActivityTs(s)) : ''
+                }
+                const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(displaySlots, 'flat', 'flat', baseSeg)
                 // Reads the flag holdHovered just set for THIS lane, so the header
                 // rule and the hold cannot disagree about the row being displaced.
                 const heldKey = heldDisplacedRef.current ? hoverPinRef.current?.key : undefined
@@ -371,10 +389,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                   // No divider before a segment header — the header separates.
                   const nextSeg = next ? segOf(next) : seg
                   const showDivider = next != null && !isActive && !nextIsActive && nextSeg === seg
-                    && !startsAutomaticSection(flatSlots, i + 1)
+                    && !startsAutomaticSection(displaySlots, i + 1)
                   return (
                     <Fragment key={sessionRowIdentity(s)}>
-                      {startsAutomaticSection(flatSlots, i) && <PinnedSessionDivider />}
+                      {startsAutomaticSection(displaySlots, i) && <PinnedSessionDivider />}
                       {showHeader && (
                         <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
                       )}
@@ -487,7 +505,35 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                             {draggingNestedFolder && <RootDropHint />}
                             {(() => {
                               const { fresh: freshRootRaw, stale: staleRoot } = splitStale(ungroupedSlots)
-                              const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(freshRootRaw, 'list', 'tree:root')
+                              // "Group by kind" (opt-in): re-bucket the FRESH part of
+                              // the unfiled list into Crew Mode / Normal / From
+                              // crewmates, leaving the stale-collapse split untouched
+                              // (grouping happens inside the fresh rows only). View
+                              // only -- the pinned block stays in front and the active
+                              // sort order is kept within each section. Off, the list
+                              // is the fresh rows unchanged, with no kind headers (the
+                              // tree root has no date segments, so there are none to
+                              // mix with).
+                              const kindOf = (s: Slot) => sessionKind(s, installedAgents)
+                              const displayFresh = kindGroupingActive
+                                ? groupFlatByKind(freshRootRaw, sidebarRows.isPinned, kindOf)
+                                : freshRootRaw
+                              // The kind segment per row (empty for a pinned row and
+                              // when the option is off). Hoisted ABOVE heldLane and
+                              // passed in, as the flat lane does: the hover hold's seat
+                              // arithmetic counts header heights, so without it a
+                              // hovered row jumps across a kind header on a slot update.
+                              const baseRootSeg = (s: Slot) => (kindGroupingActive && !sidebarRows.isPinned(s) ? i18nT(KIND_LABEL_KEY[kindOf(s)]) : '')
+                              const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(displayFresh, 'list', 'tree:root', baseRootSeg)
+                              // Suppress the header on the row being held/displaced,
+                              // exactly as the flat lane does, so a bucket whose sole
+                              // row is merely hovered does not lose (or gain) its header.
+                              const heldRootKey = heldDisplacedRef.current ? hoverPinRef.current?.key : undefined
+                              const rootSeg = (s: Slot) => {
+                                const seg = baseRootSeg(s)
+                                return seg && s.key === heldRootKey ? '' : seg
+                              }
+                              let prevRootSeg = ''
                               return (
                                 <>
                                   {/* Caption header before the pinned band when a property filter narrows the list. */}
@@ -497,11 +543,19 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                                   {freshRoot.map((s, i) => {
                                     const nextIsActive = isActiveRow(freshRoot[i + 1])
                                     const isActive = isActiveRow(s)
+                                    const seg = rootSeg(s)
+                                    const showHeader = seg !== '' && seg !== prevRootSeg
+                                    if (seg) prevRootSeg = seg
+                                    const nextSeg = i < freshRoot.length - 1 ? rootSeg(freshRoot[i + 1]) : seg
                                     const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
-                                      && !startsAutomaticSection(freshRoot, i + 1)
+                                      && nextSeg === seg
+                                      && !startsAutomaticSection(displayFresh, i + 1)
                                     return (
                                       <Fragment key={sessionRowIdentity(s)}>
-                                        {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
+                                        {startsAutomaticSection(displayFresh, i) && <PinnedSessionDivider />}
+                                        {showHeader && (
+                                          <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
+                                        )}
                                         {renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)}
                                       </Fragment>
                                     )

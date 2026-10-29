@@ -7,7 +7,7 @@
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, EyeOff, ChevronRight, Clock, Check, List, ListTree, Layers, RotateCcw, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -147,9 +147,10 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
     closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError, dispatch,
-    filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, folderActionError,
+    filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, conductorLaneActive, folderActionError,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
+    groupByKind, toggleGroupByKind,
     hasRemoteExecutedRow, hiddenFilters, hiddenFolderCount, instanceSessions, isMobile, lane,
     laneSwitchLabel, listNarrowed, manualOrderError, modelFilterInverted, modelFilterRows, newChatError, nextLane, pinnedOrderError,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, remoteSessionsError,
@@ -580,6 +581,33 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   <div className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unstamped-note">
                     {i18nT('pages.chatSidebar.folder_order_unstamped_note')}
                   </div>
+                )}
+                {/* "Group by kind": a view-only option that splits the session
+                    list into Crew Mode / Normal / From crewmates sections. Shown
+                    in the tree lane (the default) and the flat lane; HIDDEN in the
+                    board lane (tag columns, no single list) and the conductor lane
+                    (it nests by lineage, not kind) -- a control that displays an
+                    active setting while doing nothing is a lie (the same reason the
+                    stale control below hides in the flat lane). In the tree lane it
+                    groups the top-level unfiled list; folders keep their own
+                    sessions and order. A plain menu item that toggles a boolean,
+                    like the Folders shelve control; preventDefault keeps the menu
+                    open so the effect is visible at once. */}
+                {!boardLaneActive && !conductorLaneActive && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={e => { e.preventDefault(); toggleGroupByKind() }}
+                      data-testid="group-by-kind-toggle"
+                      role="menuitemcheckbox"
+                      aria-checked={groupByKind}
+                      title={i18nT('pages.chatSidebar.group_by_kind_hint')}
+                    >
+                      <Layers size={14} className="text-muted shrink-0" />
+                      <span className="flex-1">{i18nT('pages.chatSidebar.group_by_kind')}</span>
+                      {groupByKind && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                    </DropdownMenuItem>
+                  </>
                 )}
                 <DropdownMenuSeparator />
                 {/* Stale-session collapse threshold. Lives beside Sort rather than
