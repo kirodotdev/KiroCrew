@@ -1049,7 +1049,8 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 Twenty-one `runs-on` sites draw on the `kirocrew-runners` larger-runner group
 rather than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
 `fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
-`fork-ux-review`, and all three jobs of `fork-security-scope-review`), the five
+`fork-ux-review`, and the three credentialed jobs of
+`fork-security-scope-review` -- `generate`, `validate` and `publish`), the five
 same-repo review lanes (`codex-review`, `claude-review`,
 `first-principles-review`, `design-review`, `ux-review`), `codeql.yml`, both
 `docker-smoke.yml` jobs, and five jobs of `release.yml` (`version`,
@@ -1120,6 +1121,62 @@ label reference would break simultaneously. The group must stay Linux-only:
 group targeting dispatches to any available runner in the group, so adding a
 Windows definition to `kirocrew-runners` would make every one of these jobs
 eligible to land on Windows. A Windows definition belongs in its own group.
+
+**Two cross-platform matrix jobs reach these runners by LABEL instead.**
+`denial-differential.yml`'s `denial-differential` and
+`fork-security-scope-review.yml`'s `adjudicate` each run one Linux, one macOS
+and one Windows leg off `os: [ubuntu-latest, macos-latest, windows-latest]`.
+Their Linux and Windows legs now resolve to `kirocrew-linux-4-core` and
+`kirocrew-windows-4-core`, dispatched on `matrix.os` in a single `runs-on`
+expression -- the shape `ci.yml`'s `e2e-boot-matrix` already uses. `matrix.os`
+itself is unchanged, so each job's `name:` renders the same check names and
+branch protection is unaffected; `adjudicate`'s per-leg
+`scope-report-<matrix.os>` artifact names, which the fold job looks up, are
+unchanged for the same reason.
+
+The macOS legs stay on `macos-latest`. A macOS definition does exist
+(`kirocrew-macos-m1-3-core`, in its own `kirocrew-runners-macos` group) but no
+site in this repository uses it, and it is not the same-hardware swap the Linux
+and Windows definitions are: it is a 3-core arm64 runner capped at
+`maximum_runners: 8`, so whether a macOS leg runs unchanged on it has to be
+measured rather than assumed. Moving one is a separate decision.
+
+These two are the exception to the group-targeting rule above, and the reason is
+fork reachability. A runner group belongs to the kirodotdev organization, so a
+fork running either workflow **in its own repository** cannot reach one, and a
+job dispatched to a group that does not admit the repository queues until the
+24-hour auto-cancel. A label inside a
+`github.repository == 'kirodotdev/KiroCrew'` conditional degrades to the hosted
+image there; a group reference cannot. Note this is about a fork running its own
+copy, not about a fork pull request against this repository: a `pull_request`
+run on a fork PR executes in the base repository, where the group is reachable.
+`adjudicate`'s own `if` already skips the commonest fork-internal case -- a pull
+request whose head repository is the fork itself -- so the conditional is what
+covers the paths that remain. The rename exposure the group form protects
+against is real and accepted here; these two sites are the ones that break if
+either definition is renamed.
+
+A larger runner does not change `adjudicate`'s posture. It is still a
+GitHub-managed ephemeral VM holding `contents: read` and nothing else, with no
+AWS role and no App credential, and `fork-opus-review` already pairs
+`harden-runner` `egress-policy: block` with this same Linux definition, so the
+egress block that contains the fork matcher is unaffected.
+
+**The Windows group has a tighter cap.** `kirocrew-windows-4-core` is capped at
+`maximum_runners: 32`, against the Linux definition's 100, so the Windows legs
+have far less headroom to spend. Nothing gets faster on either: both definitions
+are 4 vCPU and 16 GB, so the **Nothing gets faster** paragraph above applies
+unchanged -- only queue position moves, and the minutes become billed ones.
+
+Neither job fires on every pull request, which is what bounds the added load:
+`denial-differential` is behind a `paths` filter covering the security
+surface and `scripts/deny_diff.py`, and `adjudicate` runs only when `validate`
+emits `adjudicate=true`, which needs the model to have written candidates the
+committed corpus does not already cover. **Measure both rates from the jobs API
+filtered on `runner_group_name` before adding a third matrix site**, rather than
+reading one leg per pull request off the matrix. A stuck leg rolls back the same
+way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
+which returns all three legs to the hosted images in one edit.
 
 **What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
 is itself on that lane's own scope surface, so a diff touching it sets

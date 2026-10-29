@@ -1190,7 +1190,23 @@ jobs:
     # and an omitted name resolves to the empty string rather than erroring -- so a
     # missing entry here would skip this lane while reporting success.
     needs: [generate, validate]
-    runs-on: ${{ matrix.os }}
+    # Keep matrix.os stable: the job name uses it and so do the per-leg artifact
+    # names, so neither the rendered check names nor the fold's report lookup
+    # change. In THIS repository the Linux and Windows legs take the
+    # `kirocrew-linux-4-core` / `kirocrew-windows-4-core` larger-runner groups
+    # instead of the shared standard pool, whose concurrency is shared
+    # enterprise-wide. Targeted by LABEL, not `group:` as the three credentialed
+    # jobs here do: a group belongs to the kirodotdev organization, so a fork
+    # running this workflow in its own repository cannot reach one, and a job
+    # dispatched to a group that does not admit the repository queues until the
+    # 24-hour auto-cancel. The `if` below already skips the common fork-internal
+    # case -- a pull request whose head repository IS the fork -- but the
+    # conditional label is what keeps the remaining paths on a runner they can
+    # actually get. The macOS leg stays hosted; see
+    # docs/ci/ci-and-reviews.md for why its definition is not a like-for-like
+    # swap. A larger runner changes nothing about this job's posture: still a
+    # GitHub-hosted ephemeral VM, still `contents: read` and nothing else.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
     timeout-minutes: 20
     # `contents: read` and NOTHING else. This is the job that materializes and
     # executes the fork's own matcher, so it must have nothing worth reaching:
