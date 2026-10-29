@@ -5,8 +5,10 @@ and the execution the run carries, starts the session on the parent's shared run
 dedicated process (``run_start`` decides which), builds the prompt, streams the turn through
 the retry ladder in its nested ``_stream_with_transient_retry``, answers the child's tool
 prompts through the run's permission ladder (``RunEventCoordinator._permission_policy``),
-and records the completion. It is one function, kept whole so its locals and nested closures
-stay as they are. New work inside a run's turn goes here. The per-prompt usage row's body is
+and records the completion. The steps before the prompt that hand back a value and close
+over none of the turn's locals live in ``turn_session`` (the inherited approval policy, the
+session acquisition, the spawn records, the prompt hooks). The rest is one function, kept
+whole so its locals and nested closures stay as they are. The per-prompt usage row's body is
 in ``usage_row`` (the nested ``_persist_usage_row`` calls it), which adds the row's task to
 the manager's ``_report_tasks``.
 
@@ -16,14 +18,11 @@ rebound onto ``kiro_crew.subagent``'s globals by ``bind_component_globals``, so 
 they read unqualified are that module's, imported here for typing only; this module defines
 no other.
 
-The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads: ``_await_late_start``, ``_clear_tool_dispatch``,
-``_completion_keep``, ``_completion_keep_chars``, ``_create_shared_session``,
-``_ctx_builder``, ``_effective_turn_limit``, ``_ensure_dedicated_start_priced``,
-``_fire_event``, ``_gate_exit_reset``, ``_gate_wait_mark``, ``_global_approval_mode``,
-``_is_cc_provider``, ``_is_yolo``, ``_leave_startup``, ``_note_startup_progress``,
-``_note_tool_dispatch``, ``_note_tool_result``, ``_parent_steering_dirs``,
-``_provider_label_of``, ``_sessions``,
-``_sharing_plan``, ``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
+The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads:
+``_clear_tool_dispatch``, ``_completion_keep``, ``_completion_keep_chars``, ``_ctx_builder``,
+``_effective_turn_limit``, ``_fire_event``, ``_leave_startup``, ``_note_tool_dispatch``,
+``_note_tool_result``, ``_provider_label_of``, ``_sessions``, ``_sharing_plan``,
+``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
 ``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
 ``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
 ``_yield_for_infra_retry``, ``_yield_for_stop_recovery``, ``arm_report_in_flight``,
@@ -78,12 +77,9 @@ if TYPE_CHECKING:
         extract_options,
         fire_tool_hooks,
         hook_gate_kwargs,
-        invalidate_stale_kas_session,
         is_registered_agent_name,
         logger,
         refuse_stale_switch,
-        replace_stale_shared_session,
-        reproject_claimed_session,
         run_in_embed_pool,
         sel,
         transient_retry_delay,
@@ -215,66 +211,9 @@ async def _run_inner_impl(
         await _await_owned(publication)
     finally:
         info._state_drain_active = False
-    parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
-    # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
-    if not parent_policy and info.approval_mode == "auto":
-        parent_policy = "auto"
-        sel().log_api_access(
-            caller=info.parent_session_key or f"subagent:{info.id}",
-            operation="subagent.approval_mode_auto_policy",
-            outcome="ok",
-            source="subagent",
-            resources=f"subagent_id={info.id}",
-        )
-    if not parent_policy and self._manager._is_yolo and self._manager._is_yolo():
-        parent_policy = "auto"
-        sel().log_api_access(
-            caller=info.parent_session_key,
-            operation="subagent.yolo_policy_fallback",
-            outcome="ok",
-            source="subagent",
-            resources=f"subagent_id={info.id}",
-        )
-    if not parent_policy and self._manager._global_approval_mode == "auto":
-        # Apply global config as fallback only when parent is absent or
-        # confirmed garbage-collected (absent from the session store).
-        # If parent session still exists but returned no policy, deny by
-        # default — the session is alive and intentionally non-auto.
-        if not info.parent_session_key:
-            _parent_gone = True  # no_parent
-        elif self._manager._sessions.has_session(info.parent_session_key) is False:
-            _parent_gone = True  # parent_gc
-        else:
-            _parent_gone = False  # parent alive or store error → deny
-            sel().log_api_access(
-                caller=f"subagent:{info.id}",
-                operation="subagent.config_policy_fallback",
-                outcome="denied",
-                source="subagent",
-                resources=f"subagent_id={info.id},reason=parent_alive_or_store_error",
-            )
-        if _parent_gone:
-            parent_policy = "auto"
-            _reason = "parent_gc" if info.parent_session_key else "no_parent"
-            sel().log_api_access(
-                caller=f"subagent:{info.id}",
-                operation="subagent.config_policy_fallback",
-                outcome="ok",
-                source="subagent",
-                resources=f"subagent_id={info.id},reason={_reason}",
-            )
-    # auto_approve_subagent_tools auto-approves tool calls inside
-    # subagents (separate from the spawn gate, deny-by-default).
-    if not parent_policy and self._manager._ctx_builder and self._manager._ctx_builder.hooks:
-        if self._manager._ctx_builder.hooks.auto_approve_subagent_tools is True:
-            parent_policy = "auto"
-            sel().log_api_access(
-                caller=info.parent_session_key or f"subagent:{info.id}",
-                operation="subagent.auto_approve_subagent_tools_policy",
-                outcome="ok",
-                source="subagent",
-                resources=f"subagent_id={info.id}",
-            )
+    from kiro_crew.subagent_manager import turn_session as _session
+
+    parent_policy = _session.resolve_parent_policy(self, info)
     # Admission captured both memory identity and this invocation's persona
     # before any asynchronous work. A continuation's explicit override is
     # effective only for this turn; its next continuation keeps its lineage.
@@ -458,152 +397,17 @@ async def _run_inner_impl(
     # The parent's shared runtime carries its workspace server, so a remote
     # child gets its own; a start priced shared takes the top-up below.
     use_session_sharing = plan.shared and not inherits_remote
-    if use_session_sharing:
-        # Local import: this module's ``*_impl`` bodies resolve globals through
-        # ``kiro_crew.subagent``, which does not export this name.
-        from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRequestTimeout as _StartTimeout
+    client, is_new, _resumed, is_cc, use_session_sharing = await _session.acquire_session(
+        self,
+        info,
+        session_key,
+        agent,
+        parent_policy=parent_policy,
+        extra_kwargs=extra_kwargs,
+        use_session_sharing=use_session_sharing,
+    )
 
-        try:
-            client = await self._manager._create_shared_session(info, session_key, agent)
-        except _StartTimeout as exc:
-            # CONGESTION is never a reason for a dedicated process (RFC
-            # §4.4): a timed-out session/new may still create its session,
-            # and a second runtime here would double the load that caused
-            # the timeout. The StartCollector attached to the exception
-            # owns the outstanding request; wait for its verdict and either
-            # continue on the adopted session or end this attempt.
-            client = await self._manager._await_late_start(info, session_key, exc)
-            is_new = True
-            _resumed = False
-            is_cc = False
-        except Exception as exc:
-            # The shared runtime itself is unavailable (dead, spawn failed):
-            # not congestion. The failure is counted on the ladder's L3
-            # rung for the parent's runtime (two inside the cooldown
-            # escalate to L4, one notice); the dedicated process stays the
-            # per-run recovery because the shared runtime's rebuild belongs
-            # to the session that owns it, not to a child run.
-            from kiro_crew.recovery.ladder import L3_ACP_RUNTIME, default_ladder
-
-            try:
-                default_ladder().observe_failure(
-                    L3_ACP_RUNTIME,
-                    f"runtime:{info.parent_session_key or 'companion'}",
-                    reason=f"shared runtime unavailable: {exc}"[:200],
-                    task_id=info.id,
-                )
-            except Exception:
-                logger.debug("ladder L3 observe_failure failed", exc_info=True)
-            logger.warning(
-                "Subagent %s: shared runtime unavailable (%s), using a dedicated process",
-                info.id,
-                exc,
-            )
-            info._session_sharing = False
-            info._shared_provider = None
-            use_session_sharing = False
-            # Admitted at the shared price; the process this launches was
-            # never reserved. Top up (and re-check the floor) first.
-            await self._manager._ensure_dedicated_start_priced(info)
-
-            def _fallback_claim():
-                return self._manager._sessions.get_or_create(
-                    session_key,
-                    agent=agent or None,
-                    approval_policy=parent_policy,
-                    on_gate_acquired=self._manager._gate_exit_reset(info),
-                    on_gate_queued=self._manager._gate_wait_mark(info),
-                    **extra_kwargs,
-                )
-
-            # Same claim-time re-check as the dedicated arm below.
-            client, is_new, _resumed = await reproject_claimed_session(
-                self._manager._sessions,
-                session_key,
-                agent,
-                await _fallback_claim(),
-                _fallback_claim,
-            )
-            is_cc = self._manager._is_cc_provider(client)
-        else:
-            is_new = True
-            _resumed = False
-            is_cc = False
-        if use_session_sharing:
-            # A shared session's batch is built during its session/new; a
-            # PreToolUse hook added meanwhile is not in it, and nothing else
-            # re-checks a session this run owns outright. Replaced if stale.
-            client = await replace_stale_shared_session(
-                client,
-                agent,
-                lambda: self._manager._create_shared_session(info, session_key, agent),
-            )
-    else:
-        # The dedicated process's ``session/new`` runs under the same
-        # ``SessionStartGate`` as a shared session's; hand it the same
-        # gate clock callbacks (``_gate_wait_mark`` at entry,
-        # ``_gate_exit_reset`` at exit), threaded through the provider
-        # factory to ``AcpProvider``.
-        #
-        # A kept KAS session whose registered batch auto-approves what a
-        # PreToolUse hook now covers is reset first, so the claim re-projects.
-        await invalidate_stale_kas_session(self._manager._sessions, session_key, agent)
-        # Admission may have priced this start shared and the decision
-        # turned dedicated since (parent gone, sharing off, a role pin set
-        # while it waited): reserve the process before launching it.
-        await self._manager._ensure_dedicated_start_priced(info)
-        # This arm owns its process: a flag an earlier shared attempt of the
-        # run left (a cancel-recovery respawn) would hand this process's
-        # teardown to the shared arm. The old attempt's teardown, which read
-        # it, has finished before this one runs.
-        info._session_sharing = False
-        info._shared_provider = None
-
-        def _claim():
-            return self._manager._sessions.get_or_create(
-                session_key,
-                agent=agent or None,
-                approval_policy=parent_policy,
-                on_gate_acquired=self._manager._gate_exit_reset(info),
-                on_gate_queued=self._manager._gate_wait_mark(info),
-                **extra_kwargs,
-            )
-
-        # Decided again under the lease: the pre-claim reset is declined for a
-        # session another turn holds, and this claim may have waited for it.
-        client, is_new, _resumed = await reproject_claimed_session(
-            self._manager._sessions, session_key, agent, await _claim(), _claim
-        )
-        is_cc = self._manager._is_cc_provider(client)
-
-    # Capture cleanup identity immediately after successful session
-    # acquisition. Every later step can fail and tombstone the run, so
-    # delaying this until the state write leaves provider files unidentified.
-    try:
-        cleanup_session_id = str(client.session_id or "") if hasattr(client, "session_id") else ""
-        cleanup_provider = self._manager._provider_label_of(client)
-        # Continuations use this record to recover their project on every
-        # backend, even when continuing a follow-up after gateway restart.
-        provider_cwd = getattr(client, "cwd", "")
-        cleanup_cwd = provider_cwd if isinstance(provider_cwd, str) and provider_cwd else info.cwd
-        if not cleanup_cwd and is_cc:
-            inner = getattr(client, "client", None)
-            work_dir = getattr(inner, "_work_dir", None)
-            if work_dir:
-                cleanup_cwd = str(work_dir)
-        setattr(info, "_session_id", cleanup_session_id)
-        setattr(info, "_session_provider", cleanup_provider)
-        setattr(info, "_session_cwd", cleanup_cwd)
-        self._publish_identity(
-            info.id,
-            session_id=cleanup_session_id,
-            provider=cleanup_provider,
-            cwd=cleanup_cwd,
-            keep=info.keep,
-            conversation_key=session_key if info.keep else "",
-        )
-    except Exception:
-        logger.debug("Failed to capture live cleanup identity for %s", info.id, exc_info=True)
+    _session.capture_cleanup_identity(self, info, session_key, client, is_cc=is_cc)
 
     # Both arms above land here with a live session, so this is the one place
     # that can say what its MCP servers reported — before the run spends its
@@ -657,74 +461,9 @@ async def _run_inner_impl(
     # workspace directory, not a checkout, so it can only ever mean "this
     # run named no project", which is exactly the fail-closed case. Keeping
     # one meaning for that makes the rule the same on every surface.
-    # The child's own memory silo. Without it every subagent reads the
-    # operator's global store however the parent crew is bound, which makes
-    # a crew's isolation end at the moment it delegates.
-    #
-    # Prepare before the offloaded build because vector initialization is
-    # blocking file IO. A private store that cannot be prepared refuses the
-    # turn; it cannot continue with Global memory.
-    from kiro_crew.context import prepare_store_vectors
-    from kiro_crew.memory_startup import MemoryStartupUnavailable
-
-    if info.memory_mode != "temporary":
-        try:
-            await prepare_store_vectors(
-                self._manager._ctx_builder, info.memory_store, session_key=session_key
-            )
-        except MemoryStartupUnavailable:
-            # Not an optional-recall miss: the gateway's memory fence is
-            # closed (still preparing, stopped, or this store's restore
-            # failed). A chat turn is refused at admission in that state;
-            # a run admitted here would execute with its memory silently
-            # absent, so it fails with the fence's own reason instead.
-            raise
-        except (OSError, ValueError, RuntimeError):
-            # Learned recall is optional for prompt construction. Explicit
-            # memory tools still report the unavailable captured store.
-            logger.debug("Subagent learned memory is unavailable", exc_info=True)
-    from kiro_crew.session_work_dir import is_subagent_work_dir
-
-    # A continuation of a run spawned without a cwd restores that run's
-    # per-run scratch directory as info.cwd; it is still not a project.
-    _is_scratch = bool(info.cwd) and await asyncio.to_thread(is_subagent_work_dir, info.cwd)
-    _project: str | None = None if _is_scratch else (info.cwd or None)
-    if info.crew:
-        from kiro_crew.members import record_activity
-
-        activity_member = execution.selection_name
-        if own_worker:
-            # A worker record names the worker template, not the crewmate; the
-            # crewmate is the one its member id names (the alias it has now).
-            from kiro_crew.config.loader import KiroCrewConfig as _Config
-            from kiro_crew.execution_context import member_config_for_id
-
-            _cfg = await asyncio.to_thread(_Config.load)
-            try:
-                activity_member, _ = member_config_for_id(_cfg, execution.member_id or "")
-            except ValueError:
-                activity_member = info.crew
-
-        # A respawn of this run re-enters with the same key; the dedupe keeps one entry.
-        await asyncio.to_thread(
-            record_activity,
-            activity_member,
-            session_key,
-            execution.memory_mode,
-            project=_project or "",
-            via="spawn",
-            dedupe_session=True,
-        )
-    # The parent's folder steering, so a child spawned from a chat filed in a
-    # folder follows the same guides its parent does. build_message gates the
-    # section on the project group, so a run that withheld it skips the read.
-    info.steering_dirs = ()
-    steering_resolver = self._manager._parent_steering_dirs
-    if steering_resolver is not None and info.include_project and info.parent_session_key:
-        try:
-            info.steering_dirs = tuple(await steering_resolver(info.parent_session_key))
-        except Exception:  # noqa: BLE001 - steering is optional; it must never fail the run
-            logger.warning("Folder steering unavailable for subagent %s", info.id, exc_info=True)
+    _project = await _session.prepare_child_context(
+        self, info, session_key, execution, own_worker=own_worker
+    )
     full_message, _ = await run_in_embed_pool(
         self._manager._ctx_builder.build_message,
         message,
@@ -772,162 +511,7 @@ async def _run_inner_impl(
     # EVENT_PERMISSION_REQUEST branch) but must not be unbounded.
     child_escalations = 0
     child_escalation_limit = max(turn_limit * 3, 60)
-    # Reports inherited agent (not just info.agent) so telemetry shows
-    # the actual agent used for this subagent session.
-    #
-    # Read back the model the live session actually resolved to serve, so
-    # the panel shows what ran rather than only what was requested.
-    # Best-effort at spawn: the ACP session/new response already
-    # carries the served id (readable now, even on the backend default),
-    # while the raw CC path only knows it after the first turn — so this is
-    # refreshed authoritatively at completion below. Only overwrite a prior
-    # non-empty value with another non-empty one, so a spawn-time read that
-    # succeeded is never clobbered back to "" by a transient later miss.
-    _spawn_model = _resolved_model_of(client)
-    if _spawn_model:
-        info.resolved_model = _spawn_model
-    # Persist provenance to disk BEFORE the spawn event so a gateway restart
-    # in the window between the event and the later session_id state write
-    # cannot lose it — orphan recovery reads these from disk. Off-loop and
-    # drained on cancellation via _write_state_off_loop (see
-    # that helper for why a detached worker is the hazard). Best-effort with
-    # ONE bounded retry: this write is the SINGLE owner of these two fields
-    # on the spawn path — the later session_id write does not
-    # double as a fallback, so a transient failure gets its second chance
-    # HERE rather than from a second writer downstream. update_state reports
-    # a silently-skipped merge (unreadable state) as False, which counts as a
-    # failure for the retry — only a REPORTED write ends the loop. A
-    # persistence hiccup must still never block the spawn. A cancellation
-    # ends the loop instead of retrying: `except Exception` does not catch
-    # CancelledError, so the helper's post-drain re-raise propagates rather
-    # than starting a second writer for the same fields.
-    for _provenance_attempt in range(2):
-        try:
-            _wrote = await self._manager._write_state_off_loop(
-                info,
-                "model provenance",
-                requested_model=info.requested_model,
-                resolved_model=info.resolved_model,
-                # What a continuation after a restart keeps: the caller's own
-                # pin, not ``requested_model`` (which also holds a role pin or
-                # a routed tier), and the effort.
-                pinned_model=info.model,
-                reasoning_effort=info.reasoning_effort,
-            )
-            if _wrote:
-                break
-            logger.debug("Provenance write skipped (unreadable state) for %s", info.id)
-        except Exception:
-            logger.debug("Failed to persist model provenance for %s", info.id, exc_info=True)
-    # The live generation was published synchronously at acquisition so
-    # terminal tombstones are cancellation-safe. Persist the sidecar only
-    # after the drained provenance write: cancellation during provenance must
-    # not prevent its required model fields from landing, and cancellation
-    # here still leaves the live tombstone snapshot complete.
-    try:
-        await self._remember_identity_off_loop(
-            info,
-            session_id=str(getattr(info, "_session_id", "")),
-            provider=str(getattr(info, "_session_provider", "")),
-            cwd=str(getattr(info, "_session_cwd", "")),
-            keep=info.keep,
-            conversation_key=session_key if info.keep else "",
-        )
-    except Exception:
-        logger.debug("Failed to persist cleanup identity for %s", info.id, exc_info=True)
-    await self._manager._fire_event(
-        "subagent_spawn",
-        info,
-        {
-            "task": _redact(info.task),
-            "agent": agent or "",
-            # Caller free text like ``task``, so redacted the same way.
-            "label": _redact(info.label),
-            "model": info.resolved_model,
-            # The requested pin is caller-supplied (spawn_run.model), so it
-            # is redacted like every other free-text field on the frame -- an
-            # unavailable/AKIA-shaped pin must never reach the dashboard
-            # socket raw.
-            "requested_model": _redact(info.requested_model),
-            # The sub-agent's own session key (see build_subagent_snapshot):
-            # lets a client fetch this node's own context-trace.
-            "child_session": info.conversation_key or f"subagent:{info.id}",
-        },
-    )
-    # Stream results to disk for orchestrated chat.
-
-    # Record PID for orphan recovery. Off-loop and drained on cancellation
-    # via _write_state_off_loop: update_state ends in a
-    # synchronous fsync, and the reaper, every chat turn and the heartbeat
-    # share this loop. Off-loop also means the write TAKES update_state's
-    # per-agent lock, which on-loop callers skip, so it cannot
-    # interleave with another pool writer's read-merge-rewrite.
-    try:
-        pid = self._manager._sessions.get_pid(session_key)
-        if pid:
-            info._pid = pid  # make available for _write_tombstone
-            # Out of startup: a queued spawn held by the in-startup bound
-            # may start now (``_note_startup_progress``).
-            self._manager._note_startup_progress(info)
-            await self._manager._write_state_off_loop(
-                info, "PID record", pid=pid, pid_recorded_at=time.time()
-            )
-    except Exception:
-        logger.debug("Failed to record PID for %s", info.id, exc_info=True)
-
-    # Persist the cleanup identity captured immediately after session
-    # acquisition, together with mutable retention intent.
-    try:
-        state_update: dict[str, object] = {
-            # Diagnostics only; continuation uses the protected agent.json.
-            "agent": agent,
-            "session_id": str(getattr(info, "_session_id", "")),
-            "provider": str(getattr(info, "_session_provider", "")),
-            # Model provenance (requested_model/resolved_model) is NOT
-            # re-written here: the crash-safe write BEFORE the
-            # subagent_spawn event above is the single owner of those two
-            # fields on the spawn path, and a transient failure there is
-            # handled by that write's own bounded retry.
-            "keep": info.keep,
-            "conversation_key": session_key if info.keep else "",
-        }
-        cleanup_cwd = str(getattr(info, "_session_cwd", ""))
-        if cleanup_cwd:
-            state_update["cwd"] = cleanup_cwd
-        # Same off-loop, drained write as the PID record above.
-        # This one also carries `keep`, the field the two remaining
-        # on-loop writers (promote / release) contend for -- taking the
-        # per-agent lock here is what orders it against any other pool
-        # writer.
-        #
-        # This write is the SINGLE owner of `cwd` and `session_id` on the
-        # spawn path (continuation reads `cwd` back through
-        # recorded_cwd), so it gets the same ONE bounded retry as the
-        # model-provenance write above: an exception or a reported skip
-        # (False -- update_state could not read the state) gets a second
-        # chance, and only a reported write ends the loop. CancelledError
-        # is not an Exception, so a cancellation still ends the loop
-        # instead of starting a second writer. A write that fails both
-        # times is logged at WARNING, so a run whose record lacks `cwd` is
-        # visible in the log.
-        _session_record_written = False
-        for _session_record_attempt in range(2):
-            try:
-                if await self._manager._write_state_off_loop(
-                    info, "session record", **state_update
-                ):
-                    _session_record_written = True
-                    break
-                logger.debug("Session record write skipped (unreadable state) for %s", info.id)
-            except Exception:
-                logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
-        if not _session_record_written:
-            logger.warning(
-                "Session record (session_id/cwd) was not persisted for %s after 2 attempts",
-                info.id,
-            )
-    except Exception:
-        logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
+    await _session.persist_spawn_records(self, info, session_key, agent, client)
 
     _rp = agent_dir_for_display(info.id) / "result.txt"
     info.result_path = str(_rp)
@@ -956,29 +540,14 @@ async def _run_inner_impl(
     # On such a backend PreToolUse hooks gate each permission request below;
     # the KAS projection turns every call they cover into one.
     _spec = await turn_spec_hooks(client, agent)
-    from kiro_crew.subagent_manager.prompt_hooks import prompt_hook_prefix
-
-    # Before the first stream, as a dashboard turn fires them before its own.
-    # Hook time is not the runtime's silence: the reaper's startup, first-prompt
-    # and stall checks skip the run while they run, the startup clock does not
-    # count them, and the activity clock restarts when they end, on every exit.
-    info._prompt_hooks_running = True
-    _hooks_t0 = time.monotonic()
-    try:
-        _hook_prefix = await prompt_hook_prefix(
-            self._manager.hook_store,
-            info,
-            session_key=session_key,
-            task=raw_task,
-            fresh_session=is_new and not _resumed,
-            spec_hooks=_spec.hooks,
-            spec_hooks_cwd=_spec.cwd,
-        )
-    finally:
-        info._prompt_hooks_secs += time.monotonic() - _hooks_t0
-        info.last_activity = time.time()
-        info._last_activity_mono = time.monotonic()
-        info._prompt_hooks_running = False
+    _hook_prefix = await _session.fire_prompt_hooks(
+        self,
+        info,
+        session_key,
+        task=raw_task,
+        fresh_session=is_new and not _resumed,
+        spec=_spec,
+    )
     full_message = _hook_prefix + full_message
     # The run's permission ladder. Imported here because this body runs on
     # the facade's globals (bind_component_globals), not this module's.
