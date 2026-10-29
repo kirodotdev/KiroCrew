@@ -201,7 +201,12 @@ def _with_nested_filter_repo(repo: Path, prog: Path) -> Path:
     _g(repo, "add", "vendor/n")
     _g(repo, "commit", "-qm", "gitlink")
     _g(nested, "config", "filter.pwn.clean", str(prog))
-    (nested / "x.txt").write_text("dirty\n")
+    # SAME size as the committed "x\n", with a changed mtime: git cannot call the
+    # file modified from its stat, so it must hash it, and hashing runs the clean
+    # filter. A size change lets git skip the hash, and the filter then runs only
+    # on `.gitattributes`, and only while its index entry is racily clean -- a
+    # timing accident a slow shard misses.
+    (nested / "x.txt").write_text("y\n")
     os.utime(nested / "x.txt", (1, 1))
     return nested
 
@@ -223,6 +228,17 @@ class TestNestedRepoDrivers:
         assert "filter.pwn.clean" in repo_exec_config_reason(str(repo))
         assert "filter.pwn.clean" in nested_repo_exec_driver_reason(str(repo))
         assert _ran(marker) == ""
+
+    def test_the_nested_fixture_fires_without_a_racily_clean_index(self, tmp_path):
+        # A nested index written well after every file it lists has no racily
+        # clean entry, which is what a slow shard produces. The dirty file alone
+        # must still reach the filter.
+        marker, prog = _marker_programs(tmp_path)
+        repo = _repo(tmp_path / "r")
+        nested = _with_nested_filter_repo(repo, prog)
+        later = (nested / ".gitattributes").stat().st_mtime + 60
+        os.utime(nested / ".git" / "index", (later, later))
+        _prove_planted_vector_fires(repo, marker, "status", "--porcelain")
 
     def test_nested_repos_are_found_in_a_redirected_work_tree(self, tmp_path):
         # `core.worktree` moves the tree git descends into; the nested repo lives
