@@ -1,0 +1,38 @@
+{
+  "fixture": "limits/sizes",
+  "kind": "limits",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "3",
+  "status": "plan",
+  "summary": "Size limits on frames, headers and bodies.",
+  "provisional": [],
+  "planPosition": [
+    "The frame, header and peer limits, carried from Tunnels' code and stated here. Tunnels dropped an oversized message silently."
+  ],
+  "sizes": {
+    "maxTextFrameBytes": 65536,
+    "wsFramePieceBytes": 56000,
+    "bodyChunkRawBytes": 40960,
+    "wsMessageReassembledBytes": 10485760,
+    "wsReassemblyPerConnectionBytes": 52428800,
+    "wsReassemblyConcurrent": 10,
+    "wsReassemblyPieceTimeoutSeconds": 10,
+    "setCookiesMax": 32,
+    "setCookieMaxChars": 4096,
+    "wsUpgradeHeadersMax": 64,
+    "headerNameMaxChars": 256,
+    "headerValueMaxChars": 8192,
+    "viewerRequestHeaderBytes": 16384,
+    "peerHeaderBytes": 65536,
+    "wsCloseReasonBytes": 123,
+    "uploadDefaultBytes": 104857600,
+    "uploadVideoBytes": 536870912
+  },
+  "onViolation": {
+    "viewer": "431 for headers over the limit, after the token check.",
+    "hostFrame": "error invalid_message or message_too_large with the stream's id, and 502 crew_error to the viewer.",
+    "relayFrame": "The relay client answers error invalid_message."
+  }
+}

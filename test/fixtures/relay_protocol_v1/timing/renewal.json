@@ -1,0 +1,90 @@
+{
+  "fixture": "timing/renewal",
+  "kind": "timing",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "11.1",
+  "status": "decided",
+  "summary": "Lease and token timing, as settled on 10/25: the lease every minute, 5-minute tokens, a new host token only near its end, clients renewing from the answer.",
+  "provisional": [
+    {
+      "field": "mintThreshold",
+      "why": "Above 60 and below 120 seconds. The backend team sets the exact value."
+    },
+    {
+      "field": "renewInSeconds",
+      "why": "The field name is not fixed by the backend team yet."
+    }
+  ],
+  "planPosition": [
+    "The spread sizes, and that the spread only ever moves a call earlier."
+  ],
+  "lease": {
+    "renewIntervalSeconds": 60,
+    "leaseSeconds": 300,
+    "lateWhenOverdueSeconds": 120,
+    "takeoverAfterSeconds": 120,
+    "offlineAfterSeconds": 300,
+    "rule": "The takeover time is always above the renewal interval, so a live Crew never loses its lease."
+  },
+  "hostToken": {
+    "lifetimeSeconds": 300,
+    "expiresWithLease": false,
+    "mintThreshold": {
+      "aboveSeconds": 60,
+      "belowSeconds": 120,
+      "exampleSeconds": 90,
+      "rule": "A renewal that finds less than the threshold left on the current host token gets a new one. The threshold sits a little above a minute because lease calls carry a random spread, and at exactly 60 seconds a call landing a few seconds early would find more than a minute left and the next would come too late."
+    },
+    "typicalIntervalSeconds": "about 240",
+    "alsoIssued": "On the first call, and when hostTokenRequested is set."
+  },
+  "accessToken": {
+    "lifetimeSeconds": 300,
+    "renewWhenLeftSeconds": 60,
+    "typicalIntervalSeconds": "about 240"
+  },
+  "spread": {
+    "leaseRenewInSeconds": "60 minus a random 0 to 6",
+    "accessRenewInSeconds": "240 minus a random 0 to 15",
+    "why": "So Crews and clients that reconnected together don't renew in the same second."
+  },
+  "clock": "Time the next call from when the answer arrived, with a monotonic clock, using renewInSeconds. If it is missing, use the token's own lifetime, exp minus iat, less 60 seconds. Never compare exp with the device's clock.",
+  "outage": {
+    "effect": "A Kiro backend outage longer than about a minute drops remote connections, each when its token runs out. Within 5 minutes every one has ended. They come back as soon as minting does. Accepted on 10/25.",
+    "recovery": "When the backend recovers, every Crew and client that missed a renewal renews at once: at most one signature for each connected Crew and each open client, about 275,000 to 580,000 at the capacity target. The random spread and the jittered retry backoff flatten it."
+  },
+  "exampleSequence": [
+    {
+      "at": "2026-11-02T17:00:00Z",
+      "call": "RenewCrewLease",
+      "hostTokenLeftSeconds": null,
+      "gets": "host token 1, exp 2026-11-02T17:05:00Z"
+    },
+    {
+      "at": "2026-11-02T17:00:57Z",
+      "call": "RenewCrewLease",
+      "hostTokenLeftSeconds": 243,
+      "gets": "lease only"
+    },
+    {
+      "at": "2026-11-02T17:01:52Z",
+      "call": "RenewCrewLease",
+      "hostTokenLeftSeconds": 188,
+      "gets": "lease only"
+    },
+    {
+      "at": "2026-11-02T17:02:49Z",
+      "call": "RenewCrewLease",
+      "hostTokenLeftSeconds": 131,
+      "gets": "lease only"
+    },
+    {
+      "at": "2026-11-02T17:03:45Z",
+      "call": "RenewCrewLease",
+      "hostTokenLeftSeconds": 75,
+      "gets": "host token 2, exp 2026-11-02T17:08:45Z, sent to the relay in a token frame"
+    }
+  ]
+}

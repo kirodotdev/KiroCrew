@@ -1,0 +1,114 @@
+{
+  "fixture": "frames/hello",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "4.2",
+  "status": "decided",
+  "summary": "The first frame the Crew sends after the upgrade. It names the protocol version, the mode and the features the Crew offers.",
+  "provisional": [],
+  "planPosition": [
+    "A refused hello gets an error frame first and then close 4401 with the error code as the close reason, so the Crew can tell a version refusal from a token refusal."
+  ],
+  "frame": "hello",
+  "leg": "host",
+  "direction": "host-to-relay",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"hello\"."
+    },
+    "protocolVersion": {
+      "type": "integer",
+      "required": true,
+      "notes": "1 for this contract. At least 1."
+    },
+    "mode": {
+      "type": "string",
+      "required": true,
+      "notes": "\"http\" in version 1. \"acp\" is reserved for a later mode and refused in version 1."
+    },
+    "features": {
+      "type": "array of string",
+      "required": true,
+      "notes": "Features the Crew offers. Unique, at most 16, each at most 32 characters. Known in version 1: flow-credit, ws-flow, request-credit. \"opaque\" is reserved and never offered in version 1."
+    },
+    "client": {
+      "type": "object",
+      "required": false,
+      "notes": "Optional diagnostics, name at most 64 characters and version at most 32. Never used for routing or checks."
+    }
+  },
+  "valid": [
+    {
+      "name": "crew offers response and WebSocket flow control",
+      "message": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "mode": "http",
+        "features": [
+          "flow-credit",
+          "ws-flow"
+        ],
+        "client": {
+          "name": "kiro-crew",
+          "version": "0.9.1.0"
+        }
+      }
+    },
+    {
+      "name": "minimal hello",
+      "message": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "mode": "http",
+        "features": []
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing protocolVersion",
+      "message": {
+        "type": "hello",
+        "mode": "http",
+        "features": []
+      },
+      "expect": "error invalid_message, then close 4401 with reason invalid_message"
+    },
+    {
+      "name": "version below the relay's minimum",
+      "message": {
+        "type": "hello",
+        "protocolVersion": 0,
+        "mode": "http",
+        "features": []
+      },
+      "expect": "error version_unsupported, then close 4401 with reason version_unsupported"
+    },
+    {
+      "name": "reserved mode",
+      "message": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "mode": "acp",
+        "features": []
+      },
+      "expect": "error mode_unsupported, then close 4401 with reason mode_unsupported"
+    },
+    {
+      "name": "features not an array",
+      "message": {
+        "type": "hello",
+        "protocolVersion": 1,
+        "mode": "http",
+        "features": "flow-credit"
+      },
+      "expect": "error invalid_message, then close 4401 with reason invalid_message"
+    }
+  ],
+  "timing": "The relay closes with 4408 when no hello arrives within 10 seconds of the upgrade. A second hello after ready gets error invalid_message and is otherwise ignored."
+}

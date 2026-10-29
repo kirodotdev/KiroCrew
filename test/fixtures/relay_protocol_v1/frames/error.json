@@ -1,0 +1,140 @@
+{
+  "fixture": "frames/error",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "4.6",
+  "status": "decided",
+  "summary": "A typed error with a code and an optional retry delay. With an id it ends that one stream. Without an id it is about the connection.",
+  "provisional": [],
+  "planPosition": [
+    "The code list, and that the relay client reports stream failures as error frames rather than in response headers."
+  ],
+  "frame": "error",
+  "leg": "host",
+  "direction": "both",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"error\"."
+    },
+    "code": {
+      "type": "string",
+      "required": true,
+      "notes": "One of the codes listed in codes below."
+    },
+    "message": {
+      "type": "string",
+      "required": false,
+      "notes": "Human-readable detail, at most 256 characters. Never carries payload bytes or tokens."
+    },
+    "id": {
+      "type": "integer",
+      "required": false,
+      "notes": "The stream the error ends."
+    },
+    "retryAfterSeconds": {
+      "type": "integer",
+      "required": false,
+      "notes": "When to try again, for rate_limited."
+    }
+  },
+  "valid": [
+    {
+      "name": "relay refused a Crew message",
+      "message": {
+        "type": "error",
+        "code": "invalid_message",
+        "id": 17,
+        "message": "response.setCookies has more than 32 entries"
+      }
+    },
+    {
+      "name": "relay refuses an old version before closing",
+      "message": {
+        "type": "error",
+        "code": "version_unsupported",
+        "message": "the minimum protocol version is 2"
+      }
+    },
+    {
+      "name": "relay rate limits the Crew",
+      "message": {
+        "type": "error",
+        "code": "rate_limited",
+        "retryAfterSeconds": 30
+      }
+    },
+    {
+      "name": "relay client got no response head from the Crew's web server in 50 seconds",
+      "message": {
+        "type": "error",
+        "code": "crew_not_answering",
+        "id": 42
+      }
+    },
+    {
+      "name": "relay client could not reach the Crew's web server",
+      "message": {
+        "type": "error",
+        "code": "crew_unreachable",
+        "id": 43
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing code",
+      "message": {
+        "type": "error",
+        "id": 4
+      },
+      "expect": "dropped and logged by the receiver, which is the one case where a frame is not answered"
+    }
+  ],
+  "codes": [
+    {
+      "code": "invalid_message",
+      "sentBy": "both",
+      "meaning": "A frame failed validation. With an id, that stream ends. The relay answers the viewer with 502 crew_error."
+    },
+    {
+      "code": "unsupported_frame",
+      "sentBy": "both",
+      "meaning": "A frame type the receiver does not know or did not agree to, such as opaque in version 1."
+    },
+    {
+      "code": "message_too_large",
+      "sentBy": "both",
+      "meaning": "A frame over the size limits in section 3."
+    },
+    {
+      "code": "version_unsupported",
+      "sentBy": "relay",
+      "meaning": "hello named a version below the minimum. Close 4401 follows."
+    },
+    {
+      "code": "mode_unsupported",
+      "sentBy": "relay",
+      "meaning": "hello named a mode the relay does not serve. Close 4401 follows."
+    },
+    {
+      "code": "rate_limited",
+      "sentBy": "relay",
+      "meaning": "A per-endpoint cap was hit. retryAfterSeconds says when to try again."
+    },
+    {
+      "code": "crew_not_answering",
+      "sentBy": "relay client",
+      "meaning": "The Crew's web server sent no response head within 50 seconds. The relay answers the viewer with 504 crew_not_answering."
+    },
+    {
+      "code": "crew_unreachable",
+      "sentBy": "relay client",
+      "meaning": "The relay client could not connect to the Crew's web server. The relay answers the viewer with 502 crew_error."
+    }
+  ]
+}

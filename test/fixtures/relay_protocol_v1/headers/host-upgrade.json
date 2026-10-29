@@ -1,0 +1,53 @@
+{
+  "fixture": "headers/host-upgrade",
+  "kind": "header-rule",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "9",
+  "status": "decided",
+  "summary": "How the Crew opens the host connection, and what the relay reads from it.",
+  "provisional": [
+    {
+      "field": "host names",
+      "why": "Per-stage settings. kiro-relay under on.aws and api.aws was chosen on 10/25 for now, pending the naming review. Beta and gamma start on other names."
+    },
+    {
+      "field": "authorization",
+      "why": "Open: whether a Bearer host token is acceptable on an api.aws name, since the AWS naming standard points service APIs at SigV4. Not decided."
+    }
+  ],
+  "planPosition": [
+    "A failed host token at the upgrade gets the plain 401 rather than an upgrade and a 4401 close, so unauthenticated callers never hold a socket."
+  ],
+  "rule": "The Crew dials the hostUrl from its lease answer with Authorization: Bearer and its host token. The host dial name is not a Crew's host name. The relay takes the endpoint from the host token's ep claim, never from the Host header. A token that fails gets the plain 401 and no upgrade.",
+  "cases": [
+    {
+      "name": "upgrade",
+      "request": {
+        "method": "GET",
+        "url": "wss://kiro-relay.us-east-1.api.aws/v1/host",
+        "headers": {
+          "host": "kiro-relay.us-east-1.api.aws",
+          "upgrade": "websocket",
+          "connection": "Upgrade",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "authorization": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6Imtpcm8tcmVsYXktaG9zdCtqd3QiLCJraWQiOiJ0ZXN0LWtleS0yMDI2LTExIn0.eyJpc3MiOiJodHRwczovL2tpcm8tcmVsYXktaXNzdWVyLmludmFsaWQiLCJhdWQiOiJraXJvLXJlbGF5L2hvc3QiLCJzdWIiOiJ1LTAwMDEuZXhhbXBsZS1vd25lciIsImtpbmQiOiJwZXJzb25hbCIsImhvc3QiOiJjcmV3IiwiZXAiOiJrN3FtM3gydnR6cjRoYm42Y3dhcGZlNWRqMyIsInJnbiI6InVzLWVhc3QtMSIsImluc3QiOiIzZjJiOGMxZS03YTRkLTRlOWItOWM2MS0yZDVhOGYwZTRiMTciLCJpYXQiOjE3OTM2Mzg4MDAsIm5iZiI6MTc5MzYzODgwMCwiZXhwIjoxNzkzNjM5MTAwLCJqdGkiOiI2YTFmMGM1Mi0zZThiLTRkMjctOWYxNC1iMGM3ZTJhOWQzNjEifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      },
+      "expect": "101, then the Crew sends hello within 10 seconds"
+    },
+    {
+      "name": "no Authorization header",
+      "request": {
+        "method": "GET",
+        "url": "wss://kiro-relay.us-east-1.api.aws/v1/host",
+        "headers": {
+          "upgrade": "websocket"
+        }
+      },
+      "expect": "plain 401, no upgrade"
+    }
+  ]
+}

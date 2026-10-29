@@ -1,0 +1,169 @@
+{
+  "fixture": "frames/request",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.1",
+  "status": "decided",
+  "summary": "The head of one HTTP request from a viewer. The body follows as request-chunk frames and an end.",
+  "provisional": [],
+  "planPosition": [
+    "Requests always stream in version 1. Tunnels' proxy already always sends streaming true, and its inline body fields are dropped from the request head.",
+    "user is required, because the relay never forwards a request without a verified caller."
+  ],
+  "frame": "request",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"request\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "Stream id, 0 or more, assigned by the relay, unique on this connection. HTTP requests and WebSockets share one counter."
+    },
+    "method": {
+      "type": "string",
+      "required": true,
+      "notes": "The HTTP method, upper case."
+    },
+    "path": {
+      "type": "string",
+      "required": true,
+      "notes": "Starts with /. Never under /_kiro/relay/ after normalization."
+    },
+    "query": {
+      "type": "string",
+      "required": true,
+      "notes": "The query without the leading ?, or empty."
+    },
+    "headers": {
+      "type": "object",
+      "required": true,
+      "notes": "Filtered request headers, lower-case names, after the header rules in section 9."
+    },
+    "streaming": {
+      "type": "boolean",
+      "required": true,
+      "notes": "Always true in version 1. The body always follows as chunks and an end, even when it is empty."
+    },
+    "user": {
+      "type": "string",
+      "required": true,
+      "notes": "The verified caller's Kiro user ID from the access token's sub. The relay client stamps it as x-kiro-relay-user."
+    },
+    "traceparent": {
+      "type": "string",
+      "required": false,
+      "notes": "W3C trace context."
+    },
+    "initialCredit": {
+      "type": "integer",
+      "required": false,
+      "notes": "Response bytes the Crew may send before it waits for flow-credit. Set when flow-credit is agreed. 131072."
+    }
+  },
+  "valid": [
+    {
+      "name": "dashboard API call from a native screen",
+      "message": {
+        "type": "request",
+        "id": 7,
+        "method": "GET",
+        "path": "/api/sessions",
+        "query": "limit=20",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer crew-own-session-credential",
+          "x-forwarded-host": "k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws",
+          "x-forwarded-proto": "https"
+        },
+        "streaming": true,
+        "user": "u-0001.example-owner",
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "initialCredit": 131072
+      }
+    },
+    {
+      "name": "upload from a teammate on a team Crew",
+      "message": {
+        "type": "request",
+        "id": 8,
+        "method": "POST",
+        "path": "/api/files/upload",
+        "query": "",
+        "headers": {
+          "content-type": "application/octet-stream",
+          "content-length": "52428800",
+          "x-forwarded-host": "t4nw2q7hzk5rmc3xvbp6ld2fe7.kiro-relay.us-east-1.on.aws",
+          "x-forwarded-proto": "https"
+        },
+        "streaming": true,
+        "user": "u-0002.example-teammate",
+        "initialCredit": 131072
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no user",
+      "message": {
+        "type": "request",
+        "id": 9,
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {},
+        "streaming": true
+      },
+      "expect": "the relay client answers error invalid_message with id 9 and does not call the Crew"
+    },
+    {
+      "name": "user outside the grammar",
+      "message": {
+        "type": "request",
+        "id": 9,
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {},
+        "streaming": true,
+        "user": "owner@example.com, admin"
+      },
+      "expect": "error invalid_message with id 9"
+    },
+    {
+      "name": "reserved path",
+      "message": {
+        "type": "request",
+        "id": 9,
+        "method": "GET",
+        "path": "/_kiro/relay/session",
+        "query": "",
+        "headers": {},
+        "streaming": true,
+        "user": "u-0001.example-owner"
+      },
+      "expect": "never sent. The relay handles the path itself"
+    },
+    {
+      "name": "negative id",
+      "message": {
+        "type": "request",
+        "id": -1,
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {},
+        "streaming": true,
+        "user": "u-0001.example-owner"
+      },
+      "expect": "error invalid_message"
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "fixture": "frames/flow-credit",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.4",
+  "status": "decided",
+  "summary": "Grants more body bytes for one stream. From the relay it is response credit. From the Crew it is request-body credit, used only when request-credit is agreed.",
+  "provisional": [],
+  "planPosition": [
+    "Request-body credit from the Crew is this contract's frame for plan item 7A. Until request-credit is agreed the relay sends request bodies without waiting for credit."
+  ],
+  "frame": "flow-credit",
+  "leg": "host",
+  "direction": "both",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"flow-credit\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The stream id."
+    },
+    "credit": {
+      "type": "integer",
+      "required": true,
+      "notes": "Bytes to add to what is left, 1 to 16 MiB. The window per stream is 1 MiB."
+    }
+  },
+  "valid": [
+    {
+      "name": "relay grants response credit",
+      "message": {
+        "type": "flow-credit",
+        "id": 10,
+        "credit": 524288
+      }
+    },
+    {
+      "name": "Crew grants request-body credit",
+      "message": {
+        "type": "flow-credit",
+        "id": 8,
+        "credit": 131072
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "zero credit",
+      "message": {
+        "type": "flow-credit",
+        "id": 10,
+        "credit": 0
+      },
+      "expect": "error invalid_message"
+    },
+    {
+      "name": "over 16 MiB",
+      "message": {
+        "type": "flow-credit",
+        "id": 10,
+        "credit": 16777217
+      },
+      "expect": "error invalid_message"
+    },
+    {
+      "name": "fractional",
+      "message": {
+        "type": "flow-credit",
+        "id": 10,
+        "credit": 1.5
+      },
+      "expect": "error invalid_message"
+    }
+  ],
+  "numbers": {
+    "initialCreditBytes": 131072,
+    "windowBytes": 1048576,
+    "maxCreditBytes": 16777216,
+    "requestCreditInitialBytes": 131072
+  }
+}

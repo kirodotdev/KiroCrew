@@ -1,0 +1,101 @@
+{
+  "fixture": "frames/ready",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "4.2",
+  "status": "decided",
+  "summary": "The relay's answer to hello. After ready the relay routes requests for the endpoint to this connection.",
+  "provisional": [],
+  "planPosition": [
+    "The deprecation object is this contract's shape for the HLD's announced minimum version."
+  ],
+  "frame": "ready",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"ready\"."
+    },
+    "protocolVersion": {
+      "type": "integer",
+      "required": true,
+      "notes": "The version the relay will speak on this connection. 1 here."
+    },
+    "mode": {
+      "type": "string",
+      "required": true,
+      "notes": "\"http\"."
+    },
+    "features": {
+      "type": "array of string",
+      "required": true,
+      "notes": "The features both sides use on this connection: the ones the Crew offered that the relay supports."
+    },
+    "endpointId": {
+      "type": "string",
+      "required": true,
+      "notes": "The endpoint from the host token's ep claim."
+    },
+    "minProtocolVersion": {
+      "type": "integer",
+      "required": true,
+      "notes": "The lowest version the relay accepts today."
+    },
+    "deprecation": {
+      "type": "object",
+      "required": false,
+      "notes": "Announced ahead of a raise of the minimum: minProtocolVersion and effectiveAt (UTC, ISO 8601)."
+    }
+  },
+  "valid": [
+    {
+      "name": "ready with both flow-control features",
+      "message": {
+        "type": "ready",
+        "protocolVersion": 1,
+        "mode": "http",
+        "features": [
+          "flow-credit",
+          "ws-flow"
+        ],
+        "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3",
+        "minProtocolVersion": 1
+      }
+    },
+    {
+      "name": "ready announcing a future minimum",
+      "message": {
+        "type": "ready",
+        "protocolVersion": 1,
+        "mode": "http",
+        "features": [
+          "flow-credit"
+        ],
+        "endpointId": "t4nw2q7hzk5rmc3xvbp6ld2fe7",
+        "minProtocolVersion": 1,
+        "deprecation": {
+          "minProtocolVersion": 2,
+          "effectiveAt": "2027-03-01T00:00:00Z"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing endpointId",
+      "message": {
+        "type": "ready",
+        "protocolVersion": 1,
+        "mode": "http",
+        "features": [],
+        "minProtocolVersion": 1
+      },
+      "expect": "the Crew closes the socket and reconnects with backoff"
+    }
+  ]
+}

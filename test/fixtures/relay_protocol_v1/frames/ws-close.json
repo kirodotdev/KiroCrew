@@ -1,0 +1,96 @@
+{
+  "fixture": "frames/ws-close",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.3",
+  "status": "decided",
+  "summary": "Closes one proxied WebSocket, with an optional code and reason.",
+  "provisional": [],
+  "planPosition": [
+    "The relay rewrites a Crew close code in 4400 to 4499 to 1011."
+  ],
+  "frame": "ws-close",
+  "leg": "host",
+  "direction": "both",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"ws-close\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The WebSocket's stream id."
+    },
+    "code": {
+      "type": "integer",
+      "required": false,
+      "notes": "1000, or 3000 to 4999. The relay's own block, 4400 to 4499, is never used by the Crew."
+    },
+    "reason": {
+      "type": "string",
+      "required": false,
+      "notes": "At most 123 bytes."
+    }
+  },
+  "valid": [
+    {
+      "name": "normal close",
+      "message": {
+        "type": "ws-close",
+        "id": 9,
+        "code": 1000
+      }
+    },
+    {
+      "name": "the Crew's web server refused the upgrade",
+      "message": {
+        "type": "ws-close",
+        "id": 9,
+        "code": 4502,
+        "reason": "Crew refused the WebSocket upgrade (403)"
+      }
+    },
+    {
+      "name": "a Crew close code passing through",
+      "message": {
+        "type": "ws-close",
+        "id": 9,
+        "code": 4001,
+        "reason": "terminal shell exited"
+      }
+    },
+    {
+      "name": "close with no code",
+      "message": {
+        "type": "ws-close",
+        "id": 9
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "code in the relay's block",
+      "message": {
+        "type": "ws-close",
+        "id": 9,
+        "code": 4404
+      },
+      "expect": "the relay replaces it with 1011 on the viewer leg, so a Crew cannot fake a relay close"
+    },
+    {
+      "name": "reason too long",
+      "message": {
+        "type": "ws-close",
+        "id": 9,
+        "code": 1000,
+        "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      },
+      "expect": "error invalid_message"
+    }
+  ]
+}

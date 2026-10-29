@@ -36,7 +36,7 @@ LOCKED_BY_POLICY = "locked by policy"
 #: Control id -> the local source that is ignored and what the feature does instead.
 #: Ids follow the RFC appendix "Crew key" column.
 UNKEYED_LOCKS: Dict[str, str] = {
-    "tunnel": "tunnel.enabled is ignored; no tunnel is started",
+    "tunnel": "tunnel.enabled and tunnel.relay_enabled are ignored; no tunnel or relay is started",
     "telemetry.otlp_hosts": "telemetry.otlp_endpoint is ignored; no metrics leave the host",
     # Named for the RFC "developer_mode" policy term; the key that replaces this row
     # is separate work.
@@ -46,6 +46,7 @@ UNKEYED_LOCKS: Dict[str, str] = {
 #: config.json path -> the control whose lock makes that local value inert.
 CONFIG_PATH_LOCKS: Dict[str, str] = {
     "tunnel.enabled": "tunnel",
+    "tunnel.relay_enabled": "tunnel",
     "slack.use_tunnel_url": "tunnel",
     "telemetry.otlp_endpoint": "telemetry.otlp_hosts",
 }

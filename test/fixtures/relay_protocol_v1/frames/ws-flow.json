@@ -1,0 +1,53 @@
+{
+  "fixture": "frames/ws-flow",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.4",
+  "status": "decided",
+  "summary": "Pauses or resumes the Crew's side of one proxied WebSocket when the viewer is slow.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "ws-flow",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"ws-flow\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The WebSocket's stream id."
+    },
+    "paused": {
+      "type": "boolean",
+      "required": true,
+      "notes": "True to pause reading from the Crew's socket, false to resume."
+    }
+  },
+  "valid": [
+    {
+      "name": "pause",
+      "message": {
+        "type": "ws-flow",
+        "id": 9,
+        "paused": true
+      }
+    },
+    {
+      "name": "resume",
+      "message": {
+        "type": "ws-flow",
+        "id": 9,
+        "paused": false
+      }
+    }
+  ],
+  "invalid": [],
+  "watchdog": "The Crew resumes on its own after 30 seconds paused, as Tunnels' client does."
+}

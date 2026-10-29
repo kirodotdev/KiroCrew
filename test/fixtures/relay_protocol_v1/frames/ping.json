@@ -1,0 +1,55 @@
+{
+  "fixture": "frames/ping",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "4.4",
+  "status": "decided",
+  "summary": "Keepalive. The Crew sends one every 25 seconds. Whoever receives a ping answers with pong.",
+  "provisional": [],
+  "planPosition": [
+    "Ping and pong are JSON frames, not WebSocket control frames, so either side's library can send them. Tunnels' CLI sent the text ping and the proxy never answered. The relay must answer."
+  ],
+  "frame": "ping",
+  "leg": "host",
+  "direction": "both",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"ping\"."
+    },
+    "nonce": {
+      "type": "string",
+      "required": false,
+      "notes": "At most 64 characters. Echoed in the pong."
+    }
+  },
+  "valid": [
+    {
+      "name": "crew ping",
+      "message": {
+        "type": "ping",
+        "nonce": "p-000123"
+      }
+    },
+    {
+      "name": "ping with no nonce",
+      "message": {
+        "type": "ping"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "nonce too long",
+      "message": {
+        "type": "ping",
+        "nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
+      },
+      "expect": "error invalid_message"
+    }
+  ]
+}
