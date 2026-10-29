@@ -17124,6 +17124,8 @@
         "installed_themes_refresh_failed_after_install": "थीम इंस्टॉल हो गई, लेकिन थीम सूची रीफ़्रेश नहीं हो सकी। सूची रीफ़्रेश करके इसे लागू करने के लिए फिर से कोशिश करो दबाओ, या थीम सूची रीफ़्रेश होने पर उसमें से चुनो।",
         "retry_theme_list": "फिर से कोशिश करो",
         "retrying_theme_list": "फिर कोशिश की जा रही है…",
+        "show_unread_dot": "सेशन कार्ड पर अपठित बिंदु दिखाएँ",
+        "show_unread_dot_save_failed": "अपठित बिंदु की सेटिंग सहेजी नहीं जा सकी।",
         "recent_tint_save_failed": "हाल के सत्रों की हाइलाइट संख्या सहेजी नहीं जा सकी।",
         "font_family_option_custom": "कस्टम",
         "custom_font_family": "कस्टम फ़ॉन्ट",

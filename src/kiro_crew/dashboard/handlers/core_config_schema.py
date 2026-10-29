@@ -308,6 +308,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # next click with no restart. Only a literal `true` turns it on — a
     # hand-edited non-boolean stays off.
     "dashboard.terminal.reuse_current": {"type": "bool"},
+    # The per-row unread dot on sidebar session cards (Settings → Display →
+    # Sidebar). Default on; only a literal `false` hides it.
+    "dashboard.show_unread_dot": {"type": "bool"},
     # The terminal app "Open in external terminal" starts (Settings → Display →
     # Terminal). "" = unset, the default, which withholds the action. Limited
     # to the desktop shell's launch allowlist; the launch gate in

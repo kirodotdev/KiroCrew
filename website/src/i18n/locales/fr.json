@@ -17411,6 +17411,8 @@
         "installed_themes_refresh_failed_after_install": "Le thème a été installé, mais la liste des thèmes n'a pas pu être actualisée. Appuie sur Réessayer pour actualiser la liste et l'appliquer, ou choisis-le dans la liste des thèmes une fois actualisée.",
         "retry_theme_list": "Réessayer",
         "retrying_theme_list": "Nouvelle tentative…",
+        "show_unread_dot": "Afficher le point non lu sur les cartes de session",
+        "show_unread_dot_save_failed": "Impossible d’enregistrer le réglage du point non lu.",
         "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence.",
         "font_family_option_custom": "Personnalisée",
         "custom_font_family": "Police personnalisée",

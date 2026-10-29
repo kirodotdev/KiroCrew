@@ -17411,6 +17411,8 @@
         "installed_themes_refresh_failed_after_install": "El tema se instaló, pero la lista de temas no se pudo actualizar. Pulsa Reintentar para actualizar la lista y aplicarlo, o elígelo en la lista de temas cuando se actualice.",
         "retry_theme_list": "Reintentar",
         "retrying_theme_list": "Reintentando…",
+        "show_unread_dot": "Mostrar el punto de no leído en las tarjetas de sesión",
+        "show_unread_dot_save_failed": "No se pudo guardar el ajuste del punto de no leído.",
         "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas.",
         "font_family_option_custom": "Personalizada",
         "custom_font_family": "Fuente personalizada",

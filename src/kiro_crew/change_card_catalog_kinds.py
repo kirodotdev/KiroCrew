@@ -187,6 +187,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.prevent_sleep",
         "dashboard.recent_tint_count",
         "dashboard.session_sort",
+        "dashboard.show_unread_dot",
         # Stored only: the edition's login handler re-checks every flag against
         # its own allowlist before it runs anything.
         "dashboard.sso_login_flags",

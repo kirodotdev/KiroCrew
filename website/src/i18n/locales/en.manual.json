@@ -8103,6 +8103,8 @@
         "installed_themes_refresh_failed_after_install": "The theme was installed, but the theme list could not be refreshed. Press Retry to refresh the list and apply it, or pick it from the theme list once it refreshes.",
         "retry_theme_list": "Retry",
         "retrying_theme_list": "Retrying…",
+        "show_unread_dot": "Show unread dot on session cards",
+        "show_unread_dot_save_failed": "Could not save the unread dot setting.",
         "recent_tint_save_failed": "Could not save the recent-session highlight count."
       },
       "instancesPanel": {

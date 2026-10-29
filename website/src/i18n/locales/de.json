@@ -17124,6 +17124,8 @@
         "installed_themes_refresh_failed_after_install": "Das Theme wurde installiert, aber die Theme-Liste konnte nicht aktualisiert werden. Klicke auf „Erneut versuchen“, um die Liste zu aktualisieren und es anzuwenden, oder wähle es aus der Theme-Liste, sobald sie aktualisiert wurde.",
         "retry_theme_list": "Erneut versuchen",
         "retrying_theme_list": "Wird erneut versucht…",
+        "show_unread_dot": "Ungelesen-Punkt auf Sitzungskarten anzeigen",
+        "show_unread_dot_save_failed": "Die Einstellung für den Ungelesen-Punkt konnte nicht gespeichert werden.",
         "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden.",
         "font_family_option_custom": "Benutzerdefiniert",
         "custom_font_family": "Benutzerdefinierte Schrift",

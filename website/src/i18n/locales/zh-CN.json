@@ -16837,6 +16837,8 @@
         "installed_themes_refresh_failed_after_install": "主题已安装，但无法刷新主题列表。请点击“重试”以刷新列表并应用它，或在主题列表刷新后从列表中选择它。",
         "retry_theme_list": "重试",
         "retrying_theme_list": "正在重试…",
+        "show_unread_dot": "在会话卡片上显示未读圆点",
+        "show_unread_dot_save_failed": "无法保存未读圆点设置。",
         "recent_tint_save_failed": "无法保存最近会话的高亮数量。",
         "font_family_option_custom": "自定义",
         "custom_font_family": "自定义字体",

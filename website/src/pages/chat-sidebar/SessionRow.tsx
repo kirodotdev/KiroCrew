@@ -345,7 +345,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
-    guideOnRowControl,
+    guideOnRowControl, showUnreadDot,
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
@@ -1029,7 +1029,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // not that you have not read it. So unlike every glyph above — each of which
     // sits directly in front of the label naming it, and is therefore
     // `aria-hidden` — this dot keeps a real accessible name and a tooltip.
-    const unreadDot = !rowState && isUnread
+    const unreadDot = !rowState && isUnread && showUnreadDot !== false
       // A DOT, so it keeps its own size: `ROW_ICON_PX` sizes the lucide glyphs,
       // whose ink covers a fraction of their box, while a filled disc covers all
       // of it. At 10px it reads as heavier than every state that outranks it.

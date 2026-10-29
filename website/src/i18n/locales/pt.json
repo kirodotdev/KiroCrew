@@ -17411,6 +17411,8 @@
         "installed_themes_refresh_failed_after_install": "O tema foi instalado, mas a lista de temas não pôde ser atualizada. Pressione Tentar novamente para atualizar a lista e aplicá-lo, ou escolha-o na lista de temas quando ela for atualizada.",
         "retry_theme_list": "Tentar novamente",
         "retrying_theme_list": "Tentando novamente…",
+        "show_unread_dot": "Mostrar o ponto de não lido nos cartões de sessão",
+        "show_unread_dot_save_failed": "Não foi possível salvar a configuração do ponto de não lido.",
         "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas.",
         "font_family_option_custom": "Personalizada",
         "custom_font_family": "Fonte personalizada",

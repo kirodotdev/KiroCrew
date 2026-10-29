@@ -8002,6 +8002,7 @@
         "theme_color": "",
         "language": "",
         "recent_tint_count": 0,
+        "show_unread_dot": true,
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "update_nudge": {},
@@ -9169,6 +9170,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "dashboard.show_unread_dot",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show Unread Dot on Session Cards",
+      "help": "Show the unread dot on a sidebar session card when the agent finished and you have not read the result. Folder and aggregate unread counts are not affected.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.folder_sort",

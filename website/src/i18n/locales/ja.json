@@ -16837,6 +16837,8 @@
         "installed_themes_refresh_failed_after_install": "テーマはインストールされましたが、テーマ一覧を更新できませんでした。「再試行」を押して一覧を更新して適用するか、テーマ一覧が更新されたら一覧から選んでください。",
         "retry_theme_list": "再試行",
         "retrying_theme_list": "再試行中…",
+        "show_unread_dot": "セッションカードに未読ドットを表示",
+        "show_unread_dot_save_failed": "未読ドットの設定を保存できませんでした。",
         "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。",
         "font_family_option_custom": "カスタム",
         "custom_font_family": "カスタムフォント",
