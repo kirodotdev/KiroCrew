@@ -22,6 +22,7 @@ def register(app: web.Application) -> None:
     # dashboard's token auth in addition to the direct-local write gate).
     app.router.add_get("/api/slack/config", handlers.api_slack_config_get)
     app.router.add_put("/api/slack/config", handlers.api_slack_config_save)
+    app.router.add_post("/api/slack/reconnect", handlers.api_slack_reconnect)
     app.router.add_get("/api/slack/manifest", handlers.api_slack_manifest)
     app.router.add_get("/api/slack/manifest/status", handlers.api_slack_manifest_status)
     app.router.add_get("/api/discord/config", handlers.api_discord_config_get)

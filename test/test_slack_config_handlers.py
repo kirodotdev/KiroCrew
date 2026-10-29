@@ -417,6 +417,19 @@ def test_restart_required_only_on_actual_change(tmp_path, monkeypatch) -> None:
     # Changed command (boot-read): restart.
     body = asyncio.run(_run({"command": "myclaw"}))
     assert body["restart_required"] is True
+    assert body["reconnect_required"] is False
+
+
+def test_a_credential_change_asks_for_a_reconnect_not_a_restart(tmp_path, monkeypatch) -> None:
+    """Tokens and the owner ID apply through POST /api/slack/reconnect, so a save
+    that wrote one flags ``reconnect_required`` and leaves ``restart_required`` off."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    monkeypatch.delenv("KIROCREW_OWNER_ID", raising=False)
+    (status, body), _env = _client_put(mod, monkeypatch, tmp_path, {"owner_id": "U0123ABC456"})
+    assert status == 200
+    assert body["reconnect_required"] is True
+    assert body["restart_required"] is False
 
 
 def test_webex_held_env_lock_leaves_legacy_credential_intact(tmp_path, monkeypatch) -> None:
