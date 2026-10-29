@@ -6751,10 +6751,12 @@
           "actions": "Acciones",
           "cycle_light_dark_system": "Alterna entre claro / oscuro / sistema",
           "keyboard_shortcuts_help": "Ayuda de atajos de teclado",
+          "new_session": "Sesión nueva",
           "pin_current_session": "Fijar la sesión actual",
           "pin_this_chat_to_the_top": "Fija este chat en la parte superior",
           "remove_pin_from_this_chat": "Deja de fijar este chat",
           "start_a_fresh_chat": "Inicia un chat nuevo",
+          "toggle_theme": "Cambiar el tema",
           "unpin_current_session": "Dejar de fijar la sesión actual"
         },
         "allAggregator": {

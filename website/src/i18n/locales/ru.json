@@ -6865,10 +6865,12 @@
           "actions": "Действия",
           "cycle_light_dark_system": "Переключать светлую / тёмную / системную тему",
           "keyboard_shortcuts_help": "Справка по сочетаниям клавиш",
+          "new_session": "Новая сессия",
           "pin_current_session": "Закрепить текущую сессию",
           "pin_this_chat_to_the_top": "Закрепить этот чат наверху",
           "remove_pin_from_this_chat": "Снять закрепление с этого чата",
           "start_a_fresh_chat": "Начать новый чат",
+          "toggle_theme": "Сменить тему",
           "unpin_current_session": "Открепить текущую сессию"
         },
         "allAggregator": {

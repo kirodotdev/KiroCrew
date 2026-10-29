@@ -6751,10 +6751,12 @@
           "actions": "Actions",
           "cycle_light_dark_system": "Basculer clair / sombre / système",
           "keyboard_shortcuts_help": "Aide sur les raccourcis clavier",
+          "new_session": "Nouvelle session",
           "pin_current_session": "Épingler la session actuelle",
           "pin_this_chat_to_the_top": "Épingler ce chat en haut de la liste",
           "remove_pin_from_this_chat": "Retirer l’épingle de ce chat",
           "start_a_fresh_chat": "Démarrer un nouveau chat",
+          "toggle_theme": "Changer de thème",
           "unpin_current_session": "Désépingler la session actuelle"
         },
         "allAggregator": {

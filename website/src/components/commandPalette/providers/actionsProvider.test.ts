@@ -141,3 +141,72 @@ describe('createActionsProvider — filtering', () => {
     expect(await run(createActionsProvider(d), 'zzzqqq')).toEqual([])
   })
 })
+
+/**
+ * The "New session" and "Toggle theme" TITLES — not just the subtitles — must
+ * resolve through the i18n catalog AND re-resolve on a LIVE language switch.
+ *
+ * The provider is built once inside a `useMemo` whose deps do not include the
+ * language, and `LanguageProvider` re-renders via `cloneElement` without
+ * remounting (see `get label()` in the source). So resolving `i18nT()` eagerly
+ * when the action list is built would freeze the title in whatever language was
+ * active at build time. The titles are therefore getters, read at `search()`
+ * time, exactly like the `label` getter. The second test below pins that: it
+ * switches the language on the SAME provider instance and asserts the titles
+ * follow, which an eager (frozen) implementation would fail.
+ */
+describe('createActionsProvider — localized titles', () => {
+  it('resolves the New session / Toggle theme titles through the catalog per language', async () => {
+    const { i18next } = await import('../../../i18n/all')
+    try {
+      // English baseline: titles come from the catalog, not a literal.
+      await i18next.changeLanguage('en')
+      const en = await run(createActionsProvider(deps().d), '')
+      const enTitles = en.map((r) => r.title)
+      expect(enTitles).toContain('New session')
+      expect(enTitles).toContain('Toggle theme')
+
+      // A different language must change both titles — proof they are not
+      // captured once in English.
+      await i18next.changeLanguage('ja')
+      const ja = await run(createActionsProvider(deps().d), '')
+      const jaTitles = ja.map((r) => r.title)
+      expect(jaTitles).toContain('新しいセッション')
+      expect(jaTitles).toContain('テーマを切り替え')
+      expect(jaTitles).not.toContain('New session')
+      expect(jaTitles).not.toContain('Toggle theme')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
+  it('re-resolves the two titles on a live language switch of the SAME provider', async () => {
+    const { i18next } = await import('../../../i18n/all')
+    try {
+      // Build the provider ONCE (as the memo does) while English is active.
+      await i18next.changeLanguage('en')
+      const p = createActionsProvider(deps().d)
+      const before = (await run(p, '')).map((r) => r.title)
+      expect(before).toContain('New session')
+      expect(before).toContain('Toggle theme')
+
+      // Switch language WITHOUT rebuilding the provider — a `cloneElement`
+      // re-render, not a remount. The titles must follow the new language; an
+      // eager `i18nT()` captured at build time would stay English here.
+      await i18next.changeLanguage('ja')
+      const after = (await run(p, '')).map((r) => r.title)
+      expect(after).toContain('新しいセッション')
+      expect(after).toContain('テーマを切り替え')
+      expect(after).not.toContain('New session')
+      expect(after).not.toContain('Toggle theme')
+
+      // And back again, still the same instance.
+      await i18next.changeLanguage('en')
+      const back = (await run(p, '')).map((r) => r.title)
+      expect(back).toContain('New session')
+      expect(back).toContain('Toggle theme')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+})

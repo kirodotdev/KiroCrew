@@ -93,14 +93,26 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
   const actions: ActionDef[] = [
     {
       key: 'new-session',
-      title: 'New session',
+      // A GETTER, not an eager `i18nT(...)`: this action list is built inside a
+      // `useMemo` (see `useActionsProvider`) whose deps do NOT include the
+      // language, and `LanguageProvider` re-renders via `cloneElement` without
+      // remounting — so an eager call would freeze the title in the language the
+      // memo was built under. Reading it at access time (in `search()`) re-resolves
+      // on every language switch, exactly like `get label()` below.
+      get title() {
+        return i18nT('components.commandPalette.providers.actionsProvider.new_session')
+      },
       subtitle: i18nT('components.commandPalette.providers.actionsProvider.start_a_fresh_chat'),
       icon: inlineIcon(MessageSquarePlus),
       run: deps.newSession,
     },
     {
       key: 'toggle-theme',
-      title: 'Toggle theme',
+      // Getter for the same reason as `new-session` above — re-resolve at read
+      // time so a live language switch updates the title.
+      get title() {
+        return i18nT('components.commandPalette.providers.actionsProvider.toggle_theme')
+      },
       subtitle: i18nT('components.commandPalette.providers.actionsProvider.cycle_light_dark_system'),
       icon: inlineIcon(SunMoon),
       run: deps.toggleTheme,

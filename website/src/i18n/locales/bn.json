@@ -6637,10 +6637,12 @@
           "actions": "অ্যাকশন",
           "cycle_light_dark_system": "লাইট / ডার্ক / সিস্টেম-এর মধ্যে ঘোরাও",
           "keyboard_shortcuts_help": "কীবোর্ড শর্টকাট সহায়িকা",
+          "new_session": "নতুন সেশন",
           "pin_current_session": "বর্তমান সেশন পিন করো",
           "pin_this_chat_to_the_top": "এই চ্যাট উপরে পিন করো",
           "remove_pin_from_this_chat": "এই চ্যাট থেকে পিন সরাও",
           "start_a_fresh_chat": "নতুন একটি চ্যাট শুরু করো",
+          "toggle_theme": "থিম বদলাও",
           "unpin_current_session": "বর্তমান সেশনের পিন সরাও"
         },
         "allAggregator": {

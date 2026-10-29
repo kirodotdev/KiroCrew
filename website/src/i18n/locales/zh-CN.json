@@ -6523,10 +6523,12 @@
           "actions": "操作",
           "cycle_light_dark_system": "循环切换浅色 / 深色 / 系统",
           "keyboard_shortcuts_help": "键盘快捷键帮助",
+          "new_session": "新建会话",
           "pin_current_session": "置顶当前会话",
           "pin_this_chat_to_the_top": "将此聊天置顶",
           "remove_pin_from_this_chat": "取消此聊天的置顶",
           "start_a_fresh_chat": "开始新聊天",
+          "toggle_theme": "切换主题",
           "unpin_current_session": "取消置顶当前会话"
         },
         "allAggregator": {
