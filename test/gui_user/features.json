@@ -818,7 +818,7 @@
       "title": "Worktrees",
       "user_story": "As a developer, I want to create a git worktree for a follow-up session from a card, so that parallel work stays isolated.",
       "start_url": "/chat",
-      "entry_path": "Chat follow-up card → Start in new worktree",
+      "entry_path": "Chat follow-up card → Start in a separate copy",
       "preconditions": {
         "seed": "rich",
         "members": [],

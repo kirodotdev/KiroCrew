@@ -849,6 +849,13 @@
       "configKey": "dashboard.model_picker_hidden_models"
     },
     {
+      "id": "chat.send-follow-ups-with-one-click",
+      "label": "Send follow-ups with one click",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.send-follow-ups-with-one-click",
+      "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send."
+    },
+    {
       "id": "chat.send-shortcut",
       "label": "Send shortcut",
       "tab": "chat",

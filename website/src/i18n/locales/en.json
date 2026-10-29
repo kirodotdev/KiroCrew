@@ -4971,7 +4971,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "Add to this session",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "Both actions pre-fill the composer — nothing is sent until you press send.",
+      "footer_start_sends_add_prefills": "Run in new chat sends the prompt as the first message of a new chat. Add to this session puts the prompt in your message box and sends nothing.",
       "dismiss_this_suggestion": "Dismiss this suggestion",
       "follow_up_suggestions": "Follow-up suggestions",
       "pre_fill_this_session_s_composer_with_the_expand": "Pre-fill this session's composer with the expanded prompt",
