@@ -1229,7 +1229,6 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
             "nudge_dashboard_fire",
             "result_egress",
             "subagent_injection",
-            "subagent_wiring",
         }
     ),
     "spawn_guarded_turn": frozenset({"gateway", "nudge_dashboard_fire"}),

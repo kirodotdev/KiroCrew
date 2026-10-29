@@ -75,13 +75,23 @@ _OWNER_HDR = {"X-Session-Key": "dashboard:sess-msg"}
 class _FakeSlot:
     """The narrow slot surface the injection path drives."""
 
-    def __init__(self, running: bool = False):
+    def __init__(self, running: bool = False, key: str = "sess-msg"):
+        import asyncio
+
+        self.key = key
         self.running = running
         self.is_restricted = False  # read by _is_restricted_session
         self._queue: list[dict] = []
         self.messages: list[dict] = []
         self.appended: list[tuple] = []
         self.task = None
+        # The admission state an idle delivery reads under the lock, all open.
+        self._lock = asyncio.Lock()
+        self._turn_admission_reserved = False
+        self.is_closing = False
+        self._last_turn_auth_required = False
+        self._stopping = False
+        self._stop_state = "idle"
 
     def queue_append(self, content: str, kind: str = "", meta=None, **_kw) -> str:
         self._queue.append({"content": content, "kind": kind, "meta": meta})
@@ -108,6 +118,7 @@ def message_env(monkeypatch):
         _restricted_keys: set = set()
         _slots: dict = {}
         owner_id = ""
+        sessions = None
         pushed = 0
 
         def get_slot(self, key):
@@ -293,28 +304,22 @@ async def test_message_queues_behind_live_turn(message_env, spool_tmp):
 
 @pytest.mark.asyncio
 async def test_message_starts_turn_on_idle_slot(message_env, spool_tmp, monkeypatch):
-    """An idle slot gets an inject row + a dispatched turn attributed to the
-    "app" actor."""
+    """An idle slot queues the app message as a card and the queue drain
+    starts it, so the drain's own checks apply and it writes the inject row."""
     make_client, state = message_env
     spool_id = _spool_record()
     secret = _cbs(spool_id)
     slot = _FakeSlot(running=False)
     state._slots["sess-msg"] = slot
 
-    dispatched: dict = {}
+    drained: list = []
 
-    async def _fake_run_chat(_state, _slot, message, **kwargs):
-        dispatched["message"] = message
-        dispatched["actor"] = kwargs.get("_turn_actor")
-        dispatched["synthetic"] = kwargs.get("_synthetic_payload")
+    async def _fake_drain(_state, _slot, **_kw):
+        drained.append((_slot, list(_slot._queue)))
+        _slot._queue.clear()
+        return True
 
-    def _fake_spawn(_state, _slot, coro):
-        import asyncio
-
-        return asyncio.ensure_future(coro)
-
-    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
-    monkeypatch.setattr("kiro_crew.dashboard.turn_dispatch.spawn_guarded_turn", _fake_spawn)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._start_next_queued_turn", _fake_drain)
     try:
         async with make_client() as client:
             resp = await client.post(
@@ -325,17 +330,17 @@ async def test_message_starts_turn_on_idle_slot(message_env, spool_tmp, monkeypa
             assert resp.status == 200
             body = await resp.json()
             assert body["result"] == {"isError": False}  # SEP contract only — no extra fields
-            assert slot.task is not None
-            await slot.task
-            assert dispatched["actor"] == "app"
-            # App-authored, not user speech: the flag that suppresses the
-            # linked-thread mirror.
-            assert dispatched["synthetic"] is True
-            assert dispatched["message"].startswith(mcp_apps_handlers.APP_MESSAGE_PREFIX)
-            # The inject row carries the label in meta so a rehydrate keeps it.
+            ((drained_slot, entries),) = drained
+            assert drained_slot is slot
+            (entry,) = entries
+            assert entry["kind"] == MCP_APP_MESSAGE_KIND
+            assert entry["content"].startswith(mcp_apps_handlers.APP_MESSAGE_PREFIX)
+            assert entry["meta"]["appLabel"] == "user-message/message_user"
+            assert slot._turn_admission_reserved is False
+            # The queued card carries the label so the drain's inject row keeps it.
             role, _content, _cls, meta = slot.appended[0]
-            assert role == "inject"
-            assert meta == {"injectKind": "mcp_app", "appLabel": "user-message/message_user"}
+            assert role == "queued"
+            assert meta["appLabel"] == "user-message/message_user"
     finally:
         state._slots.clear()
 

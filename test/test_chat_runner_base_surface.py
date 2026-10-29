@@ -953,6 +953,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_REPLAYS_COMPLETION_KEY", "value", "str"),
         (
+            "idle_slot_admits_drain",
+            "function",
+            "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
+        ),
+        (
             "subagents_hold_user_messages",
             "function",
             "(state: 'DashboardState', session_key: 'str') -> 'bool'",

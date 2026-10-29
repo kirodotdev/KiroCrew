@@ -177,10 +177,8 @@ class _ChatSlot:
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
-        "recovery_retrigger_count",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
-        "_recovery_chat_triggered",
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
@@ -431,8 +429,6 @@ class _ChatSlot:
     _eager_spawn_failures: int
     _eager_spawn_retry_at: float
     _prefetch_ttl_task: asyncio.Task[None] | None
-    _recovery_chat_triggered: bool
-    recovery_retrigger_count: int
     _slack_linked: bool
     _slack_channel: str
     _slack_thread_ts: str

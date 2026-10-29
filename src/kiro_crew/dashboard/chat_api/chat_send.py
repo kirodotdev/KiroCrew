@@ -1402,7 +1402,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     finally:
         if _reserve_turn_admission:
             slot._turn_admission_reserved = False
-    slot.recovery_retrigger_count = 0
     state.push_slots_update()
 
     if ws_mode:

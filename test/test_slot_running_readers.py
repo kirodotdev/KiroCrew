@@ -182,6 +182,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
                 ("chat_turn/queue_drain.py", "_drain_parked_queues"),
+                # An injector starts an idle slot's queued head only on a slot no
+                # dispatch has reserved.
+                ("chat_turn/queue_drain.py", "idle_slot_admits_drain"),
                 # The hand-off for a dispatch that never ran a turn's tail: that
                 # task has ended, so this reads a send's reservation.
                 ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
@@ -191,8 +194,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("handlers/members_thread_turns.py", "api_member_fresh_start"),
                 ("handlers/members_thread.py", "api_member_thread"),
                 ("handlers/members_roster.py", "api_members"),
-                # The session-side delivery entry point: idle gets a row and a
-                # turn, a reserved slot gets the queue or a steer.
+                # The session-side delivery entry point: idle queues and drains,
+                # a reserved slot gets the queue or a steer.
                 ("session_deliver.py", "deliver"),
                 # A peer's steer needs a running turn to cut into.
                 ("session_deliver.py", "_deliver_peer"),
@@ -281,6 +284,5 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),
-        ("session_deliver.py", "deliver"),
         ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
     }

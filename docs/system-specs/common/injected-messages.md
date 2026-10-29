@@ -20,8 +20,9 @@ prefix or prefix tuple, never by a loose regex.
 
 ## Cron notification
 
-A cron job called `send_message(session="origin")` and the origin dashboard slot
-was reachable. `dashboard/handlers/messaging.py` wraps the text:
+A cron job called `send_message(session="origin")`, or a script cron reported a
+result, and the origin dashboard slot was reachable. `dashboard/handlers/messaging.py`
+and `slack/gateway_runtime/cron_exec.py` wrap the text the same way:
 
 ```
 [Cron notification from "<job name>"]
@@ -50,7 +51,11 @@ was reachable. `dashboard/handlers/messaging.py` wraps the text:
   waiting card names the entry in `meta.queueId`, the id the drain's `queue_pop`
   frame carries, so the card comes down when the message starts its turn
   (`cron_inject.queue_cron_notification`, which a script cron's result uses too). An
-  idle slot instead gets an immediate guarded turn.
+  idle slot queues the same card and the queue drain starts it at once
+  (`session_deliver._deliver_idle`), so it waits behind a Stop being resolved, a
+  sign-in hold, memory preparation or an entry already queued. A slot that is
+  closing or receives the message during gateway shutdown takes nothing, and the
+  notification takes the out-of-session fallback.
 - When the origin slot is not in memory it is rehydrated from history. A session
   that is genuinely gone (never persisted, deleted, or closed) resolves to nothing
   and delivery falls back to a dashboard notification (plus a Slack DM when the

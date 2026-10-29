@@ -251,8 +251,9 @@ person's own queued text (#22747).
 The wake reaches the steer through `session_deliver.deliver`, the session-side entry
 point a non-human sender calls with its origin (`automation`, `cron`, `app`). The
 sender never picks idle vs running or a row role: `origin_row` maps the origin to
-its row, an idle slot gets that row and a turn, and a running slot gets the steer
-(an automation wake) or a queued card (a cron notification, an app message). A
+its row, an idle slot queues a cron notification or app message as a card that the
+queue drain starts at once (the drain writes the row), and a running slot gets the
+steer (an automation wake) or the same queued card. A
 script cron's result (`_deliver_script_result`) and a cron's `send_message` to its
 origin session (`api_send_message`), both with `evict_oldest` so a full live queue
 drops its oldest cron notification (never another kind of entry), and an MCP App's

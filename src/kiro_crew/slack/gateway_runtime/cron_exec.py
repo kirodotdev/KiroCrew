@@ -452,10 +452,17 @@ async def _deliver_script_result(
                 slot = self.dashboard_state.get_slot(slot_key)
             label = redact(job.name)
             if slot:
-                wrapped = f'[Cron notification: "{label}"]\n{message}\n[/Cron notification]'
                 # Imported here: this function runs on the facade's globals,
                 # which a module-level import in this owner never reaches.
                 from kiro_crew.dashboard import session_deliver
+                from kiro_crew.dashboard.state import (
+                    CRON_NOTIFY_END,
+                    CRON_NOTIFY_PREFIX,
+                )
+
+                # The same wrapper a cron's send_message uses: the queue drain
+                # reads its prefix to write the cron row with the job's label.
+                wrapped = f'{CRON_NOTIFY_PREFIX}"{label}"]\n{message}\n{CRON_NOTIFY_END}'
 
                 # The session decides idle (a cron row and a turn) vs running
                 # (a queued card); the cron names only itself. On a full live
@@ -471,9 +478,10 @@ async def _deliver_script_result(
                     evict_oldest=True,
                 )
                 self.dashboard_state.push_slots_update()
-                if delivery == session_deliver.QUEUE_FULL:
-                    # Nothing in the full queue could give way: the result goes
-                    # out as a notification, as it does when the session is gone.
+                if delivery in (session_deliver.QUEUE_FULL, session_deliver.NOT_DELIVERED):
+                    # Nothing in the full queue could give way, or the session
+                    # closed meanwhile: the result goes out as a notification,
+                    # as it does when the session is gone.
                     self.dashboard_state.notify(
                         "cron", f"⚡ {label}", message, meta={"job_id": job.id}
                     )

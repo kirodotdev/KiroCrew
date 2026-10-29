@@ -1173,7 +1173,6 @@ the finding: an unnamed site records `user`.
 | `slack/gateway` cron branch | a cron notification | `cron` |
 | `slack/gateway._fire_dashboard_nudge` | a nudge/monitor wake (`_directive_self_wake`) | `autonudge` |
 | `slack/gateway` sub-agent injection | a sub-agent completion | `subagent` |
-| `slack/gateway._retrigger_recovery` | re-injected sub-agent completions | `subagent` |
 | `chat_runner` synthesis dispatch | the sub-agent synthesis prompt | `subagent` |
 | `issue_radar.crew_runtime_session` | a crew-composed prompt | `crew` |
 | `handlers/taskrunner` (plan, result) | a task-runner summary | `gateway` |

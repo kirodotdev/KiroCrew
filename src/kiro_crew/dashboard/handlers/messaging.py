@@ -804,9 +804,13 @@ async def api_send_message(request: web.Request) -> web.Response:
                         state, slot, wrapped, session_deliver.cron(label), evict_oldest=True
                     )
                     state.push_slots_update()
-                    # A full queue with nothing that may give way wrote nothing,
-                    # so the message takes the fallback below instead.
-                    sent_session = delivery != session_deliver.QUEUE_FULL
+                    # A full queue with nothing that may give way, or a session
+                    # that closed meanwhile, wrote nothing, so the message takes
+                    # the fallback below instead.
+                    sent_session = delivery not in (
+                        session_deliver.QUEUE_FULL,
+                        session_deliver.NOT_DELIVERED,
+                    )
         # Fall back to normal delivery if no session target or session is gone
         if not sent_session:
             await _deliver_send_message_fallback(

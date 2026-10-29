@@ -397,6 +397,28 @@ def _is_own_recovery(items: "list[dict]", predecessor_actor: str, predecessor_tu
 _REPLAYS_COMPLETION_KEY = "_replays_completion"
 
 
+def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether an injector may start the queued head of an idle *slot* now.
+
+    Read under ``slot._lock``. The slot is still the one registered under its
+    key, owns no turn (its task, when set, is done), holds no send's admission
+    reservation, is not closing, is not held for sign-in and has no Stop in
+    flight. Shutdown and memory preparation are refused by
+    :func:`_start_next_queued_turn` itself.
+    """
+    task = slot.task
+    return (
+        state.get_slot(slot.key) is slot
+        and not slot.running
+        and (task is None or task.done())
+        and not slot._turn_admission_reserved
+        and not slot.is_closing
+        and not slot._last_turn_auth_required
+        and not slot._stopping
+        and slot._stop_state == "idle"
+    )
+
+
 def subagents_hold_user_messages(state: DashboardState, session_key: str) -> bool:
     """Whether a live child of *session_key* should keep user messages queued.
 
