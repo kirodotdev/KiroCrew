@@ -7042,7 +7042,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "このセッションに追加",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "両方のアクションはコンポーザーに事前入力されます — 送信を押すまで何も送信されません。",
+      "footer_start_sends_add_prefills": "「開始」はプロンプトを新しいセッションの最初のメッセージとして送信します。「このセッションに追加」はコンポーザーに事前入力するだけで、何も送信しません。",
       "create_worktree_and_open_session": "{{path}} から git worktree を作成し、そこで新しいセッションを開く",
       "creating_worktree": "ワークツリーを作成中…",
       "dismiss_this_suggestion": "このサジェスションを非表示",
@@ -7058,7 +7058,9 @@
       "open_new_chat_in_project": "{{path}} は git リポジトリではないため、ワークツリーを作成せずに新しいチャットを開きます",
       "open_new_chat_inside_repo": "{{path}} は {{root}} の git リポジトリ内にありますがそのルートではないため、ワークツリーを作成せずに新しいチャットを開きます",
       "open_new_chat": "このセッションにはプロジェクトディレクトリがないため、ワークツリーを作成せずに新しいチャットを開きます",
-      "new_chat_footer_same_project_directory": "両方のアクションはコンポーザーに事前入力されます — 送信を押すまで何も送信されません。新しいチャットはこのセッションのプロジェクトディレクトリで開きます。"
+      "footer_start_sends_add_prefills_project_directory": "「新しいチャットで開始」はこのセッションのプロジェクトディレクトリで新しいチャットを開き、プロンプトを最初のメッセージとして送信します。「このセッションに追加」はコンポーザーに事前入力するだけで、何も送信しません。",
+      "show_prompt": "プロンプトを表示",
+      "hide_prompt": "プロンプトを隠す"
     },
     "inboundLinkChip": {
       "driven_from": "{{label}}から駆動中",
@@ -12562,9 +12564,12 @@
       "run_in_terminal_config_read_failed_error": "ターミナル設定を読み込めなかったため、「現在のターミナルを再利用」はスキップされ、コマンドは新しいターミナルで開かれました。再試行するには再読み込みしてください。",
       "followup_worktree_session_not_created": "{{path}} にワークツリーを作成しましたが、そのセッションを開いてスコープを設定できませんでした。ボタンをもう一度押して再試行してください — 既存のワークツリーが再利用されます。",
       "followup_worktree_no_session_returned": "{{path}} にワークツリーを作成しましたが、セッションが返されませんでした。ボタンをもう一度押して再試行してください — 既存のワークツリーが再利用されます。",
-      "followup_worktree_session_not_opened": "{{path}} のワークツリーは準備できましたが、そのセッションを開けませんでした。サイドバーで切り替えるか、ボタンをもう一度押してください。",
-      "followup_worktree_session_not_focused": "{{path}} のワークツリーは準備できましたが、そのセッションにフォーカスがありません。サイドバーで切り替えるか、ボタンをもう一度押してください。",
+      "followup_worktree_prompt_not_sent": "{{path}} のワークツリーは準備できましたが、プロンプトは送信されませんでした。ボタンをもう一度押して再試行してください。同じワークツリーが再利用されます。",
+      "followup_worktree_session_not_opened": "フォローアップは {{path}} のワークツリーの新しいセッションで実行中ですが、そのセッションを開けませんでした。サイドバーで切り替えてください。",
+      "followup_worktree_session_not_focused": "フォローアップは {{path}} のワークツリーの新しいセッションで実行中ですが、そのセッションにフォーカスがありません。サイドバーで切り替えてください。",
       "followup_chat_not_created": "新しいチャットを開けませんでした。ボタンをもう一度押して再試行してください。",
+      "followup_chat_prompt_not_sent": "プロンプトは送信されませんでした。ボタンをもう一度押して再試行してください。",
+      "followup_prompt_unconfirmed": "フォローアップのセッションは開きましたが、ダッシュボードはプロンプトが届いたことを確認できませんでした。そのセッションを開いて、実行中かどうかを確認してください。",
       "followup_chat_not_focused": "新しいチャットを作成しましたが、フォーカスを移せませんでした。サイドバーで切り替えてください。",
       "open_older_sessions": "「以前のセッション」を開く",
       "tabs_were_not_restored_other": "再起動前に開いていたタブ {{count}} 個が復元されませんでした。",

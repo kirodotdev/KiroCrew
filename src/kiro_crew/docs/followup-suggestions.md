@@ -5,8 +5,14 @@ chat composer. Each suggestion carries an **expanded handoff prompt** and three
 actions: start it in a new chat (in a new git worktree when the project is a git
 repository), add it to the current session, or skip.
 
-Both non-skip actions **pre-fill a composer and stop**. Nothing is sent until
-you press send, so a single click can never launch an unattended agent turn.
+**Start runs the prompt.** It opens the new session and sends the prompt as its
+first message, so one click starts an agent turn. **Add to this session
+pre-fills** the current composer and sends nothing.
+
+Because Start runs agent-authored text on one click, every item has a **Show
+prompt** toggle that expands the full prompt on the card. The title and
+description are a label the agent chose; the prompt is what runs, so read it
+before you press Start.
 
 ## Using it
 
@@ -37,9 +43,10 @@ Calling the tool is the agent's own judgement call; there is no turn-boundary ho
 
 | Action | Effect |
 | --- | --- |
-| **Start in new worktree** | Shown when the session's project directory is a git repository (or the repository check has not answered yet). Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, and pre-fills its composer with the prompt. |
-| **Start in new chat** | Takes the worktree button's place when the session has no project directory, or its project directory is not a git repository, or is only a folder inside a repository rooted higher up (a worktree would branch that whole enclosing repository; the server refuses that unless another session is scoped to the repository root, and the card does not offer it either way). Opens a new chat session in the same project directory (or, when the session has none, wherever a new chat starts by default) and the same sidebar folder, with no worktree and no git call, and pre-fills its composer with the prompt. The button's tooltip says why no worktree is created, and in a project directory the card footer says where the new chat opens. With no project directory the tool result also tells the agent which button the card shows. |
-| **Add to this session** | Pre-fills the current session's composer with the prompt. An unsent draft is preserved — the prompt is appended below it, not written over it. |
+| **Start in new worktree** | Shown when the session's project directory is a git repository (or the repository check has not answered yet). Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, sends the prompt as its first message, and switches to it. |
+| **Start in new chat** | Takes the worktree button's place when the session has no project directory, or its project directory is not a git repository, or is only a folder inside a repository rooted higher up (a worktree would branch that whole enclosing repository; the server refuses that unless another session is scoped to the repository root, and the card does not offer it either way). Opens a new chat session in the same project directory (or, when the session has none, wherever a new chat starts by default) and the same sidebar folder, with no worktree and no git call, sends the prompt as its first message, and switches to it. The button's tooltip says why no worktree is created, and in a project directory the card footer says where the new chat opens. With no project directory the tool result also tells the agent which button the card shows. |
+| **Add to this session** | Pre-fills the current session's composer with the prompt and sends nothing. An unsent draft is preserved — the prompt is appended below it, not written over it. |
+| **Show prompt** | Expands the item's full prompt on the card, so you can read what Start will send. |
 | **Skip** | Dismisses that one suggestion; siblings remain. The card disappears when its last item is gone. |
 
 Every action removes only its own suggestion. Starting one item (in a new worktree or a new chat) or adding it to this session takes that item off the card and leaves the others there, so returning to the originating session shows the remaining suggestions. The removal is pinned to the card the click came from: a newer card that arrived while a start was in flight is left untouched. A start that fails keeps its item on the card with the error.
@@ -68,6 +75,15 @@ Every action removes only its own suggestion. Starting one item (in a new worktr
   destination on the next attempt (`reused: true`) instead of refusing. A
   `worktree add` that fails or times out part-way is unwound, so a retry is not
   blocked by half-created artifacts.
+- **Sent once.** The prompt is sent to the new session by its key before the
+  switch, while the card is still on screen. A refused send closes the new,
+  empty session, keeps the card and shows the error on that item, so pressing
+  Start again retries cleanly (the worktree is reused). If the answer to the send
+  is lost, the prompt may already be running, so that item leaves the card and a page
+  notice asks you to check that session rather than offering a second run. Once
+  the send is accepted that item leaves the card, so its Start button cannot run
+  the same prompt twice; the other suggestions stay. If you open another session while a start is in flight, you
+  stay there and a notice points at the new session in the sidebar.
 
 The gates behind those limits — argument validation, the branch-name filter, and
 the sandboxed `git` invocation — are a design record for contributors, not part

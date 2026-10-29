@@ -7042,7 +7042,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "이 세션에 추가",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "두 작업 모두 작성창을 미리 채웁니다 — 전송을 누르기 전까지는 아무것도 전송되지 않습니다.",
+      "footer_start_sends_add_prefills": "시작을 누르면 프롬프트가 새 세션의 첫 메시지로 전송됩니다. 이 세션에 추가는 작성창을 미리 채우기만 하고 아무것도 전송하지 않습니다.",
       "create_worktree_and_open_session": "{{path}}에서 git worktree를 만들고 거기서 새 세션을 엽니다",
       "creating_worktree": "worktree 생성 중…",
       "dismiss_this_suggestion": "이 제안 닫기",
@@ -7058,7 +7058,9 @@
       "open_new_chat_in_project": "{{path}}은(는) git 저장소가 아니므로 worktree 없이 새 채팅을 엽니다",
       "open_new_chat_inside_repo": "{{path}}은(는) {{root}}의 git 저장소 안에 있지만 그 루트가 아니므로 worktree 없이 새 채팅을 엽니다",
       "open_new_chat": "이 세션에는 프로젝트 디렉터리가 없으므로 worktree 없이 새 채팅을 엽니다",
-      "new_chat_footer_same_project_directory": "두 작업 모두 작성창을 미리 채웁니다 — 전송을 누르기 전까지는 아무것도 전송되지 않습니다. 새 채팅은 이 세션의 프로젝트 디렉터리에서 열립니다."
+      "footer_start_sends_add_prefills_project_directory": "새 채팅에서 시작을 누르면 이 세션의 프로젝트 디렉터리에 새 채팅이 열리고 프롬프트가 첫 메시지로 전송됩니다. 이 세션에 추가는 작성창을 미리 채우기만 하고 아무것도 전송하지 않습니다.",
+      "show_prompt": "프롬프트 보기",
+      "hide_prompt": "프롬프트 숨기기"
     },
     "inboundLinkChip": {
       "driven_from": "{{label}}에서 구동 중",
@@ -12562,9 +12564,12 @@
       "run_in_terminal_config_read_failed_error": "터미널 설정을 읽지 못해 \"현재 터미널 재사용\"을 건너뛰고 명령을 새 터미널에서 열었습니다. 다시 시도하려면 새로 고치세요.",
       "followup_worktree_session_not_created": "{{path}}에 worktree를 만들었지만 해당 세션을 열고 범위를 지정하지 못했습니다. 다시 시도하려면 버튼을 다시 누르세요 — 기존 worktree를 재사용합니다.",
       "followup_worktree_no_session_returned": "{{path}}에 worktree를 만들었지만 세션이 반환되지 않았습니다. 다시 시도하려면 버튼을 다시 누르세요 — 기존 worktree를 재사용합니다.",
-      "followup_worktree_session_not_opened": "{{path}}의 worktree는 준비되었지만 해당 세션을 열지 못했습니다. 사이드바에서 전환하거나 버튼을 다시 누르세요.",
-      "followup_worktree_session_not_focused": "{{path}}의 worktree는 준비되었지만 해당 세션에 포커스가 없습니다. 사이드바에서 전환하거나 버튼을 다시 누르세요.",
+      "followup_worktree_prompt_not_sent": "{{path}}의 worktree가 준비되었지만 프롬프트는 전송되지 않았습니다. 다시 시도하려면 버튼을 다시 누르세요. 같은 worktree를 재사용합니다.",
+      "followup_worktree_session_not_opened": "후속 작업이 {{path}}의 worktree에 있는 새 세션에서 실행 중이지만 해당 세션을 열지 못했습니다. 사이드바에서 전환하세요.",
+      "followup_worktree_session_not_focused": "후속 작업이 {{path}}의 worktree에 있는 새 세션에서 실행 중이지만 해당 세션에 포커스가 없습니다. 사이드바에서 전환하세요.",
       "followup_chat_not_created": "새 채팅을 열지 못했습니다. 다시 시도하려면 버튼을 다시 누르세요.",
+      "followup_chat_prompt_not_sent": "프롬프트는 전송되지 않았습니다. 다시 시도하려면 버튼을 다시 누르세요.",
+      "followup_prompt_unconfirmed": "후속 세션은 열렸지만 대시보드가 프롬프트 전달을 확인하지 못했습니다. 해당 세션을 열어 실행 중인지 확인하세요.",
       "followup_chat_not_focused": "새 채팅을 만들었지만 포커스를 옮기지 못했습니다. 사이드바에서 전환하세요.",
       "open_older_sessions": "'이전 세션' 열기",
       "tabs_were_not_restored_other": "재시작 전에 열려 있던 탭 {{count}}개가 복원되지 않았습니다.",

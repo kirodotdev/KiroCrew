@@ -7042,7 +7042,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "添加到此会话",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "两种操作都只是预填输入框 — 在你按下发送前不会发送任何内容。",
+      "footer_start_sends_add_prefills": "“开始”会把提示词作为新会话的第一条消息发送。“添加到此会话”只预填输入框，不发送任何内容。",
       "create_worktree_and_open_session": "从 {{path}} 创建 git 工作树并在其中打开新会话",
       "creating_worktree": "正在创建工作树…",
       "dismiss_this_suggestion": "忽略此建议",
@@ -7058,7 +7058,9 @@
       "open_new_chat_in_project": "在 {{path}} 中打开新聊天，不创建工作树，因为它不是 git 仓库",
       "open_new_chat_inside_repo": "在 {{path}} 中打开新聊天，不创建工作树，因为它位于 {{root}} 的 git 仓库内，但不是仓库根目录",
       "open_new_chat": "打开新聊天，不创建工作树，因为此会话没有项目目录",
-      "new_chat_footer_same_project_directory": "两种操作都只是预填输入框 — 在你按下发送前不会发送任何内容。新聊天会在此会话的项目目录中打开。"
+      "footer_start_sends_add_prefills_project_directory": "“在新聊天中开始”会在此会话的项目目录中打开新聊天，并把提示词作为第一条消息发送。“添加到此会话”只预填输入框，不发送任何内容。",
+      "show_prompt": "显示提示词",
+      "hide_prompt": "隐藏提示词"
     },
     "inboundLinkChip": {
       "driven_from": "由 {{label}} 驱动",
@@ -12562,9 +12564,12 @@
       "run_in_terminal_config_read_failed_error": "无法读取你的终端设置，因此已跳过“复用当前终端”，命令改为在新终端中打开。请重新加载后重试。",
       "followup_worktree_session_not_created": "已在 {{path}} 创建工作树，但无法打开其会话并设置作用域。再次按下按钮即可重试 — 将复用现有工作树。",
       "followup_worktree_no_session_returned": "已在 {{path}} 创建工作树，但未返回会话。再次按下按钮即可重试 — 将复用现有工作树。",
-      "followup_worktree_session_not_opened": "{{path}} 处的工作树已就绪，但无法打开其会话。请在侧边栏中切换过去，或再次按下按钮。",
-      "followup_worktree_session_not_focused": "{{path}} 处的工作树已就绪，但其会话未获得焦点。请在侧边栏中切换过去，或再次按下按钮。",
+      "followup_worktree_prompt_not_sent": "{{path}} 处的工作树已就绪，但提示词未发送。再次按下按钮即可重试：会复用该工作树。",
+      "followup_worktree_session_not_opened": "后续任务正在 {{path}} 处工作树的新会话中运行，但无法打开该会话。请在侧边栏中切换过去。",
+      "followup_worktree_session_not_focused": "后续任务正在 {{path}} 处工作树的新会话中运行，但该会话未处于焦点。请在侧边栏中切换过去。",
       "followup_chat_not_created": "无法打开新聊天。再次按下按钮即可重试。",
+      "followup_chat_prompt_not_sent": "提示词未发送。再次按下按钮即可重试。",
+      "followup_prompt_unconfirmed": "后续会话已打开，但仪表板无法确认提示词已送达。请打开该会话，查看它是否正在运行。",
       "followup_chat_not_focused": "新聊天已创建，但无法切换到它。请在侧边栏中切换过去。",
       "open_older_sessions": "打开“较早的会话”",
       "tabs_were_not_restored_other": "重启前打开的 {{count}} 个标签页未恢复。",

@@ -7288,7 +7288,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "Adicionar a esta sessão",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "As duas ações pré-preenchem o campo de mensagem — nada é enviado até você clicar em enviar.",
+      "footer_start_sends_add_prefills": "Iniciar envia o prompt como a primeira mensagem da nova sessão. Adicionar a esta sessão pré-preenche o campo de mensagem e não envia nada.",
       "create_worktree_and_open_session": "Criar uma worktree git a partir de {{path}} e abrir uma nova sessão nela",
       "creating_worktree": "Criando worktree…",
       "dismiss_this_suggestion": "Descartar esta sugestão",
@@ -7306,7 +7306,9 @@
       "open_new_chat_in_project": "Abrir um novo chat em {{path}} sem worktree, porque não é um repositório git",
       "open_new_chat_inside_repo": "Abrir um novo chat em {{path}} sem worktree, porque está dentro do repositório git em {{root}}, mas não é a raiz dele",
       "open_new_chat": "Abrir um novo chat sem worktree, porque esta sessão não tem diretório de projeto",
-      "new_chat_footer_same_project_directory": "As duas ações pré-preenchem o campo de mensagem — nada é enviado até você clicar em enviar. O novo chat abre no diretório de projeto desta sessão."
+      "footer_start_sends_add_prefills_project_directory": "Iniciar em um novo chat envia o prompt como a primeira mensagem de um novo chat no diretório de projeto desta sessão. Adicionar a esta sessão pré-preenche o campo de mensagem e não envia nada.",
+      "show_prompt": "Mostrar prompt",
+      "hide_prompt": "Ocultar prompt"
     },
     "inboundLinkChip": {
       "driven_from": "Controlada por {{label}}",
@@ -12938,9 +12940,12 @@
       "run_in_terminal_config_read_failed_error": "Não foi possível ler as configurações do terminal, então \"reutilizar o terminal atual\" foi ignorado e o comando abriu em um novo terminal. Recarregue para tentar novamente.",
       "followup_worktree_session_not_created": "Worktree criada em {{path}}, mas não foi possível abrir e vincular a sessão dela. Clique no botão de novo para tentar outra vez — a worktree existente será reutilizada.",
       "followup_worktree_no_session_returned": "Worktree criada em {{path}}, mas nenhuma sessão foi retornada. Clique no botão de novo para tentar outra vez — a worktree existente será reutilizada.",
-      "followup_worktree_session_not_opened": "Worktree pronta em {{path}}, mas não foi possível abrir a sessão dela. Mude para ela na barra lateral ou clique no botão de novo.",
-      "followup_worktree_session_not_focused": "Worktree pronta em {{path}}, mas a sessão dela não está em foco. Mude para ela na barra lateral ou clique no botão de novo.",
+      "followup_worktree_prompt_not_sent": "Worktree pronta em {{path}}, mas o prompt não foi enviado. Clique no botão de novo para tentar outra vez: a worktree é reutilizada.",
+      "followup_worktree_session_not_opened": "O acompanhamento está rodando em uma nova sessão na worktree em {{path}}, mas não foi possível abrir essa sessão. Mude para ela na barra lateral.",
+      "followup_worktree_session_not_focused": "O acompanhamento está rodando em uma nova sessão na worktree em {{path}}, mas essa sessão não está em foco. Mude para ela na barra lateral.",
       "followup_chat_not_created": "Não foi possível abrir o novo chat. Clique no botão de novo para tentar outra vez.",
+      "followup_chat_prompt_not_sent": "O prompt não foi enviado. Clique no botão de novo para tentar outra vez.",
+      "followup_prompt_unconfirmed": "A sessão de acompanhamento abriu, mas o painel não conseguiu confirmar que o prompt chegou a ela. Abra essa sessão para verificar se ela está em execução.",
       "followup_chat_not_focused": "O novo chat foi criado, mas não foi possível colocá-lo em foco. Mude para ele na barra lateral.",
       "open_older_sessions": "Abrir Sessões antigas",
       "tabs_were_not_restored_many": "{{count}} abas que estavam abertas antes da reinicialização não foram restauradas.",

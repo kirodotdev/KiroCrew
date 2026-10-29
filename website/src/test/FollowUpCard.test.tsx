@@ -41,9 +41,41 @@ describe('FollowUpCard', () => {
     expect(screen.getByRole('button', { name: /skip/i })).toBeInTheDocument()
   })
 
-  it('states that nothing is sent without the user pressing send', () => {
+  it('states that Start sends the prompt and Add only pre-fills it', () => {
     setup()
-    expect(screen.getByText(/nothing is sent until you press send/i)).toBeInTheDocument()
+    expect(screen.getByText(/start sends the prompt/i)).toBeInTheDocument()
+    expect(screen.getByText(/pre-fills the composer and sends nothing/i)).toBeInTheDocument()
+  })
+
+  it('keeps the prompt collapsed until the user asks to read it', () => {
+    setup()
+    const toggle = screen.getByRole('button', { name: 'Show prompt' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Add a token-bucket limiter to POST /api/upload.')).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    // The full prompt, verbatim: this is the text Start will send.
+    const hide = screen.getByRole('button', { name: 'Hide prompt' })
+    expect(hide).toHaveAttribute('aria-expanded', 'true')
+    const shown = screen.getByText('Add a token-bucket limiter to POST /api/upload.')
+    expect(hide).toHaveAttribute('aria-controls', shown.id)
+    fireEvent.click(hide)
+    expect(screen.queryByText('Add a token-bucket limiter to POST /api/upload.')).not.toBeInTheDocument()
+  })
+
+  it('expands one item\'s prompt without expanding its siblings', () => {
+    render(
+      <FollowUpCard
+        items={[item({ title: 'First', prompt: 'first prompt' }), item({ title: 'Second', prompt: 'second prompt' })]}
+        projectDir="/repo"
+        onAddToSession={vi.fn()}
+        onStartInWorktree={vi.fn()}
+        onStartInNewChat={vi.fn()}
+        onSkip={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getAllByRole('button', { name: 'Show prompt' })[1])
+    expect(screen.getByText('second prompt')).toBeInTheDocument()
+    expect(screen.queryByText('first prompt')).not.toBeInTheDocument()
   })
 
   it('calls onAddToSession with the item', () => {
@@ -85,7 +117,7 @@ describe('FollowUpCard', () => {
     expect(worktree.className).toContain('bg-accent')
     expect(worktree).toHaveAttribute('title', 'Create a git worktree from /repo and open a new session there')
     expect(screen.queryByRole('button', { name: /start in new chat/i })).not.toBeInTheDocument()
-    expect(screen.getByText('Both actions pre-fill the composer — nothing is sent until you press send.')).toBeInTheDocument()
+    expect(screen.getByText("Start sends the prompt as the new session's first message. Add to this session pre-fills the composer and sends nothing.")).toBeInTheDocument()
     fireEvent.click(worktree)
     expect(onStartInWorktree).toHaveBeenCalledWith(item(), 0)
     expect(onStartInNewChat).not.toHaveBeenCalled()
@@ -107,7 +139,7 @@ describe('FollowUpCard', () => {
 
   it('keeps the standard footer for an unscoped session, with no git terms', () => {
     setup({ projectDir: undefined })
-    expect(screen.getByText('Both actions pre-fill the composer — nothing is sent until you press send.')).toBeInTheDocument()
+    expect(screen.getByText("Start sends the prompt as the new session's first message. Add to this session pre-fills the composer and sends nothing.")).toBeInTheDocument()
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 
@@ -124,7 +156,7 @@ describe('FollowUpCard', () => {
     fireEvent.click(newChat)
     await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0))
     expect(onStartInWorktree).not.toHaveBeenCalled()
-    expect(screen.getByText(/the new chat opens in this session's project directory/i)).toBeInTheDocument()
+    expect(screen.getByText(/sends the prompt as the first message of a new chat in this session's project directory/i)).toBeInTheDocument()
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 
@@ -144,7 +176,7 @@ describe('FollowUpCard', () => {
     fireEvent.click(newChat)
     await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0))
     expect(onStartInWorktree).not.toHaveBeenCalled()
-    expect(screen.getByText(/the new chat opens in this session's project directory/i)).toBeInTheDocument()
+    expect(screen.getByText(/sends the prompt as the first message of a new chat in this session's project directory/i)).toBeInTheDocument()
   })
 
   it('ignores an enclosing repository root when the session has no project dir', () => {

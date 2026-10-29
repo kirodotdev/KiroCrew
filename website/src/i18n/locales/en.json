@@ -4748,7 +4748,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "Add to this session",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "Both actions pre-fill the composer — nothing is sent until you press send.",
+      "footer_start_sends_add_prefills": "Start sends the prompt as the new session's first message. Add to this session pre-fills the composer and sends nothing.",
       "dismiss_this_suggestion": "Dismiss this suggestion",
       "follow_up_suggestions": "Follow-up suggestions",
       "pre_fill_this_session_s_composer_with_the_expand": "Pre-fill this session's composer with the expanded prompt",
