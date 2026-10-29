@@ -642,6 +642,7 @@ if TYPE_CHECKING:
     from kiro_crew.memory_startup import MemoryStartup
     from kiro_crew.messaging.registry import ChannelDescriptor
     from kiro_crew.providers.base import LLMProvider
+    from kiro_crew.slack.events import SeenCache
     from kiro_crew.subagent_scale import SubagentEventCoalescer
     from kiro_crew.task_models import Task
     from kiro_crew.teams.client import TeamsClient
@@ -715,6 +716,10 @@ class GatewayOrchestrator:
     _tracking_channels: set[str]
     _open_channels: set[str]
     _slack_enabled: bool
+    _slack_seen: SeenCache | None
+    _slack_team_id: str
+    _slack_workspace_pinned: bool
+    _slack_reconnect_task: asyncio.Task[dict[str, Any]] | None
     slack_command: str
     _channel_restart_lock: asyncio.Lock
     _channel_transports_started: bool

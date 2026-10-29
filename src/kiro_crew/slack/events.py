@@ -196,11 +196,17 @@ def _wire_slack_code_capability_probe(
         listeners.append(_on_message)
 
 
-async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
+async def init_socket_mode(
+    orch: GatewayOrchestrator, seen: SeenCache, *, declared_yolo: bool = True
+) -> None:
     """Wire up the Socket Mode client and attach the event listener.
 
     Does nothing when Slack is disabled (missing tokens or no allowed
     users).  Mutates ``orch._socket_client`` in place.
+
+    ``declared_yolo=False`` skips the start-up YOLO grant: an in-place Slack
+    reconnect rebuilds the socket and must keep the approval state the owner
+    set since start-up (a ``!yolo off`` stays off).
 
     Awaited on the gateway loop, never offloaded whole: constructing
     ``WSSocketModeClient`` requires a current event loop in the constructing
@@ -230,7 +236,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
     set_owner_id(orch._owner_id)
-    if orch._cfg.agent.dangerously_skip_permissions:
+    if declared_yolo and orch._cfg.agent.dangerously_skip_permissions:
         # grant_declared_yolo walks the profiles dir — blocking, so off-loop.
         await asyncio.to_thread(set_yolo_mode, True)
     set_orch_cfg(orch._cfg)
