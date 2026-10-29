@@ -21,14 +21,29 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import extras
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.queue_drain import unregister_drain
 from kiro_crew.teams.client import HAS_JWT, TeamsClient
 from kiro_crew.teams.transport import TeamsTransport
-from kiro_crew.teams.transport_dispatch import TeamsDispatcher
+from kiro_crew.teams.transport_dispatch import _CHANNEL, TeamsDispatcher
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _client_close_hook(dispatcher: TeamsDispatcher) -> "Callable[[], None]":
+    """What the client runs when it closes: retire this dispatcher's queue drain.
+
+    A drain waiting on a held lease (``messaging.queue_drain.drain_when_free``) looks
+    the drain up when the lease frees, so a stale one would answer queued messages on
+    a channel the operator disabled. Compare-and-drop, so a restart whose replacement
+    already registered keeps its drain.
+    """
+    drain_hook = dispatcher._drain_queue
+    return lambda: unregister_drain(_CHANNEL, drain_hook)
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
@@ -117,6 +132,7 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
         # gates, so this records nothing an ordinary message would not have.
         client.on_route = transport.note_route
         dispatcher.client = client
+        client.on_close = _client_close_hook(dispatcher)
 
         if orch.dashboard_state is not None:
             state = orch.dashboard_state

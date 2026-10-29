@@ -174,6 +174,17 @@ class TestFolderUpdate:
         )
         assert resp.status == 400
 
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_infinite_order_400(self, stores, patch_restricted, raw: str) -> None:
+        """JSON reads ``1e999`` as an infinite float: a 400, never a 500."""
+        _store, fstore = stores
+        f = fstore.create("A")
+        body = json.loads(f'{{"order": {raw}}}')
+        resp = await api_artifact_folder_update(_request(body=body, match={"id": f["id"]}))
+        assert resp.status == 400
+        assert fstore.get(f["id"])["order"] == f["order"]
+
     @pytest.mark.asyncio
     async def test_unknown_404(self, stores, patch_restricted) -> None:
         resp = await api_artifact_folder_update(

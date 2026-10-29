@@ -477,9 +477,13 @@ locator forward.
 > and `platform_compat.host_available_mib` both read `host_statistics64`, and they sum its
 > page counters differently. The budget's version is tighter — it does not re-add
 > `speculative_count` (which `free_count` already contains) and it bounds `inactive_count`
-> by `external_page_count`. The sub-agent version is knowingly looser and stays that way,
-> because tightening it moves the spawn memory floor's macOS reading (and the TaskRunner's
-> memory-sized auto value), numbers that are documented and that operators tune against. Do not "unify" them; only the Mach call itself is shared.
+> by `external_page_count`. The spawn memory floor reads the tighter version on macOS
+> (`subagent._host_available_gb`, #21574): the floor promises what stays free after a
+> start, and the looser sum read about 3.5 GiB above what a new process could take. The
+> sub-agent version is knowingly looser and stays that way for the TaskRunner's
+> memory-sized auto value, the auto cap's disabled-floor fallback and the memory posture,
+> numbers that are documented and that operators tune against. Do not "unify" those; only
+> the Mach call itself is shared.
 
 pytest-xdist resolves `-n auto` to the CPU count and never looks at memory, so on a
 many-core host a full-suite run inside an agent turn spawns one worker per core at roughly

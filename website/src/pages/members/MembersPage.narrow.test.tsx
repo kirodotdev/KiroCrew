@@ -720,6 +720,28 @@ describe('MembersPage default member, memory and URL', () => {
       }
     })
 
+    it('wears the Sessions bar\'s bare drawer toggle and a bare panel toggle in the shell bar, not Glass chips', async () => {
+      const slot = document.createElement('div')
+      slot.id = 'mobile-topbar-slot'
+      document.body.appendChild(slot)
+      try {
+        await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+        await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+        const back = await within(slot).findByTestId('member-back')
+        const panel = within(slot).getByTestId('member-panel-toggle')
+        for (const control of [back, panel]) {
+          expect(control.tagName).toBe('BUTTON')
+          expect(control.className).not.toMatch(/glass/)
+          expect(control.className).toMatch(/(^|\s)p-2(\s|$)/)
+        }
+        // The Sessions toggle's glyph at its bar size, and its pressed state.
+        expect(back.querySelector('svg')).toHaveAttribute('width', '18')
+        expect(back).toHaveAttribute('aria-expanded', 'false')
+      } finally {
+        slot.remove()
+      }
+    })
+
     it('tells the shell which bar it needs: open for a landing, roster only when it can open no one and on unmount', async () => {
       const opening = vi.fn()
       const first = await renderPage(alphaBeta(), 'kirocrew', { reportRosterBar: opening })

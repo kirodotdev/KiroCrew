@@ -64,6 +64,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         record_activity,
     )
     from kiro_crew.members_parts.member_sessions import (  # noqa: F401
+        _CREWMATE_WORKER_PROMPT_IN_CONTEXT,
         _CREWMATE_WORKER_SLOTS,
         MEMBER_DISPATCH_SERVER,
         MEMBER_PANEL_SERVER,
@@ -72,6 +73,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_session_element,
         _slot_part,
         crew_panel_enabled,
+        crewmate_worker_prompt_in_context,
         forget_crewmate_worker_session,
         is_crewmate_worker_session,
         is_member_session_key,
@@ -81,6 +83,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         member_slot_key,
         member_thread_session_alias,
         member_turn_context,
+        note_crewmate_worker_prompt_channel,
         note_crewmate_worker_session,
         select_provider_backend,
     )

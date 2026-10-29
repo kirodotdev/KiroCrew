@@ -737,6 +737,9 @@ async def _deliver_cross_surface_user_message(
         logger.debug("Failed to mirror user message to %s", link.channel_type, exc_info=True)
 
 
+_MIRROR_ECHO_LIMIT = 500
+
+
 def _prepare_mirror_msg(raw_user_message: str) -> str:
     """Prepare a user message for the cross-surface / Slack mirror echo.
 
@@ -753,4 +756,8 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
     client renders the markup away.
     """
     safe, _ = redact_for_display(raw_user_message or "", redact_via_context)
-    return safe[:500]
+    if len(safe) <= _MIRROR_ECHO_LIMIT:
+        return safe
+    # Mark the cut. A bare slice ends mid-word with nothing after it, which
+    # reads as a message that broke rather than one that was shortened.
+    return safe[: _MIRROR_ECHO_LIMIT - 1] + "…"

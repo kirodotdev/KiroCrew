@@ -857,6 +857,10 @@ export function useAppShell() {
   // bare visit that is about to open a crewmate must not flash the logo row.
   const membersRoute = activePath === '/members' || activePath.startsWith('/members/')
   const mobileSingle = isMobile && (isChat || membersSingleBar)
+  // The phone Crewmates single bar before the page has a crewmate open: the
+  // page has no drawer bound yet, so the bar carries a nav-drawer toggle.
+  const membersBarPending = mobileSingle && onMembersRoute && membersBar === 'pending'
+  const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
     isEmbed, isPopout, initialPopoutPath, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
@@ -878,6 +882,7 @@ export function useAppShell() {
     setShowUpdateModal, showChangelog, updateError, setUpdateError, startupVideo, reportProblemOpen,
     setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, closeMobileNav, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
+    membersBarPending, mobileNavOpen,
   }
 }
 

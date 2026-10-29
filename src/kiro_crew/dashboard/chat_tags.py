@@ -991,6 +991,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew.dashboard.body_numbers import (  # noqa: F401
+        body_int,
+    )
     from kiro_crew.dashboard.chat_tag_grants import (  # noqa: F401
         GrantsSnapshot,
         has_grant_row,

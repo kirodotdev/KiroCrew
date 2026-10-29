@@ -952,18 +952,30 @@ async def _get_or_create_impl(
                     if provider.process_instance:
                         raise CapabilityStartupError("capability_runtime_not_fresh")
                     await asyncio.to_thread(verify_saved, preparation, provider.cwd)
-                # A crewmate's worker runs with its kit, or not at all: a backend
-                # that cannot carry the per-session spec would run the bare on-disk
-                # base with the crewmate's switched-off tools back (H6 opt-in).
+                # A crewmate's worker runs with its per-session spec, or not at
+                # all, under the member chat's two codes (H6 opt-in): a backend
+                # that cannot carry that spec (``ACP_BACKENDS_MATE_WORKER_KIT``),
+                # and, for a crewmate whose file turns off single tools, one that
+                # cannot honour them for a worker (``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``:
+                # KAS carries them as the worker spec's ``excludedTools``).
                 from kiro_crew.members import is_crewmate_worker_session
 
-                if (
-                    is_crewmate_worker_session(key)
-                    and provider.mate_worker_kit_supported is not True
-                ):
+                if is_crewmate_worker_session(key):
                     from kiro_crew.session_capabilities import CapabilityStartupError
 
-                    raise CapabilityStartupError("worker_kit_harness_unsupported")
+                    if provider.mate_worker_kit_supported is not True:
+                        raise CapabilityStartupError("capability_harness_unsupported")
+                    # The prompt channel is this provider's, fixed for the session.
+                    from kiro_crew.members import note_crewmate_worker_prompt_channel
+
+                    note_crewmate_worker_prompt_channel(
+                        key, provider.mate_worker_prompt_in_context is True
+                    )
+                    # A fast path: the projection refuses on the spec it builds too.
+                    if provider.mate_worker_tool_limits_supported is not True:
+                        limited = await asyncio.to_thread(_worker_tool_limited_servers, key)
+                        if limited:
+                            raise CapabilityStartupError("capability_tool_limits_unsupported")
                 # The key may have been fenced while this call waited for the
                 # semaphore or the reads above: refuse before a process is
                 # spawned that the registration door would only refuse later.
@@ -1273,6 +1285,16 @@ async def _get_or_create_impl(
         )
 
     return result
+
+
+def _worker_tool_limited_servers(key: str) -> tuple[str, ...]:
+    """The servers whose single tools worker *key*'s crewmate file turns off. Blocking."""
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.mate_worker import crewmate_tool_limited_servers
+
+    execution = read_session_execution(key)
+    member_id = str(getattr(execution, "member_id", "") or "") if execution is not None else ""
+    return crewmate_tool_limited_servers(member_id)
 
 
 def _is_crewmate_worker_key(key: str) -> bool:

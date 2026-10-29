@@ -357,6 +357,9 @@ class WebexClient:
         # connect and on disconnect — lets the gateway keep the dashboard
         # status badge truthful after boot. Mirrors DiscordClient.
         self.on_state_change: Callable[[bool, str], None] | None = None
+        # Set by the gateway to retire this channel's process-global registrations
+        # (its queue drain) when the client closes. Mirrors DiscordClient.
+        self.on_close: Callable[[], None] | None = None
         # Live turn tasks -- prevent GC of in-flight handlers.
         self._handler_tasks: set[asyncio.Task[None]] = set()
         # Recently dispatched message ids, oldest first (see _DEDUP_WINDOW).
@@ -383,6 +386,13 @@ class WebexClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
+        # Retire the registrations first, so nothing routes to a dispatcher that is
+        # going away while the tasks below unwind.
+        if self.on_close is not None:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("Webex on_close callback failed", exc_info=True)
         # Session close in a `finally` -- see DiscordClient.close() for why the
         # steps above it can raise and what leaking the session costs.
         try:

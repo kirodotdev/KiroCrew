@@ -118,19 +118,48 @@ other backend such a spec is refused before spawn with
 `capability_tool_limits_unsupported`. A member DM whose
 `agent.member_acp_backend` is `kiro` runs on KAS (the loader reads it so), so
 no member-DM backend setting honours per-tool limits and that refusal's remedy
-is to change the saved spec. `ACP_BACKENDS_MATE_WORKER_KIT` (KAS only) is
-the H6 opt-in for running a crewmate's WORKER: a spec built per session from the
-worker base plus that crewmate's file, with its switched-off tools withheld
-(`mate_worker.worker_session_spec`, the one harness-neutral seam; KAS's
-projection reads it). A worker takes its crewmate's backend
-(`members.select_provider_backend` routes a key `mate_worker.note_worker_session`
-published, identified positively by its record: a `template` selection on
-`kirocrew-mate-worker` with a member id), and on a backend outside the set it is
-refused -- `session_create` before allocating, and the allocation before spawn
-through `mate_worker_kit_supported`, which both providers answer from the set --
-because kiro-cli would run the bare on-disk base and the projecting hosts drop
-`excludedTools`. Pinned by `test_harness_parity.py::test_the_mate_worker_kit_is_opt_in`
-and `test_mate_worker_dispatch.py::test_every_backend_carries_the_kit_or_refuses_the_worker`.
+is to change the saved spec. A crewmate's WORKER runs a spec built per session
+from the worker base plus that crewmate's file (`mate_worker.worker_session_spec`,
+the one harness-neutral seam), carried the way a member chat's saved spec is.
+`ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude) names the hosts that
+carry it: KAS's projection reads the seam; the mirrored hosts read it through the
+session MCP projection, keyed by the session (`acp.session_mcp._crewmate_worker_spec`).
+kiro-cli is a member backend but not in the set: it reads `--agent` off disk from
+`~/.kiro/agents/`, where the worker spec is not, and has no per-session channel. A
+worker takes its crewmate's backend (`members.select_provider_backend` routes a
+key `mate_worker.note_worker_session` published, identified positively by its
+record: a `template` selection on `kirocrew-mate-worker` with a member id), and it
+is refused with the member chat's codes: outside `ACP_BACKENDS_MATE_WORKER_KIT`
+(`capability_harness_unsupported`, at `session_create` and before spawn through
+`mate_worker_kit_supported`), and, when the crewmate's file turns off
+single tools (an entry's `disabledTools`, or a server or native tool its own
+`excludedTools` names, as a copied kit keeps them;
+`mate_worker.crewmate_tool_limited_servers`),
+outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`
+(`capability_tool_limits_unsupported`, before spawn). That set is the worker's
+own because the worker's limits travel differently from a member chat's: the
+worker spec rewrites every switched-off tool into `excludedTools`, which KAS
+projects, so KAS (the default backend) honours them and is in the set; claude
+mounts the worker's servers whole and reports `excludedTools` as a gap, so it
+is not. codex and deepseek build their array through the same projection but
+are outside `ACP_BACKENDS_MATE_WORKER_KIT` until a live capture of a worker
+session lands for each, so a worker there is refused. Both providers answer `mate_worker_kit_supported` and
+`mate_worker_tool_limits_supported` from the two sets. The worker's prompt (its
+principles, then its crewmate's) rides the `[AGENT SYSTEM PROMPT]` block only on
+`ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT` (claude), the kit
+hosts whose mirror rules `Concern.PROMPT` `WITHHELD`; KAS's wire spec carries it.
+Which channel a worker session uses is its live provider's answer
+(`mate_worker_prompt_in_context`), recorded at allocation, so a later change to
+`agent.member_acp_backend` does not move a running worker's prompt. The
+single-tool refusal is decided again inside the projection, on the same read of
+the crewmate's file the worker spec is built from (`resolve_worker_spec`
+`refuse_tool_limits`); the allocation's earlier check is a fast path. What reaches the worker
+past that is what the member path carries on that host: the mirrored hosts
+report `excludedTools`, hooks, `toolsSettings`, native-tool restrictions and
+auto-approval shortcuts as projection gaps
+(`agent_capabilities_consumed.projection_gaps`). Pinned by
+`test_harness_parity.py::test_the_mate_worker_takes_the_member_rule` and
+`test_mate_worker_harnesses.py`.
 This is separate from session sharing and per-session member dispatch. Both `AcpProvider` and
 `AcpSessionProvider` answer `member_capabilities_supported` from this set.
 Support alone does not prove a template is loaded: dedicated runtime ownership,

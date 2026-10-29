@@ -26,6 +26,7 @@ import { useLocation } from 'react-router-dom'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { renderWithProviders } from './helpers'
 import App from '../App'
+import { api } from '../api/client'
 import { useMobileNavRail, useMobileRosterBar } from '../components/MobileNavRailContext'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 
@@ -301,7 +302,8 @@ describe('phone chat page: one top bar', () => {
       renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/members' })
       await screen.findByTestId('members-page-stub', undefined, LAZY_ROUTE)
       expect(header()).toHaveClass('topbar-single')
-      expect(within(header()).queryByRole('button', { name: 'Open menu' })).toBeNull()
+      // No logo row: the bar's one way to the navigation is the slot's toggle.
+      expect(within(header()).getAllByRole('button', { name: 'Open menu' })).toEqual([screen.getByTestId('mobile-topbar-nav-toggle')])
     } finally {
       membersRailActivate.bar = 'open'
     }
@@ -314,9 +316,44 @@ describe('phone chat page: one top bar', () => {
       renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/members' })
       await screen.findByTestId('members-page-stub', undefined, LAZY_ROUTE)
       expect(header()).toHaveClass('topbar-single')
-      expect(within(header()).queryByRole('button', { name: 'Open menu' })).toBeNull()
+      // The bar is never empty while it reads: its first control is a toggle
+      // for the nav drawer, and it opens it.
+      const toggle = within(screen.getByTestId('mobile-topbar-slot')).getByTestId('mobile-topbar-nav-toggle')
+      expect(within(header()).getAllByRole('button', { name: 'Open menu' })).toEqual([toggle])
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+      await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'))
     } finally {
       membersRailActivate.bar = 'open'
+    }
+  })
+
+  it('drops the nav toggle once the page has a crewmate open, whose header carries its own drawer toggle', async () => {
+    localStorage.setItem('mc-onboarded', '1')
+    renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/members?member=alpha' })
+    await screen.findByTestId('members-page-stub', undefined, LAZY_ROUTE)
+    expect(header()).toHaveClass('topbar-single')
+    expect(screen.queryByTestId('mobile-topbar-nav-toggle')).toBeNull()
+  })
+
+  it('shows the update pill, with its text, beside the bell on the Mates single bar, which has no overflow menu', async () => {
+    localStorage.setItem('mc-onboarded', '1')
+    const status = vi.mocked(api.status)
+    status.mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, update_available: true } as Awaited<ReturnType<typeof api.status>>)
+    try {
+      renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/members?member=alpha' })
+      await screen.findByTestId('members-page-stub', undefined, LAZY_ROUTE)
+      expect(header()).toHaveClass('topbar-single')
+      const pill = await within(header()).findByTestId('update-pill', undefined, LAZY_ROUTE)
+      // In the trailing cell, before the bell: two controls, not three.
+      const trail = pill.closest('.tb-trail') as HTMLElement
+      expect(trail).not.toBeNull()
+      expect(within(trail).getByRole('button', { name: 'Notifications' })).toBeInTheDocument()
+      // A bare download glyph did not say "update": the label stays visible.
+      const label = within(pill).getByText('Update available')
+      expect(label.className).not.toMatch(/(^|\s)hidden(\s|$)/)
+    } finally {
+      status.mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as Awaited<ReturnType<typeof api.status>>)
     }
   })
 

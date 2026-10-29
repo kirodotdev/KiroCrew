@@ -19,6 +19,7 @@ from kiro_crew.artifacts import (
     get_default_folder_store,
     get_default_store,
 )
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
@@ -244,7 +245,7 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         if "color" in body:
             f = fstore.set_color(fid, str(body.get("color") or ""))
         if "order" in body:
-            fstore.reorder([{"id": fid, "order": int(body["order"])}])
+            fstore.reorder([{"id": fid, "order": body_int(body["order"])}])
             ref = fstore.get(fid)
             if ref is not None:
                 f = ref

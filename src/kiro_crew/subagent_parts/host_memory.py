@@ -70,16 +70,17 @@ def check_memory_available(
     ``platform_compat._linux_available_mib`` reads the same file the same
     way. The ``path`` keyword is keyword-only and exists for tests only;
     production callers always take the constant.
-    Native macOS/Windows readers handle the production path on those hosts.
+    Native macOS/Windows readers handle the production path on those hosts:
+    on both, the floor compares against ``platform_compat.host_available_mib``
+    through ``_host_available_gb`` (see it for why macOS does not use the
+    looser sum the auto cap and the posture read).
     Linux production reads also respect cgroup headroom. An explicit test path
     always exercises the file reader. With no readable host memory or finite
     cgroup limit, returns (True, -1.0).
     """
     if path == "/proc/meminfo" and not platform_compat.IS_LINUX:
-        if platform_compat.IS_MACOS:
-            avail = _macos_available_memory_gb()
-        elif platform_compat.IS_WINDOWS:
-            avail = _windows_available_memory_gb()
+        if platform_compat.IS_MACOS or platform_compat.IS_WINDOWS:
+            avail = _host_available_gb()
         else:
             avail = -1.0
         return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
@@ -225,22 +226,36 @@ def _available_memory_gb() -> float:
     if platform_compat.IS_MACOS:
         return _macos_available_memory_gb()
     if platform_compat.IS_WINDOWS:
-        return _windows_available_memory_gb()
+        return _host_available_gb()
     # Unsupported platform: no probe yet → fail open.
     return -1.0
 
 
-def _windows_available_memory_gb() -> float:
-    """Available memory (GB) on Windows, or ``-1.0`` when it cannot be read.
+def _host_available_gb() -> float:
+    """``platform_compat.host_available_mib`` in GB, or ``-1.0`` when it cannot be read.
 
-    Delegates to ``platform_compat.host_available_mib`` instead of calling
-    ``GlobalMemoryStatusEx`` here. That shim is the single place the MiB unit
-    and the "0 means unreadable, never zero memory" contract are defined, and a
-    second reader would have to restate both to stay correct.
+    Delegates instead of calling ``GlobalMemoryStatusEx`` or the Mach counters
+    here. That shim is the single place the MiB unit and the "0 means
+    unreadable, never zero memory" contract are defined, and a second reader
+    would have to restate both to stay correct.
 
-    Without this branch the cap loses its memory term on Windows entirely and
-    falls open to ``_LEGACY_DEFAULT_MAX``, so a host with tens of GB free is
-    held to the same three concurrent sub-agents as an unmeasurable one.
+    Readers:
+
+    * Windows, everywhere: without it the cap loses its memory term on Windows
+      entirely and falls open to ``_LEGACY_DEFAULT_MAX``, so a host with tens of
+      GB free is held to the same three concurrent sub-agents as an
+      unmeasurable one.
+    * macOS, the spawn floor only (``check_memory_available``). There the shim
+      counts free plus purgeable pages plus ``min(inactive,
+      external_page_count)``. The floor promises that
+      ``agent.spawn_min_memory_gb`` stays free AFTER a start, so it reads what a
+      new process can really take. The looser ``_macos_available_memory_gb``
+      adds speculative pages a second time (``free_count`` already holds them)
+      and counts dirty anonymous inactive pages as free; on a loaded Apple
+      silicon host it reads about 3.5 GiB above this figure, so a floor compared
+      against it admits starts with less headroom than the operator set. The
+      auto cap's memory-sized fallback, the TaskRunner's memory-sized auto value
+      and the memory posture keep reading ``_macos_available_memory_gb``.
     """
     available_mib = platform_compat.host_available_mib()
     if available_mib <= 0:
@@ -264,11 +279,12 @@ def _macos_vm_reclaimable_pages() -> Optional[int]:
 
     This sum is knowingly looser than ``platform_compat.host_available_mib``,
     which bounds ``inactive`` by ``external_page_count`` and does not re-add
-    ``speculative`` (``free_count`` already contains it). The two are not
-    interchangeable: tightening this one moves the spawn memory floor's macOS
-    reading and the TaskRunner's memory-sized auto value
-    (``compute_memory_sized_parallel_cap``), figures that are documented and
-    that operators tune against.
+    ``speculative`` (``free_count`` already contains it). The spawn floor does
+    not read it: it reads the tight figure (``_host_available_gb``).
+    This sum feeds the TaskRunner's memory-sized auto value, the auto
+    cap's disabled-floor fallback (``compute_memory_sized_parallel_cap``) and
+    the memory posture, figures that are documented and that operators tune
+    against.
     """
     probe = platform_compat.macos_vm_statistics()
     if probe is None:

@@ -48,6 +48,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
 )
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers.hooks_scripts import _sel
 from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
     _HOOK_BODY_MAX_BYTES,
@@ -402,10 +403,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     try:
         timeout_secs = max(
             60,
-            min(int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
+            min(body_int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
         )
-    # OverflowError: json.loads reads 1e999 as inf, and int(inf) raises it.
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError):
         webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"},

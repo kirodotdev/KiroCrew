@@ -852,11 +852,19 @@ on POSIX, where locks are advisory. Finalization releases the lock and removes
 both identity-verified sidecars, then prunes EAGERLY: a projection that ends --
 `NativeSkillProjection.release()`, which the direct client calls when its process
 is dead, or the finalizer of a projection that was merely dropped -- runs the same
-bounded prune, under the same lock and gates (lease scan, `_per_spawn_prune_due`
-spacing, time budget), so this home's now-unleased views leave the agents
-directory at once instead of waiting for the next spawn. The eager prune never
-queues behind this process's own in-process lock (a start holding it runs its
-own prune), and when the end runs on an event-loop thread the lease release and
+bounded prune, under the same lock and gates (lease scan, time budget), so this
+home's now-unleased views leave the agents directory at once instead of waiting
+for the next spawn. A per-spawn eager prune honours the `_per_spawn_prune_due`
+spacing and never queues behind this process's own in-process lock (a start
+holding it runs its own prune). An end has no other party covering it, so it
+skips the spacing and queues for the lock -- but ends are COALESCED per agents
+directory and home (`_coalesced_end_prune`): while one end's prune runs, a later
+end only records a request and returns, and once the running pass finishes one
+daemon thread makes the follow-up passes, so the end that ran first is not held
+for the length of a wave. Because an end releases its lease before it asks, that later
+pass covers it. Without this a subagent fan-out queued one full prune per ended
+projection on the lock set_mode re-preparation waits on, and starts ran out
+their in-process wait and were refused. When the end runs on an event-loop thread the lease release and
 the prune both go to a daemon thread, so no session start is stalled behind a
 file-lock wait. A finalizer the cyclic collector runs does none of that work on
 the collecting thread: the collector fires on whatever thread allocated, possibly

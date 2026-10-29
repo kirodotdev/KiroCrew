@@ -626,7 +626,7 @@ model-id namespace. The crewmate's own worker runs on the crewmate's backend
 crewmate's backend"), so its pins are judged there; the profile's explicit
 `worker_model` is validated for that harness (`PUT /api/agents/{name}`) and
 crosses freely. A conductor's hand-off whose worker backend cannot carry the
-worker's kit is refused `worker_kit_harness_unsupported` before anything is
+worker's kit is refused `capability_harness_unsupported` before anything is
 allocated. A conductor slot with no execution record (one from before records,
 named only by its slot agent) is refused `conductor_record_missing` the same way:
 its worker would carry no crewmate and run on the shared store. Either pin is dropped when the child's namespace advertises a list it is

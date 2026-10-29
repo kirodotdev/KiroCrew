@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -343,7 +344,6 @@ class TestScopedDiscovery:
     async def test_gateway_list_and_exact_read_share_the_session_mapping(
         self, tmp_path, monkeypatch, opened
     ):
-        import json
         from types import SimpleNamespace
         from urllib.parse import urlencode
 
@@ -395,7 +395,6 @@ class TestScopedDiscovery:
     ):
         """One `skill://.../*/SKILL.md` glob maps many skills, so the route must
         say the search was scoped without counting glob entries as skills."""
-        import json
         from types import SimpleNamespace
         from urllib.parse import urlencode
 
@@ -618,6 +617,15 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
                 {**payload, "scope": "registry"},
             ):
                 assert (await client.post("/api/skills/-/discover", json=bad)).status == 400
+            # JSON reads 1e999 as an infinite float: the paging 400, never a 500.
+            for field in ("offset", "limit", "capacity"):
+                for raw in ("1e999", "-1e999"):
+                    infinite = json.loads(f'{{"{field}": {raw}}}')
+                    response = await client.post(
+                        "/api/skills/-/discover", json={**payload, **infinite}
+                    )
+                    assert response.status == 400, (field, raw)
+                    assert (await response.json())["code"] == "invalid_limit"
             assert len(seen) == 1
             install = await client.post("/api/skills/-/discover/install", json={})
             assert install.status == 403

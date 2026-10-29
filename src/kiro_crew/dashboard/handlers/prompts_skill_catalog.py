@@ -25,6 +25,7 @@ from kiro_crew.agent_discovery import (
     served_provider_label,
     session_skill_globs,
 )
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers.prompts_caller_gates import (
     _deny_foreign_app_skill_slot,
     _deny_non_owner_skill_operation,
@@ -284,19 +285,19 @@ async def api_skills(request: web.Request) -> web.Response:
                 status=400,
             )
         try:
-            offset = max(0, int(params.get("offset", "0")))
+            offset = max(0, body_int(params.get("offset", "0")))
             # A read pages in LINES and only when asked: the whole-or-refuse contract
             # holds for a call that names neither parameter, and ``limit`` here is
             # lines rather than the result count search and list bound at 50.
             paging = action == "read" and ("offset" in params or "limit" in params)
-            page_limit = max(1, int(params["limit"])) if paging and "limit" in params else None
+            page_limit = max(1, body_int(params["limit"])) if paging and "limit" in params else None
             # The caller may SHRINK the capacity to what its own response framing
             # leaves for the body; the ceiling itself is not the caller's to move.
             capacity = max(
-                1, min(SKILL_READ_CAPACITY, int(params.get("capacity", SKILL_READ_CAPACITY)))
+                1, min(SKILL_READ_CAPACITY, body_int(params.get("capacity", SKILL_READ_CAPACITY)))
             )
-            limit = 1 if action == "read" else max(1, min(50, int(params.get("limit", "20"))))
-        except (ValueError, TypeError, OverflowError):
+            limit = 1 if action == "read" else max(1, min(50, body_int(params.get("limit", "20"))))
+        except (ValueError, TypeError):
             return web.json_response(
                 {"error": "Invalid search limit.", "code": "invalid_limit"}, status=400
             )

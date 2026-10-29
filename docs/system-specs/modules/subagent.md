@@ -304,6 +304,7 @@ figure and the unreadable-host fallback), dispatched per operating system (see
 - **macOS** — reclaimable memory (free + inactive + speculative + purgeable
   pages) via the Mach `host_statistics64` syscall through `ctypes`/`libSystem`
   (`_macos_vm_reclaimable_pages`), combined with the `os.sysconf` page size.
+  The spawn floor reads a tighter figure instead (below).
   This is **in-process, non-blocking, no subprocess** — required because the
   probe runs on the gateway event loop at startup and the spawn-audit guard
   rejects unrouted subprocess spawns. A reload re-runs it off the loop
@@ -325,6 +326,19 @@ uses the same cgroup headroom on Linux and native memory readers on macOS and
 Windows. A known cgroup bound still applies when the Linux host reading fails;
 readings fail open only when neither host memory nor a finite cgroup limit is
 available.
+
+On macOS the gate does NOT read the reclaimable sum above. It reads
+`platform_compat.host_available_mib` in GiB (`_host_available_gb`, the reader Windows uses too):
+free + purgeable + `min(inactive, external_page_count)` pages, with speculative
+not re-added because `free_count` already holds it. The floor promises what
+stays free after a start, so it compares against what a new process can
+really take; the looser sum read about 3.5 GiB (about 32%) above it on a loaded
+Apple silicon host, because it counted dirty anonymous inactive pages as free
+(#21574). Only the gate moved: the auto cap's disabled-floor fallback and the
+TaskRunner figure (`compute_memory_sized_parallel_cap`) and the memory posture
+(`resource_status`) still read `_available_memory_gb`, the reclaimable sum. So
+on a loaded Mac the floor defers more starts than before at the same
+`spawn_min_memory_gb`; `test_subagent_macos_probe.py` pins both readings.
 
 #### Memory guard: what must remain after the start
 
