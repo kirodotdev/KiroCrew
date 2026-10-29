@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from unittest.mock import MagicMock
 
@@ -520,6 +521,74 @@ async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, ma
     assert all("secret-output" not in str(e) for e in events)
 
 
+class _CancelledProc:
+    """Fake subprocess whose wait is cancelled (gateway shutdown, task cancel)."""
+
+    def __init__(self) -> None:
+        self.pid = None  # skips the post-exit straggler reap
+        self.returncode: int | None = None
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        raise asyncio.CancelledError
+
+
+@pytest.mark.asyncio
+async def test_install_script_cancel_reaps_the_script_before_propagating(monkeypatch, tmp_path):
+    """A cancelled onInstall wait stops the script's whole process group,
+    records a terminal `cancelled` SEL event, and still re-raises the cancel."""
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+    monkeypatch.setattr(registry, "_entry_git_url", lambda e: "https://example.com/demo.git")
+
+    async def _fake_manifest(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(registry, "_fetch_app_manifest", _fake_manifest)
+    monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+    audit = MagicMock()
+    monkeypatch.setattr(registry, "sel", lambda: audit)
+    (tmp_path / "app.json").write_text(
+        json.dumps({"name": "demoapp", "setup": {"onInstall": "sleep 999"}}), encoding="utf-8"
+    )
+
+    async def _fake_build(git_url, name, log_lines, branch="main", **kwargs):
+        return {"ok": True, "pkg_dir": tmp_path}
+
+    monkeypatch.setattr(registry, "_clone_build_app", _fake_build)
+    stop_calls: list[tuple[object, float]] = []
+
+    async def _fake_stop(proc, *, grace, reap_timeout=None):
+        stop_calls.append((proc, grace))
+        proc.returncode = -9
+
+    async def _no_shell_only_kill(proc):
+        raise AssertionError("the cancel arm must stop the whole group, not wait on the shell")
+
+    # The group-wide stop: SIGTERM, wait for the GROUP up to the grace, SIGKILL
+    # what is left. ``_kill_process_group`` waits only on the shell, so a
+    # SIGTERM-ignoring child the script started would survive the cancel.
+    monkeypatch.setattr(registry.platform_compat, "terminate_and_reap", _fake_stop)
+    monkeypatch.setattr(registry, "_kill_process_group", _no_shell_only_kill)
+    proc = _CancelledProc()
+
+    async def _fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.install_from_registry("demoapp")
+
+    assert stop_calls == [(proc, registry._KILL_GRACE_PERIOD)]
+    events = [
+        c.kwargs
+        for c in audit.log_api_access.call_args_list
+        if c.kwargs.get("operation") == "app_install_script"
+    ]
+    assert [e["outcome"] for e in events] == ["started", "cancelled"]
+    assert events[1]["resources"].endswith(" exit=-9")
+
+
 # Read at import, before the module's autouse pin replaces it for every test.
 _REAL_PLATFORM_REFUSAL = registry._install_script_platform_refusal
 
@@ -709,3 +778,74 @@ async def test_a_cancelled_pull_kills_the_git_child(tmp_path, monkeypatch):
 
     assert killed == [proc]
     assert (dest / ".git").is_dir(), "a cancelled pull leaves the checkout in place"
+
+
+class _OrphanedGroupProc:
+    """The shell already exited, but a child it backgrounded holds stdout open."""
+
+    def __init__(self) -> None:
+        # nosemgrep: kirocrew.mock-pid-allocatable -- fake process; the group signal is patched out below
+        self.pid = 987655
+        self.returncode: int | None = 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        raise asyncio.CancelledError
+
+
+@pytest.mark.asyncio
+async def test_install_script_cancel_kills_a_group_whose_shell_already_exited(
+    monkeypatch, tmp_path
+):
+    """`onInstall: "sleep 999 &"`: the shell is gone, its child is not. The
+    graceful stop has no live leader to address, so the cancel arm signals the
+    known group id (the shell's pid) itself, before the cancel propagates."""
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+    monkeypatch.setattr(registry, "_entry_git_url", lambda e: "https://example.com/demo.git")
+
+    async def _fake_manifest(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(registry, "_fetch_app_manifest", _fake_manifest)
+    monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+    monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+    (tmp_path / "app.json").write_text(
+        json.dumps({"name": "demoapp", "setup": {"onInstall": "sleep 999 &"}}), encoding="utf-8"
+    )
+
+    async def _fake_build(git_url, name, log_lines, branch="main", **kwargs):
+        return {"ok": True, "pkg_dir": tmp_path}
+
+    monkeypatch.setattr(registry, "_clone_build_app", _fake_build)
+    order: list[str] = []
+
+    async def _fake_stop(proc, *, grace, reap_timeout=None):
+        order.append("graceful-stop")
+
+    group_kills: list[int] = []
+
+    def _fake_killpg(pgid, sig):
+        order.append("group-kill")
+        group_kills.append(pgid)
+
+    async def _fake_tree_kill(pid, sig):
+        order.append("group-kill")
+        group_kills.append(pid)
+
+    monkeypatch.setattr(registry.platform_compat, "terminate_and_reap", _fake_stop)
+    monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _fake_tree_kill)
+    monkeypatch.setattr(os, "killpg", _fake_killpg, raising=False)
+    proc = _OrphanedGroupProc()
+
+    async def _fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.install_from_registry("demoapp")
+
+    # The group is signalled before the graceful stop (which only reaps the
+    # exited shell) and swept once more after it.
+    assert order == ["group-kill", "graceful-stop", "group-kill"]
+    assert group_kills == [proc.pid, proc.pid]

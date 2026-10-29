@@ -52,6 +52,7 @@ from kiro_crew.apps.registry_pipeline.catalog import (
 )
 from kiro_crew.apps.registry_pipeline.checkout import (
     _COMMIT_SHA_RE,
+    _KILL_GRACE_PERIOD,
     _communicate_with_timeout,
     _kill_process_group,
     _resolved_clone_commit,
@@ -974,6 +975,49 @@ async def install_from_registry(
                     "error": f"install script timed out after {_SCRIPT_TIMEOUT}s",
                 }
                 return outcome
+            except asyncio.CancelledError:
+                # A cancelled wait (gateway shutdown, task cancel) must not
+                # leave the script running: it sits in its own process group,
+                # and the `finally` below may restore a moved-aside checkout
+                # into the tree it is still writing. The cancel skips the
+                # straggler sweep after this block, so stop the WHOLE group
+                # here: SIGTERM, wait for the group (not just the shell) up to
+                # the grace, then SIGKILL whatever is left, and reap. Then let
+                # the cancel propagate.
+                #
+                # When the shell has ALREADY exited (`sleep 999 &` keeps its
+                # stdout open, so the wait is still pending), the graceful stop
+                # has no live leader to address and reaps only the shell. So
+                # SIGKILL the known group first -- its id is the shell's pid by
+                # construction (start_new_session), the same address the
+                # straggler sweep below uses -- and sweep it once more after the
+                # graceful stop for anything a live leader left behind.
+                async def _kill_script_group() -> None:
+                    # Never broadcast-signal: group 0/1 would reach this process.
+                    if type(proc.pid) is not int or proc.pid <= 1:
+                        return
+                    try:
+                        if platform_compat.IS_POSIX:
+                            await asyncio.to_thread(
+                                platform_compat.kill_process_group,
+                                proc.pid,
+                                platform_compat.SIGKILL,
+                            )
+                        else:
+                            await platform_compat.kill_process_tree_async(
+                                proc.pid, platform_compat.SIGKILL
+                            )
+                    except (OSError, ValueError):
+                        # Empty group (nothing left to stop), or the shim refused
+                        # an id that would reach this process's own group.
+                        pass
+
+                if proc.returncode is not None:
+                    await _kill_script_group()
+                await platform_compat.terminate_and_reap(proc, grace=_KILL_GRACE_PERIOD)
+                await _kill_script_group()
+                _audit_script("cancelled", proc.returncode)
+                raise
 
             lines = stdout.decode(errors="replace").strip().split("\n")
             if len(lines) > 50:
