@@ -316,7 +316,10 @@ def _shell_c_carrier_glued(token: str) -> "str | None":
 # the payload's FIRST-WORD length -- a real program name -- so 64 covers any
 # rule-relevant program with room to spare, while keeping the per-token scan
 # O(window) and immune to cluster padding (padding only adds fake splits
-# farther from the end, whose program words are runs of flag letters).
+# farther from the end, whose program words are runs of flag letters).  A first
+# word LONGER than the window is a NAME with option letters glued to its front;
+# the resolver reads it under every suffix the payload refers back to
+# (``_GluedBindings``), so no further split is enumerated for it.
 _CARRIER_SPLIT_WINDOW = 64
 
 
@@ -344,9 +347,16 @@ def _shell_c_carrier_payloads(token: str) -> "list[str]":
     split's program word is a run of flag letters that matches no rule.
     Without the bound, a ~3 KB ``-acac…`` token made the candidate set
     quadratic and the synchronous deny scan outlived the loop watchdog.
-    The first-``c`` split is always yielded
-    regardless of the window: it is the LONGEST suffix, so the unanchored
-    regex tier sees every shorter reading as a substring of it.
+    A first word LONGER than the window is an assignment NAME (no rule-covered
+    program is that long) with the option letters glued to its front, and WHICH
+    letters is unrecoverable after the fold.  It is not enumerated here: yielding
+    one payload per suffix the script refers back to made the candidate set grow
+    with the square root of the token (k suffixes cost k*(k+1)/2 characters of
+    references) and the scan O(n^1.5).  Instead the resolver reads the first
+    word's binding under every referenced suffix (``_GluedBindings``) -- one
+    frame, linear.  The first-``c`` split is always yielded regardless of the
+    window: it is the LONGEST suffix, so the unanchored regex tier sees every
+    shorter reading as a substring of it and the resolver sees the whole name.
     """
     if not token.startswith("-") or token.startswith("--") or len(token) < 2:
         return []
