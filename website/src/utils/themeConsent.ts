@@ -40,12 +40,28 @@ export const CONSENT_PREFIX = 'mc-theme-consent-'
  */
 const LEGACY_TOKEN = '1'
 
+/**
+ * Window event fired after a grant or a "Keep colors only" answer is written or
+ * cleared, with `{ slug }` as detail. The experience layer and the Settings
+ * "Enable experience" button live in different trees, and the browser's
+ * `storage` event does not fire in the tab that wrote the value, so both
+ * re-read the stored state on this event.
+ */
+export const THEME_EXPERIENCE_CHANGED_EVENT = 'mc-theme-experience-changed'
+
+function notifyExperienceChanged(slug: string): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(THEME_EXPERIENCE_CHANGED_EVENT, { detail: { slug } }))
+}
+
 /** Persist a granted consent for `slug`, bound to `token` (persona sha256 or sentinel). */
 export function grantConsent(slug: string, token: string): void {
   if (!slug) return
   // safeSetItem is quota-safe (reclaim+retry); consent grants are tiny but we
   // route through it for parity with every other localStorage write.
   safeSetItem(CONSENT_PREFIX + slug, token)
+  // clearExperienceDecline dispatches the change event.
+  clearExperienceDecline(slug)
 }
 
 /** Remove any stored consent for `slug` (best-effort; never throws). */
@@ -82,4 +98,51 @@ export function hasConsent(slug: string, expectedToken: string): boolean {
 export function hasAnyConsent(slug: string): boolean {
   const stored = getStoredConsent(slug)
   return stored !== null && stored !== '' && stored !== LEGACY_TOKEN
+}
+
+/**
+ * localStorage key prefix for a per-slug "Keep colors only" answer.
+ *
+ * Declining keeps the pack's palette and turns off its persona, sounds and
+ * overlays. The answer is a plain per-slug marker bound to no token: no change
+ * to the pack (persona added, changed or removed, audio removed, re-install)
+ * clears it. That is safe because while it is stored no grant exists and nothing
+ * Level-2 runs, so a changed persona cannot be injected; only
+ * clearExperienceDecline (Settings' "Enable experience", or switching to the
+ * theme from another one) or Enable (grantConsent) removes it. It is
+ * separate from the grant key on purpose: api/client/chat.ts transmits the raw
+ * grant, and a decline must never look like one on the wire.
+ */
+export const DECLINE_PREFIX = 'mc-theme-experience-declined-'
+
+/** Value stored for a decline. Only its presence is read. */
+const DECLINE_MARKER = '1'
+
+/** Record that the user kept only the colors of `slug`, and revoke any grant. */
+export function declineExperience(slug: string): void {
+  if (!slug) return
+  revokeConsent(slug)
+  safeSetItem(DECLINE_PREFIX + slug, DECLINE_MARKER)
+  notifyExperienceChanged(slug)
+}
+
+/** Whether a "Keep colors only" answer is stored for `slug` (false if storage is unavailable). */
+export function hasDecline(slug: string): boolean {
+  if (!slug) return false
+  return safeGetItem(DECLINE_PREFIX + slug) !== null
+}
+
+/**
+ * Forget a "Keep colors only" answer, so the consent dialog for `slug` asks
+ * again. Called when the user switches to the theme in the picker or presses
+ * "Enable experience" in Settings > Display > Theme; neither writes a grant.
+ */
+export function clearExperienceDecline(slug: string): void {
+  if (!slug || typeof localStorage === 'undefined') return
+  try {
+    localStorage.removeItem(DECLINE_PREFIX + slug)
+  } catch {
+    /* storage disabled / SecurityError — nothing to clean up */
+  }
+  notifyExperienceChanged(slug)
 }

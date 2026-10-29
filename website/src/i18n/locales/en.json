@@ -9764,6 +9764,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "None, auto-cycle, or pick a fixed color.",
         "palette": "Palette",
         "select_a_theme_for_the_dashboard": "Select a theme for the dashboard",
+        "enable_theme_experience": "Enable experience",
+        "enable_theme_experience_hint": "You chose Keep colors only, so this theme's sounds, overlays and persona are off.",
         "sidebar_colors": "Sidebar Colors",
         "theme": "Theme",
         "theme_source": "Theme source",

@@ -6,8 +6,10 @@
  * allowlist is honoured, and only from our own theme iframes), and drives an
  * opt-in audio engine. Because an L2 theme injects a persona into the agent's
  * own system prompt (backend, §6.5) and can play sound, activating one requires
- * an explicit first-activation confirmation; declining reverts the selection so
- * nothing L2 takes effect (including the backend persona).
+ * an explicit first-activation confirmation. "Keep colors only" keeps the
+ * pack's palette and turns off everything L2 (persona, sounds, overlays,
+ * topbar); the answer is remembered per slug until the user picks the theme
+ * in the picker again.
  *
  * Security posture (§8.2): overlay/topbar iframes are `sandbox="allow-scripts"`
  * WITHOUT `allow-same-origin`, so they run in an opaque origin and cannot read
@@ -22,7 +24,6 @@ import { createPortal } from 'react-dom'
 import { Volume2, VolumeX } from 'lucide-react'
 import {
   useTheme,
-  type ColorTheme,
   type ThemeAudioManifest,
   type ThemeOverlayDecl,
   type ThemeOverlayPosition,
@@ -31,7 +32,16 @@ import { safeSetItem } from '../utils/safeStorage'
 // Consent contract lives in ONE module so the token format can't drift between
 // the write/strict-read side (this layer) and the wire-flag reader
 // (api/client/chat.ts).
-import { grantConsent, getStoredConsent, revokeConsent } from '../utils/themeConsent'
+import {
+  CONSENT_PREFIX,
+  DECLINE_PREFIX,
+  THEME_EXPERIENCE_CHANGED_EVENT,
+  declineExperience as storeExperienceDecline,
+  getStoredConsent,
+  grantConsent,
+  hasDecline,
+  revokeConsent,
+} from '../utils/themeConsent'
 // App-event → theme-audio bridge: real chat/notification events route to the
 // active theme's manifest sounds (message-received / notification triggers).
 import { MC_THEME_SOUND_EVENT, type ThemeSoundDetail } from '../hooks/themeSound'
@@ -173,7 +183,7 @@ function parseIdleSeconds(trigger: string): number | null {
 }
 
 export default function ThemeExperienceLayer() {
-  const { theme: mode, colorTheme, customThemeDataMap, setColorTheme } = useTheme()
+  const { theme: mode, colorTheme, customThemeDataMap } = useTheme()
 
   // A remote Crew is a separate SPA in a full-bleed iframe; switching Crews only
   // toggles `display` on the local dashboard's wrapper inside `App`. This layer is
@@ -262,12 +272,19 @@ export default function ThemeExperienceLayer() {
   // consentToken becomes the real sha256 in the same commit, and this effect
   // then compares the stored grant against that hash.
   const [consented, setConsented] = useState(false)
+  // "Keep colors only" answer: a per-slug marker bound to no token, so no change
+  // to the pack's persona or audio clears it (see themeConsent.ts). Seeded from
+  // storage so a declined pack's overlays never mount for the one commit before
+  // the effect runs.
+  const [declined, setDeclined] = useState(() => !!slug && isL2 && hasDecline(slug))
   useEffect(() => {
     if (!slug || !isL2) {
       // A Level-1 entry (incl. a render-cache seed) has no consent to read or revoke.
       setConsented(false)
+      setDeclined(false)
       return
     }
+    setDeclined(hasDecline(slug))
     // STRICT read: honour a stored grant only if it matches the current
     // consentToken (persona sha256 / sentinel). Changed persona or legacy '1'
     // fails and re-prompts.
@@ -282,7 +299,34 @@ export default function ThemeExperienceLayer() {
     }
     setConsented(stored !== null && stored === consentToken)
   }, [slug, isL2, consentToken])
-  const featuresOn = anyExperience && (!needsConsent || consented)
+  // The answer can change outside this layer: Settings' "Enable experience"
+  // clears a decline without switching theme (so the effect above never
+  // re-runs), and another tab can write either key. Re-read both here with
+  // the same strict comparison; this path never writes or revokes a grant.
+  useEffect(() => {
+    if (!slug || !isL2) return
+    const reread = () => {
+      setDeclined(hasDecline(slug))
+      const stored = getStoredConsent(slug)
+      setConsented(stored !== null && stored === consentToken)
+    }
+    const onChanged = (e: Event) => {
+      if ((e as CustomEvent<{ slug?: string }>).detail?.slug === slug) reread()
+    }
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === DECLINE_PREFIX + slug || e.key === CONSENT_PREFIX + slug) reread()
+    }
+    window.addEventListener(THEME_EXPERIENCE_CHANGED_EVENT, onChanged)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(THEME_EXPERIENCE_CHANGED_EVENT, onChanged)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [slug, isL2, consentToken])
+  // A stored decline holds even when the pack no longer needs consent: a
+  // re-install that drops audio and persona but keeps overlays must not bring
+  // them back without the user reversing "Keep colors only".
+  const featuresOn = anyExperience && !declined && (!needsConsent || consented)
 
   const reduced = useReducedMotion()
   const [muted, setMuted] = useState(() => localStorage.getItem(MUTE_KEY) === '1')
@@ -307,13 +351,6 @@ export default function ThemeExperienceLayer() {
   }, [featuresOn, reduced, overlayDecls, activateOnceExpired, idleOverlayIds])
 
   const showTopbar = hasTopbarForMode && !(topbarHideOnMobile && isNarrow)
-
-  // Track a "safe" theme to revert to when an experience is declined (the last
-  // active selection that wasn't an unconsented L2 pack).
-  const prevSafeRef = useRef<ColorTheme>('emerald')
-  useEffect(() => {
-    if (!(isL2 && needsConsent && !consented)) prevSafeRef.current = colorTheme
-  }, [colorTheme, isL2, needsConsent, consented])
 
   // ── Audio engine (§3.3/§4.3) ──
   // The wire now carries a trigger NAME (`theme:sound {trigger}`) resolved
@@ -698,10 +735,17 @@ export default function ThemeExperienceLayer() {
     setConsented(true)
   }, [slug, consentToken])
 
+  // "Keep colors only": the palette stays (useTheme applies it whatever this
+  // layer decides) and every L2 feature stays off, because `featuresOn` is false
+  // while declined and any stored grant is revoked. The answer is stored so the dialog
+  // does not return on every load; Settings' "Enable experience", or switching to the
+  // theme from another one, clears it.
   const declineExperience = useCallback(() => {
-    const back = prevSafeRef.current && prevSafeRef.current !== colorTheme ? prevSafeRef.current : 'emerald'
-    setColorTheme(back)
-  }, [colorTheme, setColorTheme])
+    if (!slug) return
+    storeExperienceDecline(slug)
+    setConsented(false)
+    setDeclined(true)
+  }, [slug])
 
   const toggleMute = useCallback(() => {
     setMuted((m) => {
@@ -712,7 +756,7 @@ export default function ThemeExperienceLayer() {
   }, [])
 
   const enableBtnRef = useRef<HTMLButtonElement>(null)
-  const showConsent = anyExperience && needsConsent && !consented
+  const showConsent = anyExperience && needsConsent && !consented && !declined
   // Consent-modal a11y: focus the primary action on open and let Escape decline
   // (mirrors "Keep colors only"). Backdrop already blocks pointer interaction.
   useEffect(() => {
@@ -732,7 +776,7 @@ export default function ThemeExperienceLayer() {
   if (!anyExperience || !slug) return null
 
   // First-activation consent gate for persona/audio packs.
-  if (needsConsent && !consented) {
+  if (showConsent) {
     return (
       <div
         className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"
@@ -818,6 +862,10 @@ export default function ThemeExperienceLayer() {
       }}
     />
   )
+  // "Keep colors only": nothing of the experience mounts, the topbar strip and
+  // the mute button included.
+  if (!featuresOn) return null
+
   const overlays = <>{mountedOverlays.filter((d) => d.layer !== 'behind').map(overlayFrame)}</>
   const behindOverlays = <>{mountedOverlays.filter((d) => d.layer === 'behind').map(overlayFrame)}</>
 

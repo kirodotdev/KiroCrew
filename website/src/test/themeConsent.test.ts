@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import {
   CONSENT_PREFIX,
+  DECLINE_PREFIX,
+  THEME_EXPERIENCE_CHANGED_EVENT,
+  clearExperienceDecline,
+  declineExperience,
+  hasDecline,
   grantConsent,
   revokeConsent,
   getStoredConsent,
@@ -17,6 +22,44 @@ describe('themeConsent util', () => {
     grantConsent('bikini-bottom', 'sha-abc')
     expect(localStorage.getItem(CONSENT_PREFIX + 'bikini-bottom')).toBe('sha-abc')
     expect(getStoredConsent('bikini-bottom')).toBe('sha-abc')
+  })
+
+  it('declining revokes the slug grant and stores the decline without changing another slug', () => {
+    grantConsent('bikini-bottom', 'sha-abc')
+    grantConsent('other-pack', 'sha-other')
+    declineExperience('bikini-bottom')
+    expect(localStorage.getItem(CONSENT_PREFIX + 'bikini-bottom')).toBeNull()
+    expect(localStorage.getItem(DECLINE_PREFIX + 'bikini-bottom')).toBe('1')
+    expect(getStoredConsent('other-pack')).toBe('sha-other')
+  })
+
+  it('granting after a decline restores consent and clears the decline', () => {
+    declineExperience('bikini-bottom')
+    expect(hasDecline('bikini-bottom')).toBe(true)
+    grantConsent('bikini-bottom', 'sha-abc')
+    expect(getStoredConsent('bikini-bottom')).toBe('sha-abc')
+    expect(hasDecline('bikini-bottom')).toBe(false)
+  })
+
+  it('fires the change event with the slug after decline, clear and grant write storage', () => {
+    const seen: Array<{ slug: string; declined: boolean; grant: string | null }> = []
+    const onChange = (e: Event) => {
+      const slug = (e as CustomEvent<{ slug: string }>).detail.slug
+      seen.push({ slug, declined: hasDecline(slug), grant: getStoredConsent(slug) })
+    }
+    window.addEventListener(THEME_EXPERIENCE_CHANGED_EVENT, onChange)
+    try {
+      declineExperience('bikini-bottom')
+      clearExperienceDecline('bikini-bottom')
+      grantConsent('bikini-bottom', 'sha-abc')
+    } finally {
+      window.removeEventListener(THEME_EXPERIENCE_CHANGED_EVENT, onChange)
+    }
+    expect(seen).toEqual([
+      { slug: 'bikini-bottom', declined: true, grant: null },
+      { slug: 'bikini-bottom', declined: false, grant: null },
+      { slug: 'bikini-bottom', declined: false, grant: 'sha-abc' },
+    ])
   })
 
   it('getStoredConsent returns null when nothing is stored', () => {
@@ -126,6 +169,14 @@ describe('sendChat theme_consent_sha wire token', () => {
     expect(body.theme_consent_sha).toBe('sha-abc')
     // Legacy boolean is intentionally gone.
     expect('theme_consent' in body).toBe(false)
+  })
+
+  it('omits theme_consent_sha after declining a previously granted experience', async () => {
+    grantConsent('bikini-bottom', 'sha-abc')
+    declineExperience('bikini-bottom')
+    const body = await sentBody('custom-bikini-bottom')
+    expect(body.color_theme).toBe('custom-bikini-bottom')
+    expect('theme_consent_sha' in body).toBe(false)
   })
 
   it('omits theme_consent_sha when no grant is stored', async () => {

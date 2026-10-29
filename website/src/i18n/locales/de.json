@@ -17316,6 +17316,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Keine, automatisch wechseln oder eine feste Farbe wählen.",
         "palette": "Palette",
         "select_a_theme_for_the_dashboard": "Wählen Sie ein Theme für das Dashboard",
+        "enable_theme_experience": "Erlebnis aktivieren",
+        "enable_theme_experience_hint": "Sie haben „Nur Farben behalten“ gewählt, daher sind Sounds, Overlays und Persona dieses Designs aus.",
         "sidebar_colors": "Seitenleistenfarben",
         "terminal": "Terminal",
         "terminal_font_family": "Schriftart",

@@ -265,6 +265,24 @@ dashboard load into header-only round trips.
   boolean `theme_consent` request field is still parsed for backward-compatible
   bodies/logging but **grants no injection on its own**.
 
+  **"Keep colors only".** The modal's other answer (also Escape) keeps the pack
+  selected: its palette, branding and `overrides.css` stay applied by
+  `useTheme`, and every Level-2 feature stays off — no persona (any stored grant is
+  revoked, so nothing reaches `theme_consent_sha`), no sounds, no overlays, no
+  topbar, no mute button. The answer is a plain per-slug marker under
+  `mc-theme-experience-declined-<slug>`, bound to no token, so no change to the
+  pack (persona added, changed or removed, audio removed, re-install) clears it;
+  only Enable and the two ways back (below) do. That is safe because while
+  it is stored no grant exists and nothing Level-2 runs, so a changed persona can
+  never be injected. It is a separate key from the grant on purpose: the chat
+  client transmits the raw grant, and a decline must never read as one.
+  The way back is the **Enable experience** button in Settings > Display >
+  Theme, shown while the active pack is Level 2 and declined, or switching to
+  the pack from another theme (`useTheme.setColorTheme`); both only clear the
+  marker and fire `mc-theme-experience-changed`, so the layer shows the consent
+  modal again and the user still confirms there. The boot restore of a
+  persisted selection does not clear it.
+
   **All personas come from installed packs** and are content-bound
   consent-gated by the mechanism above — there is **no built-in / unconditional
   persona path**. A theme injects a persona only via a validated `persona.md`
@@ -291,7 +309,7 @@ dashboard load into header-only round trips.
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator; the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator; the "Enable experience" button for a declined Level-2 pack (`ThemeExperienceEnableButton.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Boot sequence: themed first paint

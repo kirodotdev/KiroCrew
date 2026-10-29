@@ -17612,6 +17612,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Ninguno, ciclo automático o elige un color fijo.",
         "palette": "Paleta",
         "select_a_theme_for_the_dashboard": "Selecciona un tema para el panel",
+        "enable_theme_experience": "Activar la experiencia",
+        "enable_theme_experience_hint": "Elegiste «Mantener solo los colores», así que los sonidos, las superposiciones y la persona de este tema están desactivados.",
         "sidebar_colors": "Colores de la barra lateral",
         "terminal": "Terminal",
         "terminal_font_family": "Fuente",

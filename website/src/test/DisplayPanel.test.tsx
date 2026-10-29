@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
+import { declineExperience } from '../utils/themeConsent'
 
 // The rail mounts one item at a time; each describe sets the item it exercises
 // in its beforeEach and renders through this helper.
@@ -595,6 +596,75 @@ describe('DisplayPanel – dropped overrides notice', () => {
     }))
     renderPanel()
     expect(screen.queryByText("Some of this theme's styles were ignored")).not.toBeInTheDocument()
+  })
+})
+
+describe('DisplayPanel – Enable experience after "Keep colors only"', () => {
+  // The declined pack stays selected, so re-picking it in the select is a
+  // same-value no-op. This button is the way back: it clears the decline and
+  // leaves the grant to the consent dialog.
+  const DECLINE_KEY = 'mc-theme-experience-declined-bikini-bottom'
+  const CONSENT_KEY = 'mc-theme-consent-bikini-bottom'
+  const THEMES = [
+    { value: 'default', label: 'Default', custom: false },
+    { value: 'custom-bikini-bottom', label: 'Bikini Bottom', custom: true, installed: true },
+  ]
+  const withTheme = (colorTheme: string, level: number) =>
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      colorTheme,
+      allThemes: THEMES,
+      customThemeDataMap: new Map([['bikini-bottom', { slug: 'bikini-bottom', level }]]),
+    }))
+  const button = () => screen.queryByRole('button', { name: 'Enable experience' })
+
+  beforeEach(() => {
+    displaySub = 'theme'
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+
+  it('is absent when the active Level-2 pack has no stored decline', () => {
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    expect(button()).not.toBeInTheDocument()
+  })
+
+  it('is absent for a declined pack that is not Level 2', () => {
+    localStorage.setItem(DECLINE_KEY, '1')
+    withTheme('custom-bikini-bottom', 1)
+    renderPanel()
+    expect(button()).not.toBeInTheDocument()
+  })
+
+  it('is absent when the declined pack is not the active theme', () => {
+    localStorage.setItem(DECLINE_KEY, '1')
+    withTheme('default', 2)
+    renderPanel()
+    expect(button()).not.toBeInTheDocument()
+  })
+
+  it('clears the decline without writing a grant, then hides itself', () => {
+    localStorage.setItem(DECLINE_KEY, '1')
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    const btn = button()
+    expect(btn).toBeInTheDocument()
+    expect(btn).toHaveAccessibleDescription(
+      "You chose Keep colors only, so this theme's sounds, overlays and persona are off.",
+    )
+    fireEvent.click(btn as HTMLElement)
+    expect(localStorage.getItem(DECLINE_KEY)).toBeNull()
+    expect(localStorage.getItem(CONSENT_KEY)).toBeNull()
+    expect(button()).not.toBeInTheDocument()
+  })
+
+  it('appears when the layer stores a decline while the panel is open', () => {
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    expect(button()).not.toBeInTheDocument()
+    act(() => declineExperience('bikini-bottom'))
+    expect(button()).toBeInTheDocument()
   })
 })
 
