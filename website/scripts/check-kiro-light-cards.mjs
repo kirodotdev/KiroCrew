@@ -83,6 +83,33 @@ const ROUTES = [
   { path: '/capabilities?tab=knowledge', name: 'knowledge' },
   { path: '/apps/library', name: 'apps-library' },
   { path: '/members', name: 'members' },
+  // Built-in app pages: one per entry in src/apps/builtinRegistry.ts. Each one
+  // whose page reads a shape the generic `[]` / `{}` fallback cannot satisfy has
+  // its answers in APP_FIXTURES below, so it renders its real page rather than
+  // an error boundary or a "could not reach the backend" notice.
+  { path: '/worlds', name: 'app-agent-worlds', ready: 'Kiro Haunt' },
+  { path: '/channels', name: 'app-channels', ready: 'No channels yet' },
+  { path: '/auto-improvement', name: 'app-auto-improvement', ready: 'Measures a repository before it changes it' },
+  { path: '/auto-research', name: 'app-auto-research', ready: 'Run autonomous research' },
+  { path: '/aws-control', name: 'app-aws-control', ready: 'sandbox-dev' },
+  { path: '/file-explorer', name: 'app-file-explorer', ready: 'README.md' },
+  { path: '/code-review-sage', name: 'app-code-review-sage', ready: 'Pick a repo to see its pull requests' },
+  { path: '/workflows', name: 'app-workflows', ready: 'Run a workflow to see its phases' },
+  { path: '/dev-fleet', name: 'app-dev-fleet', ready: 'Manage the git worktrees' },
+  { path: '/issue-radar', name: 'app-issue-radar', ready: 'Welcome to Issue Radar' },
+  { path: '/meetings', name: 'app-meetings', ready: 'Live notes, diagrams, and action items' },
+  { path: '/papyrus', name: 'app-papyrus', ready: 'LaTeX papers with a live PDF preview' },
+  { path: '/pptx-maker', name: 'app-pptx-maker', ready: 'Quarterly review' },
+  { path: '/ops-mission-control', name: 'app-ops-mission-control', ready: 'Checkout latency above budget' },
+  { path: '/design-critique', name: 'app-design-critique', ready: 'Point me at a screen' },
+  { path: '/crew-companion', name: 'app-crew-companion', ready: 'Set your break rhythm' },
+  { path: '/projects', name: 'app-task-runner', ready: 'No runs yet' },
+  { path: '/md-notebook', name: 'app-md-notebook', ready: 'Release checklist' },
+  { path: '/mochi', name: 'app-mochi', ready: 'Write the release notes' },
+  { path: '/spec-builder', name: 'app-spec-builder', ready: 'Plan your next feature with a spec' },
+  { path: '/personal-shopper', name: 'app-personal-shopper', ready: 'Your life-problem advisor' },
+  { path: '/design-tweak', name: 'app-design-tweak', ready: 'Point, describe, and watch the code catch up' },
+  { path: '/project-scaffolder', name: 'app-project-scaffolder', ready: 'Scan a project directory' },
 ]
 
 /**
@@ -112,6 +139,95 @@ const detail = {
     { role: 'assistant', ts: t0 + 8, content: 'Two comments are open. Reply in the composer when you want me to address them.' },
   ],
 }
+
+/**
+ * Per-app answers, keyed by exact pathname. The generic fallback answers `[]` or
+ * `{}`, which some app pages index straight into (`.messages.sent`,
+ * `.entries.forEach`, `.provision.state`) and so crash on. Each fixture carries
+ * one populated row where the page has a list, so the gate also checks the
+ * surface a row is drawn on, not only the empty state.
+ */
+const ACC = '111122223333'
+const nullSummary = { storage: null, sites: null, tasks: null, costMonthToDate: null }
+const NOTE_PATH = 'release-checklist.md'
+const INCIDENT = {
+  incident_id: 'inc-1', status: 'investigating', operating_mode: 'observe', claimed_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z', slot_key: '', slack_thread_ts: '', ledger_matches: [], diagnosis: '',
+  proposed_action: null, resolution: '',
+  signal: {
+    id: 'sig-1', source: 'cloudwatch', title: 'Checkout latency above budget', severity: 'warning', state: 'firing',
+    fired_at: '2026-01-01T00:00:00Z', resource: 'checkout-api', url: '', labels: {}, fingerprint: 'fp-1', provider_key: 'cloudwatch',
+  },
+}
+const APP_FIXTURES = new Map([
+  ['/api/apps/aws-control/accounts', {
+    accounts: [{
+      account: ACC, name: 'sandbox-dev', health: 'ok', summary: nullSummary,
+      profiles: [{ name: 'sandbox-dev', region: 'us-west-2', kind: 'sso', identityOk: true, account: ACC, arn: `arn:aws:sts::${ACC}:assumed-role/Dev/dev`, detail: '', default: true }],
+    }],
+    totals: { accounts: 1, profiles: 1, profilesHealthy: 1 },
+    generatedAt: '2026-01-01T00:00:00Z',
+  }],
+  ['/api/apps/aws-control/profiles/available', { profiles: [], registeredCount: 1, max: 10, supported: true }],
+  ['/api/aws/consent', {
+    service: 's3', serviceLabel: 'Amazon S3', profile: 'sandbox-dev', credentialSource: 'profile sandbox-dev',
+    region: 'us-west-2', account: ACC, arn: `arn:aws:sts::${ACC}:assumed-role/Dev/dev`, identityResolved: true,
+    identityDetail: '', granted: true, reason: '', revokedOnAccountChange: false,
+    grant: { account: ACC, region: 'us-west-2', profile: 'sandbox-dev', granted_at: '2026-01-01T00:00:00Z' },
+  }],
+  ['/api/apps/aws-control/costs/' + ACC, { fresh: true, monthToDate: 12.5, projected: 30, currency: 'USD', byService: [], fetchedAt: '2026-01-01T00:00:00Z' }],
+  ['/api/apps/aws-control/drive/' + ACC, {
+    exists: true, bucket: `kirocrew-drive-${ACC}-usw2`, region: 'us-west-2',
+    usage: { bytes: 0, objects: 0, sections: { drive: { objects: 0, bytes: 0 }, library: { objects: 0, bytes: 0 }, backup: { objects: 0, bytes: 0 } } },
+  }],
+  ['/api/apps/aws-control/shares', { checked: true, shares: [] }],
+  ['/apps/file-explorer/api/health', { allowedRoots: [PROJECT], home: '/home/user' }],
+  ['/apps/file-explorer/api/tree', { entries: [
+    { name: 'src', path: `${PROJECT}/src`, type: 'dir' },
+    { name: 'README.md', path: `${PROJECT}/README.md`, type: 'file', size: 2048, mtime: 1767225600 },
+  ] }],
+  ['/apps/file-explorer/api/git-status', null],
+  ['/api/apps/pptx-maker/engine', { ready: true, clone: true, venv: true, pinnedTag: 'v1.0.0', provision: { state: 'done', log: '', elapsed: 0 } }],
+  ['/api/apps/pptx-maker/deps', { labels: {}, present: {}, managed: {}, missing: [], hints: {} }],
+  ['/api/apps/pptx-maker/decks', { decks: [{ deckId: 'quarterly-review', name: 'Quarterly review', slideCount: 6, thumbnailUrl: null, pptxUrl: null, brief: '' }] }],
+  ['/api/apps/pptx-maker/deck', {
+    deckId: 'quarterly-review', name: 'Quarterly review', defsUrl: null, pptxUrl: null, dirPath: '/home/user/decks/quarterly-review',
+    pptxPath: null, specs: { brief: 'Results and plans for the quarter.' }, updatedAt: {}, slides: [],
+  }],
+  ['/api/apps/pptx-maker/styles', { styles: [] }],
+  ['/api/apps/pptx-maker/templates', { templates: [] }],
+  ['/api/apps/ops-mission-control/state', {
+    incidents: [INCIDENT], counts: { investigating: 1 }, providers: [], webhook_queue: 0,
+    rotation: { on_shift: false, who: '', until: '', unknown: false, roster: null },
+    ledger: { total: 0, verified: 0, high_confidence: 0, total_uses: 0, proven: 0, demoted: 0 },
+  }],
+  ['/api/apps/ops-mission-control/incidents', { incidents: [INCIDENT] }],
+  ['/api/apps/ops-mission-control/ledger', { entries: [], stats: { total: 0, verified: 0, high_confidence: 0, total_uses: 0, proven: 0, demoted: 0 } }],
+  ['/api/apps/mochi/pet-state', { state: 'idle', mood: 'calm' }],
+  ['/api/apps/mochi/stats', {
+    firstLaunch: '2026-01-01T00:00:00Z', streak: 3, lastActiveDate: '2026-01-03', companionSeconds: 3600,
+    messages: { sent: 12, received: 14 }, walkSteps: 0, screenshots: 0, peeks: 0, drags: 0, thinkingSeconds: 60,
+    latestActiveTime: '18:00', earliestActiveTime: '09:00', moods: {}, longestChat: 6,
+    busiestDay: { date: '2026-01-02', messages: 9 }, lastMemoryHour: 0, celebratedMilestones: [],
+  }],
+  ['/api/apps/mochi/settings', { petInstance: 'self', mode: 'quiet', catPreset: null, allowMcpServers: false, name: '' }],
+  ['/api/apps/mochi/watchlist', { items: [] }],
+  ['/api/apps/mochi/pinned', { pins: [] }],
+  ['/api/apps/mochi/plan', { tasks: [{ id: 't1', type: 'remind', action: 'Write the release notes', done: false }], narrative: 'Write the release notes', mood: 'calm' }],
+  ['/api/apps/mochi/activity', { entries: [] }],
+  ['/api/apps/mochi/manifest', { version: '1.0.0' }],
+  ['/apps/md-notebook/api/health', { ok: true, features: [
+    'trash', 'move', 'createdAt', 'attach', 'changes', 'saveGuard', 'forget', 'pat', 'newNote', 'duplicate',
+    'localOnly', 'autoCommit', 'trashOpen', 'knowledge', 'pickFolder', 'settings', 'autoSyncLoop',
+  ] }],
+  ['/apps/md-notebook/api/vaults', { vaults: [{
+    id: 'local-notes', name: 'My Notes', repo: '', branch: 'main', localPath: '/home/user/notes', readOnly: false,
+    external: true, localOnly: true, knowledge: false, knowledgeSourceId: null,
+  }], hasPat: false, hasGhAuth: false }],
+  ['/apps/md-notebook/api/settings', { settings: { autoSync: false, autoSyncMins: 10, lastSync: {} } }],
+  ['/apps/md-notebook/api/notes', { notes: [{ path: NOTE_PATH, title: 'Release checklist', mtime: 1767225600, size: 120, createdAt: 1767225600 }] }],
+  ['/apps/md-notebook/api/changes', { rev: 1, changed: [], watching: true }],
+])
 
 /** Runs in the page: returns every element that is a card in a reference theme and nothing in kiro-light. */
 function probe({ references, minDelta, minSide }) {
@@ -267,6 +383,7 @@ for (const route of ROUTES) {
     if (path === '/api/chat/slots') return json(r, slots)
     if (path.startsWith('/api/chat/slots/')) return json(r, detail)
     if (path === '/api/theme/boot') return json(r, { mode: 'light', color: 'kiro', theme: '' })
+    if (APP_FIXTURES.has(path)) return json(r, APP_FIXTURES.get(path))
     return handleBootRoute(r, path, { project: PROJECT, theme: 'light', fixedApi })
   })
   await page.addInitScript(slot => {

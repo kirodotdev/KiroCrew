@@ -24,7 +24,15 @@ So the gate reads computed styles on rendered pages.
    network.
 2. Opens each route in `ROUTES` in kiro-light: the chat page, Settings (Overview,
    Chat, Display / Theme, Security), Schedule, Artifacts, Knowledge, the Apps
-   library and Members. A route that never renders, renders an error boundary,
+   library, Members, and every built-in app page in
+   `website/src/apps/builtinRegistry.ts` (23 pages, from `/worlds` to
+   `/project-scaffolder`). App pages that index straight into a response shape
+   the generic `[]` / `{}` fallback cannot satisfy get their answers from
+   `APP_FIXTURES` in the script: AWS Control, File Explorer, PPTX Maker,
+   Mission Control, Notes (`/md-notebook`) and Mochi. Each of those fixtures
+   carries one populated row where the page has a list, and the route's `ready`
+   text is that row, so the gate checks the page with content on it rather than
+   its empty or error state. A route that never renders, renders an error boundary,
    throws a page error, or does not apply `data-theme="kiro-light"` fails the
    gate. A blank page cannot pass.
 3. Turns transitions and animations off, then checks every element of at least
@@ -57,8 +65,9 @@ matches nothing on any route fails the gate, so the list cannot go stale.
 
 ## Adding a route
 
-Add `{ path, name }` to `ROUTES`. A page that only shows its real content once
-a specific API answers needs that fixture in the script's `page.route` handler.
+Add `{ path, name, ready }` to `ROUTES`. A new built-in app page belongs here
+as soon as it is registered. A page that only shows its real content once a
+specific API answers needs that answer in `APP_FIXTURES`, keyed by pathname.
 Without it the page stops at its empty or error state and the gate checks only
 that state. Set `ready` to text the real content shows, so a page stuck at a
 loading state fails instead of passing.

@@ -69,9 +69,11 @@ The author-facing detail lives in the `theme-pack-authoring` skill.
 shell (nav rail, sessions list) steps back onto `--panel` instead. So a `bg-card`
 surface that sits directly on the page and has no `border`, `ring`, or `shadow`
 paints nothing visible there — it "works" in every other theme and ships invisible
-in that one. `scripts/check-kiro-light-cards.mjs` renders a fixed list of routes in
+in that one. `scripts/check-kiro-light-cards.mjs` renders the core dashboard routes
+and every built-in app page (one per `src/apps/builtinRegistry.ts` entry) in
 kiro-light and fails CI on such a surface (`docs/ci/kiro-light-card-gate.md` at the
-repo root); a page outside its route list is still only caught in review. The rule for a new component: a `bg-card` box on
+repo root). A new page is covered once it is added to that script's route list,
+with fixtures for the API answers it needs to render. The rule for a new component: a `bg-card` box on
 `--bg` gets a `border-border`, a `ring-1 ring-border`, or a `shadow-*`, the way the
 settings cards already do. The one surface that deliberately stays borderless (the
 user bubble) is handled by a kiro-light-scoped hook in `src/styles/chat-transcript.css`, and

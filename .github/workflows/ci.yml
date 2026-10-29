@@ -3821,12 +3821,13 @@ jobs:
       - name: kiro-light cards carry their own edge (computed-style sweep)
         # kiro-light paints --card and --bg the same #ffffff, so a borderless
         # card there draws nothing while every other theme shows it. Renders
-        # ten routes of the built SPA in kiro-light over loopback with fixture
-        # /api/** answers and fails on any surface that is a card in `light` or
-        # `kiro-dark` but has no border, ring, shadow or outline in kiro-light.
-        # Same build, Chromium and no-gateway technique as the step above.
+        # the core dashboard routes and every built-in app page of the built
+        # SPA in kiro-light over loopback with fixture /api/** answers, and
+        # fails on any surface that is a card in `light` or `kiro-dark` but has
+        # no border, ring, shadow or outline in kiro-light. Same build,
+        # Chromium and no-gateway technique as the step above.
         # docs/ci/kiro-light-card-gate.md has the rule and the exemption list.
-        timeout-minutes: 5
+        timeout-minutes: 10
         shell: bash
         working-directory: website
         run: node scripts/check-kiro-light-cards.mjs --json "$RUNNER_TEMP/kiro-light-cards.json"
