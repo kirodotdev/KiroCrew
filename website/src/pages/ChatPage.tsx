@@ -964,6 +964,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     sidebarOnScreen,
     folderSuggestionAccept,
     folderSuggestionDecline,
+    slotFolderId: currentSlot?.folder_id,
+    slotProject: currentSlot?.project,
+    setProject,
+    projectLocked,
     activeTip,
     dismissTip,
   })

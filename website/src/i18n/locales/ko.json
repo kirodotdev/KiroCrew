@@ -6987,6 +6987,12 @@
       "default_destination_load_failed": "crew를 불러오지 못했습니다.",
       "default_destination_retry": "다시 시도"
     },
+    "folderProjectHint": {
+      "differs": "여기서 명령, 파일, 검색은 이 폴더의 {{folder}}이(가) 아니라 {{current}}을(를) 사용합니다.",
+      "keep_current": "{{current}} 유지",
+      "switch_note": "전환하면 다음 메시지부터 {{path}}에서 새 에이전트 세션이 시작됩니다. 여기의 메시지는 남고, 프로젝트 선택기로 다시 전환할 수 있습니다.",
+      "use_folder_project": "{{folder}}(으)로 전환"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "폴더 제안",
       "move_to_folder_prompt": "이 세션을 이 폴더로 이동할까요?",

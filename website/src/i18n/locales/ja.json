@@ -6987,6 +6987,12 @@
       "default_destination_load_failed": "crew を読み込めませんでした。",
       "default_destination_retry": "再試行"
     },
+    "folderProjectHint": {
+      "differs": "ここでのコマンド、ファイル、検索はこのフォルダーの {{folder}} ではなく {{current}} を使います。",
+      "keep_current": "{{current}} のままにする",
+      "switch_note": "切り替えると、次のメッセージで {{path}} の新しいエージェントセッションが始まります。ここのメッセージは残り、プロジェクトピッカーで元に戻せます。",
+      "use_folder_project": "{{folder}} に切り替え"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",
       "move_to_folder_prompt": "このセッションをこのフォルダーに移動しますか？",

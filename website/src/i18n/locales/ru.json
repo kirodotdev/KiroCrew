@@ -7356,6 +7356,12 @@
       "default_destination_load_failed": "Не удалось загрузить crew.",
       "default_destination_retry": "Повторить"
     },
+    "folderProjectHint": {
+      "differs": "Команды, файлы и поиск здесь используют {{current}}, а не {{folder}} этой папки.",
+      "keep_current": "Оставить {{current}}",
+      "switch_note": "После переключения следующее сообщение запустит новый сеанс агента в {{path}}. Сообщения здесь сохранятся, а вернуться можно через выбор проекта.",
+      "use_folder_project": "Перейти на {{folder}}"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "Предложение папки",
       "move_to_folder_prompt": "Переместить эту сессию в эту папку?",

@@ -7110,6 +7110,12 @@
       "default_destination_load_failed": "crew লোড করা যায়নি।",
       "default_destination_retry": "আবার চেষ্টা করো"
     },
+    "folderProjectHint": {
+      "differs": "এখানে কমান্ড, ফাইল আর খোঁজ {{current}} ব্যবহার করে, এই ফোল্ডারের {{folder}} নয়।",
+      "keep_current": "{{current}} রাখো",
+      "switch_note": "বদলালে পরের মেসেজে {{path}}-এ নতুন এজেন্ট সেশন শুরু হবে। এখানের মেসেজ থেকে যাবে, আর প্রজেক্ট পিকার দিয়ে আবার ফিরে যেতে পারো।",
+      "use_folder_project": "{{folder}}-এ যাও"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "ফোল্ডার প্রস্তাব",
       "move_to_folder_prompt": "এই সেশনটি কি এই ফোল্ডারে সরাবেন?",

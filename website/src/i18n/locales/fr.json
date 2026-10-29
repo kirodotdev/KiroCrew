@@ -7233,6 +7233,12 @@
       "default_destination_load_failed": "Impossible de charger les crews.",
       "default_destination_retry": "Réessayer"
     },
+    "folderProjectHint": {
+      "differs": "Ici, les commandes, les fichiers et la recherche utilisent {{current}}, et non {{folder}} de ce dossier.",
+      "keep_current": "Garder {{current}}",
+      "switch_note": "Le changement démarre une nouvelle session de l’agent dans {{path}} à ton prochain message. Les messages d’ici restent, et le sélecteur de projet permet de revenir.",
+      "use_folder_project": "Passer à {{folder}}"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",
       "move_to_folder_prompt": "Déplacer cette session vers ce dossier ?",

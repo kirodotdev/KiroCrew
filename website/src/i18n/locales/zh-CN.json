@@ -6987,6 +6987,12 @@
       "default_destination_load_failed": "无法加载 crew。",
       "default_destination_retry": "重试"
     },
+    "folderProjectHint": {
+      "differs": "此处的命令、文件和搜索使用 {{current}}，而不是此文件夹的 {{folder}}。",
+      "keep_current": "保留 {{current}}",
+      "switch_note": "切换后，下一条消息会在 {{path}} 中启动新的智能体会话。这里的消息会保留，也可以用项目选择器切换回来。",
+      "use_folder_project": "切换到 {{folder}}"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",
       "move_to_folder_prompt": "要将此会话移动到此文件夹吗？",

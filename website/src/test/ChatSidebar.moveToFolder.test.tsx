@@ -56,7 +56,7 @@ describe('FolderMoveSubmenu', () => {
 // singleton (matching how the real app is wired) and seeds it per test.
 import { store } from '../store'
 import { sseSlots } from '../store/dashboardSlice'
-import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
+import { setMovedSlot, useMovedSlot, useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 
 const SLOT = 'chat-move-1'
 
@@ -73,19 +73,20 @@ function renderMove() {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={qc}><Provider store={store}>{children}</Provider></QueryClientProvider>
   )
-  return renderHook(() => useMoveSlotToFolder(), { wrapper }).result
+  return renderHook(() => useMoveSlotToFolder(), { wrapper })
 }
 
 beforeEach(() => mocks.setSlotFolder.mockResolvedValue({}))
 afterEach(() => {
   vi.clearAllMocks()
   store.dispatch(sseSlots([]))  // reset slots between tests
+  act(() => setMovedSlot(null))  // the move marker is module state
 })
 
 describe('useMoveSlotToFolder', () => {
   it('moving to a folder optimistically updates Redux and calls setSlotFolder(key, id)', async () => {
     seedStore('')
-    const move = renderMove()
+    const { result: move } = renderMove()
     act(() => move.current(SLOT, 'f2'))
     expect(folderOf()).toBe('f2')
     await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(SLOT, 'f2'))
@@ -93,7 +94,7 @@ describe('useMoveSlotToFolder', () => {
 
   it('moving to root calls setSlotFolder(key, null) and clears folder_id', async () => {
     seedStore('f1')
-    const move = renderMove()
+    const { result: move } = renderMove()
     act(() => move.current(SLOT, null))
     // The reducer normalizes the root folder ('' ) to undefined.
     expect(folderOf()).toBeUndefined()
@@ -103,9 +104,35 @@ describe('useMoveSlotToFolder', () => {
   it('rolls back to the prior folder when the api call fails', async () => {
     mocks.setSlotFolder.mockRejectedValueOnce(new Error('boom'))
     seedStore('f1')                      // session starts in Alpha
-    const move = renderMove()
+    const { result: move } = renderMove()
     act(() => move.current(SLOT, 'f2'))  // optimistically moves to Beta
     expect(folderOf()).toBe('f2')
     await waitFor(() => expect(folderOf()).toBe('f1'))  // rolled back to Alpha
+  })
+
+  it('marks the moved session after its menu unmounts before the server acknowledges the move', async () => {
+    let resolveMove!: () => void
+    mocks.setSlotFolder.mockReturnValueOnce(new Promise<void>(resolve => { resolveMove = resolve }))
+    seedStore('f1')
+    const marked = renderHook(() => useMovedSlot())
+    const { result: move, unmount } = renderMove()
+    act(() => move.current(SLOT, 'f2'))
+    await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(SLOT, 'f2'))
+    expect(marked.result.current).toBeNull()
+    unmount()
+    await act(async () => { resolveMove() })
+    await waitFor(() => expect(marked.result.current).toBe(SLOT))
+  })
+
+  it('marks the moved session once the server acknowledges the move, and never on a failed one', async () => {
+    const marked = renderHook(() => useMovedSlot())
+    seedStore('f1')
+    mocks.setSlotFolder.mockRejectedValueOnce(new Error('boom'))
+    const { result: move } = renderMove()
+    act(() => move.current(SLOT, 'f2'))
+    await waitFor(() => expect(folderOf()).toBe('f1'))
+    expect(marked.result.current).toBeNull()
+    act(() => move.current(SLOT, 'f2'))
+    await waitFor(() => expect(marked.result.current).toBe(SLOT))
   })
 })

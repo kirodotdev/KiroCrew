@@ -7110,6 +7110,12 @@
       "default_destination_load_failed": "crew लोड नहीं हो सकीं।",
       "default_destination_retry": "फिर से कोशिश करो"
     },
+    "folderProjectHint": {
+      "differs": "यहाँ कमांड, फ़ाइलें और खोज {{current}} का इस्तेमाल करती हैं, इस फ़ोल्डर के {{folder}} का नहीं।",
+      "keep_current": "{{current}} रखो",
+      "switch_note": "स्विच करने पर अगले मैसेज से {{path}} में नया एजेंट सत्र शुरू होगा। यहाँ के मैसेज बने रहेंगे, और प्रोजेक्ट पिकर से वापस बदल सकते हो।",
+      "use_folder_project": "{{folder}} पर स्विच करो"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",
       "move_to_folder_prompt": "क्या इस सत्र को इस फ़ोल्डर में ले जाएँ?",
