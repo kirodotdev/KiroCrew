@@ -284,7 +284,8 @@ the token's own `tokenEndpoint` with `grant_type=refresh_token`. Ensure
 `offline_access` scope for refresh.
 
 The dashboard runs it as the fifth sign-in choice ("Continue with Okta, Entra ID or
-another identity provider"; a stored sign-in reads "Organization identity provider"),
+another identity provider"; the open form, the waiting screen and a stored sign-in
+use the same name),
 through `POST /api/kas-login/loopback {provider: "external_idp"}` with the
 optional portal lookup hints `external_idp_domain` (a work e-mail domain; a whole
 address is cut to its domain), `external_idp_start_url` (an HTTPS Kiro start URL) and
@@ -296,7 +297,8 @@ address is cut to its domain), `external_idp_start_url` (an HTTPS Kiro start URL
 -> http://localhost:<port>/signin/callback?login_option=external_idp&state
         &issuer_url&client_id&scopes[&login_hint][&audience]      (no code)
 -> GET {issuer_url}/.well-known/openid-configuration
-        (issuer must equal issuer_url; HTTPS authorization/token endpoints)
+        (issuer must equal issuer_url; HTTPS authorization/token endpoints;
+         issuer, endpoints and start URL use connections.l0_probe's validators)
 -> 302 to authorization_endpoint, its own query kept
         (fresh PKCE pair, fresh state, scopes + offline_access)
 -> http://localhost:<port>/oauth/callback?code&state

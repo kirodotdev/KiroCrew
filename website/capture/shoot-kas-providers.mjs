@@ -17,10 +17,10 @@ await server.listen()
 
 const browser = await chromium.launch({ executablePath })
 const shots = [
-  { name: 'chooser-en', lang: 'en', sso: false, ssoLabel: 'Continue with company SSO' },
-  { name: 'sso-form-en', lang: 'en', sso: true, ssoLabel: 'Continue with company SSO' },
-  { name: 'chooser-zh-CN', lang: 'zh-CN', sso: false, ssoLabel: '使用公司 SSO 继续' },
-  { name: 'sso-form-zh-CN', lang: 'zh-CN', sso: true, ssoLabel: '使用公司 SSO 继续' },
+  { name: 'chooser-en', lang: 'en', sso: false, ssoLabel: 'Company SSO — I have an …awsapps.com/start URL' },
+  { name: 'sso-form-en', lang: 'en', sso: true, ssoLabel: 'Company SSO — I have an …awsapps.com/start URL' },
+  { name: 'chooser-zh-CN', lang: 'zh-CN', sso: false, ssoLabel: '公司 SSO — 我有 …awsapps.com/start 网址' },
+  { name: 'sso-form-zh-CN', lang: 'zh-CN', sso: true, ssoLabel: '公司 SSO — 我有 …awsapps.com/start 网址' },
 ]
 for (const shot of shots) {
   const ctx = await browser.newContext({

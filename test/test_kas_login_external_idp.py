@@ -163,9 +163,9 @@ def test_handoff_refuses_a_non_https_or_credentialed_issuer(issuer):
         external_idp.handoff_from_callback(_portal_leg("s", issuer_url=issuer))
 
 
-def test_require_https_url_names_the_field():
-    with pytest.raises(ExternalIdpAuthError, match="start URL"):
-        external_idp.require_https_url("http://x.example", "start URL")
+def test_handoff_error_names_the_field():
+    with pytest.raises(ExternalIdpAuthError, match="issuer_url"):
+        external_idp.handoff_from_callback(_portal_leg("s", issuer_url="http://x.example"))
 
 
 def test_handoff_refuses_an_issuer_with_a_query():
@@ -432,6 +432,12 @@ async def test_begin_external_idp_refused_off_loopback(tmp_path, monkeypatch):
     [
         ({"external_idp_domain": "not a domain"}, InvalidExternalIdpInputError),
         ({"external_idp_domain": "example.com/evil"}, InvalidExternalIdpInputError),
+        ({"external_idp_domain": "-a.com"}, InvalidExternalIdpInputError),
+        ({"external_idp_domain": "a-.com"}, InvalidExternalIdpInputError),
+        ({"external_idp_domain": "a..com"}, InvalidExternalIdpInputError),
+        ({"external_idp_domain": "com"}, InvalidExternalIdpInputError),
+        ({"external_idp_domain": "a.c0m"}, InvalidExternalIdpInputError),
+        ({"external_idp_domain": "a" * 250 + ".com"}, InvalidExternalIdpInputError),
         ({"external_idp_start_url": "http://kiro.dev/start/K-1"}, InvalidExternalIdpInputError),
         ({"external_idp_start_url": "https://a@kiro.dev/start"}, InvalidExternalIdpInputError),
         ({"region": "evil.com/"}, InvalidRegionError),
@@ -440,6 +446,13 @@ async def test_begin_external_idp_refused_off_loopback(tmp_path, monkeypatch):
 async def test_begin_external_idp_refuses_malformed_hints(tmp_path, loopback_shape, kwargs, error):
     with pytest.raises(error):
         await _service(tmp_path, _FakeSession()).begin_loopback("external_idp", **kwargs)
+
+
+@pytest.mark.parametrize("value", ["example.com", "a.b.co", "x-y.example.org", "a" * 63 + ".com"])
+def test_external_idp_domain_accepts_plain_domains(value):
+    from kiro_crew.auth.service import _clean_external_idp_domain
+
+    assert _clean_external_idp_domain(value) == value
 
 
 @pytest.mark.asyncio

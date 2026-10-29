@@ -40,6 +40,7 @@ from kiro_crew.auth.store import (
     TokenStoreError,
 )
 from kiro_crew.auth.whoami import START_URL_EXTRA_KEY
+from kiro_crew.connections.l0_probe import _https_url
 
 logger = logging.getLogger(__name__)
 
@@ -141,10 +142,28 @@ class InvalidExternalIdpInputError(Exception):
     """
 
 
-# A DNS domain name: dot-joined labels of letters, digits and inner hyphens, ending
-# in an alphabetic TLD. Nothing that could close or extend the query parameter.
-_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+_DOMAIN_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+_DOMAIN_TLD_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz")
 _MAX_START_URL_LEN = 2048
+
+
+def _is_domain(name: str) -> bool:
+    """A DNS domain name: dot-joined labels of letters, digits and inner hyphens,
+    ending in an alphabetic TLD. Nothing that could close or extend the query
+    parameter."""
+    if not 1 <= len(name) <= 253:
+        return False
+    *hosts, tld = name.split(".")
+    if not hosts or not 2 <= len(tld) <= 63 or not set(tld) <= _DOMAIN_TLD_CHARS:
+        return False
+    return all(
+        1 <= len(label) <= 63
+        and set(label) <= _DOMAIN_LABEL_CHARS
+        and label[0] != "-"
+        and label[-1] != "-"
+        for label in hosts
+    )
+
 
 # The control-plane region an organization sign-in resolves its profile in when the
 # user names none (the same default as the IdC flow).
@@ -161,7 +180,7 @@ def _clean_external_idp_domain(value: str) -> str:
         return ""
     if "@" in cleaned:
         cleaned = cleaned.rsplit("@", 1)[1]
-    if not _DOMAIN_RE.fullmatch(cleaned):
+    if not _is_domain(cleaned):
         raise InvalidExternalIdpInputError("not a work e-mail domain")
     return cleaned
 
@@ -174,8 +193,8 @@ def _clean_external_idp_start_url(value: str) -> str:
     if len(cleaned) > _MAX_START_URL_LEN or any(c.isspace() for c in cleaned):
         raise InvalidExternalIdpInputError("not a Kiro start URL")
     try:
-        return external_idp.require_https_url(cleaned, "start URL")
-    except external_idp.ExternalIdpAuthError as err:
+        return _https_url(cleaned, "start URL")
+    except ValueError as err:
         raise InvalidExternalIdpInputError("not a Kiro start URL") from err
 
 

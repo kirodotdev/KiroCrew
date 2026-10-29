@@ -21,6 +21,7 @@ import aiohttp
 
 from kiro_crew.auth.login.endpoints import DEFAULT_TOKEN_TTL_SECS, USER_AGENT
 from kiro_crew.auth.store import KasToken
+from kiro_crew.connections.l0_probe import _https_url, _validate_issuer, same_issuer
 
 logger = logging.getLogger(__name__)
 
@@ -91,39 +92,6 @@ class PortalIdpHandoff:
     audience: str | None = None
 
 
-def require_https_url(value: object, field: str) -> str:
-    """Require an absolute, credential-free, fragment-free HTTPS URL; return it.
-
-    Raises :class:`ExternalIdpAuthError` naming *field* otherwise.
-    """
-    if not isinstance(value, str) or not value or len(value) > _MAX_URL_LEN:
-        raise ExternalIdpAuthError(f"{field} is missing or too long")
-    parts = urllib.parse.urlsplit(value)
-    try:
-        parts.port
-    except ValueError as err:
-        raise ExternalIdpAuthError(f"{field} has an invalid port") from err
-    if (
-        parts.scheme != "https"
-        or not parts.hostname
-        or parts.username is not None
-        or parts.password is not None
-        or parts.fragment
-    ):
-        raise ExternalIdpAuthError(f"{field} must be an absolute HTTPS URL")
-    return value
-
-
-def _same_issuer(advertised: str, expected: str) -> bool:
-    """Exact issuer equality, plus the one RFC 3986 equivalence: empty path == ``/``."""
-    if advertised == expected:
-        return True
-    a, e = urllib.parse.urlsplit(advertised), urllib.parse.urlsplit(expected)
-    if (a.scheme, a.netloc, a.query) != (e.scheme, e.netloc, e.query):
-        return False
-    return {a.path, e.path} == {"", "/"}
-
-
 # Upper bound on any URL or identifier taken from the portal leg or the discovery
 # document: long enough for every real issuer, short enough that a hostile value
 # cannot balloon the stored token or the authorization URL.
@@ -133,9 +101,13 @@ _MAX_FIELD_LEN = 1024
 
 def handoff_from_callback(query: Mapping[str, str]) -> PortalIdpHandoff:
     """Parse the portal's external_idp callback leg; raises on a missing or bad field."""
-    issuer_url = require_https_url(query.get("issuer_url"), "issuer_url")
-    if urllib.parse.urlsplit(issuer_url).query:
-        raise ExternalIdpAuthError("issuer_url must not carry a query string")
+    raw_issuer = query.get("issuer_url")
+    if not raw_issuer or len(raw_issuer) > _MAX_URL_LEN:
+        raise ExternalIdpAuthError("issuer_url is missing or too long")
+    try:
+        issuer_url = _validate_issuer(raw_issuer, "issuer_url")
+    except ValueError as err:
+        raise ExternalIdpAuthError(str(err)) from err
     client_id = query.get("client_id") or ""
     if not client_id or len(client_id) > _MAX_FIELD_LEN:
         raise ExternalIdpAuthError("portal callback carried no usable client_id")
@@ -183,12 +155,18 @@ async def discover(
     if not isinstance(doc, dict):
         raise ExternalIdpAuthError("OIDC discovery returned a non-object body")
     issuer = doc.get("issuer")
-    if not isinstance(issuer, str) or not _same_issuer(issuer, handoff.issuer_url):
+    if not isinstance(issuer, str) or not same_issuer(issuer, handoff.issuer_url):
         raise ExternalIdpAuthError("OIDC discovery names a different issuer")
-    authorization_endpoint = require_https_url(
-        doc.get("authorization_endpoint"), "authorization_endpoint"
-    )
-    token_endpoint = require_https_url(doc.get("token_endpoint"), "token_endpoint")
+    endpoints: list[str] = []
+    for field in ("authorization_endpoint", "token_endpoint"):
+        value = doc.get(field)
+        if not isinstance(value, str) or not value or len(value) > _MAX_URL_LEN:
+            raise ExternalIdpAuthError(f"{field} is missing or too long")
+        try:
+            endpoints.append(_https_url(value, field))
+        except ValueError as err:
+            raise ExternalIdpAuthError(str(err)) from err
+    authorization_endpoint, token_endpoint = endpoints
     return ExternalIdpMetadata(
         issuer_url=handoff.issuer_url,
         client_id=handoff.client_id,
