@@ -657,6 +657,9 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "set_compacting_callback": None,
     "unlanded_marker_pending": False,
     "stop_generation": 0,
+    # The link stores below are not a real ``SessionMap``, so there is no
+    # generation to key the slots projection's link memo on: it recomputes.
+    "session_map_generation": None,
 }
 #: The real in-memory link stores ``chat_test_helpers._make_state`` builds,
 #: carried onto the specced manager.

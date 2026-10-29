@@ -574,7 +574,27 @@ class SessionMap:
         # Set by ``_load`` when the file exists but is not usable JSON; the first
         # ``_write_payload`` moves it to ``<name>.corrupt-<utc>`` and clears it.
         self._set_aside_owed = False
+        # Moved by ``_touch`` after every mutation (see ``mutation_generation``).
+        self._mutation_gen = 0
         self._load()
+
+    def mutation_generation(self) -> int:
+        """A counter that moves after every in-memory mutation of this map.
+
+        Every write to ``_data`` or ``_thread_to_session`` is followed by
+        ``_save()`` or, for the writes that persist nothing, ``_touch()``; both
+        move it (``test_session_map_bindings`` checks every mutator for one of
+        the two). So a reader that records the value BEFORE reading the map and
+        finds it unchanged later knows nothing it read has changed since. The
+        slots projection keys its per-slot channel-link rows on it. Read without
+        the lock: an int read is atomic, and a bump racing the read only costs
+        that reader one recompute.
+        """
+        return self._mutation_gen
+
+    def _touch(self) -> None:
+        """Move :meth:`mutation_generation` after a write that is not saved."""
+        self._mutation_gen += 1
 
     async def _flush_async(self) -> None:
         """Debounce, serialize under the lock, write off the loop; repeat.
@@ -1262,6 +1282,7 @@ class SessionMap:
         if entry is None:
             entry = {"sid": "", "slack_thread_ts": None, "slack_channel_id": None}
             self._data[key] = entry
+            self._touch()
         return entry
 
     @_guarded

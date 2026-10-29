@@ -241,7 +241,12 @@ def _save(self: SessionMap) -> None:
       that writes in a worker thread and loops until the map is clean, so a
       trailing mutation is never dropped.
     - no running loop (CLI, tests, worker threads): write inline.
+
+    Every mutator calls this AFTER its mutation, so it is also where the map's
+    ``mutation_generation`` moves (a reader keyed on it must never see the bump
+    before the change it announces).
     """
+    self._touch()
     if self._batch_depth:
         self._batch_dirty = True
         return

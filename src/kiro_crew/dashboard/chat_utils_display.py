@@ -420,11 +420,36 @@ def _display_redaction_cache_key(
     return (digest, len(raw)), len(raw)
 
 
+#: Moved by every reset of the display caches, so a memo keyed on
+#: :func:`display_redaction_stamp` is dropped whenever they are.
+_display_cache_epoch = 0
+
+
+def display_redaction_stamp() -> tuple[object, ...] | None:
+    """Everything besides the text that the display battery's answer depends on.
+
+    The same material :func:`_display_redaction_cache_key` folds into every
+    digest -- the exempt-host set, the token-parameter prefixes and the verdict
+    MAC base -- plus the cache epoch. Equal stamps mean ``_redact_for_display``
+    and ``_redacted_preview`` give the same answer for the same text, so a
+    caller may memo their outputs under it. ``None`` inside a scope that changes
+    the battery's answer, where nothing may be memoized
+    (:func:`_display_scope_changes_battery`). Read it once per pass: it costs a
+    few microseconds, the digest's set reads.
+    """
+    if _display_scope_changes_battery():
+        return None
+    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
+    base = _display_verdicts.mac_base()
+    return (_display_cache_epoch, hosts, _token_param_exempt_prefixes(), base)
+
+
 def _clear_display_redaction_cache() -> None:
     """Reset the process-local caches for deterministic tests."""
     global _display_redaction_cache_bytes, _display_clean_young, _display_clean_old
     global _display_preview_cache_bytes, _display_preview_by_object_chars
-    global _display_preview_by_object_context
+    global _display_preview_by_object_context, _display_cache_epoch
+    _display_cache_epoch += 1
     with _display_redaction_cache_lock:
         _display_redaction_cache.clear()
         _display_redaction_cache_bytes = 0

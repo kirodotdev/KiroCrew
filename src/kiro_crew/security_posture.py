@@ -749,6 +749,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/interaction_coordinator.py",
         "dashboard/notification_coordinator.py",
         "dashboard/slot_projection.py",
+        # The slot projection's per-slot memos: it calls the redactor the
+        # projection hands it and caches the result, inside the same boundary.
+        "dashboard/slot_row_memo.py",
         "dashboard/state_parts/dashboard_services.py",
         "dashboard/state_parts/notification_log.py",
         "dashboard/state_parts/slot_directory.py",

@@ -311,6 +311,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "seed_conversation": ("function", False, "7b9b418f95e7", "claims"),
     "session_generation": ("function", False, "028659ce42ac", "claims"),
     "session_keys": ("function", False, "602c14087aa8", "claims"),
+    # The generation the slots projection keys its link memo on.
+    "session_map_generation": ("function", False, "68c459066f6e", "links"),
     "set_active_dashboard_slots": ("function", False, "883f69448594", "sweeps"),
     "set_approval_policy": ("function", False, "33c822b68141", "claims"),
     "set_autocompact_pct": ("function", False, "960510a3bde3", "turn_context"),

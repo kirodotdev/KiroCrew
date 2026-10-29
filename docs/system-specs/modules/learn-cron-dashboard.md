@@ -1844,6 +1844,28 @@ The owners, lowest layer first:
   Inside an `owner_view` or `code_text` scope, which change the battery's answer
   and are not in the cache key, both caches are neither read nor filled (see
   security.md, "Display redaction memo").
+- `dashboard/slot_row_memo.py` — per-slot memos of four row parts, consulted only
+  inside a `serialize_slots` pass, which sets the `ROW_MEMO` context and reads the
+  global halves of the keys once before any row is built; any other caller of
+  `to_dict` computes from scratch. The memos and their keys:
+
+  | Memo (slot attribute) | Value | Key |
+  |---|---|---|
+  | `_row_summary_memo` | the transcript summary: `last_ts`, last message, options and their prompt, last conversational role, activity and agent stamps | the row count, `display_redaction_stamp()`, and a copy (each row and its `meta`) of every row the newest-first scan read; a scan that read more than `MAX_MEMO_TAIL` (32) rows, or a memo that would keep more than `MAX_MEMO_TEXT` (65,536) characters of text, stores nothing |
+  | `_row_redacted_memo` | the redacted `title` and `crew_mode_agent` | the two raw strings and `display_redaction_stamp()`; past `MAX_MEMO_TEXT` it stores nothing |
+  | `_row_links_memo` | the bare audience's source-link chips | the identity of the extracted link list, which extraction rebuilds whenever it reruns |
+  | `_slot_links_memo` | the channel-link rows (`_slot_links`) | `session_map_generation()`, the registered transports and their proactive-send capability, the redaction stamp, the session key and the slot's legacy Slack fields |
+
+  `prompt_ts` and the interrupted verdict are not memoized: they are computed in
+  `SlotProjection.to_dict` only when a turn runs and only when none runs, as they
+  were before the memo. The owner and dashboard-user chips read the check-status
+  and public-repo caches and write audit records, so they are rebuilt every pass.
+  `display_redaction_stamp()` is `None` inside `owner_view` and `code_text`, so no
+  memo is read or written there. A slot mid tool-heavy turn or mid stream exceeds
+  the tail bound and is recomputed every pass. Each pass logs its hit and miss
+  counts per memo at debug level. `test_slot_row_memo.py` pins byte-identical
+  frames across a sequence of mutations, the tail and text bounds, and that a
+  warm pass recomputes no summary, link row or redaction.
 - `state_parts/chat_slot.py` — the `_ChatSlot` class itself (see above).
 - `state_parts/dashboard_services.py` — the services `DashboardState` hosts: the lazy
   coordinator accessors, the background-turn budget, approvals and questions,

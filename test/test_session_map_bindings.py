@@ -73,6 +73,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_save": ("function", False, "b60c5fea256e", "session_map_store"),
     "_serialize": ("function", False, "0b041d09502d", "session_map_store"),
     "_take_pending_snapshot": ("function", False, "81eec0f2b49e", "session_map_store"),
+    "_touch": ("function", False, "b60c5fea256e", "session_map"),
     "_write": ("function", False, "b60c5fea256e", "session_map_store"),
     "_write_payload": ("function", False, "5f650127c38f", "session_map_store"),
     "aclose": ("function", True, "b60c5fea256e", "session_map_store"),
@@ -115,6 +116,8 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "mirror_accepts_inbound": ("function", False, "1eda252b53bd", "session_map_links"),
     "mirror_claim_blockers": ("function", False, "1d8651fc9ebe", "session_map_links"),
     "mirror_link_nonce": ("function", False, "f1d40e624ae4", "session_map_links"),
+    # The counter the slots projection keys its link memo on.
+    "mutation_generation": ("function", False, "fa6cfecd5574", "session_map"),
     "privacy_flagged_entries": ("function", False, "d9cba8aba682", "session_map"),
     "privacy_flags": ("function", False, "349ed17a0181", "session_map"),
     "prune": ("function", False, "fa6cfecd5574", "session_map"),
@@ -649,3 +652,107 @@ def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
     leaf_test_scope = importlib.import_module("leaf_test_scope")
     this_file = Path(__file__).resolve()
     assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
+
+
+#: The map's two in-memory stores. A write to either, or to an entry read out of
+#: one, must move ``mutation_generation`` (the slots projection keys on it).
+_MAP_STORES = frozenset({"_data", "_thread_to_session"})
+_MUTATING_METHODS = frozenset({"pop", "popitem", "setdefault", "clear", "update"})
+#: Functions that write the stores without moving the counter themselves:
+#: ``_load`` fills a map nobody has read yet, and ``_evict_rival_claimants``
+#: is a helper whose one caller, ``set_slack_link``, saves or touches after it.
+_UNSAVED_WRITERS_ALLOWED = frozenset({"_load", "_evict_rival_claimants"})
+
+
+def _reads_a_store(node: ast.AST) -> bool:
+    for sub in ast.walk(node):
+        if (
+            isinstance(sub, ast.Attribute)
+            and sub.attr in _MAP_STORES
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id == "self"
+        ):
+            return True
+        if (
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "_ensure_entry"
+        ):
+            return True
+    return False
+
+
+def _store_writes(fn: ast.FunctionDef) -> list[int]:
+    """Line numbers where *fn* writes a map store or an entry read out of one."""
+    tainted: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and _reads_a_store(node.value):
+            tainted.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, (ast.For, ast.comprehension)) and _reads_a_store(node.iter):
+            tainted.update(n.id for n in ast.walk(node.target) if isinstance(n, ast.Name))
+
+    def is_store(expr: ast.AST) -> bool:
+        if isinstance(expr, ast.Name):
+            return expr.id in tainted
+        if isinstance(expr, (ast.Call, ast.Subscript)):
+            # ``self._ensure_entry(key)[field] = ...``, ``self._data[key][field] = ...``
+            return _reads_a_store(expr)
+        return (
+            isinstance(expr, ast.Attribute)
+            and expr.attr in _MAP_STORES
+            and isinstance(expr.value, ast.Name)
+            and expr.value.id == "self"
+        )
+
+    lines: list[int] = []
+    for node in ast.walk(fn):
+        targets: list[ast.AST] = []
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AugAssign):
+            targets = [node.target]
+        for target in targets:
+            if isinstance(target, ast.Subscript) and is_store(target.value):
+                lines.append(node.lineno)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _MUTATING_METHODS
+            and is_store(node.func.value)
+        ):
+            lines.append(node.lineno)
+    return lines
+
+
+def _moves_the_counter(fn: ast.FunctionDef) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("_save", "_touch")
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        for node in ast.walk(fn)
+    )
+
+
+def test_every_map_store_writer_moves_the_mutation_generation() -> None:
+    """A write to the map that moves no counter would leave the sidebar's link rows stale."""
+    src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    offenders: list[str] = []
+    writers = 0
+    for path in sorted(src.glob("session_map*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef) or fn.name in _UNSAVED_WRITERS_ALLOWED:
+                continue
+            lines = _store_writes(fn)
+            if not lines:
+                continue
+            writers += 1
+            if not _moves_the_counter(fn):
+                offenders.append(f"{path.name}:{fn.name} writes at lines {lines}")
+    # The scan finds the mutators (a broken matcher would pass vacuously).
+    assert writers >= 10
+    assert not offenders, "call self._save() or self._touch() after the write:\n" + "\n".join(
+        offenders
+    )

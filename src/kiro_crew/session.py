@@ -735,6 +735,7 @@ class SessionManager:
     mirror_accepts_inbound = _links.mirror_accepts_inbound
     has_mirror_row = _links.has_mirror_row
     mirror_link_nonce = _links.mirror_link_nonce
+    session_map_generation = _links.session_map_generation
     slack_link_nonce = _links.slack_link_nonce
     set_mirror_opt_out = _links.set_mirror_opt_out
     mirror_opt_out = _links.mirror_opt_out

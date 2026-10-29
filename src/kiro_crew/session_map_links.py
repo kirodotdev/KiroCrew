@@ -234,6 +234,10 @@ def set_slack_link(self: SessionMap, key: str, thread_ts: str, channel_id: str |
             # is deliberately NOT touched here — see the docstring.
             if evicted:
                 self._save()
+            else:
+                # The reverse index may have gained the thread. It is rebuilt
+                # at load, so nothing is written, but readers must see it move.
+                self._touch()
             return
         # REBIND: the mute belonged to the binding being replaced, so it goes
         # with it rather than carrying onto a thread the user never muted.
