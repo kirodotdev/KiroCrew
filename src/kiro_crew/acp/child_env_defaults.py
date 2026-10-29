@@ -16,7 +16,9 @@ out gets the host-sized default from
 :func:`kiro_crew.host_task_sizing.thread_pool_env_defaults`; the merge is per
 name, so configuring one still leaves the other at the host default. kiro-cli
 otherwise starts one worker per core in each pool, and every thread counts
-against the agents slice's ``TasksMax``.
+against the agents slice's ``TasksMax``. That default exists only where the
+slice's task ceiling is in force; on any other host it is empty and only the
+configured map applies.
 """
 
 from __future__ import annotations

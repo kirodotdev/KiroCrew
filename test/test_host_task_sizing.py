@@ -81,13 +81,29 @@ class TestThreadPool:
     @pytest.mark.parametrize("cpus, want", [(1, 1), (2, 2), (4, 4), (8, 4), (128, 4)])
     def test_min_of_cpus_and_four(self, cpus, want):
         facts = HostTaskFacts(cpus, None, None, None, None)
-        assert hts.thread_pool_env_defaults(facts) == {
+        assert hts.thread_pool_env_defaults(facts, ceiling_in_force=True) == {
             "TOKIO_WORKER_THREADS": str(want),
             "RAYON_NUM_THREADS": str(want),
         }
 
     def test_unknown_cpus_sets_nothing(self):
-        assert hts.thread_pool_env_defaults(UNKNOWN) == {}
+        assert hts.thread_pool_env_defaults(UNKNOWN, ceiling_in_force=True) == {}
+
+    def test_no_task_ceiling_sets_nothing(self):
+        """Without the agents slice there is no TasksMax for the cap to protect."""
+        assert hts.thread_pool_env_defaults(BIG, ceiling_in_force=False) == {}
+
+    @pytest.mark.parametrize("available", [True, False])
+    def test_the_default_follows_the_cgroup_scope_probe(self, monkeypatch, available):
+        monkeypatch.setattr("kiro_crew.sandbox._probe_cgroup_scope", lambda: (available, "test"))
+        assert bool(hts.thread_pool_env_defaults(BIG)) is available
+
+    def test_a_failing_probe_means_no_ceiling(self, monkeypatch):
+        def boom() -> tuple[bool, str]:
+            raise RuntimeError("probe failed")
+
+        monkeypatch.setattr("kiro_crew.sandbox._probe_cgroup_scope", boom)
+        assert hts.thread_pool_env_defaults(BIG) == {}
 
     def test_every_name_is_accepted_by_the_config_allowlist(self):
         from kiro_crew.config.sections_agent_env import CHILD_ENV_DEFAULT_NAMES
@@ -134,8 +150,10 @@ class TestProbe:
         assert (facts.pid_max, facts.threads_max, facts.user_tasks_max) == (None, None, None)
 
 
-def _with_facts(monkeypatch, facts: HostTaskFacts) -> None:
+def _with_facts(monkeypatch, facts: HostTaskFacts, *, ceiling: bool = True) -> None:
+    """Pin the host reading, and whether the agents slice's task ceiling is in force."""
     monkeypatch.setattr(hts, "host_task_facts", lambda: facts)
+    monkeypatch.setattr("kiro_crew.sandbox._probe_cgroup_scope", lambda: (ceiling, "test"))
 
 
 class TestWiring:
@@ -214,6 +232,22 @@ class TestChildEnvDefaults:
         _with_facts(monkeypatch, UNKNOWN)
         assert self._apply(monkeypatch, {}, {}) == {}
 
+    def test_a_host_without_the_ceiling_keeps_its_pools(self, monkeypatch):
+        """macOS, Windows and Linux without the agents slice: nothing is capped."""
+        _with_facts(monkeypatch, BIG, ceiling=False)
+        assert self._apply(monkeypatch, {}, {}) == {}
+
+    def test_a_configured_value_still_applies_without_the_ceiling(self, monkeypatch):
+        _with_facts(monkeypatch, BIG, ceiling=False)
+        env = self._apply(monkeypatch, {"TOKIO_WORKER_THREADS": "16"}, {})
+        assert env == {"TOKIO_WORKER_THREADS": "16"}
+
+    def test_an_inherited_value_is_never_overridden(self, monkeypatch):
+        for ceiling in (True, False):
+            _with_facts(monkeypatch, BIG, ceiling=ceiling)
+            env = self._apply(monkeypatch, {}, {"RAYON_NUM_THREADS": "12"})
+            assert env["RAYON_NUM_THREADS"] == "12"
+
     def test_a_failing_host_reading_never_breaks_the_spawn(self, monkeypatch):
         def boom() -> HostTaskFacts:
             raise RuntimeError("probe failed")
@@ -247,12 +281,13 @@ class TestDoctorRow:
         raw_limits: dict,
         agent_env: dict[str, str] | None = None,
         child_env: dict[str, str] | None = None,
+        ceiling: bool = True,
     ) -> str:
         from kiro_crew import cli_doctor
         from kiro_crew.config.sections_limits import ResourceLimitsConfig
         from kiro_crew.doctor_checks import resources
 
-        _with_facts(monkeypatch, BIG)
+        _with_facts(monkeypatch, BIG, ceiling=ceiling)
         cfg = unittest.mock.MagicMock()
         cfg.resource_limits = ResourceLimitsConfig.from_raw(raw_limits)
         cfg.agent.child_env_defaults = dict(child_env or {})
@@ -298,6 +333,12 @@ class TestDoctorRow:
         assert "TOKIO_WORKER_THREADS: 8 (agent.child_env_defaults)" in out
         assert "RAYON_NUM_THREADS: 4 (host-sized)" in out
         assert "gateway's environment" in out
+
+    def test_without_the_ceiling_the_pools_are_reported_unset(self, monkeypatch):
+        """Doctor reports what a spawn gets: no host default where no slice exists."""
+        out = self._run(monkeypatch, None, {}, ceiling=False)
+        assert "TOKIO_WORKER_THREADS: unset (kiro-cli uses one worker per core)" in out
+        assert "RAYON_NUM_THREADS: unset (kiro-cli uses one worker per core)" in out
 
     def test_the_section_never_adds_an_issue(self, tmp_path, monkeypatch, capsys):
         """The slice is shared by every gateway under the user, so its live state
