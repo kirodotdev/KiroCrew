@@ -76,7 +76,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      13483,
+      13484,
       128000
     ],
     "usage_cost": null
@@ -102,7 +102,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      13533,
+      13534,
       128000
     ],
     "usage_cost": null
@@ -164,7 +164,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      37610,
+      37611,
       128000
     ],
     "usage_cost": null
@@ -195,7 +195,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      49648,
+      49649,
       128000
     ],
     "usage_cost": null
@@ -210,13 +210,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "Compaction completed.\nTokens before: 49648\n\nok\n\n---\n\n**Turn Context (split turn):**\n\nok"
+        "text": "Compaction completed.\nTokens before: 49649\n\nok\n\n---\n\n**Turn Context (split turn):**\n\nok"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "Compaction completed.\nTokens before: 49648\n\nok\n\n---\n\n**Turn Context (split turn):**\n\nok",
+      "text": "Compaction completed.\nTokens before: 49649\n\nok\n\n---\n\n**Turn Context (split turn):**\n\nok",
       "thinking": false
     }
   },
@@ -246,7 +246,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      13596,
+      13597,
       128000
     ],
     "usage_cost": null

@@ -25,30 +25,30 @@
     "config_options": [
       {
         "category": "model",
-        "currentValue": "scripted/scripted-model",
+        "currentValue": "stub/stub-model",
         "description": "Select the model for this session",
         "id": "model",
         "name": "Model",
         "options": [
           {
             "description": null,
-            "name": "scripted/scripted-model",
-            "value": "scripted/scripted-model"
+            "name": "stub/Stub",
+            "value": "stub/stub-model"
           }
         ],
         "type": "select"
       },
       {
         "category": "thought_level",
-        "currentValue": "off",
+        "currentValue": "medium",
         "description": "Set the reasoning effort for this session",
         "id": "thought_level",
         "name": "Thinking",
         "options": [
           {
             "description": null,
-            "name": "Thinking: off",
-            "value": "off"
+            "name": "Thinking: medium",
+            "value": "medium"
           }
         ],
         "type": "select"
@@ -58,9 +58,14 @@
     "id": 2,
     "modes": {
       "advertised": true,
-      "current": "off",
+      "current": "medium",
       "ids": [
-        "off"
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ]
     },
     "session_id": "pi-session-1"
@@ -103,30 +108,30 @@
     "config_options": [
       {
         "category": "model",
-        "currentValue": "scripted/scripted-model",
+        "currentValue": "stub/stub-model",
         "description": "Select the model for this session",
         "id": "model",
         "name": "Model",
         "options": [
           {
             "description": null,
-            "name": "scripted/scripted-model",
-            "value": "scripted/scripted-model"
+            "name": "stub/Stub",
+            "value": "stub/stub-model"
           }
         ],
         "type": "select"
       },
       {
         "category": "thought_level",
-        "currentValue": "off",
+        "currentValue": "medium",
         "description": "Set the reasoning effort for this session",
         "id": "thought_level",
         "name": "Thinking",
         "options": [
           {
             "description": null,
-            "name": "Thinking: off",
-            "value": "off"
+            "name": "Thinking: medium",
+            "value": "medium"
           }
         ],
         "type": "select"
@@ -157,7 +162,7 @@
         "is_shell": true,
         "kind": "tool_call",
         "title": "sleep 4 && echo done",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_bash_2",
         "tool_kind": "execute",
         "wire_title": "sleep 4 && echo done"
       }
@@ -172,7 +177,7 @@
         "is_shell": true,
         "kind": "tool_call_update",
         "title": "sleep 4 && echo done",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_bash_2",
         "tool_kind": "execute",
         "wire_title": "sleep 4 && echo done"
       }
@@ -203,7 +208,7 @@
         },
         "shell_classified": true,
         "title": "bash",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_bash_2",
         "tool_input": "{\n  \"command\": \"sleep 4 && echo done\"\n}",
         "tool_kind": "execute"
       }
@@ -232,7 +237,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_bash_2",
         "tool_final": true,
         "tool_status": "completed"
       }
@@ -245,14 +250,14 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "{\"kiro-crew-steer\":1,\"nonce\":\"8ad50edfb70b49958dc0aa0f55af4386\",\"seq\":1}"
+        "text": "{\"kiro-crew-steer\":1,\"nonce\":\"bf46895eeacd42b7a7f2b86d4242ea47\",\"seq\":1}"
       }
     ],
     "frame": "session/update",
     "pi_steer_consumed": 1,
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "{\"kiro-crew-steer\":1,\"nonce\":\"8ad50edfb70b49958dc0aa0f55af4386\",\"seq\":1}",
+      "text": "{\"kiro-crew-steer\":1,\"nonce\":\"bf46895eeacd42b7a7f2b86d4242ea47\",\"seq\":1}",
       "thinking": false
     }
   },
@@ -261,28 +266,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "Steer received"
+        "text": "Steer received: PINEAPPLE."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "Steer received",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": ": PINEAPPLE."
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": ": PINEAPPLE.",
+      "text": "Steer received: PINEAPPLE.",
       "thinking": false
     }
   },
@@ -292,7 +282,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      110,
+      1611,
       128000
     ],
     "usage_cost": null

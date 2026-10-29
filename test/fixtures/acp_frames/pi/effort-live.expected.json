@@ -111,13 +111,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "pi v1.3.0\n---\n"
+        "text": "pi v1.4.0\n---\n"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "pi v1.3.0\n---\n",
+      "text": "pi v1.4.0\n---\n",
       "thinking": false
     }
   },
