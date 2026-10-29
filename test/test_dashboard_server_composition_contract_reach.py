@@ -989,9 +989,32 @@ async def _traced_dashboard(
 
     monkeypatch.setattr(server, "start_dashboard", _start)
     runner, state, _spies = await harness._start_dashboard(tmp_path, monkeypatch)
+    await _knowledge_reclaim_finished(state)
     boot = list(holder["trace"])
     del holder["trace"][:]
     return runner, state, boot, holder["trace"]
+
+
+#: How long the boot's knowledge-reclaim task may run before the test gives up on it.
+_RECLAIM_WAIT_SECONDS = 30
+
+
+async def _knowledge_reclaim_finished(state: Any) -> None:
+    """Wait for the boot's knowledge reclaim task, which then calls the memory prebuild.
+
+    ``_kick_knowledge_orphan_reclaim`` reaches ``_prebuild_memory_after_preparation``
+    only after its worker thread returns. The teardown cancels every stray task, so
+    on a slow runner the prebuild is never called and drops out of the trace.
+    This one task is finite, unlike the boot's other background loops, so waiting
+    for it alone records the prebuild on every runner.
+    """
+    reclaim = [
+        task
+        for task in state._background_tasks
+        if task.get_coro().__qualname__.endswith("._knowledge_orphan_reclaim")
+    ]
+    if reclaim:
+        await asyncio.wait_for(asyncio.gather(*reclaim), timeout=_RECLAIM_WAIT_SECONDS)
 
 
 async def _traced_api(
