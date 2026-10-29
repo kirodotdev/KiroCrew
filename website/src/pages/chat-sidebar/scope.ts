@@ -262,7 +262,7 @@ export interface SidebarScope {
   // From `useSessionRename`
   renameError: ReturnType<typeof useSessionRename>['renameError']
   setRenameError: ReturnType<typeof useSessionRename>['setRenameError']
-  suppressMenuRestoreRef: ReturnType<typeof useSessionRename>['suppressMenuRestoreRef']
+  suppressMenuRestore: ReturnType<typeof useSessionRename>['suppressMenuRestore']
   onMenuCloseAutoFocus: ReturnType<typeof useSessionRename>['onMenuCloseAutoFocus']
 
   // From `useSessionAutoTitle`

@@ -42,7 +42,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
-    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestoreRef,
+    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestore,
     toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation } = shell
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
@@ -297,7 +297,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
             </span>
           </Item>
         )}
-        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
+        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestore(); setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
         <Item data-testid={tid('new-subfolder')} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
         {/* The two private modes are listed flat, each naming its own action
          *  and what it does with memory. A grouping caption read as a button

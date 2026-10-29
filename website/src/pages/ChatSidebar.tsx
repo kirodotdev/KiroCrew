@@ -251,7 +251,7 @@ function ChatSidebar({
   )
   const {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
-    suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
+    suppressMenuRestore, disarmMenuRestore, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
     onMenuCloseAutoFocus,
   } = useSessionRename({ dispatch, store, queryClient })
   const { autoTitleError, setAutoTitleError, onAutoTitle } = useSessionAutoTitle({ dispatch, store })
@@ -333,7 +333,7 @@ function ChatSidebar({
 
   const {
     folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
-  } = useFolderRename({ renamingSlot, suppressMenuRestoreRef })
+  } = useFolderRename({ renamingSlot, disarmMenuRestore })
   const [folderRenameAnnouncement, setFolderRenameAnnouncement] = useState('')
 
   // Folders via React Query. `isSuccess` gates the stale-collapse move
@@ -834,7 +834,7 @@ function ChatSidebar({
     manualOrderError, setManualOrderError,
     showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,
     sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
-    subagentApprovalCounts, suppressMenuRestoreRef, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
+    subagentApprovalCounts, suppressMenuRestore, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
     toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,

@@ -21,6 +21,7 @@ import { useAppQuery, useAppQueryKey } from '../../app-sdk/appQuery'
 // Imported by path, not from the app-sdk barrel: that barrel is the surface published to
 // third-party apps, and this store is builtin-only.
 import { useAppViewState, isViewString, type ViewStateDecl } from '../../app-sdk/viewState'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { i18nT } from '../../i18n/t'
 import { awsControlApi, AwsControlError } from './api'
@@ -190,42 +191,23 @@ export function useDrivePageFiles(account: string) {
   /** The file a "Move to folder…" picker is open for, or null. */
   const [moveTarget, setMoveTarget] = useState<string | null>(null)
   /** Who opened the row menu that is closing, and whether one of its items
-   *  opened a dialog. Two Radix behaviours meet here. Item select is
-   *  dispatched with `flushSync`, so a dialog set from `onSelect` mounts in a
-   *  commit where the menu is STILL trapping focus — the dialog focuses itself
-   *  and the trap yanks focus straight back into a menu that then unmounts,
-   *  stranding it on `body`. So the open is deferred one macrotask, past the
-   *  menu's own close commit. Then Radix restores focus to the trigger one
-   *  macrotask after the content unmounts — by which time the dialog owns
-   *  focus — so when an item opened a dialog that restore is suppressed, and
-   *  the dialog hands focus back to the opener itself on close. */
-  const menuOpenerRef = useRef<HTMLElement | null>(null)
-  const menuOpenedDialogRef = useRef(false)
-  /** Recorded from the trigger's OWN pointer/keyboard event, not from
-   *  `document.activeElement` at open time: Safari does not focus a button on
-   *  pointer click, so the active element there would still be whatever had
-   *  focus before, and the dialog would hand focus back to the wrong place. */
-  const rememberMenuOpener = (e: React.SyntheticEvent<HTMLElement>) => {
-    menuOpenerRef.current = e.currentTarget
-  }
-  const skipRestoreIfDialog = (e: Event) => {
-    if (!menuOpenedDialogRef.current) return
-    e.preventDefault()
-    menuOpenedDialogRef.current = false
-  }
+   *  opened a dialog: the Share and Move dialogs open one macrotask after the
+   *  menu closes and hand focus back to the opener themselves. The ordering
+   *  this relies on is documented on `useMenuOpensDialog`. */
+  const menuLayer = useMenuOpensDialog()
+  const rememberMenuOpener = menuLayer.rememberOpener
+  const skipRestoreIfDialog = menuLayer.onCloseAutoFocus
   const openShare = (key: string) => {
-    menuOpenedDialogRef.current = true
-    setTimeout(() => setShare({ key }), 0)
+    menuLayer.openLayer(() => setShare({ key }))
   }
   const openMove = (key: string) => {
-    menuOpenedDialogRef.current = true
     moveDialogOpenRef.current = true
     // A refusal from an earlier drag belongs to that drag, not to the picker
     // that is about to open.
     setMoveError(null)
-    setTimeout(() => setMoveTarget(key), 0)
+    menuLayer.openLayer(() => setMoveTarget(key))
   }
-  const returnFocusToOpener = () => menuOpenerRef.current?.focus({ preventScroll: true })
+  const returnFocusToOpener = menuLayer.returnFocus
   /** Whether the Move picker is on screen, readable from a mutation callback
    *  that may fire after the reader has already dismissed it. */
   const moveDialogOpenRef = useRef(false)
