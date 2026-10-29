@@ -61,7 +61,8 @@ agent *hint* only:
 * ``agent`` is carried as a hint and applied ONLY if the target has an agent by
   that name; otherwise it is dropped rather than left dangling.
 * ``folder_id``, ``tags``, ``pinned``, ``artifact``, ``app``,
-  ``linked_session_key`` and ``forked_from`` are all local-graph references and
+  ``linked_session_key``, ``forked_from`` and the fork point (``fork_point_mid``,
+  ``fork_point_ts``, ``fork_direction``) are all local-graph references and
   are not carried at all. The arriving session's PLACEMENT is nonetheless not the
   top level: it is derived locally from ``origin`` by
   :mod:`kiro_crew.dashboard.arrival_folders`, which files it under

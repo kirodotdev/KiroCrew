@@ -1464,6 +1464,23 @@ no longer destroy older turns.
   loading the full visible history. Restore paths preserve a missing legacy `mid`
   rather than minting an in-memory-only identity that full-history operations cannot
   resolve.
+- **Fork point record**: the child keeps where it was cut on its own metadata line:
+  `fork_point_mid` and `fork_point_ts` (the `meta.mid` and `ts` of the parent row the
+  cut sits after — the selected row, or the last non-notice row of a whole-transcript fork;
+  if every visible row is a notice, the last row is kept) and
+  `fork_direction` (`head` | `tail`). They are slot-owned keys read back on every
+  hydration purpose. `slot_persistence/metadata_values.py` holds the one bound both the fork and
+  the read apply: a non-string, empty or over-128-character value, or an unknown
+  direction, is recorded and read back as none. The parent's transcript (`pages/chat/forkPoints.ts`) matches
+  `fork_point_mid` against its rows, and `fork_point_ts` only for a child that recorded
+  no id. Both the index and its signature match `forked_from` to the parent's
+  `linked_session_key` when bound, otherwise `dashboard:<slot key>`. Whole-transcript
+  forks skip assistant notices when choosing the point, using top-level `kind` or
+  `meta.kind` and the five kinds in `website/src/lib/systemNotice.ts` (mirrored by
+  `dashboard/system_notices.py`); the copied rows are unchanged. Explicit cuts keep
+  their selected row. Split View passes its existing open-full path to each pane's
+  session opener, so the fork-parent tag opens the parent through that path.
+  A fork made before these were recorded carries neither and marks nothing.
 - **Tail-only fork** (`direction="tail"`): copies only `visible[at_index+1:]`
   into the new slot instead of the head `visible[:at_index+1]`. The head is
   always dropped -- there is no summarize option. Gated server-side by

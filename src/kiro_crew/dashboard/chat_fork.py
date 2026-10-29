@@ -40,6 +40,7 @@ from kiro_crew.dashboard.slot_buffers import (
     bounded_transcript_created_at,
 )
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
+from kiro_crew.dashboard.slot_persistence.metadata_values import fork_point_of_row
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
     _TRANSIENT_ROLES,
@@ -49,6 +50,7 @@ from kiro_crew.dashboard.state import (
     _safe_folder_tree,
     request_slot_origin,
 )
+from kiro_crew.dashboard.system_notices import SYSTEM_NOTICE_KINDS
 from kiro_crew.dashboard.token_auth_callers import folder_principal
 from kiro_crew.dashboard.transcript_snapshot import (
     FORK,
@@ -606,6 +608,7 @@ def _shape_fork_child(
     folders: list[dict[str, Any]],
     folder_principal: str,
     promote: bool = False,
+    fork_point_row: dict,
 ) -> None:
     """Copy onto the just-minted *new_slot* what it inherits from its parent *slot*.
 
@@ -618,11 +621,22 @@ def _shape_fork_child(
     ``slots`` frame already shows the folder, tags, color and fork title set here.
     ``promote`` titles the child as a kept copy ("Keep this chat") instead
     of a fork.
+    *fork_point_row* is the parent row the cut sits after; its ``meta.mid`` and
+    ``ts`` are what the parent's transcript finds the fork point by.
     """
     forked_from = effective_session_key(slot)
     if len(forked_from) <= MAX_FORK_PARENT_KEY_CHARS:
         new_slot.forked_from = forked_from
         new_slot.forked_from_created_at = bounded_transcript_created_at(slot._disk_meta_created_at)
+        # Recorded only beside a recorded parent link: a fork whose parent key is
+        # over the cap names no parent whose transcript could draw the marker.
+        # Bounded here as well as on read: the parent's rows come from a transcript
+        # agent tools can write, and a value the restore would drop must not be
+        # projected live first.
+        point = fork_point_of_row(fork_point_row, direction)
+        new_slot.fork_point_mid = point.mid
+        new_slot.fork_point_ts = point.ts
+        new_slot.fork_direction = point.direction
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
@@ -1196,6 +1210,22 @@ async def fork_slot(
                 status=400,
             )
 
+    # Explicit cuts keep the selected row. Whole-transcript cuts prefer the
+    # last bubble row, while copying every row, including status notices.
+    fork_point_row = visible[at_index] if at_index is not None else visible[-1]
+    if at_index is None:
+        for row in reversed(visible):
+            meta = row.get("meta")
+            kind = row.get("kind")
+            if kind is None and isinstance(meta, dict):
+                kind = meta.get("kind")
+            if (
+                row.get("role") != "assistant"
+                or not isinstance(kind, str)
+                or kind not in SYSTEM_NOTICE_KINDS
+            ):
+                fork_point_row = row
+                break
     head_messages: list[dict] = []
     if direction == _FORK_DIRECTION_TAIL:
         if at_index is None:
@@ -1346,6 +1376,7 @@ async def fork_slot(
                 folders=_safe_folder_tree(state._folders),
                 folder_principal=folder_principal,
                 promote=_promote_from_ephemeral,
+                fork_point_row=fork_point_row,
             )
             if stamp is not None:
                 stamp(new_slot)

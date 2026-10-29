@@ -37,7 +37,7 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'default' }], defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
-vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
+vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }), emitSlotFocused: vi.fn(), endSplitPaneFocus: vi.fn() }))
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -45,6 +45,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import SessionGridView from '../components/SessionGridView'
 import { api } from '../api/client'
 import { sseSlotTitle, sseSlots } from '../store/dashboardSlice'
 
@@ -65,7 +66,7 @@ function makeStore() {
   })
 }
 
-function renderPane() {
+function renderPane(pane: { onSessionOpen?: (key: string) => void } = {}, onCollapse?: (key: string, anchorTs?: string, anchorMid?: string, gesture?: boolean) => void) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore()
   const utils = render(
@@ -73,7 +74,7 @@ function renderPane() {
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={SLOT} onRemove={() => {}} />
+            {onCollapse ? <SessionGridView seedSlot={SLOT} onClose={() => {}} onCollapse={onCollapse} /> : <ChatPane slotKey={SLOT} onRemove={() => {}} {...pane} />}
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -241,4 +242,46 @@ describe('ChatPane header — fork-of tag (#23084)', () => {
     expect(tag.textContent).toBe(`↳ ${PARENT}`)
     expect(tag.getAttribute('title')).toBe(`Forked from ${PARENT}`)
   })
+
+  it('opens the parent from the tag when the host can switch sessions', async () => {
+    const onSessionOpen = vi.fn()
+    const { store } = renderPane({ onSessionOpen })
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: `dashboard:${PARENT}` },
+        { key: PARENT, title: 'Parent chat', messages: 2, running: false },
+      ] as never))
+    })
+    const tag = await screen.findByTestId('chat-pane-fork-parent')
+    expect(tag.tagName).toBe('BUTTON')
+    fireEvent.click(tag)
+    expect(onSessionOpen).toHaveBeenCalledWith(PARENT)
+  })
+
+  it('keeps a plain tag for a parent the host cannot open', async () => {
+    const { store } = renderPane({ onSessionOpen: vi.fn() })
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: `dashboard:${PARENT}` },
+      ] as never))
+    })
+    const tag = await screen.findByText((_t, el) => el?.tagName === 'SPAN' && (el.textContent ?? '').startsWith('↳'))
+    expect(tag.textContent).toBe(`↳ ${PARENT}`)
+    expect(screen.queryByTestId('chat-pane-fork-parent')).toBeNull()
+  })
+})
+
+it('opens a split pane fork parent through the grid open path', async () => {
+  localStorage.removeItem('mc-split-layouts')
+  const onCollapse = vi.fn()
+  const { store } = renderPane({}, onCollapse)
+  act(() => {
+    store.dispatch(sseSlots([
+      { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: 'dashboard:parent' },
+      { key: 'parent', title: 'Parent notes', messages: 2, running: false },
+    ]))
+  })
+  const tag = await screen.findByText('↳ Parent notes')
+  fireEvent.click(tag)
+  expect(onCollapse).toHaveBeenCalledWith('parent', undefined, undefined, true)
 })
