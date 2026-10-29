@@ -3507,6 +3507,8 @@
         "anotherMeetingReviewing": "«{{title}}» è ancora in revisione. Aprila in Riunioni e scegli prima «Chiudi la riunione».",
         "sttStreamingDisabled": "La trascrizione dal vivo è disattivata. In Impostazioni → Voce, verifica che l'input vocale sia attivo, che il provider supporti lo streaming e che Streaming sia attivo.",
         "openVoiceSettings": "Apri impostazioni voce",
+        "openBlockingMeeting": "Apri la riunione",
+        "openBlockingReview": "Apri la revisione",
         "noteSaveFailed": "Non è stato possibile salvare la tua nota.",
         "noteImageFailed": "Non è stato possibile aggiungere quell'immagine. Incolla un PNG, JPEG, GIF o WebP.",
         "noteImageTooLarge": "Quell'immagine è troppo grande per una nota."

@@ -3435,6 +3435,8 @@
         "anotherMeetingReviewing": "“{{title}}” अभी समीक्षा में है। उसे मीटिंग्स में खोलो और पहले मीटिंग बंद करो।",
         "sttStreamingDisabled": "लाइव ट्रांसक्रिप्शन बंद है। सेटिंग्स → वॉइस में जाँचो कि वॉइस इनपुट चालू है, प्रदाता स्ट्रीमिंग सपोर्ट करता है, और स्ट्रीमिंग चालू है।",
         "openVoiceSettings": "वॉइस सेटिंग्स खोलो",
+        "openBlockingMeeting": "मीटिंग खोलो",
+        "openBlockingReview": "समीक्षा खोलो",
         "noteSaveFailed": "नोट सहेजा नहीं जा सका।",
         "noteImageFailed": "वह छवि जोड़ी नहीं जा सकी। PNG, JPEG, GIF या WebP चिपकाओ।",
         "noteImageTooLarge": "वह छवि नोट में जोड़ने के लिए बहुत बड़ी है।"
