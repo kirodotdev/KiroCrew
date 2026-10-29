@@ -116,6 +116,17 @@ def acp_backend_stored_as_kiro() -> bool:
     return _stored_agent_value("acp_backend") == STORED_BACKEND_KIRO
 
 
+def acp_backend_bundle_route() -> bool:
+    """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
+
+    Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
+    On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
+    own bundled engine, which kiro-cli's own v3 support says nothing about, so the
+    gateway floor and the per-process probe both decline to promote the pick.
+    """
+    return bool(_stored_agent_value("kas_bundle") is True)
+
+
 def acp_backend_overlay_owned() -> bool:
     """Whether the ``config.local.json`` overlay names ``agent.acp_backend``.
 

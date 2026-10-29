@@ -857,6 +857,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _store_validated_data,
         _stored_agent_value,
         _type_names,
+        acp_backend_bundle_route,
         acp_backend_declared,
         acp_backend_overlay_owned,
         acp_backend_stored_as_kiro,

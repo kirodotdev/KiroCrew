@@ -546,6 +546,7 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     _floor_monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
     _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
     _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
 
 
 @pytest.fixture
