@@ -10212,7 +10212,14 @@
       "tool_access_allowed": "অনুমতি আছে",
       "tool_access_not_allowed": "অনুমতি নেই",
       "tool_access_turn_on": "চালু করো",
-      "tool_access_not_now": "এখন না"
+      "tool_access_not_now": "এখন না",
+      "kind_workflow_save": "সংরক্ষিত ওয়ার্কফ্লো",
+      "kind_workflow_update": "সংরক্ষিত ওয়ার্কফ্লোর পরিবর্তন",
+      "primary_workflow_save": "ওয়ার্কফ্লো সংরক্ষণ করো",
+      "primary_workflow_update": "রিভিশন সংরক্ষণ করো",
+      "field_workflow_command": "কমান্ড",
+      "field_workflow_source": "স্ক্রিপ্ট",
+      "field_workflow_diff": "স্ক্রিপ্টের পরিবর্তন"
     },
     "assistantWelcome": {
       "default_name": "Mate"

@@ -10212,7 +10212,14 @@
       "tool_access_allowed": "अनुमति है",
       "tool_access_not_allowed": "अनुमति नहीं है",
       "tool_access_turn_on": "चालू करो",
-      "tool_access_not_now": "अभी नहीं"
+      "tool_access_not_now": "अभी नहीं",
+      "kind_workflow_save": "सहेजा गया वर्कफ़्लो",
+      "kind_workflow_update": "सहेजे गए वर्कफ़्लो में बदलाव",
+      "primary_workflow_save": "वर्कफ़्लो सहेजो",
+      "primary_workflow_update": "संशोधन सहेजो",
+      "field_workflow_command": "कमांड",
+      "field_workflow_source": "स्क्रिप्ट",
+      "field_workflow_diff": "स्क्रिप्ट में बदलाव"
     },
     "assistantWelcome": {
       "default_name": "Mate"

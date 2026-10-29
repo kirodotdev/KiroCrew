@@ -10358,7 +10358,14 @@
       "tool_access_allowed": "Permitido",
       "tool_access_not_allowed": "No permitido",
       "tool_access_turn_on": "Activar",
-      "tool_access_not_now": "Ahora no"
+      "tool_access_not_now": "Ahora no",
+      "kind_workflow_save": "Flujo de trabajo guardado",
+      "kind_workflow_update": "Cambio en un flujo de trabajo guardado",
+      "primary_workflow_save": "Guardar flujo de trabajo",
+      "primary_workflow_update": "Guardar revisión",
+      "field_workflow_command": "Comando",
+      "field_workflow_source": "Script",
+      "field_workflow_diff": "Cambios en el script"
     },
     "assistantWelcome": {
       "default_name": "Mate"

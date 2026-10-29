@@ -10504,7 +10504,14 @@
       "tool_access_allowed": "Разрешено",
       "tool_access_not_allowed": "Не разрешено",
       "tool_access_turn_on": "Включить",
-      "tool_access_not_now": "Не сейчас"
+      "tool_access_not_now": "Не сейчас",
+      "kind_workflow_save": "Сохранённый воркфлоу",
+      "kind_workflow_update": "Изменение сохранённого воркфлоу",
+      "primary_workflow_save": "Сохранить воркфлоу",
+      "primary_workflow_update": "Сохранить ревизию",
+      "field_workflow_command": "Команда",
+      "field_workflow_source": "Скрипт",
+      "field_workflow_diff": "Изменения в скрипте"
     },
     "assistantWelcome": {
       "default_name": "Mate"

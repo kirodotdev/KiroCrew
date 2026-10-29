@@ -51,6 +51,8 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_SETTING_CHANGE,
     KIND_TEMPLATE_UPDATE,
     KIND_TRUST_APP,
+    KIND_WORKFLOW_SAVE,
+    KIND_WORKFLOW_UPDATE,
     LIST_OP_ADD,
     RISK_CODE_EXEC,
     RISK_NORMAL,
@@ -913,6 +915,70 @@ def build_preview(
         elif remove:
             out["risk"] = RISK_TIGHTEN
         out["apply"] = [_folder_steering_step(p["folder"], new)]
+    elif kind == KIND_WORKFLOW_SAVE:
+        out["title"] = f"Save workflow “{_short(p['name'], 80)}” to the library"
+        out["changes"] = [{"field": "name", "label": "Name", "after": _display(p["name"])}]
+        if p["description"]:
+            out["changes"].append(
+                {
+                    "field": "description",
+                    "label": "Description",
+                    "after": _display(p["description"]),
+                }
+            )
+        if p.get("slug"):
+            out["changes"].append(
+                {"field": "workflow_command", "label": "Command", "after": f"/workflow {p['slug']}"}
+            )
+        out["changes"].append(
+            {"field": "workflow_source", "label": "Script", "after": _display(p["source"])}
+        )
+        # A saved workflow is a script anyone can start by name, so the card says it
+        # runs code whatever the script does.
+        out["risk"] = RISK_CODE_EXEC
+        out["apply"] = [step("POST", "/api/workflows/definitions", _workflow_save_body(p))]
+    elif kind == KIND_WORKFLOW_UPDATE:
+        if not snapshot.get("exists"):
+            raise _fail("not_found", f"no saved workflow '{p['workflow']}'")
+        if snapshot.get("format") != "python":
+            raise _fail("not_python", "only a Python workflow can be revised from a card")
+        changed = {k: p[k] for k in ("name", "description") if k in p and p[k] != snapshot.get(k)}
+        diff = str(context.get("diff") or "")
+        if not diff and not changed:
+            raise _fail("no_change", "the saved workflow already reads like that")
+        label = str(snapshot.get("name") or p["workflow"])
+        revision = int(snapshot.get("revision") or 0)
+        out["title"] = f"Save a new revision of workflow “{_short(label, 80)}”"
+        out["changes"] = [
+            {"label": "Workflow", "after": f"/workflow {snapshot.get('slug') or p['workflow']}"},
+            {"label": "Revision", "before": revision, "after": revision + 1},
+        ]
+        for key, value in changed.items():
+            out["changes"].append(
+                {
+                    "field": key,
+                    "label": key.capitalize(),
+                    "before": _display(str(snapshot.get(key) or "")),
+                    "after": _display(value),
+                }
+            )
+        if diff:
+            out["changes"].append(
+                {"field": "workflow_diff", "label": "Changes to the script", "after": diff}
+            )
+            out["changes"].append(
+                {
+                    "field": "workflow_source",
+                    "label": "Script",
+                    "after": _display(p["source"]),
+                    "detail": True,
+                }
+            )
+        out["risk"] = RISK_CODE_EXEC
+        body = {"source": p["source"], "expected_revision": revision, **changed}
+        out["apply"] = [
+            step("PATCH", f"/api/workflows/definitions/{_q(str(snapshot['id']))}", body)
+        ]
     else:  # KIND_DENIED_COMMAND
         if p["action"] == "add":
             if snapshot.get("exists"):
@@ -979,9 +1045,21 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
         # The yes only starts a wake; the page it leads to goes back with
         # ``dashboard_rollback``, a version like any other.
         KIND_CREWMATE_DASHBOARD_PAGE,
+        # The library has no delete, and a revision is never taken back: an earlier
+        # revision stays in the definition's history.
+        KIND_WORKFLOW_SAVE,
+        KIND_WORKFLOW_UPDATE,
     ):
         return True
     return kind == KIND_DENIED_COMMAND and params.get("action") == "add"
+
+
+def _workflow_save_body(p: dict[str, Any]) -> dict[str, Any]:
+    """The Workflows tab's own save body for a ``workflow.save`` card."""
+    body = {"source": p["source"], "name": p["name"], "description": p["description"]}
+    if p.get("slug"):
+        body["slug"] = p["slug"]
+    return body
 
 
 def _folder_steering_step(folder: str, steering_dirs: list[str]) -> dict[str, Any]:

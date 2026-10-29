@@ -9925,7 +9925,14 @@
       "tool_access_allowed": "[Àĺĺøẁèð ···········]",
       "tool_access_not_allowed": "[Ñøţ àĺĺøẁèð ··········]",
       "tool_access_turn_on": "[Ţùŕñ øñ ···········]",
-      "tool_access_not_now": "[Ñøţ ñøẁ ···········]"
+      "tool_access_not_now": "[Ñøţ ñøẁ ···········]",
+      "kind_workflow_save": "[Şàṽèð ẁøŕķƒĺøẁ ·············]",
+      "kind_workflow_update": "[Şàṽèð ẁøŕķƒĺøẁ çĥàñğè ···············]",
+      "primary_workflow_save": "[Şàṽè ẁøŕķƒĺøẁ ············]",
+      "primary_workflow_update": "[Şàṽè ŕèṽìşìøñ ············]",
+      "field_workflow_command": "[Çøɱɱàñð ···········]",
+      "field_workflow_source": "[Şçŕìþţ ·········]",
+      "field_workflow_diff": "[Çĥàñğèş ţø ţĥè şçŕìþţ ···············]"
     },
     "assistantWelcome": {
       "default_name": "[Ṁàţè ······]"

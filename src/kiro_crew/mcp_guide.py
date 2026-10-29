@@ -224,8 +224,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "List the change-card kinds you can propose (settings, schedules, "
                 "crewmates, capabilities, templates, MCP servers, connections, "
-                "secrets, app trust, denied commands), each with its params schema "
-                "and which fields the user may edit on the card."
+                "secrets, app trust, denied commands, saved workflows), each with "
+                "its params schema and which fields the user may edit on the card."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },

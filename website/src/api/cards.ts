@@ -36,6 +36,8 @@ export const CARD_KINDS = [
   'trust.app',
   'denied_command',
   'folder.steering',
+  'workflow.save',
+  'workflow.update',
 ] as const
 export type CardKind = typeof CARD_KINDS[number]
 

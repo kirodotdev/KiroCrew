@@ -71,6 +71,22 @@ describe('CardChanges', () => {
     expect(screen.getByTestId('change-card-hint')).toHaveTextContent(L('approval_mode_hint_normal'))
   })
 
+  it('shows a workflow card script and its diff whole, as code', () => {
+    const script = 'META = {"name": "x"}\nasync def workflow(ctx):\n    return 1'
+    const diff = '--- revision 1\n+++ revision 2\n-    return 0\n+    return 1'
+    render(<CardChanges changes={[
+      { field: 'workflow_command', label: 'Command', after: '/workflow x' },
+      { field: 'workflow_diff', label: 'Changes to the script', after: diff },
+      { field: 'workflow_source', label: 'Script', after: script },
+    ]} />)
+    const blocks = screen.getAllByTestId('change-card-code')
+    expect(blocks.map(b => b.tagName)).toEqual(['PRE', 'PRE'])
+    expect(blocks.map(b => b.textContent)).toEqual([diff, script])
+    expect(blocks[0].className).toContain('font-mono')
+    for (const k of ['field_workflow_command', 'field_workflow_diff', 'field_workflow_source']) expect(screen.getByText(L(k))).toBeTruthy()
+    expect(screen.getByText('/workflow x')).toBeTruthy()
+  })
+
   it('shows every rule in full and each imported cron as arriving paused', () => {
     render(<CardChanges changes={[
       { field: 'rules', label: 'Rules', after: 'Never push to main.\nAsk before deleting.' },

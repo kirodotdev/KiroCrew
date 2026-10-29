@@ -882,6 +882,32 @@ a saved run accepts its caller-supplied session header, so it cannot spoof resul
 delivery into another live session. Every allow or deny decision at these
 authorization gates is SEL-audited.
 
+An agent may PROPOSE a save, never perform one. The `workflow.save` and
+`workflow.update` change-card kinds (`change_card_catalog_kinds.py`, raised with
+the guide server's `propose_change`) carry a Python script of at most
+`WORKFLOW_SOURCE_MAX` characters. The proposal is validated by `validate` before the
+card exists, so a script the save route would refuse is never put in front of the
+owner. The card shows the name, the description, the requested slash command and
+the whole script; an update card names the definition by id or slug, reads its
+current revision, and shows the revision step, any name or description change and
+a unified diff of the script (bounded at `WORKFLOW_DIFF_MAX`, with the whole new
+script under Details). Both carry `code_exec` risk. Apply is the owner's browser
+sending the card's single step to the same `POST /api/workflows/definitions` or
+`PATCH /api/workflows/definitions/{ref}` route the Workflows tab uses, through the
+card hook (`HOOKED_ROUTES`), so the owner-dashboard gates above are unchanged and
+the definition is written under the owner's identity. An update's step targets the
+definition id and sends the previewed revision as `expected_revision`; a save made
+in between is refused (`changed_since_preview`, or the route's own 409). Declining
+writes nothing. Neither card offers Undo: the library has no delete, and an update
+keeps every earlier revision in `revisions`. Only the main assistant's own
+dashboard chat may propose one: the shared card caller check already refuses
+sub-agents, scheduled and app sessions, channel turns and turns the user did not
+send, and the propose route also refuses a crewmate's thread and its workers
+(`owner_assistant_only`). SEL records `cards.workflow.propose`, and each owner
+decision as `cards.workflow.decline` or `cards.workflow.apply` (outcome `completed`,
+`partial` or `error`), beside the definition routes' own allow/deny rows. Neither
+route is a memory route, so an ordinary Workflows-tab save stays off the card hook.
+
 A definition has a stable `wfd_*` id, unique slash-command `slug`, current source,
 SHA-256 content hash, timestamps, an integer `revision`, immutable source entries
 in `revisions`, an immutable `format` (`python` or `task-plan`), and optional
@@ -1437,8 +1463,9 @@ reports, each appended only when it is a positive integer and naming the
 calls failed does not read as clean and a clean run's line is unchanged.
 Durable create and update operations
 are deliberately absent from the model-facing MCP surface: only the dashboard's
-explicit human management and completed-session confirmation flows may call the
-mutation routes.
+explicit human management, the completed-session confirmation flow and the
+owner's press on a `workflow.save` / `workflow.update` change card (see
+"Reusable definition library") may call the mutation routes.
 
 The dashboard handles `/workflow <slug> [input]` locally before harness session
 acquisition; `/workflow` alone lists saved definitions. This keeps the command

@@ -45,6 +45,13 @@ KIND_SECRET_SAVE = "secret.save"
 KIND_TRUST_APP = "trust.app"
 KIND_DENIED_COMMAND = "denied_command"
 KIND_FOLDER_STEERING = "folder.steering"
+#: Save a Python workflow script into the global workflow library, or append a
+#: revision to a saved one. The card's Apply is the owner's own call to the
+#: Workflows tab's routes, so nothing reaches ``workflow_library/`` until the
+#: owner presses it; a crewmate never proposes one (``handlers.change_cards``).
+KIND_WORKFLOW_SAVE = "workflow.save"
+KIND_WORKFLOW_UPDATE = "workflow.update"
+WORKFLOW_KINDS = frozenset({KIND_WORKFLOW_SAVE, KIND_WORKFLOW_UPDATE})
 #: One crewmate from a ``.crewmate`` file
 #: (``docs/request-for-change/rfc-crewmate-share.md``). The owner raises it from
 #: the crewmate dropdown (``POST /api/members/import``); an agent never can, so
@@ -115,6 +122,11 @@ _PARAMS_MAX_BYTES = 32 * 1024
 #: The folder route's per-entry bound (``chat_folders.MAX_FOLDER_STEERING_DIR_LEN``),
 #: so a canonical path the route accepts is one a stored card keeps.
 FOLDER_STEERING_DIR_MAX = 4096
+#: Longest workflow script a card carries. The card keeps the script in its params,
+#: in its Apply body and in the rows that show it, all inside one card record
+#: (``change_cards_records.CARD_RECORD_MAX``); a longer script is saved from the
+#: Workflows tab instead.
+WORKFLOW_SOURCE_MAX = 12_000
 #: The ``template.update`` fields that hold a list, replaced whole, and so the ones
 #: its ``clear`` may name.
 _TEMPLATE_LIST_FIELDS = ("tools", "allowedTools", "skills")
@@ -609,6 +621,41 @@ KINDS: dict[str, KindDef] = {
             ("steering_dirs",),
         ),
         KindDef(
+            KIND_WORKFLOW_SAVE,
+            "Save a Python workflow script to the workflow library (Customize -> "
+            "Workflows), so it runs as `/workflow <slug>`. `source` is the whole "
+            "script, validated before the card is shown; `name` is required, "
+            "`description` and `slug` are optional. Nothing is saved until the user "
+            "presses the card's button.",
+            _obj(
+                {
+                    "source": {"type": "string", "maxLength": WORKFLOW_SOURCE_MAX},
+                    "name": _STR,
+                    "description": _STR,
+                    "slug": _STR,
+                },
+                ["source", "name"],
+            ),
+            (),
+        ),
+        KindDef(
+            KIND_WORKFLOW_UPDATE,
+            "Save a new revision of a saved Python workflow. `workflow` is its id or "
+            "slug from workflow_library_list; `source` is the whole new script. "
+            "`name` and `description` are optional. The card shows the change to the "
+            "script; earlier revisions stay in the library.",
+            _obj(
+                {
+                    "workflow": _STR,
+                    "source": {"type": "string", "maxLength": WORKFLOW_SOURCE_MAX},
+                    "name": _STR,
+                    "description": _STR,
+                },
+                ["workflow", "source"],
+            ),
+            (),
+        ),
+        KindDef(
             KIND_CREWMATE_IMPORT,
             "Import one crewmate from a .crewmate file (owner only).",
             _obj(
@@ -767,6 +814,20 @@ def _clean_at(params: dict[str, Any]) -> str:
     except ValueError:
         raise _fail("invalid_at", "'at' is not a real date and time") from None
     return parsed.isoformat(timespec="minutes" if parsed.second == 0 else "seconds")
+
+
+def _workflow_source(params: dict[str, Any]) -> str:
+    """A card's workflow script: Windows line ends read as ``\\n``, then bounded.
+
+    The script is what Apply sends and what the card shows, so it is normalized
+    once here and every later copy is this one.
+    """
+    raw = params.get("source")
+    if isinstance(raw, str):
+        params = {**params, "source": raw.replace("\r\n", "\n")}
+    value = _clean_str(params, "source", max_len=WORKFLOW_SOURCE_MAX)
+    assert value is not None
+    return value
 
 
 def _str_list(value: Any, key: str, *, max_len: int = 512) -> list[str]:
@@ -1252,6 +1313,33 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
                 p.get("steering_dirs"), "steering_dirs", max_len=FOLDER_STEERING_DIR_MAX
             ),
         }
+    if kind == KIND_WORKFLOW_SAVE:
+        _only(p, {"source", "name", "description", "slug"})
+        out = {
+            "source": _workflow_source(p),
+            "name": _clean_str(p, "name", max_len=_NAME_MAX),
+            "description": _clean_str(
+                p, "description", required=False, max_len=_TEXT_MAX, allow_empty=True
+            )
+            or "",
+        }
+        slug = _clean_str(p, "slug", required=False, max_len=64, pattern=_SLUG_RE, allow_empty=True)
+        if slug:
+            out["slug"] = slug
+        return out
+    if kind == KIND_WORKFLOW_UPDATE:
+        _only(p, {"workflow", "source", "name", "description"})
+        out = {
+            "workflow": _clean_str(p, "workflow", max_len=128, pattern=_SLUG_RE),
+            "source": _workflow_source(p),
+        }
+        if "name" in p:
+            out["name"] = _clean_str(p, "name", max_len=_NAME_MAX)
+        if "description" in p:
+            out["description"] = (
+                _clean_str(p, "description", max_len=_TEXT_MAX, allow_empty=True) or ""
+            )
+        return out
     # KIND_DENIED_COMMAND
     action = p.get("action")
     if action == "add":

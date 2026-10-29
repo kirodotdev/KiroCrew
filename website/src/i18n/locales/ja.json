@@ -10066,7 +10066,14 @@
       "tool_access_allowed": "許可",
       "tool_access_not_allowed": "許可しない",
       "tool_access_turn_on": "オンにする",
-      "tool_access_not_now": "今はしない"
+      "tool_access_not_now": "今はしない",
+      "kind_workflow_save": "保存済みワークフロー",
+      "kind_workflow_update": "保存済みワークフローの変更",
+      "primary_workflow_save": "ワークフローを保存",
+      "primary_workflow_update": "リビジョンを保存",
+      "field_workflow_command": "コマンド",
+      "field_workflow_source": "スクリプト",
+      "field_workflow_diff": "スクリプトの変更"
     },
     "assistantWelcome": {
       "default_name": "Mate"

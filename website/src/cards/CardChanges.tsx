@@ -43,10 +43,16 @@ export const FIELD_LABELS: Record<string, () => string> = {
   carried_skills: () => i18nT('components.changeCards.field_carried_skills'),
   carried_scripts: () => i18nT('components.changeCards.field_carried_scripts'),
   carried_avatar: () => i18nT('components.changeCards.field_carried_avatar'),
+  workflow_command: () => i18nT('components.changeCards.field_workflow_command'),
+  workflow_source: () => i18nT('components.changeCards.field_workflow_source'),
+  workflow_diff: () => i18nT('components.changeCards.field_workflow_diff'),
 }
 
 /** The import rows whose text the crewmate reads every turn: shown whole, line breaks kept. */
 const FULL_TEXT_FIELDS: ReadonlySet<string> = new Set(['rules', 'description', 'import_crons'])
+
+/** A workflow card's script and its diff: code, shown whole in a scrolling block. */
+const CODE_FIELDS: ReadonlySet<string> = new Set(['workflow_source', 'workflow_diff'])
 
 /** One imported cron: its name, schedule and that it lands paused, then the
  *  full message it sends (or its script) and its time zone, so two crons that
@@ -263,6 +269,8 @@ function ChangeRow({ c }: { c: CardChange }) {
             </li>
           ))}
         </ul>
+      ) : c.field && CODE_FIELDS.has(c.field) && typeof c.after === 'string' ? (
+        <pre data-testid="change-card-code" className="m-0 mt-1 max-h-60 overflow-auto rounded bg-bg-hover p-2 font-mono text-[12px] leading-4 whitespace-pre-wrap [overflow-wrap:anywhere]">{c.after}</pre>
       ) : (c.before !== undefined || c.after !== undefined) && (
         <>
           <span className="inline-flex max-w-full flex-wrap items-baseline gap-x-1.5" data-testid="change-card-value">

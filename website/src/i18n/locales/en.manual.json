@@ -4363,7 +4363,14 @@
       "tool_access_allowed": "Allowed",
       "tool_access_not_allowed": "Not allowed",
       "tool_access_turn_on": "Turn on",
-      "tool_access_not_now": "Not now"
+      "tool_access_not_now": "Not now",
+      "kind_workflow_save": "Saved workflow",
+      "kind_workflow_update": "Saved workflow change",
+      "primary_workflow_save": "Save workflow",
+      "primary_workflow_update": "Save revision",
+      "field_workflow_command": "Command",
+      "field_workflow_source": "Script",
+      "field_workflow_diff": "Changes to the script"
     },
     "assistantWelcome": {
       "default_name": "Mate"

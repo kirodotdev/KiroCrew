@@ -2203,7 +2203,8 @@ The same server carries **change cards**. `propose_change(kind, params, reason?)
 names one REGISTERED kind (`change_card_catalog.KINDS`: `setting.change`,
 `schedule.create`/`.update`, `crewmate.create`/`.update`/`.capabilities`,
 `template.update`, `mcp.install`/`.add_custom`/`.toggle`, `connection.connect`,
-`secret.save`, `trust.app`, `denied_command`, `folder.steering`); trust-root files have no kind.
+`secret.save`, `trust.app`, `denied_command`, `folder.steering`,
+`workflow.save`/`.update`); trust-root files have no kind.
 `setting.change` takes a Settings-registry `setting_id` (found with
 `find_setting(query)`, which returns up to ten matches with `writable`,
 the current value and the allowed values, never a credential value) or a raw

@@ -983,6 +983,8 @@ async def read_state(
         if folder is None:
             return {"exists": False}
         return {"exists": True, "steering_dirs": catalog.string_items(folder.get("steering_dirs"))}
+    if kind in catalog.WORKFLOW_KINDS:
+        return await _workflow_state(kind, params, state)
     if kind == catalog.KIND_TEMPLATE_UPDATE and "skills" in (params.get("fields") or {}):
         return await asyncio.to_thread(_template_state_with_skills, params, state)
     # A legacy-shaped create card made its schedule at step 1, the current one at
@@ -1227,7 +1229,102 @@ async def read_context(
         # Display only: the folder's name, so a rename is not a conflict.
         folder = await _folder(state, p["folder"])
         return {"label": str((folder or {}).get("name") or p["folder"])}
+    if kind in catalog.WORKFLOW_KINDS:
+        return await _workflow_context(kind, p, before, state)
     return {}
+
+
+def _workflow_service(state: Any) -> Any:
+    svc = getattr(state, "workflow_service", None)
+    if svc is None:
+        raise catalog.CardCatalogError("workflows_unavailable", "workflows are not available")
+    return svc
+
+
+async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict[str, Any]:
+    """What a workflow card replaces: nothing for a save, the saved revision for an update.
+
+    A save creates a definition with its own new id, so there is nothing it could
+    overwrite. An update is pinned to the revision read here: Apply sends it as
+    ``expected_revision``, and any save in between is a change since the preview.
+    """
+    svc = _workflow_service(state)
+    if kind == catalog.KIND_WORKFLOW_SAVE:
+        return {}
+    definition = await asyncio.to_thread(svc.get_definition, params["workflow"])
+    if not isinstance(definition, dict):
+        return {"exists": False}
+    return {
+        "exists": True,
+        "id": str(definition.get("id") or ""),
+        "slug": str(definition.get("slug") or ""),
+        "name": str(definition.get("name") or ""),
+        "description": str(definition.get("description") or ""),
+        "format": str(definition.get("format") or "python"),
+        "revision": definition.get("revision"),
+        "content_hash": str(definition.get("content_hash") or ""),
+    }
+
+
+#: Longest script diff a ``workflow.update`` card shows; the whole new script is
+#: under the card's Details either way.
+WORKFLOW_DIFF_MAX = 12_000
+
+
+def _workflow_diff(old: str, new: str, revision: int) -> str:
+    """The unified diff from revision *revision* to the next one, bounded for the card."""
+    import difflib
+
+    lines = list(
+        difflib.unified_diff(
+            old.splitlines(),
+            new.splitlines(),
+            f"revision {revision}",
+            f"revision {revision + 1}",
+            lineterm="",
+        )
+    )
+    shown: list[str] = []
+    size = 0
+    for index, line in enumerate(lines):
+        if size + len(line) + 1 > WORKFLOW_DIFF_MAX:
+            shown.append(
+                f"… {len(lines) - index} more diff lines; the whole new script is under Details"
+            )
+            break
+        shown.append(line)
+        size += len(line) + 1
+    return "\n".join(shown)
+
+
+async def _workflow_context(
+    kind: str, params: dict[str, Any], before: dict[str, Any], state: Any
+) -> dict[str, Any]:
+    """Refuse a script the library would refuse, and for an update, the diff it shows.
+
+    The script is validated before the card exists, so the person is never asked to
+    approve something the save route answers 400 to.
+    """
+    from kiro_crew.workflows.validate import validate
+
+    result = await asyncio.to_thread(validate, params["source"])
+    if not result.ok:
+        errors = "; ".join(str(e) for e in result.errors)
+        raise catalog.CardCatalogError(
+            "invalid_workflow", f"the script is not valid: {errors[:400]}"
+        )
+    if kind != catalog.KIND_WORKFLOW_UPDATE or not before.get("exists"):
+        return {}
+    definition = await asyncio.to_thread(
+        _workflow_service(state).get_definition, str(before.get("id") or "")
+    )
+    old = str((definition or {}).get("source") or "")
+    if old == params["source"]:
+        return {}
+    revision = before.get("revision")
+    return {
+        "diff": _workflow_diff(old, params["source"], revision if isinstance(revision, int) else 0)
+    }
 
 
 async def resolve_params(kind: str, params: dict[str, Any]) -> dict[str, Any]:

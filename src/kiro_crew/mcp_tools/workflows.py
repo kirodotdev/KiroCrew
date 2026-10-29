@@ -111,7 +111,9 @@ def schemas() -> list[dict[str, Any]]:
             "name": "workflow_library_list",
             "description": (
                 "List reusable workflows explicitly saved in the global Kiro Crew library. "
-                "Pass search to find local workflows relevant to a new request before authoring."
+                "Pass search to find local workflows relevant to a new request before authoring. "
+                "To save one or revise a saved one, ask the user with "
+                "propose_change(kind='workflow.save' or 'workflow.update')."
             ),
             "inputSchema": {
                 "type": "object",
