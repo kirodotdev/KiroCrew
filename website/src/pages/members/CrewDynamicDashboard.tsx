@@ -672,8 +672,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const srcdoc = useMemo(
     () =>
       shown && !isError
-        // `rewriteBareLinks: false`: the sandbox withholds `allow-popups`, so a
-        // `target="_blank"` link here would be a blocked popup (a dead click).
+        // `linkBridge`: the sandbox withholds `allow-popups` and top navigation, so
+        // a `_blank` or `_top` link would be a dead click. The shim hands it to
+        // `useFrameLinkBridge` above, which checks the frame, URL and gesture.
         ? // offlineScripts: the CDN script origins are dropped for THIS document.
           // The page is filled with this crewmate's own task titles, summaries
           // and costs, and since the preview/apply pair it can be written by an
@@ -685,7 +686,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             html: shown.html,
             themeVars,
             mode: theme,
-            rewriteBareLinks: false,
+            linkBridge: true,
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.
             relayTouches: true,
@@ -982,7 +983,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             html: candidate.html,
             themeVars,
             mode: theme,
-            rewriteBareLinks: false,
+            linkBridge: true,
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.
             relayTouches: true,
