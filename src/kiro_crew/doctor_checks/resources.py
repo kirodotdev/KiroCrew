@@ -206,6 +206,42 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
     print("               Fix: add swap, enable systemd-oomd, or install earlyoom.")
 
 
+def _doctor_windows_inert_resource_limits(issues: list[str], limits: Any = None) -> None:
+    """Name each ``resource_limits`` key that is set but not enforced on Windows.
+
+    The Windows Job object bounds only per-spawn ``max_processes`` and
+    ``max_memory_mb``; every key in ``sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS``
+    needs a systemd user manager or a POSIX rlimit. The gateway logs one startup
+    warning for the keys an operator set; this row names those AND the
+    default-on ``max_open_files``, which the operator never wrote but would still
+    expect to apply.
+
+    *limits* is the merged ``resource_limits`` the doctor loaded, so a key set
+    only in ``config.local.json`` is named too; ``None`` reads ``config.json``.
+
+    Windows only, so the Linux and macOS reports are unchanged. Advisory (never
+    appended to ``issues``): the config is valid, it just does less here.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    if not cli_doctor.platform_compat.IS_WINDOWS:
+        return
+    print("\nResource Limits")
+    found = cli_doctor.sandbox._windows_inert_resource_limit_keys(limits, include_defaults=True)
+    if found is None:
+        print("  inert keys:  ⚠  could not read resource_limits — check skipped")
+        return
+    if not found:
+        print("  inert keys:  ✅ none set (the Job object enforces max_processes / max_memory_mb)")
+        return
+    names = ", ".join(
+        f"resource_limits.{key}" + (" (on by default)" if from_default else "")
+        for key, from_default in found
+    )
+    print(f"  inert keys:  ⚠  {names}")
+    print("               set but not enforced on Windows: the Job object bounds only")
+    print("               per-spawn max_processes / max_memory_mb.")
+
+
 # ── ACP runtimes (live count and backend CPU; Linux procfs) ──────────────────
 # A runtime is what one ACP spawn leaves running: the root the gateway recorded
 # in its session registry (a sandbox launcher, or the harness itself when nothing

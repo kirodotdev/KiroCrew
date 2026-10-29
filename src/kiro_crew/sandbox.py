@@ -607,6 +607,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _slice_reclaim_trigger_pct,
         _slice_reclaimable_file,
         _warn_windows_inert_resource_limits_once,
+        _windows_inert_resource_limit_keys,
         _write_memory_reclaim,
         agents_slice_throttling,
         apply_windows_resource_ceiling,

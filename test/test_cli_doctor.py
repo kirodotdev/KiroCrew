@@ -23,6 +23,7 @@ import pytest
 
 from conftest import make_dir_link
 from kiro_crew import cli_doctor
+from kiro_crew.doctor_checks import resources
 
 
 class TestManagedServicePolicyDoctor:
@@ -1299,6 +1300,103 @@ class TestMemoryPressure:
         out = capsys.readouterr().out
         assert out.index("session ceiling") < out.index("gateway rss") < out.index("not applicable")
         assert issues == []
+
+
+class TestWindowsInertResourceLimits:
+    """`kirocrew doctor` names the ``resource_limits`` keys Windows ignores.
+
+    Ungated: the platform is faked through ``platform_compat.IS_WINDOWS`` and the
+    config through ``config.loader._raw_config``, so every runner proves both arms.
+    """
+
+    @staticmethod
+    def _arrange(monkeypatch, raw: dict | None, *, windows: bool = True) -> list[str]:
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", windows)
+        monkeypatch.setattr("kiro_crew.config.loader._raw_config", lambda: {"resource_limits": raw})
+        return ["pre-existing"]
+
+    def test_names_each_set_key_and_the_default_on_open_files(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(
+            monkeypatch, {"cpu_weight": 80, "max_total_memory_mb": 4096, "max_cpu_percent": 0}
+        )
+
+        resources._doctor_windows_inert_resource_limits(issues)
+
+        out = capsys.readouterr().out
+        assert "Resource Limits" in out and "⚠" in out
+        assert "resource_limits.cpu_weight," in out
+        assert "resource_limits.max_total_memory_mb" in out
+        assert "resource_limits.max_open_files (on by default)" in out
+        # Zero is "unset" for an opt-in quota, so it is not named.
+        assert "max_cpu_percent" not in out
+        assert issues == ["pre-existing"], "the row is advisory"
+
+    def test_open_files_set_by_the_operator_is_not_called_a_default(
+        self, monkeypatch, capsys
+    ) -> None:
+        self._arrange(monkeypatch, {"max_open_files": 4096})
+
+        resources._doctor_windows_inert_resource_limits([])
+
+        out = capsys.readouterr().out
+        assert "resource_limits.max_open_files" in out
+        assert "on by default" not in out
+
+    def test_open_files_turned_off_leaves_nothing_inert(self, monkeypatch, capsys) -> None:
+        self._arrange(monkeypatch, {"max_open_files": 0, "max_processes": 64})
+
+        resources._doctor_windows_inert_resource_limits([])
+
+        out = capsys.readouterr().out
+        assert "inert keys:  ✅ none set" in out
+        assert "⚠" not in out
+
+    def test_unreadable_config_skips_the_check(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", True)
+
+        def _boom():
+            raise OSError("unreadable")
+
+        monkeypatch.setattr("kiro_crew.config.loader._raw_config", _boom)
+
+        resources._doctor_windows_inert_resource_limits([])
+
+        assert "check skipped" in capsys.readouterr().out
+
+    def test_the_merged_limits_the_doctor_loaded_win_over_config_json(
+        self, monkeypatch, capsys
+    ) -> None:
+        """A key set only in config.local.json is still named: the row reads the
+        merged ``cfg.resource_limits`` the doctor passes, not the base file."""
+        from kiro_crew.config.loader import ResourceLimitsConfig
+
+        self._arrange(monkeypatch, {"max_open_files": 0})
+        merged = ResourceLimitsConfig.from_raw({"max_open_files": 0, "cpu_weight": 80})
+
+        resources._doctor_windows_inert_resource_limits([], merged)
+
+        out = capsys.readouterr().out
+        assert "resource_limits.cpu_weight" in out
+        assert "none set" not in out
+
+    def test_other_platforms_print_nothing(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, {"cpu_weight": 80}, windows=False)
+
+        resources._doctor_windows_inert_resource_limits(issues)
+
+        assert capsys.readouterr().out == ""
+        assert issues == ["pre-existing"]
+
+    def test_the_startup_warning_still_names_only_keys_the_operator_set(self, monkeypatch) -> None:
+        # The default-on key is the doctor row's addition alone: the startup
+        # warning would otherwise fire on every Windows boot.
+        self._arrange(monkeypatch, {"cpu_weight": 80})
+
+        assert cli_doctor.sandbox._windows_inert_resource_limit_keys() == [("cpu_weight", False)]
+        assert cli_doctor.sandbox._windows_inert_resource_limit_keys(include_defaults=True) == [
+            ("cpu_weight", False),
+            ("max_open_files", True),
+        ]
 
 
 class TestRuntimeTmpfs:

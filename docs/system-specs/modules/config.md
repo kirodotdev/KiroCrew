@@ -3650,7 +3650,11 @@ On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 `max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`,
 `slice_reclaim_trigger_pct`) are accepted but not enforced there,
 and one warning names the ones that are set
-(`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
+(`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`). `kirocrew doctor` prints the
+same list as its Windows-only Resource Limits row, and adds `max_open_files`
+while it is unset, because the `RLIMIT_NOFILE` default is on unless the key is
+`0`; the startup warning leaves that default out so it does not fire on every
+boot (`sandbox._windows_inert_resource_limit_keys`).
 
 On macOS no mechanism bounds the agent tree's memory: the cgroup path is a no-op,
 and the session host's rlimit profile sets only `RLIMIT_NOFILE`, so `max_memory_mb`

@@ -308,6 +308,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _slice_own_high_events
         _SLICE_MEMHIGH_MUTEX _reconcile_slice_memory_high_off_thread
         _WINDOWS_INERT_RESOURCE_LIMIT_KEYS _WINDOWS_INERT_LIMITS_WARNED
+        _windows_inert_resource_limit_keys
         _warn_windows_inert_resource_limits_once apply_windows_resource_ceiling
         _SCOPE_UNIT_PREFIX _SCOPE_UNIT_TOKEN_SAFE scope_unit_name cgroup_scope_argv
         name_scope_unit _CGROUP_TOTAL_MEMORY_FRACTION _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB

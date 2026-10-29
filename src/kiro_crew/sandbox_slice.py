@@ -333,6 +333,38 @@ _WINDOWS_INERT_RESOURCE_LIMIT_KEYS = (
 _WINDOWS_INERT_LIMITS_WARNED = False
 
 
+def _windows_inert_resource_limit_keys(
+    limits: object | None = None, *, include_defaults: bool = False
+) -> list[tuple[str, bool]] | None:
+    """Each ``resource_limits`` key Windows accepts but does not enforce, in order.
+
+    *limits* is a ``ResourceLimitsConfig``; ``None`` reads ``config.json``'s
+    block. A key counts when it is set: non-null and non-zero. With
+    *include_defaults*, ``max_open_files`` also counts while unset, because the
+    rlimit profile applies the ``RLIMIT_NOFILE`` default
+    (``security.helpers._RLIMIT_DEFAULTS``) unless the key is ``0``. Each entry is
+    ``(key, from_default)``. ``None`` when the config cannot be read.
+    """
+    rl = limits
+    if rl is None:
+        try:
+            # circular import: same function-level pattern as _cgroup_limits_from_config.
+            from kiro_crew.config.loader import ResourceLimitsConfig, _raw_config
+
+            rl = ResourceLimitsConfig.from_raw(_raw_config().get("resource_limits"))
+        except Exception:
+            logger.debug("inert resource_limits check: config unavailable")
+            return None
+    keys: list[tuple[str, bool]] = []
+    for key in _WINDOWS_INERT_RESOURCE_LIMIT_KEYS:
+        value = getattr(rl, key, None)
+        if value:
+            keys.append((key, False))
+        elif include_defaults and value is None and key == "max_open_files":
+            keys.append((key, True))
+    return keys
+
+
 def _warn_windows_inert_resource_limits_once() -> None:
     """Log ONE warning naming each set ``resource_limits`` key Windows ignores.
 
@@ -343,15 +375,10 @@ def _warn_windows_inert_resource_limits_once() -> None:
     if _WINDOWS_INERT_LIMITS_WARNED:
         return
     _WINDOWS_INERT_LIMITS_WARNED = True
-    try:
-        # circular import: same function-level pattern as _cgroup_limits_from_config.
-        from kiro_crew.config.loader import ResourceLimitsConfig, _raw_config
-
-        rl = ResourceLimitsConfig.from_raw(_raw_config().get("resource_limits"))
-    except Exception:
-        logger.debug("inert resource_limits check: config unavailable")
+    found = _windows_inert_resource_limit_keys()
+    if found is None:
         return
-    inert = [key for key in _WINDOWS_INERT_RESOURCE_LIMIT_KEYS if getattr(rl, key, None)]
+    inert = [key for key, _from_default in found]
     if inert:
         logger.warning(
             "resource_limits.%s %s set but not enforced on Windows: the Job "

@@ -716,6 +716,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── Memory pressure preparedness (swap / userspace OOM killer) ──
     resources._doctor_memory_pressure(issues)
 
+    # ── resource_limits keys Windows accepts but does not enforce (Windows only) ──
+    resources._doctor_windows_inert_resource_limits(issues, cfg.resource_limits)
+
     # ── ACP runtimes: live count, owner and backend CPU (advisory; Linux) ──
     resources._doctor_acp_runtimes(issues)
 
