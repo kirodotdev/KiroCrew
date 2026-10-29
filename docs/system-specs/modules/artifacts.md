@@ -485,6 +485,8 @@ kirocrew artifact delete <slug>
 ```
 
 The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
+`show --version N` takes N of 1 or more; a lower value or a non-number exits 2
+with a message before any request, and a given N always reads that version.
 
 ### HTTP
 

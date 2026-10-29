@@ -38,6 +38,17 @@ _AUTO_PAUSE_AFTER_HELP = (
 _fmt = argparse.RawDescriptionHelpFormatter
 
 
+def _positive_int(value: str) -> int:
+    """An argparse ``type`` for a count or number that starts at 1."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a whole number, got {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, got {number}")
+    return number
+
+
 def register_chat_parser(sub: _Commands, _jail_opts: argparse.ArgumentParser) -> None:
     chat_parser = cli_help.add_command(
         sub,
@@ -535,7 +546,9 @@ Examples:
 
     art_show = art_sub.add_parser("show", help="Print an artifact's content")
     art_show.add_argument("slug", help="Artifact slug")
-    art_show.add_argument("--version", type=int, help="Specific version (default: current)")
+    art_show.add_argument(
+        "--version", type=_positive_int, help="Specific version, 1 or more (default: current)"
+    )
     art_show.add_argument(
         "--meta",
         action="store_true",
