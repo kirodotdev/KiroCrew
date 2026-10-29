@@ -232,6 +232,7 @@ def _launch_provider(project: Path, documents: dict[str, str]):
         cwd=str(project),
         native_context_documents=dict(documents),
         native_steering=False,
+        native_spec_prompt_across_compaction=False,
         member_dispatch_mounted=None,
     )
 
@@ -363,6 +364,7 @@ def _bounded_launch_provider(project: Path, documents: dict[str, str], fit):
     handle = SimpleNamespace(
         native_context_documents=dict(documents),
         native_context_documents_fit=fit,
+        agent_version="",
     )
     runtime = SimpleNamespace(acp_backend="", process_instance="runtime")
     return AcpSessionProvider(handle, runtime)

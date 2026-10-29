@@ -6,7 +6,8 @@ folder breadcrumbs, hooks, thread-history budgets and compression, vector-store 
 the docs section, agent prompts and runtime identity. The memory and lesson blocks a
 session start reads, with the ``build_message`` call-site ratchet, live in
 ``test_context_memory_lessons.py``; the prompt-text blocks outside memory in
-``test_context_prompt_text.py``.
+``test_context_prompt_text.py``; ``_load_agent_prompt`` and a custom persona the harness
+delivers itself in ``test_context_agent_prompt.py``.
 """
 
 from __future__ import annotations
@@ -1427,121 +1428,6 @@ class TestCompressedHistory:
 
         assert "OPENING CONTEXT LINE" in ctx
         assert "[Older thread history omitted]" not in ctx
-
-
-class TestLoadAgentPrompt:
-    """Tests for _load_agent_prompt handling of null/missing prompt values."""
-
-    def test_null_prompt_returns_empty(self, tmp_path, monkeypatch):
-        """Agent JSON with "prompt": null should return empty string."""
-        import json
-
-        agents_dir = tmp_path / ".kiro" / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "test.json").write_text(
-            json.dumps({"name": "test", "prompt": None}), encoding="utf-8"
-        )
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert ContextBuilder._load_agent_prompt("test") == ""
-
-    def test_missing_prompt_returns_empty(self, tmp_path, monkeypatch):
-        """Agent JSON without "prompt" key should return empty string."""
-        import json
-
-        agents_dir = tmp_path / ".kiro" / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "test.json").write_text(json.dumps({"name": "test"}), encoding="utf-8")
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        assert ContextBuilder._load_agent_prompt("test") == ""
-
-    @staticmethod
-    def _write_spec(tmp_path, monkeypatch, prompt: str) -> None:
-        import json
-
-        agents_dir = tmp_path / ".kiro" / "agents"
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        (agents_dir / "test.json").write_text(
-            json.dumps({"name": "test", "prompt": prompt}), encoding="utf-8"
-        )
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir)
-        monkeypatch.setattr("kiro_crew.agent_discovery._KIRO_AGENTS_DIR", agents_dir)
-
-    @staticmethod
-    def _managed_contract(tmp_path, monkeypatch):
-        from kiro_crew import agent
-
-        package = tmp_path / "installed-package" / "config"
-        package.mkdir(parents=True)
-        contract = package / "prompt.md"
-        contract.write_text("RESOLVED_CONTRACT", encoding="utf-8")
-        monkeypatch.setattr(agent, "_BUNDLED_CFG_DIR", package)
-        monkeypatch.setattr(agent, "_project_dir", lambda: None)
-        assert agent._prompt_path() == contract
-        return contract
-
-    @pytest.mark.parametrize("owner_template", ["", "test"], ids=["fork-or-copy", "owner"])
-    def test_managed_stub_resolves_to_contract(self, tmp_path, monkeypatch, owner_template):
-        """The stub is the managed contract whatever spec carries it: a fork or
-        template copy inherits it verbatim and must not receive the stub TEXT as
-        its persona."""
-        from kiro_crew import agent
-
-        self._managed_contract(tmp_path, monkeypatch)
-        self._write_spec(tmp_path, monkeypatch, agent._NATIVE_PROMPT_STUB)
-        loaded = ContextBuilder._load_agent_prompt("test", owner_template=owner_template)
-        assert loaded == "RESOLVED_CONTRACT"
-
-    @pytest.mark.parametrize("owner_template", ["", "test"], ids=["fork-or-copy", "owner"])
-    def test_managed_pointer_resolves_to_contract(self, tmp_path, monkeypatch, owner_template):
-        contract = self._managed_contract(tmp_path, monkeypatch)
-        self._write_spec(tmp_path, monkeypatch, f"file://{contract}")
-        loaded = ContextBuilder._load_agent_prompt("test", owner_template=owner_template)
-        assert loaded == "RESOLVED_CONTRACT"
-
-    def test_owner_template_custom_prompt_omitted(self, tmp_path, monkeypatch):
-        """An owner template's own (non-managed) prompt reaches the model through
-        member essentials, so the session-start load omits it."""
-        self._managed_contract(tmp_path, monkeypatch)
-        self._write_spec(tmp_path, monkeypatch, "You are a bespoke reviewer.")
-        assert ContextBuilder._load_agent_prompt("test", owner_template="test") == ""
-        assert ContextBuilder._load_agent_prompt("test") == "You are a bespoke reviewer."
-
-    def test_template_copy_with_stub_delivers_contract_once_at_session_start(
-        self, tmp_path, monkeypatch
-    ):
-        """End to end: a plain (non-member) session on a template copy of the
-        managed default, whose spec inherited the stub verbatim, gets the resolved
-        contract as its [AGENT SYSTEM PROMPT] exactly once, and never the stub text."""
-        from kiro_crew import agent
-
-        self._managed_contract(tmp_path, monkeypatch)
-        self._write_spec(tmp_path, monkeypatch, agent._NATIVE_PROMPT_STUB)
-        builder = ContextBuilder(
-            memory=MemoryStore(workspace=tmp_path / "ws"),
-            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
-        )
-        msg, _ = builder.build_message("hello", is_new_session=True, agent="test")
-        assert msg.count("RESOLVED_CONTRACT") == 1
-        assert "[AGENT SYSTEM PROMPT]\nRESOLVED_CONTRACT\n[END AGENT SYSTEM PROMPT]" in msg
-        assert "follow it as your authoritative contract" not in msg
-
-    def test_custom_agent_gets_own_prompt_under_claude_code(self, tmp_path, monkeypatch):
-        """Under claude_code a custom agent without a private owner gets its own
-        prompt as its [AGENT SYSTEM PROMPT], not the Kiro Crew persona."""
-        self._managed_contract(tmp_path, monkeypatch)
-        self._write_spec(tmp_path, monkeypatch, "You are a bespoke reviewer.")
-        builder = ContextBuilder(
-            memory=MemoryStore(workspace=tmp_path / "ws"),
-            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
-        )
-        msg, _ = builder.build_message(
-            "hello", is_new_session=True, agent="test", provider_type="claude_code"
-        )
-        assert (
-            "[AGENT SYSTEM PROMPT]\nYou are a bespoke reviewer.\n[END AGENT SYSTEM PROMPT]" in msg
-        )
-        assert "RESOLVED_CONTRACT" not in msg
 
 
 class TestRuntimeDisplayName:

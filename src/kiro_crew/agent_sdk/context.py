@@ -61,6 +61,9 @@ class ContextPromptProvider(Protocol):
     def native_steering(self) -> bool: ...
 
     @property
+    def native_spec_prompt_across_compaction(self) -> bool: ...
+
+    @property
     def cwd(self) -> str: ...
 
     @property

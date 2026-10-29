@@ -1,7 +1,8 @@
 """Putting a started session on its agent.
 
 The bracketed ``session/set_mode`` with its skill-view aliases and the one-at-a-time projection
-generation, the spawn-agent checks, and the model an agent switch selected.
+generation, the spawn-agent checks, the model an agent switch selected, and the persona text the
+host loads for the active agent: read at spawn and at ``set_mode``, recorded on the session.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
@@ -11,8 +12,8 @@ Instance fields written: ``_native_skill_projection``, ``_skill_projection_gener
 ``_skill_projection_issued``, ``_skill_projection_lock_obj``,
 ``_skill_projection_unadopted``, ``_switched_models``.
 
-Instance fields read: ``_agent``, ``_launch_agent``, ``_spawn_skill_projection``,
-``_wire_mode_id``, ``_work_dir``.
+Instance fields read: ``_agent``, ``_launch_agent``, ``_spawn_persona_snapshot``,
+``_spawn_skill_projection``, ``_wire_mode_id``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,11 @@ from typing import TYPE_CHECKING, Any, Callable
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp._dispatch import parse_session_modes, set_mode_params
 from kiro_crew.acp.session_handle import AcpModeNotFound, AcpRuntimeError, AcpSessionHandle
-from kiro_crew.acp.types import ACP_BACKENDS_MARKDOWN_AGENT_SPECS, METHOD_SET_MODE
+from kiro_crew.acp.types import (
+    ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT,
+    METHOD_SET_MODE,
+)
 from kiro_crew.agent import markdown_spec_for_agent
 from kiro_crew.metrics.events import SKILL_VIEW_FALLBACKS, emit_counter
 
@@ -497,7 +502,8 @@ async def _activate_mode_bracketed(
     payload_snapshot: Any,
     wire_registered: bool,
     mode_id: str | None = None,
-) -> str | None:
+    handle: AcpSessionHandle | None = None,
+) -> tuple[str | None, tuple[str, str] | None]:
     """Send ``session/set_mode`` for *mode_agent* inside the derived-spec bracket.
 
     *mode_id* is the id the host registered *mode_agent* under when that
@@ -537,6 +543,22 @@ async def _activate_mode_bracketed(
     landing after cannot change what was already consumed. Same answer as the
     ``initialize`` bracket -- a session that may have activated an unverified spec
     must not survive.
+
+    Returns ``(alias, persona)``. *alias* is the skill-view alias the request
+    named, ``None`` when no view translated *mode_agent*; it is the session's
+    view for the launch-record copy. With *handle* given, *persona* is the
+    persona text the host now holds. kiro-cli reads a spec at process spawn and
+    at ``set_mode``, never at a plain ``session/new``, so the copy it loads HERE
+    is read immediately before the request, from the spec the request names --
+    the skill-view alias when one is sent, which is the copy prepared for this
+    start rather than the source an edit may since have changed -- and returned
+    as the ``(agent, text)`` pair. The bracket never writes the session's
+    document map itself: the caller hands the pair to the recorder, which is the
+    map's one writer and runs after every other source has been merged, so the
+    one-record-per-document guard sees the launch sources too. A ``None``
+    persona -- a wire-registered host (its payload was recorded at
+    ``session/new``), a ``None`` handle, or a copy that could not be read --
+    records nothing, which keeps the block.
     """
     from kiro_crew.agent import (
         DerivedSpecStale,
@@ -659,6 +681,7 @@ async def _activate_mode_bracketed(
         # agent (an older alias, or the authored spec kiro-cli cached) is proven
         # to match the spec on disk, so none is activated in its place. Every other
         # error propagates as before.
+        persona_before_set_mode: tuple[str, str] | None = None
         params = set_mode_params(session_id, mode_id or mode_agent)
         # Translated from the projection this bracket adopted and sent as
         # fixed wire params -- past the send's own translation, which reads
@@ -710,6 +733,22 @@ async def _activate_mode_bracketed(
                     missed = None
             if sent_alias is not None:
                 self._refuse_if_view_unverified(mode_agent, used_generation)
+            # Persona snapshot: kiro-cli re-reads the agent spec when it
+            # activates the mode (measured: a plain session/new keeps the
+            # spawn-time copy; set_mode loads the spec as it is now), so the
+            # text it will hold is the spec this request's ``modeId`` names --
+            # the alias when one is sent, which is the copy prepared for this
+            # start, not the source an edit may since have changed -- read
+            # immediately before the send; a retry re-reads for the alias it
+            # sends. An app's launch copy goes out under its own id, which is
+            # not alias-shaped, so the read records nothing for it. Only a
+            # host that consumes the spec itself is read; a wire-registered
+            # host is recorded from its payload by
+            # _record_native_persona_snapshot.
+            if handle is not None and not wire_registered:
+                persona_before_set_mode = await asyncio.to_thread(
+                    self._native_persona_text, mode_agent, wire["modeId"]
+                )
             try:
                 await self._send_and_await(METHOD_SET_MODE, wire, timeout=budget, **untranslated)
             except AcpModeNotFound as exc:
@@ -765,4 +804,126 @@ async def _activate_mode_bracketed(
     except DerivedSpecStale as exc:
         await self.terminate_session(session_id)
         raise AcpRuntimeError(str(exc)) from exc
-    return sent_alias
+    # The alias is the one this request named (``None`` when no view
+    # translated the mode); the caller's launch-record copy checks the
+    # session's view against it. The persona is ``None`` on a wire-registered
+    # host (the spec travelled in the payload, so there is no file to read),
+    # when no handle was given, and when the copy could not be read, which
+    # keeps the block. The caller hands it to _record_native_persona_snapshot,
+    # the map's one writer, where it wins over the spawn-time copy because
+    # kiro-cli now holds THIS text; writing it here would put a second record
+    # under the prompt key ahead of the launch sources the caller merges after
+    # this bracket.
+    return sent_alias, persona_before_set_mode
+
+
+def _native_persona_text(
+    self: AcpRuntime, agent: str | None, transport: str | None = None
+) -> tuple[str, str] | None:
+    """``(agent, persona text)`` kiro-cli holds for *agent*, or ``None``.
+
+    Blocking (reads the spec file): call it through ``asyncio.to_thread``.
+    kiro-cli reads an agent's spec at two moments only -- when its process
+    spawns (the ``--agent`` spec) and at a successful ``session/set_mode``
+    -- and not again at a plain ``session/new``, so a snapshot has to be
+    the text of one of those moments, read immediately before the request
+    that makes kiro-cli read it, not the file as it reads at session time.
+    One read, before: an edit landing between it and kiro-cli's own read
+    leaves the file different from the snapshot, so the block is sent (a
+    repeat), never withheld (a loss). *transport* is the name kiro-cli is
+    given -- the skill-view alias when a view was prepared, else the agent's
+    own name -- and selects the spec read (``native_spec_prompt_copy``):
+    the alias is the copy kiro-cli loads, and for an inline prompt its text
+    cannot change under its name, so there the read has no window at all.
+    A plain name is resolved the way kiro-cli resolves it from this
+    runtime's work dir (its process cwd): a spec declaring the name in that
+    checkout's ``.kiro/agents`` first, else the user-level spec; a checkout
+    copy records nothing, so the block is sent rather than withheld against
+    a user-level text kiro-cli never loaded.
+    ``None`` for a host that takes no native spec prompt, for no agent, and
+    for any shape or read failure -- each of which records nothing, so the
+    block is kept.
+    """
+    if not agent or self.acp_backend not in ACP_BACKENDS_NATIVE_SPEC_PROMPT:
+        return None
+    from kiro_crew.member_essential_context import native_spec_prompt_copy
+
+    text = native_spec_prompt_copy(agent, transport=transport, work_dir=self._work_dir)
+    return None if text is None else (agent, text)
+
+
+def _spawn_persona_text(self: AcpRuntime, transport: str | None = None) -> tuple[str, str] | None:
+    """The spawn agent's persona as kiro-cli will load it under *transport*
+    (the translated ``--agent`` value), read by ``_spawn_admitted`` just
+    before the process starts."""
+    return self._native_persona_text(self._agent, transport)
+
+
+async def _record_native_persona_snapshot(
+    self: AcpRuntime,
+    handle: AcpSessionHandle,
+    active_agent: str,
+    kas_agents: Any,
+    *,
+    set_mode_persona: tuple[str, str] | None = None,
+) -> None:
+    """Record the persona text the harness itself delivered for *active_agent*.
+
+    One helper for both establishment paths: ``_finish_create_session`` and
+    ``load_session``. A resume delivers the persona natively exactly as a cold
+    start does: a resumed KAS session gets its wire payload re-sent, and on
+    kiro-cli a resume runs on a runtime that read the spec when its process
+    spawned (a fresh runtime respawns) and re-reads it at ``set_mode`` when
+    the resume path sends one. So a resume needs the same record -- without
+    it, every resumed session had no snapshot and the post-compaction
+    reinjection repeated the block on the very hosts that already carry it
+    (kirodotdev/KiroCrew#13305). This is the map's one writer for the persona
+    on both paths, and it runs after the ``set_mode`` bracket and after every
+    merge (the launch sources on both paths, the projected sources on the create
+    path), so the one-record guard below sees everything the map already holds.
+
+    Inline prompt bytes and file resources come from the same activated wire
+    definition, so a KAS host is recorded from its payload. kiro-cli loads the
+    active agent's spec itself -- its skill-view alias when a view was
+    prepared, else the user-level spec -- with no wire copy to record, and it
+    reads that spec at process spawn and at ``set_mode``, never at a plain
+    ``session/new``: so the copies recorded here are read from the spec named
+    at each of those two moments, immediately before it. *set_mode_persona*
+    is the pair the ``set_mode`` bracket read before its request, ``None``
+    when no ``set_mode`` was sent, when the copy could not be read, or on a
+    wire-registered host (its spec travelled in the payload); it is preferred
+    because it is the text kiro-cli holds after the mode change. Otherwise
+    the spawn read (``_spawn_persona_snapshot``) is the copy. Either is used
+    only when it is the active agent's.
+    The file as it reads NOW is never the source -- a persona edited between
+    the spawn and this session would match the file and withhold a block for
+    text kiro-cli does not hold. The prompt builder's dedup then compares a
+    later edit against THIS text rather than the file as it reads then. Only a
+    host with no wire payload (``kas_agents is None``: it took its agent at
+    spawn time) is recorded this way; a wire-registered host holds exactly
+    what its payload carried, so a definition missing from that payload is
+    never filled in from a file. A member launch has already recorded that
+    persona under its source path, and one record per loaded document is the
+    contract of this map, so a text already present is not entered a second
+    time. No snapshot, or one for another agent, records nothing, which keeps
+    the block: a repeat costs a duplicate, a wrong withhold costs the persona.
+    """
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    prompt_key = native_prompt_document_key(active_agent)
+    for definition in kas_agents or ():
+        if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
+            handle.native_context_documents[prompt_key] = definition["prompt"]
+    spawn_snapshot = getattr(self, "_spawn_persona_snapshot", None)
+    candidate: tuple[str, str] | None = None
+    if set_mode_persona is not None and set_mode_persona[0] == active_agent:
+        candidate = set_mode_persona
+    elif spawn_snapshot is not None and spawn_snapshot[0] == active_agent:
+        candidate = spawn_snapshot
+    if (
+        kas_agents is None
+        and prompt_key not in handle.native_context_documents
+        and candidate is not None
+        and candidate[1] not in handle.native_context_documents.values()
+    ):
+        handle.native_context_documents[prompt_key] = candidate[1]
