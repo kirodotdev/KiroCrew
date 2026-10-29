@@ -862,29 +862,38 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     resp.headers["Cache-Control"] = "no-cache"
     await resp.prepare(request)
 
-    last_pos = 0
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.session_workspace_tail import ResultTail  # noqa: F811
 
-    for _ in range(1200):  # 20 min max
-        try:
-            if path.exists():
-                content = path.read_text(encoding="utf-8")
-                if len(content) > last_pos:
-                    chunk = content[last_pos:]
-                    last_pos = len(content)
-                    chunk, _ = redact_exfiltration_urls(chunk)
-                    chunk, _ = redact_credentials(chunk)
-                    await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+    # Each poll reads only the bytes appended since the last one, in a thread:
+    # re-reading the whole file every second on the loop grows with its square.
+    tail = ResultTail(path)
+
+    async def _send(chunk: str) -> None:
+        if chunk:
+            chunk, _ = redact_exfiltration_urls(chunk)
+            chunk, _ = redact_credentials(chunk)
+            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+
+    polls = 1200  # 20 min max
+    try:
+        for poll in range(polls):
+            chunk = await asyncio.to_thread(tail.read_new)
             # Check if the subagent is done.
             state: DashboardState = request.app["state"]
-            if state.subagents:
-                info = state.subagents.get(agent_id)
-                if info and info.done:
-                    await resp.write(b"event: done\ndata: {}\n\n")
-                    break
-        except (ConnectionResetError, ClientConnectionResetError):
-            break
-        await asyncio.sleep(1)
+            info = state.subagents.get(agent_id) if state.subagents else None
+            done = bool(info and info.done)
+            if done or poll == polls - 1:
+                # The decoder may still hold a final "\r"; it belongs to this
+                # last chunk, as the whole-file read gave it.
+                chunk += tail.finish()
+            await _send(chunk)
+            if done:
+                await resp.write(b"event: done\ndata: {}\n\n")
+                break
+            await asyncio.sleep(1)
+    except (ConnectionResetError, ClientConnectionResetError):
+        pass
     return resp
 
 
