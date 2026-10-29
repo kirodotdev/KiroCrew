@@ -10561,7 +10561,8 @@
       "toggle_left_sidebar": "Alternar barra lateral esquerda",
       "toggle_session_panel": "Alternar painel de sessões",
       "toggle_side_panel": "Alternar painel lateral",
-      "toggle_terminal": "Alternar terminal"
+      "toggle_terminal": "Alternar terminal",
+      "toggle_side_terminal": "Alternar terminal do painel lateral"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} novas notificações",

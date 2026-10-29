@@ -10415,7 +10415,8 @@
       "toggle_left_sidebar": "Linke Seitenleiste umschalten",
       "toggle_session_panel": "Sitzungsbereich umschalten",
       "toggle_side_panel": "Seitenpanel umschalten",
-      "toggle_terminal": "Terminal umschalten"
+      "toggle_terminal": "Terminal umschalten",
+      "toggle_side_terminal": "Seitenpanel-Terminal umschalten"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} neue Benachrichtigung",

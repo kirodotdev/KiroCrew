@@ -10561,7 +10561,8 @@
       "toggle_left_sidebar": "Mostrar u ocultar la barra lateral izquierda",
       "toggle_session_panel": "Mostrar u ocultar el panel de sesiones",
       "toggle_side_panel": "Mostrar u ocultar el panel lateral",
-      "toggle_terminal": "Mostrar u ocultar el terminal"
+      "toggle_terminal": "Mostrar u ocultar el terminal",
+      "toggle_side_terminal": "Mostrar u ocultar el terminal del panel lateral"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} notificaciones nuevas",

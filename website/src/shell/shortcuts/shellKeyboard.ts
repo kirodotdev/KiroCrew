@@ -15,6 +15,7 @@ import { focusComposerElement, queryComposerOrExpand } from '../../pages/chat/co
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../../utils/agentSwitchFeedback'
 import { api } from '../../api/client'
 import { newTerminalByChord, toggleTerminalByChord } from '../../lib/terminalChordFocus'
+import { TOGGLE_SIDE_TERMINAL_EVENT } from '../../lib/panelToggleShortcuts'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
@@ -308,6 +309,11 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     // a popped-out panel is focused rather than grown from out of sight.
     onNewTerminal: terminalEnabled && !isPopout && !isEmbed
       ? () => { if (terminalPoppedOut) focusTerminalPopout(); else newTerminalByChord(activeSlotProject) }
+      : undefined,
+    // The side panel's terminal for this session: the chat page answers. Same
+    // gating as the dock toggle: a popout or embed hosts no side panel.
+    onToggleSideTerminal: terminalEnabled && !isPopout && !isEmbed
+      ? () => window.dispatchEvent(new Event(TOGGLE_SIDE_TERMINAL_EVENT))
       : undefined,
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,

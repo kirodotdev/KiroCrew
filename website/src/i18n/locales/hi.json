@@ -10415,7 +10415,8 @@
       "toggle_left_sidebar": "बायाँ साइडबार दिखाएँ/छिपाएँ",
       "toggle_session_panel": "सत्र पैनल दिखाएँ/छिपाएँ",
       "toggle_side_panel": "साइड पैनल दिखाएँ/छिपाएँ",
-      "toggle_terminal": "टर्मिनल दिखाएँ/छिपाएँ"
+      "toggle_terminal": "टर्मिनल दिखाएँ/छिपाएँ",
+      "toggle_side_terminal": "साइड पैनल का टर्मिनल दिखाएँ/छिपाएँ"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} नई सूचना",

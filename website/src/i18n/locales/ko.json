@@ -10269,7 +10269,8 @@
       "toggle_left_sidebar": "왼쪽 사이드바 표시 전환",
       "toggle_session_panel": "세션 패널 표시 전환",
       "toggle_side_panel": "사이드 패널 표시 전환",
-      "toggle_terminal": "터미널 표시 전환"
+      "toggle_terminal": "터미널 표시 전환",
+      "toggle_side_terminal": "사이드 패널 터미널 표시 전환"
     },
     "useNativeNotification": {
       "new_notifications_other": "새 알림 {{count}}개"

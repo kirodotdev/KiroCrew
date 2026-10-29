@@ -10269,7 +10269,8 @@
       "toggle_left_sidebar": "切换左侧边栏",
       "toggle_session_panel": "切换会话面板",
       "toggle_side_panel": "切换侧边面板",
-      "toggle_terminal": "切换终端"
+      "toggle_terminal": "切换终端",
+      "toggle_side_terminal": "切换侧边面板终端"
     },
     "useNativeNotification": {
       "new_notifications_other": "{{count}} 条新通知"

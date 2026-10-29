@@ -88,18 +88,19 @@ describe('defaults', () => {
   })
 
   it('covers exactly the known panel command ids', () => {
-    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'terminal', 'terminal-new'])
+    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'side-terminal', 'terminal', 'terminal-new'])
   })
 
   /* Mirrors VS Code's `terminal.integrated.commandsToSkipShell`: only the commands
      that must survive terminal focus are listed, and everything else is conceded
      to the PTY. The terminal toggle qualifies because opening that panel focuses
      its own shell — conceding there makes the chord one-way; new-terminal is
-     pressed from inside a shell to get a second one. */
-  it('lets ONLY the two terminal commands skip the shell', () => {
-    expect([...PANEL_TOGGLES_SKIPPING_SHELL]).toEqual(['terminal', 'terminal-new'])
+     pressed from inside a shell to get a second one. The side-panel terminal
+     toggle joins for the toggle's reason. */
+  it('lets ONLY the three terminal commands skip the shell', () => {
+    expect([...PANEL_TOGGLES_SKIPPING_SHELL]).toEqual(['terminal', 'terminal-new', 'side-terminal'])
     for (const id of PANEL_TOGGLE_IDS) {
-      if (!id.startsWith('terminal')) expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
+      if (!id.endsWith('terminal') && !id.startsWith('terminal')) expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
     }
   })
 })

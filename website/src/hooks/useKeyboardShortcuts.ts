@@ -721,10 +721,12 @@ interface UseKeyboardShortcutsOpts {
    *  panel if needed. Same ownership and unbound-when-undefined rule as
    *  `onToggleTerminal`. */
   onNewTerminal?: () => void
+  /** Show this session's terminal in the side panel, or hide the panel when it is showing. */
+  onToggleSideTerminal?: () => void
   disabled?: boolean
 }
 
-export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, disabled }: UseKeyboardShortcutsOpts) {
+export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onToggleSideTerminal, disabled }: UseKeyboardShortcutsOpts) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const guardedHistoryStep = useGuardedHistoryStep()
@@ -790,7 +792,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     'side-panel': onToggleSidePanel,
     'terminal': onToggleTerminal,
     'terminal-new': onNewTerminal,
-  }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal])
+    'side-terminal': onToggleSideTerminal,
+  }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onToggleSideTerminal])
 
   const handler = useCallback((e: KeyboardEvent) => {
     const isInput = isEditableTarget(e)

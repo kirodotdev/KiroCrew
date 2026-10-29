@@ -35,6 +35,7 @@ import { Btn, ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsLink } from '../../components/SettingsLink'
 import type { ExternalTerminalFallbackNote } from '../../lib/externalTerminal'
+import { TOGGLE_SIDE_TERMINAL_EVENT } from '../../lib/panelToggleShortcuts'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { fetchFileRead } from '../../utils/fileReadQuery'
 import { useAppSelector } from '../../store'
@@ -478,6 +479,26 @@ export default function SidePanel({
     if (!ask) { run(); return }
     void Promise.resolve(ask()).then(ok => { if (ok) run() })
   }, [openProjectTerminal, openView, leavingHook])
+  // The side-terminal chord (#15174): hide the panel when a terminal is showing
+  // (the tab and its shell stay), else focus this session's terminal or open one.
+  const isHereTerminal = useCallback((t?: PanelTab) =>
+    t?.kind === 'terminal' && (t.remoteSlot ?? '') === (placementRef.current ? slot : ''), [slot])
+  const showSideTerminal = useCallback(() => {
+    const here = visibleTabs.filter(isHereTerminal)
+    const last = here[here.length - 1]
+    if (last) void requestActive(last.id, activeId)
+    else openMenuItem('terminal')
+  }, [visibleTabs, isHereTerminal, requestActive, activeId, openMenuItem])
+  // Ignore presses until the panel can act; nothing is queued for later.
+  useEffect(() => {
+    if (panelHidden || remoteEnvironment === undefined || !terminalEnabled || isWithheld('terminal') || terminalsPending) return
+    const onChord = () => {
+      if (isHereTerminal(visibleTabs.find(t => t.id === activeId))) void closePanel()
+      else showSideTerminal()
+    }
+    window.addEventListener(TOGGLE_SIDE_TERMINAL_EVENT, onChord)
+    return () => window.removeEventListener(TOGGLE_SIDE_TERMINAL_EVENT, onChord)
+  }, [panelHidden, remoteEnvironment, terminalEnabled, isWithheld, terminalsPending, showSideTerminal, isHereTerminal, visibleTabs, activeId, closePanel])
   const requestPanelTab = useCallback((d: PanelTabDescriptor) => {
     const ask = leavingHook()
     if (!ask) { openPanelTab(d); return }

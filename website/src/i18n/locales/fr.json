@@ -10561,7 +10561,8 @@
       "toggle_left_sidebar": "Afficher/masquer la barre latérale gauche",
       "toggle_session_panel": "Afficher/masquer le panneau de sessions",
       "toggle_side_panel": "Afficher/masquer le panneau latéral",
-      "toggle_terminal": "Afficher/masquer le terminal"
+      "toggle_terminal": "Afficher/masquer le terminal",
+      "toggle_side_terminal": "Afficher/masquer le terminal du panneau latéral"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} nouvelles notifications",

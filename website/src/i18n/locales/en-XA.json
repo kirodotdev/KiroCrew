@@ -10166,7 +10166,8 @@
       "toggle_left_sidebar": "[Ţøğğĺè ĺèƒţ şìðèƀàŕ ·················]",
       "toggle_session_panel": "[Ţøğğĺè şèşşìøñ þàñèĺ ··················]",
       "toggle_side_panel": "[Ţøğğĺè şìðè þàñèĺ ···············]",
-      "toggle_terminal": "[Ţøğğĺè ţèŕɱìñàĺ ··············]"
+      "toggle_terminal": "[Ţøğğĺè ţèŕɱìñàĺ ··············]",
+      "toggle_side_terminal": "[Ţøğğĺè şìðè-þàñèĺ ţèŕɱìñàĺ ··················]"
     },
     "useNativeNotification": {
       "new_notifications_one": "[{{count}} ñèẁ ñøţìƒìçàţìøñ ···············]",

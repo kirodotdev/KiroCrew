@@ -10561,7 +10561,8 @@
       "toggle_left_sidebar": "Attiva/disattiva la barra laterale sinistra",
       "toggle_session_panel": "Attiva/disattiva il pannello delle sessioni",
       "toggle_side_panel": "Attiva/disattiva il pannello laterale",
-      "toggle_terminal": "Attiva/disattiva il terminale"
+      "toggle_terminal": "Attiva/disattiva il terminale",
+      "toggle_side_terminal": "Attiva/disattiva il terminale del pannello laterale"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} nuove notifiche",

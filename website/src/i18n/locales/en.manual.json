@@ -4552,7 +4552,8 @@
       "toggle_left_sidebar": "Toggle left sidebar",
       "toggle_session_panel": "Toggle session panel",
       "toggle_side_panel": "Toggle side panel",
-      "toggle_terminal": "Toggle terminal"
+      "toggle_terminal": "Toggle terminal",
+      "toggle_side_terminal": "Toggle side-panel terminal"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} new notification",
