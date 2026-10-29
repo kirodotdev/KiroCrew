@@ -101,6 +101,12 @@ protection as Discord and Telegram. Native Slack sanitizes the accumulated reply
 before final rendering and conversation persistence; an operating-system error
 must not expose its data-home path to channel readers.
 
+Native Slack uses the dispatcher's `_is_control_message` predicate before
+Shared Crew capacity admission. Bang commands, including owner-only `!yolo off`,
+and modifier-only messages keep their sender checks without waiting for model
+capacity. A privacy-modified prompt still needs capacity; model messages enter
+the full handler after admission, including its channel-policy checks.
+
 Native and transport Slack dispatch resolve persisted agent/project overrides
 off-loop. Only the event loop updates the live override maps, retaining a newer
 command or completed hydration that arrived during the read. Both dispatch paths

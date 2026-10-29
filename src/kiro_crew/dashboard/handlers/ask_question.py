@@ -95,8 +95,8 @@ def _deny_app_token(request: web.Request, operation: str) -> web.Response | None
 
     Denying app tokens outright also removes the need to bind each pending
     ``ask_id`` to an originating app: with only dashboard-user tokens accepted,
-    the sole party that can answer is the single dashboard owner — the actor the
-    card is addressed to.
+    the parties that can answer are the owner and the Shared Crew collaborators
+    the card is addressed to (``_deny_non_collaborator``).
 
     Callers are the dashboard UI answering or dismissing a card, so no
     legitimate caller is an app.
@@ -235,6 +235,25 @@ def _crew_worker_refusal(state: Any, slot_key: str, session_key: str) -> web.Res
         },
         status=409,
     )
+
+
+def _deny_non_collaborator(request: web.Request, operation: str) -> web.Response | None:
+    """Require the owner or a Shared Crew collaborator. Returns 403 or None.
+
+    Reading, answering and dismissing a question card is a collaboration right:
+    every collaborator sees the card and the first valid answer wins through the
+    shared decision registry. ``collaborators.is_collaborator_request`` admits the
+    owner (``is_owner_dashboard_request``) and a dashboard session whose verified
+    actor a membership boundary admitted (an allowlisted tailnet login behind
+    serve, or an enterprise assertion). Every caller the owner gate refuses for
+    another reason, a Slack-allowlist dashboard token among them, is refused here
+    exactly as before.
+    """
+    from kiro_crew.shared_crew.collaborators import is_collaborator_request
+
+    if is_collaborator_request(request):
+        return None
+    return _deny_non_owner(request, operation)
 
 
 async def api_ask_question(request: web.Request) -> web.Response:
@@ -388,14 +407,14 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
       dismiss it (the client no longer knows the ``card_id``) — a stuck state
       that only sending a message could clear.
 
-    Owner-only on the same grounds as the other endpoints: the payload is the
-    question text addressed to the owner.
+    Open to the owner and every collaborator (``_deny_non_collaborator``): the
+    payload is the question text addressed to whoever shares the session.
     """
     state: DashboardState = request.app["state"]
     deny = _deny_app_token(request, "ask_question_pending")
     if deny is not None:
         return deny
-    deny = _deny_non_owner(request, "ask_question_pending")
+    deny = _deny_non_collaborator(request, "ask_question_pending")
     if deny is not None:
         return deny
     out = pending_question_cards(state)
@@ -425,14 +444,14 @@ async def api_ask_question_dismiss(request: web.Request) -> web.Response:
     of that record; the answer half retires through the ordinary user message the
     card's submit sends.
 
-    Owner-only on the same grounds as the other endpoints: it mutates the
-    owner's own session status.
+    Open to the owner and every collaborator (``_deny_non_collaborator``): any of
+    them may retire a card they all see.
     """
     state: DashboardState = request.app["state"]
     deny = _deny_app_token(request, "ask_question_dismiss")
     if deny is not None:
         return deny
-    deny = _deny_non_owner(request, "ask_question_dismiss")
+    deny = _deny_non_collaborator(request, "ask_question_dismiss")
     if deny is not None:
         return deny
     try:
@@ -552,10 +571,50 @@ def _parse_answer_body(
 
 
 def _resolve_or_not_found(
-    state: DashboardState, ask_id: str, answers: dict[str, str] | None, reason: str | None
+    state: DashboardState,
+    ask_id: str,
+    answers: dict[str, str] | None,
+    reason: str | None,
+    *,
+    request: web.Request | None = None,
+    body: dict | None = None,
 ) -> web.Response:
-    """Resolve *ask_id* and answer ``{"ok": true}``, or the 404 for a gone ask."""
-    if not state.resolve_question(ask_id, answers, reason=reason):
+    """Resolve *ask_id* and answer ``{"ok": true}``, or the 404 for a gone ask.
+
+    With *request* (the browser answer route), the verified responder and the
+    body's ``response_id`` ride into the resolution through the shared decision
+    registry, so two collaborators answering at once settle it once.
+    """
+    responder = None
+    response_id = ""
+    if request is not None:
+        from kiro_crew.shared_crew import decisions as shared_decisions
+
+        response_id, response_id_ok = shared_decisions.read_response_id(body or {})
+        if not response_id_ok:
+            return web.json_response(
+                {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
+            )
+        responder = shared_decisions.request_principal(request)
+    if not state.resolve_question(
+        ask_id, answers, reason=reason, responder=responder, response_id=response_id
+    ):
+        if request is not None:
+            # A different answer that lost the race is audited as the conflict.
+            late = shared_decisions.decisions_for(state)
+            decision_id = shared_decisions.question_decision_id(ask_id)
+            settled = shared_decisions.lost_race_reply(
+                (
+                    late.classify_late(
+                        decision_id, response_id, shared_decisions.request_principal(request)
+                    )
+                    if response_id
+                    else late.classify(decision_id, response_id)
+                ),
+                response_id,
+            )
+            if settled is not None:
+                return shared_decisions.respond(settled)
         recorded_reason = state.recent_question_resolutions().get(ask_id)
         if recorded_reason:
             return web.json_response(
@@ -586,7 +645,7 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
     deny = _deny_app_token(request, "ask_question_answer")
     if deny is not None:
         return deny
-    deny = _deny_non_owner(request, "ask_question_answer")
+    deny = _deny_non_collaborator(request, "ask_question_answer")
     if deny is not None:
         return deny
     ask_id = request.match_info["ask_id"]
@@ -602,7 +661,7 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
     if isinstance(parsed, web.Response):
         return parsed
     answers, reason = parsed
-    return _resolve_or_not_found(state, ask_id, answers, reason)
+    return _resolve_or_not_found(state, ask_id, answers, reason, request=request, body=body)
 
 
 # ── Agent asks: the blocking MCP ``ask_question`` ─────────────────────────────

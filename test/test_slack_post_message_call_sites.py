@@ -70,6 +70,7 @@ BASELINE: dict[str, tuple[int, str]] = {
         "send_message tool: text plus a plain fallback when Slack rejects the button form",
     ),
     "dashboard/server_runtime/owner_notices.py": (1, "owner DM notice"),
+    "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
     "slack/events.py": (5, "!stop and !restart notices and the not-authorized refusal"),
     "slack/files.py": (1, "notes for images Slack refused to upload"),

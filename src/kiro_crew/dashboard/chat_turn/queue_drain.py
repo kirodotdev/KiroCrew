@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -299,6 +300,12 @@ def _parked_queue_drain_admitted() -> bool:
     return True
 
 
+# Recovery turns and memory-ready callbacks inherit only their accepted card ids.
+_RESTORED_DRAIN_IDS: ContextVar[dict[str, frozenset[str]]] = ContextVar(
+    "restored_drain_ids", default={}
+)
+
+
 async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> None:
     """Start the next queued turn on each parked slot that is still idle.
 
@@ -320,7 +327,7 @@ async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> N
                     or slot._stop_state != "idle"
                 ):
                     continue
-                if not _parked_queue_drain_admitted():
+                if not _memory_preparation_pending(state) and not _parked_queue_drain_admitted():
                     return
                 started = await _start_next_queued_turn(state, slot)
             if started:
@@ -612,6 +619,17 @@ async def _start_next_queued_turn(
     if await _drop_revoked_replays(state, slot):
         return False
 
+    from kiro_crew.shared_crew.admission_entry import queued_work_ids
+    from kiro_crew.shared_crew.admission_gate import installed_service
+
+    service = installed_service()
+    if service is not None:
+        for item in list(slot._queue):
+            work_ids = queued_work_ids([item])
+            if work_ids and await service._cancelled_parked(work_ids) is not None:
+                slot.queue_remove_by_id(item["id"])
+                state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": item["id"]})
+
     try:
         merge = KiroCrewConfig.load().dashboard.merge_queued_messages
     except Exception:
@@ -637,6 +655,19 @@ async def _start_next_queued_turn(
         not allow_user_during_subagents
         and subagents_hold_user_messages(state, effective_session_key(slot))
     )
+    restored_ids = _RESTORED_DRAIN_IDS.get().get(slot.key)
+    if restored_ids is not None and not required_queue_id and not hold_users:
+        required_queue_id = next(
+            (
+                item["id"]
+                for item in slot._queue
+                if not item.get(RESTORED_QUEUE_KEY) or item["id"] in restored_ids
+            ),
+            None,
+        )
+        if required_queue_id is None:
+            return False
+
     if required_queue_id and hold_users:
         # The hold dequeues only system entries, so it could start a different
         # entry than the one card asked for. That card stays queued instead.
@@ -951,7 +982,7 @@ async def _start_next_queued_turn(
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
     # last writer would be quoted another sender's words.
-    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY):
+    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY, "author"):
         _addresses = [
             (
                 (item.get("meta") or {}).get(_address_key)
@@ -1188,11 +1219,23 @@ async def _start_next_queued_turn(
                 if isinstance(_loop_id, str) and _loop_id:
                     _run_kwargs["_directive_loop_id"] = _loop_id
                 break
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        _run_chat(state, slot, next_msg, **_run_kwargs),
+    # Shared Crew: the drained turn is charged to the person who queued it, read
+    # from the server-stamped author on the entries. Entries restored from disk
+    # or written by different people name no one, so the turn falls to the
+    # bounded Unknown or automation budget (shared_crew.turn_gate).
+    from kiro_crew.shared_crew.turn_gate import (
+        independent_turn,
+        initiated_by,
+        queued_initiator,
+        queued_work,
     )
+
+    with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
+        task = spawn_guarded_turn(
+            state,
+            slot,
+            _run_chat(state, slot, next_msg, **_run_kwargs),
+        )
     slot.task = task
     # A recovery replay of a Regenerate's message takes over its target now
     # that ``slot.task`` gave it the slot's generation.

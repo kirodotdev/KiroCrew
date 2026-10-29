@@ -109,12 +109,26 @@ async def run_oneshot_translation(sessions: Any, prompt: str) -> str:
     ``kiro_crew.start_priority``).
     """
     from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
+    from kiro_crew.shared_crew.admission import OperationKind
+    from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise
 
     key = f"{k.SLOT_PREFIX}-translate-{uuid.uuid4().hex}"
-    provider, _is_new, _resumed = await sessions.get_or_create(key, agent="kirocrew-lite")
-    try:
+
+    async def _call() -> str:
+        provider, _is_new, _resumed = await sessions.get_or_create(key, agent="kirocrew-lite")
         return await stream_and_collect(
             provider, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+        )
+
+    try:
+        # Shared Crew fair admission, charged to Crew automation (the live
+        # stream runs unattended); a refusal raises ``TurnRefused``.
+        return await run_admitted_or_raise(
+            _call(),
+            session_key=key,
+            text=prompt,
+            automation=True,
+            operation=OperationKind.BACKGROUND,
         )
     finally:
         try:

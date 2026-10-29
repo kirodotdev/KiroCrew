@@ -418,6 +418,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_compaction_failed_retries": ("value", "0"),
     "_coordinator_approvals": ("value", "None"),
     "_created_by": ("value", "''"),
+    "_attribution": ("value", "None"),
     "_created_by_sid": ("value", "''"),
     "_crew_log_opened_sid": ("value", "''"),
     "_crew_log_pending_channel": ("value", "False"),

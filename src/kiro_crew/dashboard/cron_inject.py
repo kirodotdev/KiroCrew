@@ -821,10 +821,15 @@ def inject_cron_result_to_dashboard(
             else:
                 header_marker = marker
                 prompt_body = safe_prompt
+            # Admission is loaded only on delivery, not on the gateway boot path.
+            from kiro_crew.shared_crew.admission_gate import AUTOMATION_PRINCIPAL
+            from kiro_crew.shared_crew.attribution import stamp_principal_author
+
             _reflect(
                 "user",
                 f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
                 "msg msg-u",
+                meta=stamp_principal_author({}, AUTOMATION_PRINCIPAL),
             )
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)

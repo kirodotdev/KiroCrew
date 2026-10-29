@@ -462,7 +462,10 @@ def drain_when_free(*, channel: str, session_key: str, is_busy: Callable[[str], 
     slot = (str(channel), str(session_key))
     if slot in _HELD_RETRIES:
         return False
-    task = asyncio.ensure_future(_drain_after_hold(slot, is_busy))
+    from kiro_crew.shared_crew.turn_gate import independent_turn
+
+    with independent_turn():
+        task = asyncio.ensure_future(_drain_after_hold(slot, is_busy))
     _HELD_RETRIES[slot] = task
 
     def _forget(done: asyncio.Task[None]) -> None:

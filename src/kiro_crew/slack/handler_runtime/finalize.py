@@ -234,7 +234,16 @@ def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -
             # The person typed this in Slack; mirroring it into the
             # linked slot keeps it a human turn (see
             # history.HUMAN_TURN_META_KEY).
-            slot.append("user", text, "msg msg-u", meta={HUMAN_TURN_META_KEY: True})
+            # A Slack sender has no Shared Crew principal: Unknown.
+            from kiro_crew.shared_crew.attribution import stamp_principal_author
+            from kiro_crew.shared_crew.contracts import Principal
+
+            slot.append(
+                "user",
+                text,
+                "msg msg-u",
+                meta=stamp_principal_author({HUMAN_TURN_META_KEY: True}, Principal.unknown()),
+            )
             slot.append("assistant", accumulated, "msg msg-a")
             if slot._on_message:
                 slot._on_message(slot.key, {"role": "user", "content": text, "cls": "msg msg-u"})

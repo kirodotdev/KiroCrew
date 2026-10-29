@@ -8308,7 +8308,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Fair Admission",
-      "help": "Not active in this build yet. Charge every turn, subagent, task, workflow and cron run to the person who started it, and admit work through per-person and Crew-wide limits with a fair queue. Off by default: a single-operator Crew keeps its current behaviour and reports queueing as unavailable.",
+      "help": "Charge every turn, subagent, task, workflow and cron run to the person who started it, and admit work through per-person and Crew-wide limits with a fair queue. Off by default: a single-operator Crew keeps its current behaviour and reports queueing as unavailable.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8322,7 +8322,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Active Work Per Person",
-      "help": "Not active in this build yet. Root executions (turns, tasks, workflows, cron runs) one person may run at once, across all tabs, devices and sessions.",
+      "help": "Root executions (turns, tasks, workflows, cron runs) one person may run at once, across all tabs, devices and sessions.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4
@@ -8336,7 +8336,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Active Work Crew-Wide",
-      "help": "Not active in this build yet. Root executions the whole Crew runs at once. 0 uses the session start gate's automatic width for this host.",
+      "help": "Root executions the whole Crew runs at once. 0 uses the session start gate's automatic width for this host.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
@@ -8350,7 +8350,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Per-Person Slices",
-      "help": "Not active in this build yet. While fair admission is on, start each person's agent runtimes in that person's own systemd slice so their CPU, memory and process counts are bounded together. Linux with cgroup v2 delegation only.",
+      "help": "While fair admission is on, start each person's agent runtimes in that person's own systemd slice so their CPU, memory and process counts are bounded together. Linux with cgroup v2 delegation only.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -8364,7 +8364,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Require Enforced Limits",
-      "help": "Not active in this build yet. Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable user bus, or memory and pids delegation is missing, instead of running without per-person limits. Needs fair admission on: with fair admission off, no agent runtime starts. Off by default.",
+      "help": "Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable user bus, or memory and pids delegation is missing, instead of running without per-person limits. Needs fair admission on: with fair admission off, no agent runtime starts. Off by default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8408,7 +8408,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Typing Lock Idle Window",
-      "help": "Not active in this build yet. Seconds a collaborator may pause typing before the other collaborators' composers unlock. While someone types in a shared session, everyone else's composer is read-only until that person sends, clears the draft, or stays idle this long. 3 to 60.",
+      "help": "Seconds a collaborator may pause typing before the other collaborators' composers unlock. While someone types in a shared session, everyone else's composer is read-only until that person sends, clears the draft, or stays idle this long. 3 to 60.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 10

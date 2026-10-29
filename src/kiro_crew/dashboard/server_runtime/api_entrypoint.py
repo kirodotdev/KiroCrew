@@ -463,6 +463,12 @@ async def start_api_server(
     _kick_local_decision_model(state)
     _kick_owner_only_sweep(state)
     _kick_display_verdicts(state)
+    # Parity with start_dashboard's post-bind restore: build fair admission's
+    # service (and probe containment) before any channel turn can arrive, so a
+    # headless gateway enforces the configured limits too. Never raises.
+    from kiro_crew.shared_crew.wiring import prepare_gateway
+
+    await prepare_gateway(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         logger,
         maybe_apply_privacy_modifiers,
         maybe_route_linked_thread,
+        privacy_mode,
         redact_credentials,
         redact_exfiltration_urls,
         save_conversation_turn_off_loop,
@@ -60,6 +61,26 @@ if TYPE_CHECKING:
         sessions_include_ended,
         slack_cfg,
     )
+
+
+def _message_command_text(text: str) -> str:
+    """Expose the native command after an optional leading Slack bot mention."""
+    return re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
+
+
+def _is_bang_command(cmd_text: str) -> bool:
+    """Whether the native command router claims this normalized command text."""
+    return cmd_text.startswith("!")
+
+
+def _is_control_message(text: str) -> bool:
+    """Classify controls without applying modifiers or changing sender authorization."""
+    cmd_text = _message_command_text(text)
+    for mode in (privacy_mode.MODE_TEMPORARY, privacy_mode.MODE_INCOGNITO):
+        cmd_text, had_mode = privacy_mode.strip_token(cmd_text, mode)
+        if had_mode and not cmd_text:
+            return True
+    return _is_bang_command(cmd_text)
 
 
 async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
@@ -191,7 +212,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # Strip leading bot mention from app_mention events so the ! prefix is exposed.
     # DM:       "!agent foo"                    → "!agent foo"       (no-op)
     # @mention: "<@UBOT|kirocrew> !agent foo"   → "!agent foo"      (strip prefix)
-    _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
+    _cmd_text = _message_command_text(text)
 
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
     text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(

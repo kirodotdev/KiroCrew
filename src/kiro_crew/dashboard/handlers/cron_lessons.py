@@ -11,6 +11,7 @@ never imports it.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import threading
@@ -319,6 +320,14 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # which the context builder serves as a standing rule. Both write paths carry
     # it so the JSONL fallback tiers identically to the vector store.
     applies = cleaned.get("applies") or None
+    # Who this write is attributed to, derived by the server (never the body):
+    # a person's own dashboard request, else the author of the session's latest
+    # user turn. Stored on the row as ``written_by`` and named in the
+    # memory-change notice and audit record when this write replaces lessons.
+    from kiro_crew.shared_crew import memory_changes
+
+    writer = memory_changes.writer_principal(request, state, sk)
+    written_by = memory_changes.writer_stamp(writer)
     # Write to vector store if available, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -381,6 +390,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             # over; the exact-rule, substring and keyword-overlap rules still apply
             # to it.
             defer_backfills=True,
+            written_by=written_by,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and
@@ -484,6 +494,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             repo_scope=repo_scope,
             applies=applies,
             ts=datetime.now(timezone.utc).isoformat(),
+            written_by=written_by,
         )
         store = _lesson_jsonl_store(
             state, _lesson_silo, scope, cleaned.get("workspace"), session_key=sk
@@ -498,7 +509,10 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # ``refused`` means neither field was persisted; this is the one content
         # refusal the fallback owns, and its string outcome matches
         # LessonWriteOutcome on the wire.
-        outcome = await asyncio.to_thread(store.save_or_enrich, lesson)
+        replaced_rules: list[str] = []
+        outcome = await asyncio.to_thread(
+            functools.partial(store.save_or_enrich, lesson, superseded_out=replaced_rules)
+        )
         # This store has exactly THREE refusal paths -- the volatile-text
         # predicate, the blocked-content screen and the row cap -- and all answer
         # with the bare ``refused`` string, so the cause has to be re-derived here.
@@ -517,14 +531,15 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             else:
                 reason = LESSON_REFUSED_AT_CAPACITY
         stored = outcome != "refused"
-        # A genuine empty, not an unfilled field. ``_insert_or_enrich`` has no dedup
-        # rule that supersedes: it matches on exact rule text plus scope and either
-        # attaches a clause or reports ``unchanged``, appending every other record
-        # untouched -- so this store keeps both a general rule and the narrower rule
-        # containing it, which the vector store does not. (It can still drop the
-        # oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is an eviction,
-        # not this write superseding a rule it overlaps.)
-        superseded = []
+        # Only a ``preference`` insert supersedes here: it replaces the stored
+        # preferences it conflicts with (newest wins). Every other rule matches on
+        # exact rule text plus scope and either attaches a clause or reports
+        # ``unchanged``, so this store keeps both a general rule and the narrower
+        # rule containing it, which the vector store does not. (It can still drop
+        # the oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is an
+        # eviction, not this write superseding a rule it overlaps.) Redacted on the
+        # same chain as the vector path.
+        superseded = _redact_memory_field(replaced_rules) if replaced_rules else []
         # This store never answers ``deduped``, so there is no winner to name.
         winner = None
         winner_repo_scope = None
@@ -541,6 +556,22 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # refresh on a no-op re-submit costs a redundant list fetch, a missed one shows
     # deleted data.
     state.push_refresh("lessons")
+    # Newest wins, and everyone is told: a write that replaced stored lessons is
+    # audited with who changed what, and in a shared Crew the session gets a
+    # notice and every collaborator a frame. Never fails the write.
+    if superseded:
+        try:
+            memory_changes.announce_replacement(
+                state,
+                writer,
+                session_key=sk,
+                category=category,
+                new_rule=str(_redact_memory_field(rule) or ""),
+                replaced=[str(s) for s in superseded],
+                memory_store=_lesson_silo,
+            )
+        except Exception:
+            logger.debug("memory change announcement failed", exc_info=True)
     # One chat row per write that changed the store; the recorder drops every
     # other outcome, and a caller with no chat of its own draws nothing.
     await _surface_lesson_saved(request, state, sk, rule, outcome)

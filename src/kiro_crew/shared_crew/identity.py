@@ -235,6 +235,12 @@ async def publish_actor(
         actor = unknown_actor(request)
     request[ACTOR_REQUEST_KEY] = actor
     try:
+        from kiro_crew.shared_crew.attribution import bind_request_author
+
+        bind_request_author(actor)
+    except Exception:
+        logger.debug("binding the request author failed", exc_info=True)
+    try:
         from kiro_crew.shared_crew.people import observe
 
         observe(actor.principal, str(request.get(DEVICE_REQUEST_KEY) or ""))

@@ -358,6 +358,7 @@ from kiro_crew.config.sections_shared_crew import (  # noqa: F401
     EffectiveLimits,
     SharedCrewConfig,
     effective_limits,
+    load_shared_crew_config,
     shared_crew_config_from,
 )
 from kiro_crew.config.sections_slack import (  # noqa: F401

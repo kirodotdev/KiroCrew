@@ -286,6 +286,31 @@ class TestApiChatSubagentQueueGate:
         # The gate must query the slot's parent key, not a bare/mismatched one.
         subs.running_agents_for.assert_any_call("dashboard:s1")
 
+    async def test_held_message_keeps_its_author(self, tmp_path, monkeypatch):
+        """A send held behind running sub-agents names its sender, like a busy-slot send."""
+        from kiro_crew.shared_crew import identity
+        from kiro_crew.shared_crew.contracts import ActorContext, Provenance, Transport
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+            return None
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+        ann = identity.tailnet_principal("ann@example.com", "phone", Provenance.TAILSCALE_SERVE)
+        actor = ActorContext(principal=ann, request_id="r", transport=Transport.HTTP, correlation_id="r")
+        monkeypatch.setattr(identity, "actor_of", lambda _request: actor)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=[{"id": "a1"}])
+        state = _make_state(tmp_path, subagents=subs)
+        slot = state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "after the wave", "slot": "s1"})
+            assert (await resp.json()).get("queued") is True
+
+        assert slot._queue[0]["meta"]["author"]["id"] == ann.id
+
     async def test_not_queued_when_no_subagents_running(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
 

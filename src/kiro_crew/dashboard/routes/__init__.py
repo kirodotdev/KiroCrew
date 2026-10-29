@@ -32,6 +32,7 @@ from kiro_crew.dashboard.routes import (
     messaging,
     realtime,
     sessions,
+    shared_crew,
     skills,
     system,
     taskrunner,
@@ -52,6 +53,7 @@ _REGISTRARS: tuple[tuple[str, object], ...] = (
     ("taskrunner", taskrunner.register),
     ("connections", connections.register),
     ("system", system.register),
+    ("shared_crew", shared_crew.register),
 )
 
 REGISTRAR_NAMES: tuple[str, ...] = tuple(name for name, _ in _REGISTRARS)

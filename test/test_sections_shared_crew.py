@@ -81,7 +81,11 @@ def test_effective_limits_resolve_auto_and_cap_per_person():
     assert set(as_dict) == set(sc.EffectiveLimits.__dataclass_fields__)
 
 
-def test_every_key_needs_a_restart_and_says_it_is_not_active():
+#: The keys whose behaviour is not in this build: their help text says so.
+_NOT_ACTIVE = {"tailnet_direct", "local_authorization"}
+
+
+def test_every_key_needs_a_restart_and_says_whether_it_is_active():
     from dataclasses import fields
 
     from kiro_crew.config.schema import requires_restart
@@ -89,5 +93,64 @@ def test_every_key_needs_a_restart_and_says_it_is_not_active():
     assert requires_restart("dashboard.shared_crew")
     for f in fields(sc.SharedCrewConfig):
         assert requires_restart(f"dashboard.shared_crew.{f.name}"), f.name
-        assert f.metadata["help"].startswith("Not active in this build yet."), f.name
+        not_active = f.metadata["help"].startswith("Not active in this build yet.")
+        assert not_active is (f.name in _NOT_ACTIVE), f.name
         assert "Takes effect" not in f.metadata["help"], f.name
+
+
+@pytest.mark.parametrize("base_present", [False, True])
+def test_load_shared_crew_config_merges_local_overlay(tmp_path, monkeypatch, base_present):
+    import json
+
+    from kiro_crew.config import loader
+
+    base = tmp_path / "config.json"
+    local = tmp_path / "config.local.json"
+    monkeypatch.setattr(loader, "config_path", lambda: base)
+    monkeypatch.setattr(loader, "config_local_path", lambda: local)
+    if base_present:
+        base.write_text(
+            json.dumps(
+                {
+                    "dashboard": {
+                        "shared_crew": {
+                            "admission_enabled": False,
+                            "crew_concurrency": 8,
+                            "principal_concurrency": 3,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    local.write_text(
+        json.dumps(
+            {
+                "dashboard": {
+                    "shared_crew": {
+                        "admission_enabled": True,
+                        "crew_concurrency": 1,
+                        "hard_limits": True,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = sc.load_shared_crew_config()
+    assert cfg.admission_enabled is True
+    assert cfg.hard_limits is True
+    assert cfg.crew_concurrency == 1
+    assert cfg.principal_concurrency == (3 if base_present else 4)
+
+
+@pytest.mark.parametrize("content", ["{", "[]", '{"dashboard": {"shared_crew": null}}'])
+def test_load_shared_crew_config_refuses_invalid_overlay(tmp_path, monkeypatch, content):
+    from kiro_crew.config import loader
+
+    local = tmp_path / "config.local.json"
+    monkeypatch.setattr(loader, "config_path", lambda: tmp_path / "absent.json")
+    monkeypatch.setattr(loader, "config_local_path", lambda: local)
+    local.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError):
+        sc.load_shared_crew_config()

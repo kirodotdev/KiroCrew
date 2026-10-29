@@ -619,6 +619,17 @@ async def _shutdown_and_exit(
     # The one call site that asks for the leaders narrowing. Nothing spawns a
     # session by this point, so the sweep is not racing a mapping publisher.
     await asyncio.to_thread(cleanup_orphaned_sessions)
+    # Shared Crew per-principal slices. The dashboard's cleanup hook releases
+    # them, but a graceful shutdown that ran out of time never reaches it, and
+    # os._exit below skips it. The runtimes are gone by now, so their scopes
+    # are empty; a release that already ran leaves nothing to do here. Bounded
+    # like the drains below.
+    try:
+        from kiro_crew.shared_crew.admission_gate import shutdown_cleanup
+
+        await asyncio.wait_for(shutdown_cleanup(), timeout=6.0)
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        logger.debug("shared crew slice release at exit failed", exc_info=True)
     # The skill-usage ledgers debounce their writes to one per 60 s, and their
     # flush thread is a daemon: a hit accepted inside that window lives only in
     # memory, and os._exit below kills it. Flush them here, off-loop and
