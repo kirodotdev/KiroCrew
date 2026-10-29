@@ -66,6 +66,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -1572,6 +1573,7 @@ def hoist_servers_for_session(
     *,
     include_user_servers: bool = False,
     reserved_names: frozenset[str] = frozenset(),
+    managed_entries: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
     """Carry the ACTIVE agent's servers for this session in the session-level array.
 
@@ -1654,6 +1656,13 @@ def hoist_servers_for_session(
     WITHOUT the token -- the daemon would deny it anyway, and a session with an
     unattested control plane is better than one with none.
 
+    *managed_entries* is the managed invocation per name, already resolved by
+    :func:`resolve_managed_entries` off the event loop (the KAS harness's
+    ``session_extras`` thread). Resolving it here would run the launcher's
+    ``is_file`` / ``os.access`` / ``shutil.which`` probes on the loop at every
+    session start. ``None`` resolves in place, for a caller that is
+    already off the loop.
+
     The agent's ``tools`` / ``excludedTools`` / ``permissions`` are untouched:
     ``@server`` refs resolve wherever the server was declared, which is the same
     property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
@@ -1719,7 +1728,9 @@ def hoist_servers_for_session(
 
         hoisted = [
             (
-                _tokened_managed_element(element, session_token, attach_stub_session_token)
+                _tokened_managed_element(
+                    element, session_token, attach_stub_session_token, managed_entries
+                )
                 if element["name"] in MANAGED_MCP_SERVER_NAMES
                 else element
             )
@@ -1736,10 +1747,35 @@ def hoist_servers_for_session(
 _TOKENED_ENV_KEYS_KEPT = ("KIROCREW_PORT", "KIROCREW_SESSION_KEY")
 
 
+def resolve_managed_entries(
+    custom_agents: list[dict[str, Any]] | None,
+    agent_id: str,
+) -> dict[str, Any]:
+    """The managed invocation for each managed server the ACTIVE agent declares.
+
+    Blocking: :func:`~kiro_crew.agent.managed_mcp_spec_entry` resolves the
+    ``kirocrew`` launcher with filesystem and ``PATH`` probes. Call it off the
+    event loop and hand the result to :func:`hoist_servers_for_session`, which
+    then stays free of I/O. A name whose invocation does not resolve maps to
+    ``None``, the same answer the in-place lookup gives.
+    """
+    from kiro_crew.agent import managed_mcp_spec_entry
+
+    names: set[str] = set()
+    for descriptor in custom_agents or ():
+        if not isinstance(descriptor, dict) or descriptor.get("id") != agent_id:
+            continue
+        declared = descriptor.get("mcpServers")
+        if isinstance(declared, dict):
+            names.update(name for name in declared if name in MANAGED_MCP_SERVER_NAMES)
+    return {name: managed_mcp_spec_entry(name, include_opt_in=True) for name in sorted(names)}
+
+
 def _tokened_managed_element(
     element: dict[str, Any],
     session_token: str,
     attach: Any,
+    managed_entries: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """*element* relaunched as the managed invocation and stamped with the token.
 
@@ -1751,7 +1787,10 @@ def _tokened_managed_element(
     from kiro_crew.agent import _managed_mcp_env, managed_mcp_spec_entry
 
     name = str(element.get("name", ""))
-    managed = managed_mcp_spec_entry(name, include_opt_in=True)
+    if managed_entries is not None and name in managed_entries:
+        managed = managed_entries[name]
+    else:
+        managed = managed_mcp_spec_entry(name, include_opt_in=True)
     if not isinstance(managed, dict) or not managed.get("command"):
         logger.warning(
             "hoisted MCP server %r gets no session token: its managed invocation does"

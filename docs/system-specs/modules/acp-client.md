@@ -2108,7 +2108,12 @@ never the spec's `command` / `args`: KAS spawns it directly, so
 `daemon/control_plane.py::_spawns_own_control_plane` never vets it, and a hand-edited spec
 must not hand the token to another binary. Its env keeps only the projected
 `KIROCREW_PORT` / `KIROCREW_SESSION_KEY` plus the managed env; a name whose
-managed invocation does not resolve is hoisted as projected with no token. On `session/new` the move covers the active agent's managed names only; on
+managed invocation does not resolve is hoisted as projected with no token.
+Resolving that invocation probes the filesystem and `PATH` for the `kirocrew`
+launcher, so the KAS harness does it in its `session_extras` thread
+(`kas_agents.resolve_managed_entries`) and carries the result on
+`SessionExtras.managed_entries`; the hoist itself does no I/O on the event loop
+(#15282). On `session/new` the move covers the active agent's managed names only; on
 `session/load` it additionally hoists remaining user-declared names
 (`include_user_servers=True` in `hoist_servers_for_session`): kiro-cli
 re-initialises MCP servers from the session-level array only on load — not from

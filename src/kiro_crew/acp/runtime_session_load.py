@@ -302,6 +302,7 @@ async def load_session(
             session_token=stub_token,
             include_user_servers=True,
             reserved_names=reserved,
+            managed_entries=kas_extras.managed_entries,
         )
         # REBIND, not just re-assign the param: the hoist changes the array, and
         # wire_servers is what the stall diagnostic and the session report read.

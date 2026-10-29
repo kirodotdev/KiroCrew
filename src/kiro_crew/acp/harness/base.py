@@ -303,6 +303,16 @@ class SessionExtras:
     records nothing; read here so no other host's session start gains a step.
     """
 
+    managed_entries: Mapping[str, Any] | None = None
+    """The managed invocation per Crew-managed server the payload declares.
+
+    For a host whose payload carries agent-declared managed servers that the
+    runtime hoists and tokens (KAS): resolved in the same off-loop step as the
+    payload, because resolving the ``kirocrew`` launcher is filesystem and
+    ``PATH`` I/O that must not run on the event loop. Handed to
+    ``kas_agents.hoist_servers_for_session``. ``None`` on every other host.
+    """
+
 
 # ── Seam 5: notification aliases ──
 

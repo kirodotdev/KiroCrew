@@ -330,7 +330,11 @@ async def create_session(
     # ``hoist_servers_for_session``). The kiro path returns None here and is
     # untouched.
     kas_agents, mcp_servers = hoist_servers_for_session(
-        kas_agents, active_agent, mcp_servers, session_token=stub_token
+        kas_agents,
+        active_agent,
+        mcp_servers,
+        session_token=stub_token,
+        managed_entries=kas_extras.managed_entries,
     )
     # The host's last word on its own tool surface. A host that reads an
     # agent spec passes the list straight back; one that has nothing else

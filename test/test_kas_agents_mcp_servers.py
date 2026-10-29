@@ -1273,6 +1273,52 @@ class TestHoistManagedServers:
         )
         assert with_default == with_empty
 
+    def test_pre_resolved_entries_keep_the_hoist_free_of_launcher_lookups(self, monkeypatch):
+        # the launcher lookup probes the filesystem and PATH, so the
+        # runtime hands the hoist entries resolved off the loop and it must not
+        # look anything up itself.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        calls = self._managed(monkeypatch, {"command": "/wrong", "args": []})
+        resolved = {"kirocrew-core": {"command": "/opt/kc", "args": ["mcp-core"]}}
+        _, array = hoist_servers_for_session(
+            [self._projected()],
+            "kirocrew",
+            [],
+            session_token="tok-1",
+            managed_entries=resolved,
+        )
+        assert calls == [], "no lookup when the entry was resolved off the loop"
+        (core,) = [e for e in array if e["name"] == "kirocrew-core"]
+        assert core["command"] == "/opt/kc"
+        assert core["args"] == ["mcp-core"]
+        assert {p["name"]: p["value"] for p in core["env"]}[STUB_SESSION_TOKEN_ENV] == "tok-1"
+
+    def test_a_pre_resolved_none_is_hoisted_without_the_token(self, monkeypatch):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        calls = self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        _, array = hoist_servers_for_session(
+            [self._projected()],
+            "kirocrew",
+            [],
+            session_token="tok-1",
+            managed_entries={"kirocrew-core": None},
+        )
+        assert calls == []
+        assert all(
+            pair["name"] != STUB_SESSION_TOKEN_ENV
+            for element in array
+            for pair in element.get("env", [])
+        )
+
+    def test_resolve_managed_entries_covers_only_the_active_agents_managed_names(self, monkeypatch):
+        calls = self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        other = {"id": "other", "mcpServers": {"kirocrew-cron": {"command": "kc"}}}
+        resolved = kas_agents.resolve_managed_entries([self._projected(), other], "kirocrew")
+        assert resolved == {"kirocrew-core": {"command": "/opt/kc", "args": ["mcp-core"]}}
+        assert calls == [("kirocrew-core", True)], "third-party and inactive names are skipped"
+
     def test_block_key_is_removed_when_nothing_remains(self):
         spec = _spec(mcpServers={"kirocrew-core": {"command": "kc"}})
         projected = to_client_custom_agent("kirocrew", spec, "p")
