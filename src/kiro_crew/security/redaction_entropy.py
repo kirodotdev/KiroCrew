@@ -25,6 +25,7 @@ import bisect
 import contextvars
 import math
 import re
+import urllib.parse
 import zlib
 from collections import Counter
 from collections.abc import Iterator
@@ -677,25 +678,42 @@ def _text_contains_bare_secret(text: str) -> bool:
 #   * HTTPS, a lowercase literal host right after the scheme (no userinfo, no
 #     port), `docs.google.com`, `drive.google.com`, `<tenant>.atlassian.net`, or
 #     a PlantUML server: a host whose first label is `plantuml` (after an
-#     optional `www.`), such as `www.plantuml.com`;
+#     optional `www.`), such as `www.plantuml.com`, or Outlook on the web
+#     (`outlook.office.com`, `outlook.office365.com`, `outlook.live.com`,
+#     `outlook.cloud.microsoft`), or Slack (`<workspace>.slack.com`,
+#     `<workspace>.enterprise.slack.com`, `app.slack.com`);
 #   * every path segment fixed or drawn from a closed class: a Google id is
 #     25-72 chars of `[A-Za-z0-9_-]`, a Confluence space key is alphanumeric, a
 #     page id is digits, a PlantUML diagram is `[/plantuml]/<png|svg|txt|uml>/`
-#     then its deflate text in PlantUML's `[0-9A-Za-z_-]` alphabet;
+#     then its deflate text in PlantUML's `[0-9A-Za-z_-]` alphabet, an Outlook
+#     item id opens with an Exchange id prefix (`AAMk`, `AAQk`, `AQMk`, `AQQk`)
+#     and is 16-256 chars of `[A-Za-z0-9_-]` and the `%2B`, `%2F` and `%3D`
+#     escapes of its base64 (a mail item under `mail/[<n>/][<folder>/]id/`,
+#     where a folder is a well-known name, or under
+#     `mail/deeplink/<compose|read>/`; a calendar item under
+#     `calendar/[<n>/]item/` or `calendar/deeplink/read/`), a Slack id is one
+#     uppercase letter and 7-11 uppercase letters or digits
+#     (`client/<id>/<id>`, then a required `/p<16 digits>` message);
 #   * no piece of the link is a whole key: a piece exactly 40 characters long
 #     voids the match when `_looks_like_secret_key` accepts it. Pieces are cut
 #     twice, once at every non-run character (`/`, `-`, `_`, `%`, `.`, `~`)
 #     and once also at `+`, the space of a Confluence title slug, so a key
-#     pasted in as the id or as a title word is still redacted. A PlantUML
+#     pasted in as the id or as a title word is still redacted. An Outlook
+#     link is also cut with every `%XX` escape read as a separator (a key between
+#     two escapes), percent-decoded per `/` segment (a key with its own `/` or
+#     `+` escaped); its id prefix keeps a key whose own `/` doubles as a route
+#     separator from riding the route, and its id must decode to one whole
+#     Exchange id, every field length used up exactly, so a key glued after an
+#     id or a bare prefix voids the match. A PlantUML
 #     diagram is random-looking by construction, so it is judged by decoding
 #     instead: it must inflate, whole, to printable text with nothing after the
 #     stream but the encoder's zero padding, and every credential pass must
 #     leave that text unchanged. The text inflated per call is capped (see
 #     `_PLANTUML_SOURCE_CAP`). A key as the diagram, glued to one, or written
 #     in its source voids the match;
-#   * the link ends where the route ends, with one optional trailing `/`: a
-#     further base64-alphabet character (a glued key, another `/segment`)
-#     fails the match.
+#   * the link ends where the route ends, with one optional trailing `/` (none
+#     after an Outlook item id): a further base64-alphabet character (a glued
+#     key, another `/segment`) fails the match.
 # The query and fragment are outside the match, so a key there, a `?token=`
 # value and every pass-1 and pass-2 hit are judged exactly as before.
 #
@@ -710,6 +728,124 @@ _DOCUMENT_ID = r"[A-Za-z0-9_-]{25,72}"
 _PLANTUML_DIAGRAM = r"[A-Za-z0-9_-]{1,16384}"
 _GOOGLE_USER = r"(?:u/[0-9]{1,2}/)?"
 _RUN_PIECE_RES = (re.compile(r"[A-Za-z0-9+]+"), re.compile(r"[A-Za-z0-9]+"))
+_PERCENT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+_DECODED_RUN_RE = re.compile(r"[A-Za-z0-9+/]+")
+_URL_SEGMENT_SEP_RE = re.compile(r"/")
+
+
+def _link_pieces(link: str, *, outlook: bool = False) -> Iterator[str]:
+    """Yield every piece of a document link that could be a whole key.
+
+    The link is cut at each `_RUN_PIECE_RES` class. An Outlook link is also cut
+    with every `%XX` escape read as a separator, so a key between two escapes is
+    a piece; each `/` segment holding an escape is percent-decoded and cut into
+    base64 runs, so a key whose `/` or `+` is written `%2F` or `%2B` is one
+    piece. A key sharing a `/` with the route cannot ride it: every Outlook id
+    opens with a fixed Exchange id prefix.
+    """
+    for piece_re in _RUN_PIECE_RES:
+        yield from piece_re.findall(link)
+    if not outlook:
+        return
+    escaped_as_slash = _PERCENT_ESCAPE_RE.sub("/", link)
+    for piece_re in _RUN_PIECE_RES:
+        yield from piece_re.findall(escaped_as_slash)
+    # A URL path, not a filesystem path: its separator is `/` on every platform.
+    for segment in _URL_SEGMENT_SEP_RE.split(link):
+        if "%" in segment:
+            yield from _DECODED_RUN_RE.findall(urllib.parse.unquote(segment))
+
+
+# An Outlook id is the base64 of an Exchange id, so it opens with one of the
+# Exchange id prefixes (`AAMk`, `AAQk`, `AQMk`, `AQQk`) and is a few hundred
+# characters at most. The prefix keeps a key glued in front of an id from
+# riding the route, and `_is_whole_exchange_id` one glued after it.
+_OUTLOOK_ID = r"A[AQ][MQ]k(?:[A-Za-z0-9_-]|%2[BFbf]|%3[Dd]){12,252}"
+# Well-known folder names only: a folder given by its id would let a key whose
+# last character is `/` hide as the tail of that id plus its separator.
+_OUTLOOK_FOLDER = r"(?:inbox|drafts|sentitems|deleteditems|archive|junkemail|outbox|search)/"
+# An Outlook item id ends the link with no trailing `/`, so a key whose last
+# character is `/` cannot pass as a 39-char id plus the optional slash.
+_OUTLOOK_ITEM_ID = r"(?P<exchange_id>" + _OUTLOOK_ID + r")(?!/)"
+# The decoded Exchange id: a compression flag, the id storage type, the 36-byte
+# mailbox GUID text with its 16-bit length, a processing byte, then the store id
+# with its 16-bit length, which must end the id exactly and (for a long-term id)
+# carry an entry id's fixed flag, type and padding bytes.
+_EXCHANGE_GUID_RE = re.compile(rb"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+_EXCHANGE_ID_MAX_BYTES = 1024
+
+
+def _expand_exchange_runs(data: bytes) -> bytes | None:
+    """Undo an Exchange id's run-length compression, or return None if malformed.
+
+    Two equal bytes in a row are followed by a count of further repeats.
+    """
+    out = bytearray()
+    i = 0
+    while i < len(data):
+        if i + 1 < len(data) and data[i] == data[i + 1]:
+            if i + 2 >= len(data):
+                return None
+            out += bytes([data[i]]) * (2 + data[i + 2])
+            i += 3
+        else:
+            out.append(data[i])
+            i += 1
+        if len(out) > _EXCHANGE_ID_MAX_BYTES:
+            return None
+    return bytes(out)
+
+
+def _is_whole_exchange_id(text: str) -> bool:
+    """Whether an Outlook item id decodes to one complete Exchange id.
+
+    Every field length must account for every decoded byte, so a key glued after
+    an id, or after a bare id prefix, fails the decode instead of riding the route.
+    """
+    encoded = urllib.parse.unquote(text).replace("-", "+").replace("_", "/").rstrip("=")
+    if len(encoded) % 4 == 1:
+        return False
+    try:
+        data = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+    except ValueError:
+        return False
+    if data[:1] == b"\x01":
+        expanded = _expand_exchange_runs(data[1:])
+        if expanded is None:
+            return False
+        data = b"\x01" + expanded
+    if len(data) < 43 or data[1] not in (3, 4) or data[2:4] != b"\x24\x00":
+        return False
+    if not _EXCHANGE_GUID_RE.fullmatch(data[4:40]):
+        return False
+    store = data[43:]
+    if len(store) != (data[41] | data[42] << 8):
+        return False
+    if data[1] == 4:
+        return len(store) == 16
+    return _is_item_entry_id(store)
+
+
+def _is_item_entry_id(store: bytes) -> bool:
+    """Whether a store id is a folder or message entry id with its fixed bytes.
+
+    Zero flags, the folder (1) or message (7) type and the zero padding after
+    each long-term id leave no free stretch longer than 22 bytes, about 30
+    base64 characters, so no 40-char key fits in one.
+    """
+    if len(store) not in (46, 70) or store[:4] != b"\0\0\0\0":
+        return False
+    kind = b"\x07\x00" if len(store) == 70 else b"\x01\x00"
+    pads = store[44:46] + store[68:70]
+    return store[20:22] == kind and pads == b"\0" * len(pads)
+
+
+# Slack: a workspace, enterprise or `app` host; ids are one uppercase letter and
+# 7-11 uppercase letters or digits, a message is `p` and 16 digits.
+_SLACK_HOST = r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,2}"
+_SLACK_ID = r"[A-Z][A-Z0-9]{7,11}"
+_SLACK_MESSAGE = r"/p[0-9]{16}"
+_SLACK_ROUTE = _SLACK_HOST + r"slack\.com/client/" + _SLACK_ID + r"/" + _SLACK_ID + _SLACK_MESSAGE
 _DOCUMENT_LINK_RE = re.compile(
     r"(?<![A-Za-z0-9+.-])https://(?:"
     r"docs\.google\.com/(?:document|spreadsheets|presentation|drawings|forms)/"
@@ -728,7 +864,12 @@ _DOCUMENT_LINK_RE = re.compile(
     r"(?:/[A-Za-z0-9+%._~-]{1,255})?)"
     r"|(?:www\.)?plantuml(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:/plantuml)?/(?:png|svg|txt|uml)/"
     r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
-    r")/?(?![A-Za-z0-9+/_-])"
+    r"|(?P<outlook>outlook\.(?:office\.com|office365\.com|live\.com|cloud\.microsoft)/(?:"
+    r"mail/(?:[0-9]{1,2}/)?(?:" + _OUTLOOK_FOLDER + r")?id/"
+    r"|mail/deeplink/(?:compose|read)/"
+    r"|calendar/(?:[0-9]{1,2}/)?item/"
+    r"|calendar/deeplink/read/"
+    r")" + _OUTLOOK_ITEM_ID + r")|" + _SLACK_ROUTE + r")/?(?![A-Za-z0-9+/_-])"
 )
 _PLANTUML_ALPHABET = {
     c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
