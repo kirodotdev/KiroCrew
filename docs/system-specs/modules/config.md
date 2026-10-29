@@ -3984,7 +3984,13 @@ sidebar (and the folder pickers) through the shared `GET /api/config/kirocrew`
 query, and the `kirocrew-dashboard` MCP server's `chat_folder_tree`, which reads the
 same `config.json` through the loader (the HTTP route is cookie-only) and lists
 folders in the order the sidebar draws them so an agent can pick a `before`/`after`
-anchor from it (see `docs/architecture/mcp.md`). Written only through the
+anchor from it (see `docs/architecture/mcp.md`). One browser-local view sits on
+top of that order and the tool cannot see it: **Move folders with unread chats to
+the top** (`mc-sidebar-folders-unread-first` in localStorage, off by default) draws
+folders holding an unread chat first, newest unread first, and the rest in the
+mode's order. It writes no `order` and no `folder_sort`, so the stored order an
+agent reads stays the one a drag or `chat_folder_move` writes; the tool's
+description says the sidebar may lift unread folders above it. Written only through the
 `PATCH /api/config/kirocrew` allowlist (`dashboard.folder_sort`, enum
 `FOLDER_SORT_MODES`); the loader reads anything outside that set as `custom`.
 Choosing a mode is a VIEW change — no folder's stored `order` is rewritten — so

@@ -12828,6 +12828,8 @@
       "folder_order_reorder_note": "폴더는 사용자 지정 순서에서만 끌어서 배치할 수 있습니다",
       "folder_order_switch_custom": "사용자 지정으로 전환",
       "folder_order_unstamped_note": "날짜가 기록되기 전에 만든 폴더에는 날짜가 없으며, 사용자 지정 순서로 마지막에 표시됩니다",
+      "folder_order_unread_first": "읽지 않은 채팅이 있는 폴더를 맨 위로 이동",
+      "folder_order_unread_first_note": "켜져 있는 동안에는 폴더를 끌어 정렬할 수 없습니다. 정렬하려면 끄세요",
       "sort_sessions_by": "세션 정렬 기준",
       "sort_newest": "최신순",
       "sort_oldest": "오래된순",

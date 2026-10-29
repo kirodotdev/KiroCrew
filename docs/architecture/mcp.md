@@ -4338,6 +4338,12 @@ are checked against one artifact. Digits are ASCII `0-9` on both sides (never
 value without ever becoming a number, for the same reason the name compare never
 folds outside `A`-`Z`.
 
+The sidebar's browser-local **Move folders with unread chats to the top** view is
+the one place the drawn order can differ from the listing: when the person turns it
+on, folders holding an unread chat are drawn first. It lives in localStorage, so
+the tool cannot read it, and its description says so instead. It writes no `order`
+and no `folder_sort`, so an anchor still lands in the stored order the tool lists.
+
 The tool's header line names the active mode (`folder order: name`). A POSITION is
 still a stored-order concept: the placement helpers compute a `before`/`after` gap in
 the custom order whatever the mode, so when the mode is not `custom` the listing says

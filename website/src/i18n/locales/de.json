@@ -13035,6 +13035,8 @@
       "folder_order_reorder_note": "Ordner lassen sich nur in der eigenen Reihenfolge per Ziehen anordnen",
       "folder_order_switch_custom": "Auf „Eigene“ wechseln",
       "folder_order_unstamped_note": "Ordner, die vor der Aufzeichnung von Daten angelegt wurden, haben kein Datum; sie stehen zuletzt, in deiner eigenen Reihenfolge",
+      "folder_order_unread_first": "Ordner mit ungelesenen Chats nach oben verschieben",
+      "folder_order_unread_first_note": "Ordner lassen sich nicht ziehen, solange dies an ist; zum Umsortieren ausschalten",
       "sort_sessions_by": "Sitzungen sortieren nach",
       "sort_newest": "Neueste",
       "sort_oldest": "Älteste",

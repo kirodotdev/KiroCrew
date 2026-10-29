@@ -6145,6 +6145,8 @@
       "folder_order_reorder_note": "Folders can be dragged into place in Custom order only",
       "folder_order_switch_custom": "Switch to Custom",
       "folder_order_unstamped_note": "Folders made before dates were recorded have no date; they come last, in your Custom order",
+      "folder_order_unread_first": "Move folders with unread chats to the top",
+      "folder_order_unread_first_note": "Folders cannot be dragged into place while this is on",
       "sort_sessions_by": "Sort sessions by",
       "clear_named_filter": "Clear {{filter}} filter",
       "pause_all_filters": "Pause all filters",

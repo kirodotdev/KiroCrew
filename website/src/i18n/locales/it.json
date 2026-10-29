@@ -13242,6 +13242,8 @@
       "folder_order_reorder_note": "Le cartelle si possono trascinare al loro posto solo nell’ordine personalizzato",
       "folder_order_switch_custom": "Passa a Personalizzato",
       "folder_order_unstamped_note": "Le cartelle create prima che le date venissero registrate non hanno data; vengono per ultime, nel tuo ordine personalizzato",
+      "folder_order_unread_first": "Sposta in alto le cartelle con chat non lette",
+      "folder_order_unread_first_note": "Le cartelle non si possono trascinare mentre questa opzione è attiva; disattivala per riordinarle",
       "sort_sessions_by": "Ordina le sessioni per",
       "sort_newest": "Più recenti",
       "sort_oldest": "Più vecchie",

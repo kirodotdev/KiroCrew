@@ -13242,6 +13242,8 @@
       "folder_order_reorder_note": "Las carpetas solo se pueden arrastrar a su sitio en el orden personalizado",
       "folder_order_switch_custom": "Cambiar a Personalizado",
       "folder_order_unstamped_note": "Las carpetas creadas antes de que se registraran las fechas no tienen fecha; van al final, en tu orden personalizado",
+      "folder_order_unread_first": "Mover arriba las carpetas con chats sin leer",
+      "folder_order_unread_first_note": "Las carpetas no se pueden arrastrar mientras esto esté activo; desactívalo para reordenarlas",
       "sort_sessions_by": "Ordenar sesiones por",
       "sort_newest": "Más recientes",
       "sort_oldest": "Más antiguas",
