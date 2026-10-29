@@ -248,9 +248,18 @@ def _read_global_mcps() -> Any:
     Blocking file I/O: the probe and the listing handlers call it through
     ``asyncio.to_thread``, so a slow home directory stalls only a worker
     thread. A missing or unparsable file reads as ``{}``.
+
+    The read retries the Windows window in which a writer's ``os.replace``
+    makes the open fail with ``PermissionError``. A ``PermissionError`` that
+    outlasts the retry propagates: the listing routes answer it with a
+    retryable 503, because folding it into ``{}`` would show every server as
+    enabled mid-write.
     """
+    from kiro_crew.atomic_write import read_bytes_with_retry
+
     try:
-        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
+        raw = read_bytes_with_retry(_GLOBAL_MCP_JSON).decode("utf-8")
+        data = loads_mcp_config(raw, jsonc=True)
         return data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
@@ -502,7 +511,13 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # here. See the block above the return.
 
     # Read global mcp.json for disabled state
-    global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    try:
+        global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    except PermissionError:
+        logger.warning("GET /api/mcp: mcp.json stayed unreadable after retries", exc_info=True)
+        return web.json_response(
+            {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+        )
     # Kiro Crew-scope entries: disabled state (consent-disabled installs and
     # custom adds live only here) + which rows the JSON editor can manage.
     # Off the loop, like the probe and probe-cache sites: the helper is blocking
@@ -633,7 +648,15 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     # Kiro Crew / default: every scope, through the one launch predicate.
     from kiro_crew.mcp_discovery import list_servers  # noqa: F811
 
-    global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    try:
+        global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    except PermissionError:
+        logger.warning(
+            "GET /api/mcp/active: mcp.json stayed unreadable after retries", exc_info=True
+        )
+        return web.json_response(
+            {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+        )
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     servers = list_servers()
     result: list[dict] = []
@@ -690,7 +713,15 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     except Exception:
         logger.debug("shareability evaluation failed; probe result unaffected", exc_info=True)
     # Read global mcp.json for enabled/disabledTools state
-    global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    try:
+        global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    except PermissionError:
+        logger.warning(
+            "POST /api/mcp/probe: mcp.json stayed unreadable after retries", exc_info=True
+        )
+        return web.json_response(
+            {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+        )
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     result: list[dict[str, Any]] = []
     for s in servers:
