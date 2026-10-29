@@ -95,10 +95,14 @@ class TestDiedReplacementWording:
 
     def test_the_owner_is_only_looked_up_when_the_port_answers(self, capsys):
         with patch("kiro_crew.cli_server._config_dir_owner") as mock_desktop:
-            readiness.TestRestartReadinessVerdict()._drive(
+            code, _sel, _url = readiness.TestRestartReadinessVerdict()._drive(
                 poll=1, ready_status=0, marker_pid=[None, None]
             )
         mock_desktop.assert_not_called()
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "Nothing is serving port" in out
+        assert "owns" not in out
 
 
 class TestConfigDirOwner:

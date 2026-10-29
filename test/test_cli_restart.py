@@ -1019,7 +1019,8 @@ class TestRestart:
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway(6776)
+            spawned = _spawn_detached_gateway(6776)
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == [
             "/usr/local/bin/kirocrew",
             "gateway",
@@ -1027,7 +1028,7 @@ class TestRestart:
             "6776",
         ]
 
-    def test_restart_passes_resolved_port_to_spawn(self, tmp_path, monkeypatch):
+    def test_restart_passes_resolved_port_to_spawn(self, tmp_path, monkeypatch, capsys):
         """`restart` with no --port must hand its resolved port to the child."""
         from kiro_crew import cli_server
 
@@ -1051,6 +1052,7 @@ class TestRestart:
         ):
             cli_server._restart(None)
         assert mock_spawn.call_args.args[0] == 6776
+        assert "Started detached gateway (pid 1234)" in capsys.readouterr().out
 
     def test_spawn_detached_gateway_uses_kirocrew_bin(self, tmp_path, monkeypatch):
         # When ``kirocrew`` is on PATH, the detached child must invoke it
@@ -1110,7 +1112,8 @@ class TestRestart:
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway()
+            spawned = _spawn_detached_gateway()
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == [str(own), "gateway"]
 
     def test_spawn_detached_gateway_ignores_non_kirocrew_argv0(self, tmp_path, monkeypatch):
@@ -1130,7 +1133,8 @@ class TestRestart:
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway()
+            spawned = _spawn_detached_gateway()
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == ["/usr/local/bin/kirocrew", "gateway"]
 
     def test_spawn_detached_gateway_ignores_missing_argv0_path(self, tmp_path, monkeypatch):
@@ -1147,7 +1151,8 @@ class TestRestart:
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway()
+            spawned = _spawn_detached_gateway()
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == ["/usr/local/bin/kirocrew", "gateway"]
 
     def test_spawn_detached_gateway_absolutizes_relative_argv0(self, tmp_path, monkeypatch):

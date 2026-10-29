@@ -964,8 +964,13 @@ class TestArtifactCli:
 class TestPodDispatch:
     def test_pod_delegates_to_verb_layer(self) -> None:
         args = _ns(pod_action="ls")
-        with patch("kiro_crew.pod.cli.dispatch") as dispatch:
+        # The verb layer's exit status must reach the shell unchanged.
+        with (
+            patch("kiro_crew.pod.cli.dispatch", side_effect=SystemExit(3)) as dispatch,
+            pytest.raises(SystemExit) as exc,
+        ):
             cc._pod(args)
+        assert exc.value.code == 3
         dispatch.assert_called_once_with(args)
 
 
@@ -1237,7 +1242,7 @@ class TestRunEval:
 
     @pytest.mark.asyncio
     async def test_all_scenarios_loads_the_whole_directory(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
         scenarios = [_scenario("a"), _scenario("b")]
@@ -1248,10 +1253,13 @@ class TestRunEval:
             await cc._run_eval(_ns(all_scenarios=True, scenarios=None, judge=False))
         assert loader.call_args[0][0].name == "scenarios"
         h.runner.run_scenarios.assert_awaited_once_with(scenarios)
+        out = capsys.readouterr().out
+        assert "Running: a, b (4 turns)" in out
+        assert "Overall: 1/2 scenarios passed" in out
 
     @pytest.mark.asyncio
     async def test_named_scenario_is_resolved_by_extension(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
         with (
@@ -1262,6 +1270,8 @@ class TestRunEval:
                 _ns(all_scenarios=False, scenarios=["memory_recall_basic"], judge=False)
             )
         assert ld.call_args[0][0].name == "memory_recall_basic.json"
+        out = capsys.readouterr().out
+        assert "Running: named" in out and "Overall: 1/1 scenarios passed" in out
 
     @pytest.mark.asyncio
     async def test_unknown_scenario_lists_available_and_returns(
