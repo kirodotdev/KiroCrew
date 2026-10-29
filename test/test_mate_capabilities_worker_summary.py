@@ -372,3 +372,30 @@ def test_a_glob_entry_withholds_remove_on_a_tool_it_still_grants(monkeypatch, se
     assert tools["@notes/write_note"]["remove"] is None
     assert tools[glob]["remove"] == {"section": section, "id": glob}
     assert file_spec[section] == [glob, "@notes/write_note"]
+
+
+def test_a_flat_listed_app_skill_the_base_app_wildcard_grants_comes_with(monkeypatch, tmp_path):
+    """An app skill listed under its flat link is granted by ``<app>/*/SKILL.md``."""
+    from kiro_crew.skills import skills_dir
+    from kiro_crew.testing.links import make_dir_link
+
+    root = skills_dir()
+    target = tmp_path / "bundle" / "a-first"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("x", encoding="utf-8")
+    (root / "app").mkdir(parents=True)
+    make_dir_link(root / "a-first", target)
+    make_dir_link(root / "app" / "a-first", target)
+    wildcard = f"skill://{root.as_posix()}/app/*/SKILL.md"
+    flat = f"skill://{root.as_posix()}/a-first/SKILL.md"
+    base = {"mcpServers": {}, "tools": [], "resources": [wildcard]}
+    file_spec = {"resources": [flat]}
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, file_spec))
+    monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: merged)
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, file_spec))
+    _patch_base(monkeypatch, base)
+
+    rows = mate_capabilities.worker_summary("ben", {"a-first": flat})["rows"]
+    skills = {row["id"]: row for row in rows if row["section"] == "skills"}
+    assert skills["a-first"]["state"] == "inherited"
+    assert skills["a-first"]["remove"] is None

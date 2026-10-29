@@ -384,7 +384,12 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         from kiro_crew.agent_sdk.mcp_refs import entry_reaches
         from kiro_crew.config.loader import default_project_dir
         from kiro_crew.mate_worker import MATE_WORKER_AGENT, worker_additions
-        from kiro_crew.skill_runtime.catalog import _matches_any, _with_canonical_globs
+        from kiro_crew.skill_runtime.catalog import (
+            _alias_matches,
+            _matches_any,
+            _with_canonical_globs,
+        )
+        from kiro_crew.skills import skills_dir
 
         _path, file_spec = _load_spec(member)
         base = agent_specs.load_agent_spec(mate_agents_dir(), MATE_WORKER_AGENT)
@@ -406,7 +411,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
                 _skill_key(uri)
                 for uri in skill_uris
                 if (path := expand_skill_uri(uri, skill_path, project_dir=project))
-                and _matches_any(path, globs)
+                and (_matches_any(path, globs) or _alias_matches(Path(path), globs, [skills_dir()]))
             }
 
         base_skills = _granted_skills(_strs(base.get("resources"))) | set(_strs(base.get("skills")))
