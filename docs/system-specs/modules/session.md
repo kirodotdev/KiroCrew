@@ -3908,6 +3908,26 @@ so absence clears it.
   callback that does not survive the process. `meta` rides along verbatim,
   because it holds the admission-time containment snapshot the drain
   re-validates against and an entry without one fails closed.
+- **An agent-origin send is not a person's.** A `POST /api/chat` body that
+  carries the key `turn_origin` (`dashboard/agent_origin.py`; `"agent"` is the one defined value
+  and any other value reads the same) is how a hub conductor's send to a remote
+  worker arrives (rfc-conductor-remote-dispatch §4). `chat_send` folds it into
+  one `_person_send` value with the app-token test, so the send is handled as
+  a send no person typed: `_directive_user_origin` False on the started turn,
+  the queued entry and the sub-agent hold, the `crew` actor on the turn, the
+  entries and the row (so `model.route` and the linked-thread echo skip it), no
+  `_human_seen` attendance, no `HUMAN_TURN_META_KEY` on its row, no responsive
+  path, no `message.steer` decision, no autonudge "user wins", no guide-tab
+  note, Slack auto-link, edition observer or user-session count. Its text gets
+  the credential and exfiltration-URL redaction the queue drain gives a
+  non-user entry, on the `user` row and the turn input alike. A `steer` on
+  it is refused as an app's is: it queues without the act-now intent and does
+  not skip the sub-agent hold, because a steer would put its text inside the
+  person's running turn, whose own `_directive_user_origin` the turn's
+  directives keep reading. The mark only removes; app-scope checks still read
+  the app token. Because the mark only removes, it needs no switch and no
+  proof of its writer; a body without the key takes exactly the path it always
+  did.
 - **Provenance does NOT survive the restart, and that is a security property.**
   `_directive_user_origin` / `_directive_channel_origin` record that an entry's
   words came from an authenticated human, and the drain reduces the consumed

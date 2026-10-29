@@ -174,9 +174,10 @@ async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict 
     composer's default have always taken.
 
     Called for a send the dashboard's own human made while a turn is running, and
-    nowhere else (the busy branch's ``not request_app`` conjunct): an app token, an
+    nowhere else (the busy branch's ``_person_send`` conjunct): an app token, an
     integration or a cron has nobody watching the reply, and every such send
-    already falls through to the fail-closed queue. Consent and sampling are the
+    already falls through to the fail-closed queue; an agent-origin send takes the
+    manual steer path as a non-person steer. Consent and sampling are the
     seam's own gates, re-checked inside ``decide``.
 
     Never raises except cancellation. The seam may cost an observation and must
@@ -400,7 +401,25 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # Whether a PERSON typed this send. An app token never did, and neither did a
+    # hub conductor's send marked agent-origin (`agent_origin`), whose turn is
+    # the `crew` actor's. Every
+    # person-only grant below reads `_person_send`; the app-scope checks keep
+    # reading `request_app` as before.
+    from kiro_crew.dashboard.agent_origin import send_is_agent_origin
+
+    _agent_origin = send_is_agent_origin(body)
+    _person_send = not request.get("app", "") and not _agent_origin
     message = body.get("message", "").strip()
+    if _agent_origin and isinstance(message, str):
+        # Not the session's own human's words, so the same redaction the queue
+        # drain gives a non-user entry (`queue_drain`, `deliver_as_typed`): the
+        # `user` row is served unredacted, and this text becomes both that row
+        # and the turn's input, here as on the queued path.
+        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+        message, _ = redact_exfiltration_urls(message)
+        message, _ = redact_credentials(message)
     agent = body.get("agent", "")
     slot_name = body.get("slot")
     color_theme = body.get("color_theme", "")
@@ -429,7 +448,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # session's own human (an app token), so every later read of
             # `user_meta` -- immediate row, queue entry, hold entry, frames --
             # carries the same form its text gets.
-            bounded_quote = quote_meta(user_meta, user_origin=not bool(request.get("app", "")))
+            bounded_quote = quote_meta(user_meta, user_origin=_person_send)
             user_meta.pop("quote")
             user_meta.update(bounded_quote)
         if not user_meta:
@@ -458,7 +477,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # tab id and a shipped-catalog tag, only in memory.
     _guide_tab = request.headers.get("X-Guide-Tab")
     _ui_lang = request.headers.get("X-UI-Lang")
-    if _requested_key and (_guide_tab or _ui_lang) and not request.get("app", ""):
+    if _requested_key and (_guide_tab or _ui_lang) and _person_send:
         from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
         if is_owner_dashboard_request(request):
@@ -604,7 +623,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # Human request-layer path: a person sending a chat message. The
             # origin conjunct in state_parts/slot_directory.py still excludes app-token callers. A
             # slot an attested cron opens is not a person's and is not counted.
-            count_user_session=not cron_creator,
+            count_user_session=not cron_creator and _person_send,
         )
     except ValueError as exc:
         sel().log_api_access(
@@ -733,12 +752,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     },
                     status=409,
                 )
-    if not request_app:
+    if _person_send:
         # A dashboard user (no app token) typed into this slot, so a human
         # demonstrably has it open. That restores the full 2h approval
         # window even on an app-owned tab — the deny-fast window is for slots
         # nobody is watching. Only a caller with an EMPTY request_app reaches
-        # here, so an app cannot forge attendance for its own worker.
+        # here, so an app cannot forge attendance for its own worker, and an
+        # agent-origin send proves no attendance either.
         slot._human_seen = True
 
     if slot.agent not in (None, ""):
@@ -917,7 +937,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     from kiro_crew.dashboard import responsive_chat
 
     _responsive_eligible = False
-    if body.get("responsive") is True or steer:
+    # The responsive path records its send as the person's own
+    # (`directive_user_origin=True`), so only a person's send may take it.
+    if _person_send and (body.get("responsive") is True or steer):
         _responsive_eligible = responsive_chat.eligible(
             request,
             slot,
@@ -955,7 +977,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # more conjunct on its condition and the receipt it stamps.
         _auto_strip: dict | None = None
         _auto_queues = False
-        if steer_is_auto(steer) and not request_app and not _responsive_eligible:
+        if steer_is_auto(steer) and _person_send and not _responsive_eligible:
             # The turn the question is ABOUT, captured before the await. The
             # decision is a provider round-trip, so the turn it describes can end
             # while it is in flight -- and an answer about a turn that is gone is
@@ -971,7 +993,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             if slot.task is not _turn_before:
                 _auto_queues = False
                 _auto_strip = None
-        if steer and not request_app and not _auto_queues:
+        # Only a person's send steers. A steer narrows the slot's
+        # `_turn_user_sent` but not the running turn's own `_directive_user_origin`,
+        # which its directives read, so an app's or an agent-origin send queues
+        # as a turn of its own instead.
+        if steer and _person_send and not _auto_queues:
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -999,7 +1025,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 # session's own surface by its authenticated human, which is what
                 # earns a requeued entry the exemption from the drain's LINKED drop.
                 # Stated rather than defaulted, because the default fails closed.
-                user_origin=not bool(request_app),
+                user_origin=_person_send,
                 # Captured HERE, before the RPC suspends, for the same reason the peer
                 # path captures it: the requeue runs in the turn's teardown and a slot
                 # read there folds a mirror linked during the suspension into the
@@ -1051,14 +1077,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             state,
             slot,
             message,
-            directive_user_origin=not bool(request_app),
+            directive_user_origin=_person_send,
             # A queued turn reaches the runner through the DRAIN, so the dispatch
             # keyword this handler passes for an IMMEDIATE send cannot carry the
             # actor here. It rides the entry's meta instead, which is what
             # `_actor_for_queue_items` reads; unstamped, the drain falls back to
             # `user` and files an app's send as a person's. A script cron's
             # `send_to_session` is attested the same way (`cron_creator`).
-            turn_actor="app" if request_app else ("cron" if cron_creator else ""),
+            turn_actor=(
+                "app"
+                if request_app
+                else ("cron" if cron_creator else ("crew" if _agent_origin else ""))
+            ),
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
             attachments=attachment_meta(user_meta),
             quote=quote_meta(user_meta).get("quote"),
@@ -1073,7 +1103,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # duplicate) still means "act now": released past the sub-agent hold
             # when this turn ends. An `auto` send Jev chose to queue is a real
             # queue and waits like one.
-            steer_intent=bool(steer) and not request_app and not _auto_queues,
+            steer_intent=bool(steer) and _person_send and not _auto_queues,
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
@@ -1086,7 +1116,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # releases it after the last sub-agent finishes (see chat_runner _hold_users).
     # Opt-out: if the user explicitly chose steer mode, honour it — start a new
     # turn immediately so the message is processed without waiting for children.
-    # An app on a session it does not own has no opt-out (`steer` is None there).
+    # An app on a session it does not own has no opt-out (`steer` is None there),
+    # and an agent-origin send has none either: it waits like any queued turn.
     _sub_key = effective_session_key(slot)
     _held = subagents_hold_user_messages(state, _sub_key)
     # Messages parked while a child was live stay parked once it is flagged
@@ -1098,7 +1129,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
-    if not steer and (_held or _behind_parked):
+    if not (steer and not _agent_origin) and (_held or _behind_parked):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -1112,18 +1143,20 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_attachments = attachment_meta(user_meta)
         _hold_meta.update(_hold_attachments)
         _hold_meta.update(quote_meta(user_meta))
-        if request_app or cron_creator:
+        if request_app or cron_creator or _agent_origin:
             # Same reason as the busy-slot queue above: this entry is drained
-            # later, so only its meta can name the actor. One stamp for both,
+            # later, so only its meta can name the actor. One stamp for all,
             # the app winning as on the other two arms: a script cron's send is
             # `cron`, an app's is `app` whatever else the request carries.
-            _hold_meta[TURN_ACTOR_META_KEY] = "app" if request_app else "cron"
+            _hold_meta[TURN_ACTOR_META_KEY] = (
+                "app" if request_app else ("cron" if cron_creator else "crew")
+            )
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
-            directive_user_origin=not bool(request_app),
+            directive_user_origin=_person_send,
         )
-        _redacted = queued_text_for_display(message, user_origin=not bool(request_app))
+        _redacted = queued_text_for_display(message, user_origin=_person_send)
         warn_if_not_durable(slot._queue, qid, slot.key)
         # Start the durable write here too, not only in the busy-slot branch.
         # This branch holds an IDLE slot, so no drain is coming to write the
@@ -1258,12 +1291,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
     # callers without a correlation id keep their existing delivery contract.
     _user_row_meta = _redact_meta(user_meta) if user_meta else {}
-    if user_meta and not request_app and isinstance(user_meta.get("quote"), dict):
+    if user_meta and _person_send and isinstance(user_meta.get("quote"), dict):
         # The human's own quote record stays as typed, like the row's content
         # it must byte-match (`_redact_meta_for_role` keeps the same rule on
         # every later persist and emit); an app's was redacted at the bound.
         _user_row_meta["quote"] = user_meta["quote"]
-    if not request_app:
+    if _person_send:
         # A PERSON typed this. Marked explicitly rather than inferred, because the
         # row's role and presentation class cannot tell it apart from a turn the
         # gateway drives on its own (see history.HUMAN_TURN_META_KEY). An app
@@ -1274,7 +1307,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     else:
         # The queued path stamps the same actor on its entry, which the drain
         # unions onto the row; the title counter reads it off either row.
-        _user_row_meta[TURN_ACTOR_META_KEY] = "app"
+        _user_row_meta[TURN_ACTOR_META_KEY] = "app" if request_app else "crew"
     _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
     _user_mid = _user_row.get("meta", {}).get("mid")
     if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
@@ -1293,7 +1326,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # LLM titling is kicked off below, before _run_chat.
 
     # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
-    responsive_chat.notify_user_input(request, slot)
+    responsive_chat.notify_user_input(request, slot, person=_person_send)
 
     # Drain stale pending messages from previous turns that completed
     # after their SSE reader disconnected. Must happen BEFORE _run_chat
@@ -1321,7 +1354,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         state._background_tasks.add(_at)
         _at.add_done_callback(state._background_tasks.discard)
 
-    _reserve_turn_admission = not request_app
+    _reserve_turn_admission = _person_send
     if _reserve_turn_admission:
         slot._turn_admission_reserved = True
     try:
@@ -1362,7 +1395,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # companion uses this to auto-ingest doc links pasted into chat. The public
         # Default is a no-op. Guarded so an observer error never blocks the turn;
         # deferred context read via the sel.py pattern (no platform import at load).
-        responsive_chat.observe_user_message(request, message)
+        if not _agent_origin:
+            responsive_chat.observe_user_message(request, message)
 
         # An unattended app-owned turn runs under the background concurrency
         # cap; run_background_turn passes an attended slot straight through, so the
@@ -1381,7 +1415,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # an app-authored send out of the ledger's ``user`` bucket: the actor
         # resolver's fallback is ``user``, so a site that observes an app and stays
         # silent records a person who never typed anything.
-        _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
+        _turn_kwargs: dict = {"_directive_user_origin": _person_send}
         if request_app:
             _turn_kwargs["_turn_actor"] = "app"
         elif cron_creator:
@@ -1389,6 +1423,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # the cron's turn, not a person's, so it is neither filed under
             # `user` nor quoted into a linked thread as if someone typed it.
             _turn_kwargs["_turn_actor"] = "cron"
+        elif _agent_origin:
+            # A hub conductor's send (rfc-conductor-remote-dispatch): a crew's
+            # turn, not a person's, so it is not filed under `user` either.
+            _turn_kwargs["_turn_actor"] = "crew"
         if _accepted_attachments:
             _turn_kwargs["_attachments"] = _accepted_attachments
             # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
