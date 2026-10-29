@@ -242,7 +242,7 @@ def _index_ledger_safely() -> dict[str, int]:
         # disabled persistence switch must leave no write-side effect behind.
         # memory.writes_enabled stops it the same way as memory.persistence_enabled.
         if memory_writes_off_key(cfg.memory) is not None:
-            return {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0}
+            return {"scanned": 0, "written": 0, "skipped": 0}
         store_obj = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
         store_obj.init()
         return ledger_index.import_pending(store_obj)
@@ -251,7 +251,7 @@ def _index_ledger_safely() -> dict[str, int]:
             "ops-mission-control: ledger indexing unavailable; hygiene still ran",
             exc_info=True,
         )
-        return {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0}
+        return {"scanned": 0, "written": 0, "skipped": 0}
     finally:
         if store_obj is not None:
             try:

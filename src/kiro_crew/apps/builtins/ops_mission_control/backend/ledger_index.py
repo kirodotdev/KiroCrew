@@ -20,12 +20,14 @@ entries must not re-embed 100k rows. Two guards, in cost order:
    deleted cursor, a restored backup, a teammate's entry that arrived by merge).
 
 Embedding is **deferred**, not inline. ``write_episodic(defer_embedding=True)`` stores
-the row keyword-searchable immediately and leaves the vector NULL; one
-``backfill_missing_embeddings()`` sweep at the end embeds the batch and rebuilds FAISS
-once. Inline embedding costs ~0.4s per 2000-char chunk on CPU, so a 10k import would
-hold the caller for over an hour; deferral turns that into one batched pass. The tradeoff
-is real and documented upstream: a deferred row is absent from *vector* search until the
-sweep runs, so this module always runs it.
+the row keyword-searchable immediately and leaves the vector NULL. Inline embedding
+costs ~0.4s per 2000-char chunk on CPU, so a 10k import would hold the caller for over
+an hour. This module does **not** embed the deferred rows itself: the store it is handed
+has no ``embed_fn``, so a sweep here could only ever return 0. The gateway's paced
+member-memory repair loop (``slack/gateway.py`` ``_repair_member_memory``) binds its
+own embedder and backfills NULL vectors in the same on-disk store, a bounded batch per
+visit. The tradeoff is real: a deferred row is absent from *vector* search (it stays
+keyword-searchable) until that repair loop reaches it.
 
 Deferral also skips the store's similarity dedup (it needs a vector), which is exactly
 why the two guards above are this module's job rather than the store's.
@@ -132,16 +134,17 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
     real SQLite/FAISS pair, and so a caller that already holds the shared store does not
     open a second connection to the same files.
 
-    Returns counts: ``{"scanned", "written", "skipped", "embedded"}``. Entries a full
-    store refused count in ``scanned`` but in none of ``written``, ``skipped`` or
-    ``embedded``, and stay off the cursor, so a later import
+    Returns counts: ``{"scanned", "written", "skipped"}``. Rows are written with a NULL
+    vector; the gateway's repair loop embeds them later (see the module docstring).
+    Entries a full store refused count in ``scanned`` but in neither ``written`` nor
+    ``skipped``, and stay off the cursor, so a later import
     retries them once the cap is raised or an unrelated delete (an operator delete,
     stale retirement) drops the active count below it; cap eviction by other writers
     always leaves the count AT the cap. Never raises —
     the index is an enhancement to matching, and failing to build it must not fail the
     cycle that asked for it.
     """
-    result = {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0}
+    result = {"scanned": 0, "written": 0, "skipped": 0}
     try:
         entries = ledger.read_entries()
     except Exception:  # noqa: BLE001 — a ledger fault is reported, never fatal here
@@ -164,7 +167,7 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
             result["skipped"] += 1
             continue
         try:
-            # deferred: the batch is embedded once by the sweep below.
+            # deferred: the gateway's repair loop embeds the row later.
             # preserve_existing: import is merge-only — it must never tombstone a row
             # another writer owns, which is what this flag exists for upstream.
             #
@@ -212,24 +215,15 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
         _write_cursor(cursor | newly)
 
     if result["written"]:
-        try:
-            # PACED, even though a caller blocks on this: the only caller is the
-            # ledger-hygiene CRON (`routes.py:_handle_ledger_hygiene`, "Called by
-            # the ledger-hygiene cron"; no UI path reaches it). A cron holds the
-            # response open but nobody attends it, and the PR's rule is
-            # attendance, not blocking. Left unpaced this was a side door around
-            # the whole fix: the sweep is whole-corpus, so a post-migration
-            # backlog would be re-embedded flat out — at the full interactive
-            # thread count, since `pace=False` also selects the thread class — on
-            # the next daily tick.
-            result["embedded"] = int(store.backfill_missing_embeddings() or 0)
-        except Exception:  # noqa: BLE001 — rows stay keyword-searchable if this fails
-            logger.exception("ops-mission-control: embedding backfill failed")
+        # No embedding sweep here: the store the hygiene route hands over has no
+        # `embed_fn`, so `backfill_missing_embeddings()` would return 0 without
+        # embedding anything. The gateway's paced repair loop embeds these
+        # NULL-vector rows.
         sel().log_api_access(
             caller="core:ops-mission-control",
             operation="ledger_index_import",
             outcome="success",
-            resources=f"written={result['written']} embedded={result['embedded']}",
+            resources=f"written={result['written']}",
         )
     return result
 
