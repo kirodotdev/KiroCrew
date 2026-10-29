@@ -17,8 +17,9 @@ import en from '../i18n/locales/en.json'
  * the token. Pinned here: token → copy; a pending retry renders as a soft
  * NoticeCard on BOTH registries (main transcript + app-sdk) and settles to
  * "Connection restored" once an assistant row follows WITHIN the same recovery,
- * or to the past-tense "Connection interrupted" when a later user turn or a
- * non-ladder error row (the give-up included) closes the window first, so a
+ * or to the past-tense "Connection interrupted" when a non-ladder error row (the
+ * give-up included) closes the window first (a later user turn stops the scan
+ * and leaves it pending), so a
  * failed retry never reads "restored" off an unrelated later answer and never
  * stays "retrying…" above its own red give-up; the terminal shape stays a
  * red ErrorCard with the host's Continue affordance intact; token-less history
@@ -88,7 +89,7 @@ describe('resolveTransientNotice', () => {
   })
 
   it('settles to the past-tense "interrupted" when the ladder gives up', () => {
-    // [retrying, giveUp]: the pending row above the red give-up no longer reads
+    // [retrying, giveUp]: the pending row above the red give-up does not read
     // as a retry still in progress — and never as "restored".
     expect(resolveTransientNotice(retrying, [retrying, giveUp], 0)).toEqual(INTERRUPTED)
     expect(resolveTransientNotice(resuming, [resuming, giveUp], 0)).toEqual(INTERRUPTED)
@@ -105,16 +106,28 @@ describe('resolveTransientNotice', () => {
     expect(resolveTransientNotice(retrying, list, 0)).toEqual(INTERRUPTED)
   })
 
-  it('settles an ABANDONED recovery to "interrupted" too, never left pending', () => {
-    // [retrying, user, assistant]: a new turn began with no answer to this one in
-    // between. Every gateway path that drops the re-queued retry writes a give-up
-    // row, so the person moved on; "retrying…" above a later conversation would
-    // claim a retry still running. The answer below belongs to the new turn, so
-    // it is not "restored" either.
+  it('scans past another re-queued recovery row (a dead process) to the outcome it reaches', () => {
+    // The replay lost its process: the gateway appends a token-less
+    // `kind: transient_retry` row and re-queues again. That row is still
+    // recovery, so it neither settles the notice nor hides the later outcome.
+    const processLost = msg('error', { content: '⟳ Connection lost — retrying…', meta: { kind: 'transient_retry' } } as Partial<ChatMessage>)
+    const PENDING = { text: COPY.retrying, card: 'notice', tone: 'warn' }
+    expect(resolveTransientNotice(retrying, [retrying, processLost], 0)).toEqual(PENDING)
+    expect(resolveTransientNotice(retrying, [retrying, processLost, msg('assistant', { content: 'ok' })], 0)?.text).toBe(COPY.restored)
+    expect(resolveTransientNotice(retrying, [retrying, processLost, giveUp], 0)).toEqual(INTERRUPTED)
+  })
+
+  it('leaves an ABANDONED recovery pending: a user row proves neither outcome', () => {
+    // [retrying, user, assistant]: a message typed during the backoff is written
+    // at send time while the pre-token replay is re-queued at the head and still
+    // runs, so the user row does not prove the retry ended ("interrupted" would
+    // be false), and the answer below may belong to the new turn ("restored"
+    // would be unproven). The row keeps its present-tense pending copy.
+    const PENDING = { text: COPY.retrying, card: 'notice', tone: 'warn' }
     const abandoned = [retrying, msg('user', { content: 'hello?' }), msg('assistant', { content: 'hi' })]
-    expect(resolveTransientNotice(retrying, abandoned, 0)).toEqual(INTERRUPTED)
-    // A user row with nothing after it yet closes the window the same way.
-    expect(resolveTransientNotice(resuming, [resuming, msg('user', { content: 'still there?' })], 0)).toEqual(INTERRUPTED)
+    expect(resolveTransientNotice(retrying, abandoned, 0)).toEqual(PENDING)
+    expect(resolveTransientNotice(retrying, [retrying, msg('user', { content: 'still there?' })], 0)).toEqual(PENDING)
+    expect(resolveTransientNotice(resuming, [resuming, msg('user', { content: 'x' })], 0)?.text).toBe(COPY.resuming)
   })
 
   it('scopes the scan to THIS recovery: a failed retry never reads "restored" off a later turn', () => {

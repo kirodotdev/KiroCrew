@@ -1,6 +1,6 @@
-/** Real-browser evidence for #10141 on capture/transient-notice-settle.html:
+/** Real-browser evidence on capture/transient-notice-settle.html:
  * a pending transient-retry notice settles to the past-tense "Connection
- * interrupted" when the ladder gives up (or the person moves on), and the
+ * interrupted" when the ladder gives up (or another error ends it), and the
  * resuming notice names the answer it is finishing.
  *
  * Serves the dev build itself (vite in-process, loopback, ephemeral port).
@@ -52,17 +52,17 @@ for (const theme of ['dark', 'light']) {
     tone: await notice(id).getAttribute('data-tone'),
   })
   const giveUp = await read('give-up')
-  const abandoned = await read('abandoned')
+  const other = await read('other')
   const resuming = await read('resuming')
   const restored = await read('restored')
-  console.log(theme, JSON.stringify({ giveUp, abandoned, resuming, restored }))
+  console.log(theme, JSON.stringify({ giveUp, other, resuming, restored }))
   if (BEFORE) {
     check(`[${theme}] before: give-up scene still reads retrying`, /retrying…/.test(giveUp.text) && giveUp.tone === 'warn')
-    check(`[${theme}] before: abandoned scene still reads retrying`, /retrying…/.test(abandoned.text))
+    check(`[${theme}] before: other-error scene still reads retrying`, /retrying…/.test(other.text))
     check(`[${theme}] before: resuming copy is the old one`, /resuming…/.test(resuming.text))
   } else {
     check(`[${theme}] give-up scene reads interrupted (info)`, /Connection interrupted/.test(giveUp.text) && giveUp.tone === 'info')
-    check(`[${theme}] abandoned scene reads interrupted (info)`, /Connection interrupted/.test(abandoned.text) && abandoned.tone === 'info')
+    check(`[${theme}] other-error scene reads interrupted (info)`, /Connection interrupted/.test(other.text) && other.tone === 'info')
     check(`[${theme}] resuming names its answer (warn)`, /finishing this answer…/.test(resuming.text) && resuming.tone === 'warn')
   }
   check(`[${theme}] restored control unchanged`, /Connection restored/.test(restored.text) && restored.tone === 'info')
