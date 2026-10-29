@@ -15510,7 +15510,8 @@
         "sort_label": "Ordina competenze",
         "sort_default": "Ordine predefinito",
         "sort_most_used": "Più usato",
-        "sort_recently_used": "Usato di recente"
+        "sort_recently_used": "Usato di recente",
+        "sort_newest_first": "Più recenti prima"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenzioni Markdown che l’agente legge. La modalità di inclusione di ogni file decide quando: sempre, solo per i file corrispondenti o su richiesta. I file globali stanno in ~/.kiro/steering e valgono ovunque; quelli del workspace stanno in <project>/.kiro/steering e valgono solo per quel progetto.",

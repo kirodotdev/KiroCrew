@@ -18,7 +18,7 @@ import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
-import { SKILL_SORTS, sortSkills, type SkillSort } from './skillSort'
+import { SKILL_SORTS, pendingCreatedAt, sortByCreated, sortSkills, type SkillSort } from './skillSort'
 import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
 
@@ -477,7 +477,7 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
-    <PendingSkillsPanel />
+    <PendingSkillsPanel sort={skillSort} />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
@@ -528,6 +528,7 @@ export default function SkillsTab() {
               i18nT('pages.overview.skillsTab.sort_default'),
               i18nT('pages.overview.skillsTab.sort_most_used'),
               i18nT('pages.overview.skillsTab.sort_recently_used'),
+              i18nT('pages.overview.skillsTab.sort_newest_first'),
             ]}
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
@@ -1157,7 +1158,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   )
 }
 
-function PendingSkillsPanel() {
+function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1219,6 +1220,12 @@ function PendingSkillsPanel() {
   // Stable identity per fetch: the prune effect below depends on this, and a
   // fresh array every render would re-run it continuously.
   const pending: PendingSkill[] = useMemo(() => data?.pending ?? [], [data])
+  // Display order only: candidates carry no usage, so only Newest first
+  // reorders them; every lookup by slug keeps reading `pending`.
+  const shownPending = useMemo(
+    () => (sort === 'created' ? sortByCreated(pending, pendingCreatedAt) : pending),
+    [pending, sort],
+  )
   // Why the last Approve click was refused, per slug. Server prose stays out of
   // the UI: the coded body picks a catalog message, and the findings report
   // renders next to the card so the user learns WHAT was flagged.
@@ -1620,7 +1627,7 @@ function PendingSkillsPanel() {
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
-            {pending.map(p => (
+            {shownPending.map(p => (
               <PendingCandidateRow
                 key={p.slug}
                 p={p}

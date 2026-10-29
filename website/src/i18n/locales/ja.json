@@ -14998,7 +14998,8 @@
         "sort_label": "スキルの並び替え",
         "sort_default": "標準の順序",
         "sort_most_used": "よく使う順",
-        "sort_recently_used": "最近使った順"
+        "sort_recently_used": "最近使った順",
+        "sort_newest_first": "新しい順"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "エージェントが読む Markdown 規約。適用タイミングは各ファイルのインクルードモードで決まります: 常時、一致するファイルのときだけ、または必要時。グローバルファイルは ~/.kiro/steering にあり、どこでも適用されます。ワークスペースファイルは <project>/.kiro/steering にあり、そのプロジェクトだけに適用されます。",

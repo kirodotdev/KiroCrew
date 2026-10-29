@@ -5251,6 +5251,13 @@ a skill stays in use. The 30-day TTL applies when the ledger loads its file at
 gateway start, so a running gateway keeps counting a key that has been idle for
 longer.
 
+`created_at` is the unix time parsed from the SKILL.md frontmatter's
+`created_at` (auto skills record it when they are written), or `None` when the
+field is absent or unparseable. It never falls back to the file's mtime, which
+an edit, copy or restore moves. The list's Newest first sort orders by it, and
+orders the Pending review queue by each candidate's `.meta.json` `created_at`;
+undated rows keep the listing's own order after the dated ones.
+
 It also carries `owned` — whether the `SKILL.md` sits under the directory
 Kiro Crew owns. A skill reached through `skills.extra_paths` still reports
 `source: kirocrew`, so source alone cannot gate the toggle; the UI hides the

@@ -7131,7 +7131,8 @@
         "sort_label": "Sort skills",
         "sort_default": "Default order",
         "sort_most_used": "Most used",
-        "sort_recently_used": "Recently used"
+        "sort_recently_used": "Recently used",
+        "sort_newest_first": "Newest first"
       },
       "steeringTab": {
         "delete_confirm": "Delete “{{path}}”?",

@@ -14998,7 +14998,8 @@
         "sort_label": "스킬 정렬",
         "sort_default": "기본 순서",
         "sort_most_used": "많이 사용한 순",
-        "sort_recently_used": "최근 사용순"
+        "sort_recently_used": "최근 사용순",
+        "sort_newest_first": "최신순"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "에이전트가 읽는 Markdown 규칙. 언제 적용되는지는 각 파일의 포함 모드가 정합니다: 항상, 일치하는 파일에만, 또는 필요할 때. 전역 파일은 ~/.kiro/steering에 있으며 어디서나 적용되고, 작업 공간 파일은 <project>/.kiro/steering에 있으며 해당 프로젝트에만 적용됩니다.",
