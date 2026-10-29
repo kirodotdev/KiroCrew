@@ -32,7 +32,9 @@ if TYPE_CHECKING:
 async def _should_prevent_sleep(state: DashboardState, port: int) -> bool:
     """Whether the host should be kept awake right now.
 
-    Two independent reasons, either sufficient on its own:
+    Three independent reasons, any one sufficient on its own (the third is
+    Shared Crew's: a collaborator is connected or their work is queued or
+    running, ``shared_crew.host_power.shared_use_wants_awake``):
 
     * **A turn is in flight**, and the user opted in via
       ``dashboard.prevent_sleep``. The original reason this poll exists.
@@ -76,6 +78,12 @@ async def _should_prevent_sleep(state: DashboardState, port: int) -> bool:
         logger.debug("prevent-sleep config read failed", exc_info=True)
         return False
     if tailnet_wants_awake and await _tailnet_publish_keeps_awake(port):
+        return True
+    from kiro_crew.shared_crew.host_power import shared_use_wants_awake
+
+    # Shared Crew: teammates lose the Crew when it sleeps, so a connected
+    # collaborator or their queued or running work keeps the host awake.
+    if shared_use_wants_awake(state):
         return True
     if not opted_into_turn_wake:
         return False

@@ -1057,6 +1057,22 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
             "to use the persistent shape."
         )
         _persist = False
+    if _persist and _identity_trusted:
+        from kiro_crew.dashboard.tailnet_proxy_proof import proof_support
+
+        _proof_gap = await asyncio.to_thread(proof_support)
+        if _proof_gap:
+            # A ``require_peer`` session rotates only once the daemon-verified
+            # peer is proven, and this host cannot prove the proxy is
+            # ``tailscaled``. Minting one would hand out a link that can never
+            # be redeemed, so the phone gets the boot-bound shape instead.
+            logger.warning(
+                "dashboard.qr_session_persist_across_restart is on but this host "
+                "cannot prove a tailscale serve connection comes from tailscaled "
+                "(%s), so the phone session stays bound to this gateway process.",
+                _proof_gap,
+            )
+            _persist = False
     if _persist and not _identity_trusted:
         logger.warning(
             "dashboard.qr_session_persist_across_restart is on but tailnet "

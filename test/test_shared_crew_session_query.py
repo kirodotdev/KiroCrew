@@ -2,26 +2,32 @@
 
 The query runs over real catalog rows: sessions are written to a real
 ``ConversationLog`` directory and listed through ``list_sessions``, then filtered
-by ``query_sessions``.
+by ``query_sessions`` and served by ``GET /api/shared-crew/sessions``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.history import ConversationLog
-from kiro_crew.shared_crew import people
+from kiro_crew.shared_crew import people, routes_identity
 from kiro_crew.shared_crew.codec import ContractError
 from kiro_crew.shared_crew.contracts import (
+    ACTOR_REQUEST_KEY,
+    ActorContext,
     AttributionAvailability,
     Principal,
     Provenance,
     SessionAttribution,
     SessionQuery,
+    Transport,
 )
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
 from kiro_crew.shared_crew.session_query import decode_cursor, encode_cursor, query_sessions
@@ -152,6 +158,92 @@ def test_a_cursor_round_trips():
 
 
 # -- The routes ------------------------------------------------------------- #
+
+
+def _actor(p: Principal) -> ActorContext:
+    return ActorContext(principal=p, request_id="r", transport=Transport.HTTP)
+
+
+async def _client(log, *, viewer: Principal, dashboard_user: bool = True, app: str = ""):
+    @web.middleware
+    async def fake_auth(request: web.Request, handler: Any) -> web.StreamResponse:
+        # Stands in for token_auth_middleware's published claims.
+        request["is_dashboard_user"] = dashboard_user
+        request["app"] = app
+        # The viewer came in on the direct listener, which checked the access set.
+        request["auth_tailnet_direct"] = True
+        request[ACTOR_REQUEST_KEY] = _actor(viewer)
+        return await handler(request)
+
+    app_ = web.Application(middlewares=[fake_auth])
+    app_["state"] = SimpleNamespace(conversation_log=log)
+    routes_identity.register(app_)
+    client = TestClient(TestServer(app_))
+    await client.start_server()
+    return client
+
+
+@pytest.mark.asyncio
+async def test_sessions_route_filters_server_side_for_the_authenticated_viewer(catalog):
+    client = await _client(catalog, viewer=BOB)
+    try:
+        # A "me" the client sends is just a filter value; mine is the viewer.
+        resp = await client.get("/api/shared-crew/sessions", params={"creator": "mine"})
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["total_matching"] == 3 and body["hidden_by_filter"] == 7
+        assert body["viewer"]["id"] == BOB.id
+        assert {i["key"] for i in body["items"]} == {
+            "dashboard_b0",
+            "dashboard_b1",
+            "dashboard_b2",
+        }
+        resp = await client.get(
+            "/api/shared-crew/sessions", params={"creator": "all", "limit": "3"}
+        )
+        body = await resp.json()
+        assert len(body["items"]) == 3 and body["total_matching"] == 10 and body["next_cursor"]
+        resp = await client.get("/api/shared-crew/sessions", params={"creator": "bob@example.com"})
+        assert resp.status == 400 and (await resp.json())["code"] == "invalid_filter"
+        resp = await client.get("/api/shared-crew/sessions", params={"cursor": "bm9wZQ=="})
+        assert resp.status == 400 and (await resp.json())["code"] == "invalid_cursor"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dashboard_user,app", [(False, ""), (True, "notes"), (False, "notes")])
+async def test_routes_refuse_callers_other_than_the_dashboard_user(catalog, dashboard_user, app):
+    client = await _client(catalog, viewer=ALICE, dashboard_user=dashboard_user, app=app)
+    try:
+        for path in (routes_identity.SESSIONS_PATH, routes_identity.PEOPLE_PATH):
+            resp = await client.get(path)
+            assert resp.status == 403
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_people_route_separates_observed_from_session_creators(catalog):
+    people.reset_for_tests(clock=iter([100.0, 200.0, 300.0, 400.0]).__next__)
+    people.observe(BOB, "node:b")
+    people.observe(Principal.unknown(), "x")
+    people.observe(Principal.system("internal"), "")
+    client = await _client(catalog, viewer=BOB)
+    try:
+        body = await (await client.get(routes_identity.PEOPLE_PATH)).json()
+    finally:
+        await client.close()
+        people.reset_for_tests()
+    assert body["directory"] == {"state": "unavailable"}
+    assert body["usage_available"] is False
+    by_id = {row["principal"]["id"]: row for row in body["people"]}
+    assert set(by_id) == {ALICE.id, BOB.id}
+    assert by_id[BOB.id]["sources"] == ["observed", "session_creator"]
+    assert by_id[BOB.id]["is_viewer"] is True and by_id[BOB.id]["sessions_created"] == 3
+    # Alice was never seen by this process; she is known only as a creator.
+    assert by_id[ALICE.id]["sources"] == ["session_creator"]
+    assert by_id[ALICE.id]["last_seen_at"] is None and by_id[ALICE.id]["sessions_created"] == 5
 
 
 def test_people_registry_is_bounded_and_drops_the_least_recently_seen():

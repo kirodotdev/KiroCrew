@@ -127,7 +127,11 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 Lessons (`learn_add`) are separate and injected for **every** agent, custom
 included. A lesson with no `repo_scope` applies everywhere; a scoped one reaches
 only sessions whose project is inside that tree. The legacy `scope="workspace"`
-tier never reaches a prompt.
+tier never reaches a prompt. In a Shared Crew every admitted person's lessons and
+preferences land in the one Crew store and reach every session, the owner's
+included; a newer conflicting lesson replaces the older one (see
+[Shared Crew memory changes](../system-specs/modules/shared-crew.md#memory-changes)).
+The stored `written_by` label is never injected.
 
 ### Budgets and caps
 

@@ -19,12 +19,14 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.dashboard import tailnet_owner
 from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
     is_https_request,
     is_loopback,
     is_proxied_request,
+    mark_audit_claimed,
 )
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
@@ -50,14 +52,19 @@ from kiro_crew.dashboard.revocation_gen import (  # noqa: F401  # re-exports
     current_revocation_gen_or_none,
 )
 from kiro_crew.dashboard.tailnet import (
+    REFUSE_NOT_ALLOWED,
     ForwardedPeer,
     TailnetTrust,
+    forwarded_peer_refusal,
     is_forwarded_tailnet_request,
     login_allowed,
     peer_pin_key,
     peer_pin_key_for_claim,
     resolve_forwarded_peer,
 )
+from kiro_crew.dashboard.tailnet_direct import DIRECT_PEER_REQUEST_KEY, DirectGate, GateRef
+from kiro_crew.dashboard.tailnet_direct import refusal_response as tailnet_direct_refusal
+from kiro_crew.dashboard.tailnet_direct import run_with_reverify
 from kiro_crew.dashboard.token_auth_app_scope import _enforce_app_scope, _prime_app_api_allowlist
 from kiro_crew.dashboard.token_auth_callers import (
     _derive_internal_caller_app,
@@ -125,6 +132,7 @@ def token_auth_middleware(
     local_only: bool = True,
     spa_shell_handler: Callable[..., Any] | None = None,
     tailnet_trust: TailnetTrust | None = None,
+    tailnet_direct: DirectGate | GateRef | None = None,
 ) -> Callable[..., Any]:
     """Factory returning aiohttp middleware for token-based dashboard auth.
 
@@ -153,6 +161,15 @@ def token_auth_middleware(
     resolution) behaviour is byte-for-byte the existing token+IP path, except
     for sessions carrying ``require_peer=1``: those explicitly opt out of the
     fallback and fail closed until the daemon verifies an allowed peer.
+
+    *tailnet_direct* is the gate of the direct tailnet listener
+    (:mod:`kiro_crew.dashboard.tailnet_direct`). It decides only requests whose
+    local socket address is one of this machine's tailnet addresses: those are
+    authenticated by the daemon's ``whois`` of the TCP peer and the login
+    allowlist, with no dashboard token. Every other request, loopback and
+    ``tailscale serve`` alike, runs the token flow unchanged. A
+    :class:`~kiro_crew.dashboard.tailnet_direct.GateRef` is read per request,
+    so the gateway can fill it in after the bind.
     """
 
     # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
@@ -207,8 +224,84 @@ def token_auth_middleware(
         valid, uid, reason, app = validate_token_with_app(cookie_token, use_session_exp=True)
         return valid, uid, reason, app, cookie_token, False
 
+    def _current_direct_gate() -> DirectGate | None:
+        if isinstance(tailnet_direct, GateRef):
+            return tailnet_direct.gate
+        return tailnet_direct
+
+    async def _direct_tailnet_gate(
+        request: web.Request, handler: object, gate: DirectGate
+    ) -> tuple[web.StreamResponse | None, object]:
+        """Decide a request on the direct tailnet listener before any token is read.
+
+        Returns ``(response, handler)``. A response is final: a refusal, or the
+        handler's answer for a token-free request the daemon admitted. ``None``
+        hands the request to the token flow, which then also enforces its own
+        credential: that is only an APP token, so an app keeps its scope. A
+        human token or cookie on this listener is ignored, never required.
+        """
+        path = request.path
+        is_ws = (request.headers.get("Upgrade") or "").lower() == "websocket"
+        direct_peer, refusal = await gate.verify(request, fresh=is_ws)
+        if refusal or direct_peer is None:
+            refusal = refusal or "whois_failed"
+            mark_audit_claimed(request)
+            _sel_fn().log_api_access(
+                caller=direct_peer.login if direct_peer is not None else (request.remote or ""),
+                forwarded=is_proxied_request(request),
+                operation="tailnet_direct_auth",
+                outcome="denied",
+                source="token_auth",
+                resources=path,
+                error=refusal,
+            )
+            return tailnet_direct_refusal(request, refusal), handler
+        request[DIRECT_PEER_REQUEST_KEY] = direct_peer
+        # Every response is re-verified while it runs, not only a WebSocket: an
+        # event stream lives as long, and a removed person must lose it too.
+
+        async def _reverified(req: web.Request) -> Any:
+            return await run_with_reverify(req, gate, direct_peer, handler)  # type: ignore[arg-type]
+
+        wrapped: object = _reverified
+        # Machine-to-machine paths stay loopback-only, and the internal secret
+        # is never accepted off loopback.
+        strict = internal_path_matches(path, internal_paths) and not internal_path_matches(
+            path, mixed_internal_paths
+        )
+        if strict or "X-Internal-Secret" in request.headers:
+            mark_audit_claimed(request)
+            _log_auth(request, direct_peer.login, "denied", "tailnet direct: internal path")
+            return _deny(request, "Forbidden"), wrapped
+        query_token = request.query.get("token") or ""
+        if query_token and claims_an_app_unverified(query_token):
+            return None, wrapped
+        # The owner's own Tailscale user gets the owner subject (tailnet_owner).
+        subject, unconfirmed = tailnet_owner.direct_subject(request, gate, direct_peer)
+        if unconfirmed is not None:
+            mark_audit_claimed(request)
+            _log_auth(request, direct_peer.login, "denied", "tailnet direct: confirm required")
+            return unconfirmed, wrapped
+        request["user"] = subject
+        request["app"] = ""
+        request["auth_token"] = ""
+        request["auth_tailnet_direct"] = True
+        request["is_dashboard_user"] = True
+        request["auth_from_query_token"] = False
+        _log_auth(request, direct_peer.login, "granted", "tailnet direct whois")
+        await publish_actor(request, trust=tailnet_trust, serve_peer=None)
+        return await wrapped(request), wrapped  # type: ignore[operator]
+
     @web.middleware
     async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
+        gate = _current_direct_gate()
+        if gate is not None and gate.owns(request):
+            response, handler = await _direct_tailnet_gate(request, handler, gate)
+            if response is not None:
+                return response
+        return await _token_flow(request, handler)
+
+    async def _token_flow(request: web.Request, handler: object) -> web.StreamResponse:
         path = request.path
 
         # A relay-delivered request (``dashboard/kiro_relay``): the relay is its
@@ -273,12 +366,9 @@ def token_auth_middleware(
                 # widening this gate exists to stop, so the "unknown policy"
                 # deny would announce itself and then not happen.
                 #
-                # Distinct from the ordinary enabled path, where an unresolved
-                # peer deliberately falls through (fail-closed on identity,
-                # fail-open on availability): there the operator's allowlist is
-                # KNOWN, so availability is the only thing at stake. Here the
-                # restriction itself is missing, and there is nothing left to be
-                # available for.
+                # Distinct from ``forwarded_peer_refusal`` below, which still
+                # admits a whois-named allowlisted login as Unknown: here the
+                # allowlist itself is missing, so no login can be checked.
                 #
                 # ``is_forwarded_tailnet_request`` is what keeps this from being
                 # a lockout: a local request resolves to no peer for an entirely
@@ -296,6 +386,23 @@ def token_auth_middleware(
                 )
                 _log_auth(request, "", "denied", "tailnet identity policy unreadable")
                 return _deny(request, "tailnet login not allowed")
+            refusal = await forwarded_peer_refusal(request, tailnet_trust, peer)
+            if refusal is not None:
+                # The allowlist fails closed: a forwarded tailnet request that
+                # names no allowed login is refused, never admitted unnamed.
+                _sel_fn().log_api_access(
+                    caller=request.remote or "",
+                    forwarded=True,
+                    operation="tailnet_peer_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error=refusal,
+                )
+                _log_auth(request, "", "denied", f"tailnet identity unverified: {refusal}")
+                if refusal == REFUSE_NOT_ALLOWED:
+                    return _deny(request, "tailnet login not allowed")
+                return _deny(request, "tailnet identity unverified")
         # Audit attribution (RFC §3): when a peer resolved, the trail names a
         # person; otherwise it stays the immediate peer address as today.
         _caller = peer.login if peer is not None else (request.remote or "")

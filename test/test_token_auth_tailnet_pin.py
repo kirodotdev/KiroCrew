@@ -66,6 +66,8 @@ def _tailnet_env(monkeypatch):
     def set_whois(result):
         mock = MagicMock(return_value=(result, False))
         monkeypatch.setattr(tailnet, "_run_json_detail", mock)
+        # The loopback client stands in for the daemon behind ``tailscale serve``.
+        monkeypatch.setattr(tailnet, "loopback_client_is_daemon", lambda *_a: True)
         return mock
 
     yield set_whois
@@ -212,20 +214,16 @@ async def test_xff_injection_from_non_loopback_peer_gets_ip_pin(_tailnet_env) ->
 
 
 @pytest.mark.asyncio
-async def test_daemon_failure_degrades_to_token_ip_path(_tailnet_env) -> None:
-    """Daemon absent/down/timeout → request proceeds on today's token+IP path:
-    fail-closed on identity, fail-open on availability."""
-    from kiro_crew.dashboard import token_auth as _ta
-
+async def test_daemon_failure_refuses_the_forwarded_request(_tailnet_env) -> None:
+    """Daemon absent/down/timeout: the forwarded tailnet request names nobody,
+    so the allowlist refuses it rather than admitting it on the token alone."""
     _tailnet_env(None)  # every whois outcome collapses to None at this seam
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
     token = generate_token("tsuser", ttl_seconds=300)
     resp = await mw(_peer_request(query={"token": token}), _ok_handler)
-    assert resp.status == 200
-    cookie = resp.cookies.get("mc_token_5476")
-    key, _exp, proxied = _ta._state._peer_bindings[_ta._token_pin_key(cookie.value)]
-    assert key == "ip:127.0.0.1"
-    assert proxied is True  # same-host proxy pin — posture reports SHARED
+    assert resp.status == 403
+    assert b"tailnet identity unverified" in resp.body
+    assert resp.cookies.get("mc_token_5476") is None
 
 
 @pytest.mark.asyncio

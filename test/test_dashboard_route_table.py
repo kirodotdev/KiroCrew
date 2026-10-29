@@ -204,7 +204,14 @@ def test_shared_crew_slice_matches_each_lane_registrar() -> None:
     from aiohttp import web
 
     from kiro_crew.dashboard.routes import shared_crew
-    from kiro_crew.shared_crew import routes_admission, routes_capabilities, routes_collab
+    from kiro_crew.shared_crew import (
+        routes_access,
+        routes_admission,
+        routes_capabilities,
+        routes_collab,
+        routes_identity,
+        routes_invites,
+    )
 
     def table(*registrars: Any) -> list[tuple[str, str, Any]]:
         app = web.Application()
@@ -217,9 +224,12 @@ def test_shared_crew_slice_matches_each_lane_registrar() -> None:
         ]
 
     assert table(shared_crew.register) == table(
+        routes_identity.register,
         routes_admission.register,
         routes_collab.register,
         routes_capabilities.register,
+        routes_invites.register,
+        routes_access.register,
     )
 
 

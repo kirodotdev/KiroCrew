@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from kiro_crew import edition, github_runner
+from kiro_crew.dashboard.tailnet_proxy_proof import loopback_client_is_daemon
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.context import redact_log_via_context
@@ -1239,11 +1240,12 @@ def is_forwarded_tailnet_request(request: web.Request, trust: TailnetTrust) -> b
 async def resolve_forwarded_peer(request: web.Request, trust: TailnetTrust) -> ForwardedPeer | None:
     """Resolve the daemon-verified peer behind a local proxy, or ``None``.
 
-    ``None`` covers every unresolvable case — trust off, non-loopback peer,
-    zero/multiple forwarded addresses, non-tailnet address, daemon absent or
+    ``None`` covers every unresolvable case — trust off, non-loopback peer, a
+    loopback client the kernel does not prove is ``tailscaled``
+    (:mod:`kiro_crew.dashboard.tailnet_proxy_proof`), zero/multiple forwarded addresses, non-tailnet address, daemon absent or
     down, timeout, malformed output, or a corroborating header that disagrees
-    with the daemon. The caller falls through to the existing token+IP path:
-    fail-closed on identity, fail-open on availability.
+    with the daemon. ``None`` names nobody; whether the request is still
+    admitted is :func:`forwarded_peer_refusal`'s decision, not this one's.
 
     The blocking daemon call is offloaded to a worker thread so it never runs
     on the event loop; the WebSocket path resolves once here at upgrade, never
@@ -1252,14 +1254,29 @@ async def resolve_forwarded_peer(request: web.Request, trust: TailnetTrust) -> F
     addr = _forwarded_peer_candidate(request, trust)
     if addr is None:
         return None
+    loop = asyncio.get_running_loop()
+    # (a') loopback names only the host, not the proxy: any local process
+    # holding a token can send the header. The kernel must prove the client
+    # end of this socket belongs to the daemon before the header is read.
+    transport = getattr(request, "transport", None)
+    sock_peer = transport.get_extra_info("peername") if transport is not None else None
+    sock_local = transport.get_extra_info("sockname") if transport is not None else None
+    try:
+        proven = await loop.run_in_executor(
+            subprocess_executor(), loopback_client_is_daemon, sock_peer, sock_local
+        )
+    except Exception:  # noqa: BLE001 - a proof that cannot run proves nothing
+        logger.debug("loopback proxy proof failed to run", exc_info=True)
+        proven = False
+    if not proven:
+        logger.debug("forwarded tailnet header from an unproven loopback client; ignoring")
+        return None
     # (e) the daemon decides identity. Offloaded onto the DEDICATED subprocess
     # executor, not asyncio.to_thread's shared default pool: waiters can hold a
     # worker for up to the daemon timeout behind _whois_lock, and starving the
     # process-wide default pool with header-driven work would stall unrelated
     # gateway offloads (the cross-starvation subprocess_executor exists to stop).
-    resolved = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), _whois_cached, addr
-    )
+    resolved = await loop.run_in_executor(subprocess_executor(), _whois_cached, addr)
     if resolved is None:
         return None
     login, node = resolved
@@ -1276,6 +1293,51 @@ async def resolve_forwarded_peer(request: web.Request, trust: TailnetTrust) -> F
         )
         return None
     return ForwardedPeer(login=login, node=node, address=addr)
+
+
+REFUSE_UNATTRIBUTABLE = "forwarded chain cannot be attributed"
+REFUSE_UNRESOLVED = "forwarded address names no tailnet login"
+REFUSE_HEADER_MISMATCH = "login header disagrees with the daemon"
+REFUSE_NOT_ALLOWED = "login not in allowed_logins"
+
+
+async def forwarded_peer_refusal(
+    request: web.Request, trust: TailnetTrust, peer: ForwardedPeer | None
+) -> str | None:
+    """Why a forwarded tailnet request that named nobody must be refused, or ``None``.
+
+    The allowlist fails closed. When :func:`resolve_forwarded_peer` could not
+    name an allowed person (no kernel proof on this host, a proof that failed,
+    the daemon down, a header that disagreed), a forwarded tailnet request is
+    admitted only when the daemon's ``whois`` of its single forwarded address
+    names a login on ``allowed_logins``. Such a request is admitted as Unknown:
+    the name is not proven, so it is never attributed or pinned.
+
+    Reading the header without the proof is safe in this direction only. A
+    forged header can refuse its own request, or admit it as Unknown, which
+    the same caller gets by sending no header at all. It can never name a person.
+
+    ``None`` for a resolved peer (the caller has already checked it against the
+    allowlist) and for every request that is not a forwarded tailnet request,
+    so the local operator is never refused here.
+    """
+    if peer is not None or not is_forwarded_tailnet_request(request, trust):
+        return None
+    addr = _forwarded_peer_candidate(request, trust)
+    if addr is None:
+        return REFUSE_UNATTRIBUTABLE
+    resolved = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), _whois_cached, addr
+    )
+    if resolved is None:
+        return REFUSE_UNRESOLVED
+    login = resolved[0]
+    header_login = (request.headers.get(_USER_LOGIN_HEADER) or "").strip()
+    if header_login and header_login.lower() != login.lower():
+        return REFUSE_HEADER_MISMATCH
+    if not login_allowed(login, trust.allowed_logins):
+        return REFUSE_NOT_ALLOWED
+    return None
 
 
 def _direct_peer_candidate(request: web.Request, trust: TailnetTrust) -> str | None:
@@ -1382,11 +1444,20 @@ def login_allowed(login: str, allowed_logins: tuple[str, ...]) -> bool:
     """Whether *login* is on the operator's allowlist. Case-insensitive.
 
     Deny-by-default: an empty allowlist allows no one (and also disables
-    resolution upstream — see :func:`_forwarded_peer_candidate`).
+    resolution upstream — see :func:`_forwarded_peer_candidate`). While the
+    gateway has installed Shared Crew's derived access set
+    (:mod:`kiro_crew.dashboard.tailnet_live_allowlist`), that set decides and
+    *allowed_logins* is not read; a login an in-Crew invite granted or revoked
+    since startup follows the same module.
     """
+    from kiro_crew.dashboard import tailnet_live_allowlist
+
     candidate = login.strip().lower()
     if not candidate:
         return False
+    live = tailnet_live_allowlist.decision(candidate)
+    if live is not None:
+        return live
     return any(candidate == entry.strip().lower() for entry in allowed_logins if entry.strip())
 
 

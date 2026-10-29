@@ -52,10 +52,14 @@ class TailscaleConfig:
         default_factory=list,
         metadata=_meta(
             "Allowed Tailnet Logins",
-            "Tailscale logins permitted when trust_identity is on. Mandatory: "
-            "a shared tailnet can have hundreds of members, so identity trust "
-            "without an allowlist would hand each of them the dashboard. A "
-            "verified peer whose login is not listed is denied.",
+            "Not where you add people. Shared Crew works out who may open the "
+            "Crew over Tailscale (you, accepted Crew invites, people you approve) "
+            "and reads this list at the first start as its starting point. Adding "
+            "a login later admits nobody; removing one removes that person at the "
+            "next start. It must still "
+            "be non-empty for trust_identity: a shared tailnet can have hundreds "
+            "of members, so identity trust without one would hand each of them "
+            "the dashboard.",
             restart=True,
         ),
     )
