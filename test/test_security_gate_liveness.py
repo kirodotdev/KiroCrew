@@ -681,7 +681,13 @@ def _url_payload_command(n: int) -> str:
 #: value in every saved copy, channel, log and model replay.
 #: Raised by one, from 34,522, for the TickTick consent host in ``exfil_oauth``'s
 #: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_523
+#: Raised by 129, from 34,523, for the ssh-to-self floor's glob program words: a glob
+#: that can name several ssh-family verbs is walked once per verb at its token
+#: (``_ssh_family_verbs``, ``_frame_verb_choices``, which skips case patterns),
+#: and nested payload, operand and hosts-file verdicts are shared for one outer
+#: call (``_shares_nested_verdicts``), plus nine manifest lines. The verdict
+#: stops depending on the hash seed.
+_PACKAGE_LINE_BUDGET = 34_652
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
