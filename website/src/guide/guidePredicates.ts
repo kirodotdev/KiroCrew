@@ -70,6 +70,7 @@ export const GUIDE_PREDICATE_EVALUATORS: Record<UiRuntimePredicateId, () => bool
 /** One evaluator per gate, like predicates; a preview flag is read from storage directly. */
 export const GUIDE_GATE_EVALUATORS: Record<UiGateId, () => boolean | null> = {
   terminal_enabled: () => reported('terminal_enabled'),
+  topbar_search_shown: () => reported('topbar_search_shown'),
 }
 
 const KNOWN: ReadonlySet<string> = new Set(UI_RUNTIME_PREDICATES)
@@ -299,4 +300,5 @@ export const GUIDE_SELECTION_TEXT_KEYS: Record<typeof UI_SELECTION_SCOPES[UiSele
 /** A gate with no setting to name says what it needs in its own words. */
 export const GUIDE_GATE_TEXT_KEYS: Record<UiGateId, string> = {
   terminal_enabled: 'components.guideLayer.gate_terminal_enabled',
+  topbar_search_shown: 'components.guideLayer.gate_topbar_search_shown',
 }

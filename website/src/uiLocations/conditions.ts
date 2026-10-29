@@ -31,6 +31,7 @@ export const UI_CONDITIONS = {
   pointer_on_session_row: 'the pointer or keyboard focus is on a session row of this machine that is not being renamed (the control is drawn on that row)',
   // Shell and notifications
   terminal_enabled: 'the terminal is turned on in Settings',
+  topbar_search_shown: 'the Show search in the top bar setting is on (Settings → Display → View)',
   phone_connect_available: 'pairing a phone is available on this machine',
   kiro_account_entry: 'the menu offers a Kiro account row (always when this installation runs on Kiro; with another backend, only once an account usage reading has arrived)',
   has_notifications: 'at least one notification is listed',
@@ -235,6 +236,7 @@ export type UiSelectionId = keyof typeof UI_SELECTION_SCOPES
 export const PREVIEW_GATE_PREFIX = 'preview_flag:'
 export const UI_GATES = {
   terminal_enabled: { setting: null },
+  topbar_search_shown: { setting: 'display.show-search-in-the-top-bar' },
 } as const satisfies Partial<Record<UiConditionId, { setting: string | null }>>
 
 export type UiGateId = keyof typeof UI_GATES

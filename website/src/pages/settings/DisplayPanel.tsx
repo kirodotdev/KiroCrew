@@ -43,6 +43,7 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useCloseAction } from '../../hooks/useCloseAction'
+import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 /**
@@ -111,6 +112,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const editor = useThemeEditor()
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
+  // "Show search in the top bar", on by default. useAppShell reads the same key
+  // to draw the header, and usePersistedBool keeps the two readers in step.
+  const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -580,6 +584,17 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={setLiquidGlass}
           />
           <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {/* The top bar's search box, on by default. Browser-local like the
+              switch above, because it is about how much room this window gives
+              the top bar: off, the box's centre track goes to the controls on
+              either side (`.topbar-no-search`), so the CPU/MEM/DSK readouts stay
+              inline in narrower windows. The search shortcut does not read it. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_topbar_search')}
+            hint={i18nT('pages.settings.displayPanel.show_topbar_search_desc')}
+            checked={topbarSearch}
+            onChange={setTopbarSearch}
+          />
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main

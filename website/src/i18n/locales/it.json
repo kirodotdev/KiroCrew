@@ -10156,6 +10156,7 @@
       "select_open_named": "Aperto ora: «{{name}}».",
       "gate_setting": "Attiva prima «{{label}}» nelle Impostazioni. La guida prosegue da sola appena è attivo; non cambia mai l’impostazione al posto tuo.",
       "gate_terminal_enabled": "Il terminale è disattivato in questa installazione. La guida prosegue da sola appena viene attivato.",
+      "gate_topbar_search_shown": "La ricerca è nascosta nella barra superiore di questo browser. La guida prosegue da sola appena viene mostrata di nuovo.",
       "title_ui_find": "Trova «{{label}}»",
       "step_ui_find_open": "Apri il controllo evidenziato: «{{target}}» è lì dentro.",
       "find_not_found": "«{{label}}» non è visibile in questa pagina. Se è dentro un menu o una sezione, aprilo e la guida lo indicherà.",
@@ -17429,7 +17430,9 @@
         "desktop_app": "App desktop",
         "keep_running_when_window_closed": "Continua in background dopo la chiusura della finestra",
         "keep_running_when_window_closed_desc": "Chiudendo la finestra, {{productName}} viene nascosto e le sessioni e i lavori pianificati continuano. Disattiva l'opzione perché il pulsante di chiusura chiuda completamente l'app. Un gateway avviato da questa app si arresta con essa, mentre un gateway a cui si connette soltanto continua a funzionare.",
-        "keep_running_when_window_closed_save_failed": "Impossibile salvare questa impostazione. Non è cambiato nulla. Riprova."
+        "keep_running_when_window_closed_save_failed": "Impossibile salvare questa impostazione. Non è cambiato nulla. Riprova.",
+        "show_topbar_search": "Mostra la ricerca nella barra superiore",
+        "show_topbar_search_desc": "Mostra il campo di ricerca al centro della barra superiore. Disattivato, il suo spazio va ai controlli ai lati, così i valori di CPU, MEM e DSK restano visibili nelle finestre più strette. La scorciatoia di ricerca apre ancora la ricerca. Finché le scorciatoie sono disattivate, il campo resta visibile."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

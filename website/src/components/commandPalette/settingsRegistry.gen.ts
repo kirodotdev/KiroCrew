@@ -2207,6 +2207,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.reuse_current"
   },
   {
+    "id": "display.show-search-in-the-top-bar",
+    "label": "Show search in the top bar",
+    "labelKey": "pages.settings.displayPanel.show_topbar_search",
+    "hint": "Show the search box in the middle of the top bar. Off, the controls on either side get its space, so the CPU, MEM and DSK readings stay visible in narrower windows. The search shortcut still opens search. While keyboard shortcuts are off, the box stays shown.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.theme",
     "label": "Theme",
     "labelKey": "pages.settings.displayPanel.theme",

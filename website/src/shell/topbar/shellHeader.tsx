@@ -149,8 +149,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
-    requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen,
+    requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen, topbarSearch,
   } = shell
+  // Desktop only: the phone form has no full-width search to hide (its centre
+  // track is already `auto`), and its layout is not this setting's to change.
+  const searchHidden = !isMobile && !topbarSearch
   return (
     <>
       {/* Topbar */}
@@ -171,7 +174,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         // more when those rungs still leave contents overflowing
         // (useTopbarCollapse in useAppShell). Desktop only, on purpose: below 768px the
         // phone header's icon-only search and container rungs already fit.
-        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? '' : ' tb-measured'}`}
+        //
+        // `topbar-no-search` is the desktop form with "Show search in the top
+        // bar" turned off: the centre cell holds only the focus-mode toggle,
+        // and the side tracks take the width the search box leaves.
+        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? '' : ' tb-measured'}${searchHidden ? ' topbar-no-search' : ''}`}
         // On a phone the chat title is portaled into this bar, above the
         // transcript: inert while a transcript selection is held, so a dragged
         // handle cannot land on the title (useSelectionInertOverlays).
@@ -302,13 +309,22 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             `data-topbar-overlay` is read by the crew-pin capture harnesses
             (website/scripts/capture-crew-pin-chips.mjs, record-crew-pin-chips.mjs,
             capture-crew-chip-shrink.mjs) to find this cell; nothing in src/
-            reads it any more. Keep it. */}
+            reads it any more. Keep it.
+
+            With "Show search in the top bar" off (`searchHidden`) the search
+            trigger is left out, whichever surface owns the quick-search slot,
+            and the focus-mode toggle is the cell's only control. The header's
+            `topbar-no-search` form keeps this track `auto`, so it shrinks to
+            the toggle, and gives the freed width to the side tracks. The
+            command palette's keyboard trigger (useCommandPalette) still opens
+            search, or the owning app's launcher. */}
         {!isMobile && (
           <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
           {/* The trigger IS a Liquid Glass pane (components/Glass.tsx, chip
               recipe) rendered as the button, the same material as the
               sidebar's search field and the composer dock: no border and no
               fill of its own, `glass-hover` for the hover step. */}
+          {!searchHidden && (
           <Glass
             as="button"
             type="button"
@@ -344,6 +360,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 : i18nT('app.k_search_for_anything')}
             </span>
           </Glass>
+          )}
           {/* Focus mode. `aria-pressed` rather than a second label, so a screen
               reader gets the state from the control instead of from copy that
               would have to be kept in step with the icon. */}

@@ -1081,6 +1081,35 @@ describe('App routing', () => {
     expect(sides).toEqual(['minmax(0,1fr)', 'minmax(0,1fr)'])
   })
 
+  it('gives the actions group two thirds of the bar when the search is hidden', () => {
+    // "Show search in the top bar" off: the centre cell holds only the
+    // focus-mode toggle, so its `auto` track is the toggle's 28px, the column
+    // gaps keep their 12px, and the side tracks are weighted 1:2 toward the
+    // actions group. The full readout tier (518px of contents, its rung at
+    // 530px of group) then stays inline down to ~870px of window, against
+    // ~1,416px with the search shown, and the identity group stays above its
+    // widest rung (Back/Forward drops at 208px).
+    const rule = topbarCss().match(/\.topbar\.topbar-no-search\{[^}]*\}/)?.[0] ?? ''
+    expect(rule.match(/grid-template-columns:([^;}]+)/)?.[1].trim()).toBe('minmax(0,1fr) auto minmax(0,2fr)')
+    expect(rule).not.toMatch(/gap/)
+    const FOCUS_TOGGLE = 28
+    const NO_SEARCH_CHROME = TOPBAR_GAPS + FOCUS_TOGGLE
+    const READOUT_CONTENT = 518
+    const READOUT_RUNG = 530
+    const NAV_HISTORY_RUNG = 208
+    const shown = (w: number) => (w - searchWidth(w) - TOPBAR_GAPS) / 2
+    const hiddenRight = (w: number) => ((w - NO_SEARCH_CHROME) * 2) / 3
+    const hiddenLeft = (w: number) => (w - NO_SEARCH_CHROME) / 3
+    const readoutsInline = (side: number) => side > READOUT_RUNG && side >= READOUT_CONTENT
+    for (let w = 768; w <= 3840; w += 8) {
+      expect(hiddenRight(w)).toBeGreaterThan(shown(w))
+      expect(hiddenLeft(w)).toBeGreaterThan(NAV_HISTORY_RUNG)
+    }
+    expect(readoutsInline(hiddenRight(880))).toBe(true)
+    expect(readoutsInline(hiddenRight(860))).toBe(false)
+    expect(readoutsInline(shown(1140))).toBe(false)
+  })
+
   it('leaves every desktop width room for the actions group icons-only form', () => {
     // The invariant that replaced the per-track floor: the side tracks are pure
     // remainder, so the search width function is the only thing standing between

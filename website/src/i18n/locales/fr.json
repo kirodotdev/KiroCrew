@@ -10156,6 +10156,7 @@
       "select_open_named": "Ouvert en ce moment : « {{name}} ».",
       "gate_setting": "Active d’abord « {{label}} » dans les Réglages. Le guide continue tout seul une fois l’option activée ; il ne change jamais le réglage à ta place.",
       "gate_terminal_enabled": "Le terminal est désactivé sur cette installation. Le guide continue tout seul une fois qu’il est activé.",
+      "gate_topbar_search_shown": "La recherche est masquée dans la barre supérieure de ce navigateur. Le guide continue tout seul une fois qu’elle est de nouveau affichée.",
       "title_ui_find": "Trouver « {{label}} »",
       "step_ui_find_open": "Ouvre la commande en surbrillance : « {{target}} » se trouve dedans.",
       "find_not_found": "« {{label}} » n’apparaît pas sur cette page. S’il se trouve dans un menu ou une section, ouvre-le et le guide le montrera.",
@@ -17429,7 +17430,9 @@
         "desktop_app": "Application de bureau",
         "keep_running_when_window_closed": "Continuer en arrière-plan après la fermeture de la fenêtre",
         "keep_running_when_window_closed_desc": "Fermer la fenêtre masque {{productName}}, et tes sessions et tâches continuent. Désactive cette option pour que le bouton de fermeture quitte l'application. Une passerelle lancée par cette application s'arrête avec elle, et une passerelle à laquelle elle se connecte seulement continue de tourner.",
-        "keep_running_when_window_closed_save_failed": "Impossible d'enregistrer ce réglage. Rien n'a changé. Réessaie."
+        "keep_running_when_window_closed_save_failed": "Impossible d'enregistrer ce réglage. Rien n'a changé. Réessaie.",
+        "show_topbar_search": "Afficher la recherche dans la barre supérieure",
+        "show_topbar_search_desc": "Affiche le champ de recherche au centre de la barre supérieure. Désactivé, son espace revient aux commandes de chaque côté, et les valeurs CPU, MEM et DSK restent visibles dans les fenêtres plus étroites. Le raccourci de recherche ouvre toujours la recherche. Tant que les raccourcis sont désactivés, le champ reste affiché."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

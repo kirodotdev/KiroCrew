@@ -38,6 +38,8 @@ import { useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 import { useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
+import { usePersistedBool } from '../hooks/usePersistedBool'
+import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
@@ -698,6 +700,18 @@ export function useAppShell() {
   // rungs still leave a group's contents overflowing; its level classes can
   // hide metric numbers without resizing the box the metrics probe observes.
   const topbarLevels = useTopbarCollapse(topPeekSurface, !isMobile)
+  // "Show search in the top bar" (Settings -> Display -> View). Off, the desktop
+  // header drops the search trigger, leaving the focus-mode toggle alone in the
+  // centre cell, and weights the side tracks 1:2 toward the right group; both
+  // groups' boxes change size, so the collapse hook's observers re-settle both
+  // ladders. With keyboard shortcuts switched off (Settings -> Shortcuts, in
+  // this tab or another) nothing else opens search on desktop, so the box stays
+  // shown whatever the setting holds; usePaletteShortcutsEnabled follows the
+  // flag exactly as the palette's keydown handler reads it. The guide gate
+  // follows what is drawn. The Settings switch (DisplayPanel) writes the same key.
+  const [topbarSearchSetting] = usePersistedBool('mc-topbar-search', true)
+  const paletteChordLive = usePaletteShortcutsEnabled()
+  const topbarSearch = topbarSearchSetting || !paletteChordLive
   const metrics = useMetricsReadout(isMobile, updateAvailable, topbarLevels.right)
   const { capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef } = metrics
 
@@ -706,6 +720,7 @@ export function useAppShell() {
   // own drawer replaces the menu button there).
   useGuideGate('terminal_enabled', terminalEnabled)
   useEffect(() => { showNativeDevTools() }, [])
+  useGuideGate('topbar_search_shown', topbarSearch)
   useGuidePredicate('not_on_sessions_page', location.pathname !== '/sessions')
   // Whether the rail draws Connect your phone at all: the pairing guide's blocker otherwise.
   useGuidePredicate('phone_connect_available', hasRenderableMobileConnect)
@@ -906,7 +921,7 @@ export function useAppShell() {
     setShowUpdateModal, showChangelog, updateError, setUpdateError, startupVideo, reportProblemOpen,
     setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, closeMobileNav, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
-    membersBarPending, mobileNavOpen,
+    membersBarPending, mobileNavOpen, topbarSearch,
   }
 }
 

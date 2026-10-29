@@ -10011,6 +10011,7 @@
       "select_open_named": "Gerade geöffnet: „{{name}}“.",
       "gate_setting": "Schalte zuerst „{{label}}“ in den Einstellungen ein. Danach geht die Anleitung von selbst weiter; sie ändert die Einstellung nie für dich.",
       "gate_terminal_enabled": "Das Terminal ist in dieser Installation ausgeschaltet. Sobald es eingeschaltet ist, geht die Anleitung von selbst weiter.",
+      "gate_topbar_search_shown": "Die Suche ist in diesem Browser aus der oberen Leiste ausgeblendet. Sobald sie wieder angezeigt wird, geht die Anleitung von selbst weiter.",
       "title_ui_find": "„{{label}}“ finden",
       "step_ui_find_open": "Öffne das hervorgehobene Element: „{{target}}“ ist darin.",
       "find_not_found": "„{{label}}“ ist auf dieser Seite gerade nicht zu sehen. Liegt es in einem Menü oder Abschnitt, öffne diesen, dann zeigt die Anleitung darauf.",
@@ -17142,7 +17143,9 @@
         "desktop_app": "Desktop-App",
         "keep_running_when_window_closed": "Nach dem Schließen des Fensters im Hintergrund weiterlaufen",
         "keep_running_when_window_closed_desc": "Beim Schließen des Fensters wird {{productName}} ausgeblendet, und deine Sitzungen und Jobs laufen weiter. Schalte dies aus, damit die Schließen-Schaltfläche die App beendet. Ein von dieser App gestartetes Gateway wird mit ihr beendet, ein Gateway, mit dem sie nur verbunden ist, läuft weiter.",
-        "keep_running_when_window_closed_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Es wurde nichts geändert. Versuch es erneut."
+        "keep_running_when_window_closed_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Es wurde nichts geändert. Versuch es erneut.",
+        "show_topbar_search": "Suche in der oberen Leiste anzeigen",
+        "show_topbar_search_desc": "Zeigt das Suchfeld in der Mitte der oberen Leiste. Ausgeschaltet bekommen die Bedienelemente links und rechts seinen Platz, sodass die Werte für CPU, MEM und DSK auch in schmaleren Fenstern sichtbar bleiben. Das Tastenkürzel für die Suche öffnet sie weiterhin. Solange die Tastenkürzel ausgeschaltet sind, bleibt das Suchfeld sichtbar."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

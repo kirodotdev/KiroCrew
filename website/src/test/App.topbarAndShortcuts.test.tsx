@@ -11,6 +11,7 @@ import { screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import App from '../App'
 import { ApiError } from '../api/client'
+import { focusModeEnabled, __resetFocusMode } from '../hooks/useFocusMode'
 
 /** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
 const REAL_FAILURE = 'invalid agent name'
@@ -152,6 +153,119 @@ describe('mobile nav drawer insets', () => {
     expect(classes).toContain('fixed')
     expect(classes.some(c => c === 'top-0' || c === 'top-safe'), `expected a top anchor, got: ${classes.join(' ')}`).toBe(true)
     expect(classes.some(c => c === 'bottom-0' || c === 'bottom-safe'), `expected a bottom anchor, got: ${classes.join(' ')}`).toBe(true)
+  })
+})
+
+describe('Show search in the top bar setting', () => {
+  // The desktop header with the setting off (`mc-topbar-search` = `0`): no
+  // search trigger, the focus-mode toggle alone in the centre cell, and the
+  // `topbar-no-search` grid form. The search shortcut and the focus-mode chord
+  // keep working.
+  const SEARCH = 'Search sessions, files, and commands'
+  const rightGroupItems = (header: HTMLElement) =>
+    [...header.querySelector(':scope > .tb-right > .tb-measure')!.children].filter(el => !el.classList.contains('tb-metrics-probe'))
+
+  it('keeps the trigger and the focus-mode toggle in the centre cell while the setting is on', () => {
+    localStorage.removeItem('mc-topbar-search')
+    renderWithProviders(<App />, { route: '/chat' })
+    const trigger = screen.getByRole('button', { name: SEARCH })
+    const centre = trigger.parentElement!
+    expect(centre).toHaveAttribute('data-topbar-overlay')
+    expect([...centre.children]).toEqual([trigger, screen.getByTestId('focus-mode-toggle')])
+    const header = centre.parentElement!
+    expect(header).not.toHaveClass('topbar-no-search')
+    expect(header.querySelectorAll('[data-testid="focus-mode-toggle"]')).toHaveLength(1)
+  })
+
+  it('leaves the focus-mode toggle alone in the centre cell when off', () => {
+    localStorage.setItem('mc-topbar-search', '0')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      expect(screen.queryByRole('button', { name: SEARCH })).toBeNull()
+      const header = document.querySelector('header.topbar') as HTMLElement
+      expect(header).toHaveClass('topbar', 'tb-measured', 'topbar-no-search')
+      // The three-track grid still holds three in-flow children, and the
+      // centre one holds exactly the one toggle.
+      const centre = header.querySelector(':scope > [data-topbar-overlay]')!
+      expect([...centre.children]).toEqual([screen.getByTestId('focus-mode-toggle')])
+      const flow = [...header.children].filter(el => !el.className.includes('absolute'))
+      expect(flow.map(el => el === centre || el.className.split(' ')[0])).toEqual(['tb-left', true, 'tb-right'])
+      expect(header.querySelectorAll('[data-testid="focus-mode-toggle"]')).toHaveLength(1)
+      // The right group gains nothing: its first item is still the readout
+      // capsule (whose first segment is the plug).
+      const [first] = rightGroupItems(header)
+      expect(first.querySelector('.tb-capsule [data-conn-state]')).not.toBeNull()
+    } finally {
+      localStorage.removeItem('mc-topbar-search')
+    }
+  })
+
+  it('still opens Search everywhere from the shortcut when the trigger is hidden', () => {
+    localStorage.setItem('mc-topbar-search', '0')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      act(() => { fireEvent.keyDown(window, { key: 'k', ctrlKey: true }) })
+      expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
+    } finally {
+      localStorage.removeItem('mc-topbar-search')
+    }
+  })
+
+  it('keeps the trigger while keyboard shortcuts are off, since nothing else opens search', () => {
+    localStorage.setItem('mc-topbar-search', '0')
+    localStorage.setItem('mc-keyboard-shortcuts', '0')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const trigger = screen.getByRole('button', { name: SEARCH })
+      expect(trigger.parentElement).toHaveAttribute('data-topbar-overlay')
+      expect(document.querySelector('header.topbar')).not.toHaveClass('topbar-no-search')
+      fireEvent.click(trigger)
+      expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
+    } finally {
+      localStorage.removeItem('mc-keyboard-shortcuts')
+      localStorage.removeItem('mc-topbar-search')
+    }
+  })
+
+  it('brings the trigger back when another tab turns keyboard shortcuts off', () => {
+    // The palette's keydown handler reads the flag from storage on every
+    // keystroke, so another tab's write stops the chord here at once. The
+    // hidden trigger has to come back at the same moment.
+    localStorage.setItem('mc-topbar-search', '0')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      expect(screen.queryByRole('button', { name: SEARCH })).toBeNull()
+      act(() => {
+        localStorage.setItem('mc-keyboard-shortcuts', '0')
+        window.dispatchEvent(new StorageEvent('storage', { key: 'mc-keyboard-shortcuts', oldValue: null, newValue: '0' }))
+      })
+      expect(screen.getByRole('button', { name: SEARCH })).toBeInTheDocument()
+      expect(document.querySelector('header.topbar')).not.toHaveClass('topbar-no-search')
+    } finally {
+      localStorage.removeItem('mc-keyboard-shortcuts')
+      localStorage.removeItem('mc-topbar-search')
+    }
+  })
+
+  it('toggles focus mode from the button and from its chord while the search is hidden', async () => {
+    localStorage.setItem('mc-topbar-search', '0')
+    __resetFocusMode()
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const toggle = screen.getByTestId('focus-mode-toggle')
+      expect(toggle).toHaveAttribute('aria-pressed', 'false')
+      expect(toggle).toHaveAttribute('aria-keyshortcuts', 'Alt+Shift+M')
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'M', code: 'KeyM', altKey: true, shiftKey: true, bubbles: true }))
+      })
+      expect(focusModeEnabled()).toBe(true)
+      expect(screen.getByTestId('focus-mode-toggle')).toHaveAttribute('aria-pressed', 'true')
+      await act(async () => { fireEvent.click(screen.getByTestId('focus-mode-toggle')) })
+      expect(focusModeEnabled()).toBe(false)
+    } finally {
+      __resetFocusMode()
+      localStorage.removeItem('mc-topbar-search')
+    }
   })
 })
 

@@ -69,6 +69,21 @@
 @media (max-width:767px){
   .topbar{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 }
+/* Desktop with "Show search in the top bar" off (`topbar-no-search`, set by
+   shell/topbar/shellHeader.tsx from a browser-local display setting): the
+   centre cell holds only the focus-mode toggle, so its `auto` track resolves
+   to the toggle's 28px. Nothing wide is centred any more, so the side tracks
+   stop being an equal pair: the actions group takes two thirds of the rest and
+   the identity group one third. An even split hands the identity group (often
+   only Back/Forward) half the bar while the readouts fold for want of room.
+   Both tracks stay `minmax(0,Nfr)`, so both groups stay inline-size containers
+   fed by their tracks (see the note below on `auto` side tracks). One third
+   keeps the identity group above its widest rung (Back/Forward drops at 208px)
+   at every desktop width: (768 - 72) / 3 = 232px, where 72px is the header's
+   20px of padding, the two 12px gaps and the toggle.
+   Every invariant above is stated for the default form (test/App.test.tsx pins
+   both forms). */
+.topbar.topbar-no-search{grid-template-columns:minmax(0,1fr) auto minmax(0,2fr)}
 /* Phone chat page (`topbar-single`, App.tsx): the header is the ONE bar for
    shell and conversation, so its centre cell is the chat page's title slot and
    has to take every pixel the side cells leave -- the opposite of the
@@ -124,7 +139,8 @@
    and the header height does not change. */
 .tb-right{justify-content:flex-end;gap:.375rem;padding:6px 6px 6px 0;margin:-6px -6px -6px 0}
 
-/* Both side tracks are `minmax(0,1fr)` at EVERY width, and that is load-bearing
+/* Both side tracks are `minmax(0,1fr)` at EVERY width (the no-search form above
+   weights them 1:2 but keeps both flexible), and that is load-bearing
    for the containment above, not just for centring. A side track sized `auto`
    asks its item for a content size, and an inline-size container has none to
    give: when the narrow rule made the identity track `auto`, the track collapsed

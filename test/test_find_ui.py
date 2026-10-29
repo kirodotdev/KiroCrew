@@ -382,6 +382,7 @@ def test_a_shell_control_is_on_every_page_and_survives_a_surface_filter() -> Non
     assert [r.get("id") or r.get("value") for r in p["requires"]] == [
         "desktop",
         "search_bar_unclaimed",
+        "topbar_search_shown",
     ]
     # Drawn on every page, so a page filter keeps it; an unknown surface is still refused.
     assert "shell.search" in _by_id(ui_index.find_ui("command palette", "en", "schedule"))

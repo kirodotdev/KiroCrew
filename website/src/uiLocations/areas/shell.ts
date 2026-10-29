@@ -10,7 +10,8 @@ export const LOCATIONS = {
   // The desktop top bar's Search Everywhere trigger: the only way into the
   // command palette besides ⌘K. While an app claims the quick-search slot the
   // same button opens that app's launcher under another label, hence the
-  // condition. The phone nav drawer's Search row is shell.menu-search below;
+  // condition. The Show search in the top bar display setting can hide it,
+  // hence the gate. The phone nav drawer's Search row is shell.menu-search below;
   // the phone Sessions drawer's rail button names itself from a variable and
   // is not registered.
   'shell.search': {
@@ -34,6 +35,7 @@ export const LOCATIONS = {
       requires: [
         { kind: 'viewport', value: 'desktop' },
         { kind: 'condition', id: 'search_bar_unclaimed' },
+        { kind: 'condition', id: 'topbar_search_shown' },
       ],
     }],
   },
