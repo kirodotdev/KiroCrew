@@ -961,7 +961,10 @@ opens that mate's editor on its **Approvals** section
 (`CrewApprovalsEditor`). There, Review and Save with an empty draft restamps the file when every changed key is
 one the review can vouch for (`_unvouched`); a changed key the review cannot
 show refuses with `409 unreviewable_drift`, naming the file
-(`_stamp_reviewed`).
+(`_stamp_reviewed`). Every stamp also records the file's top-level keys as
+`reviewed_keys` on the intent, and `_unvouched` compares those too, so a key
+removed from both the file and its parent since the last review is drift
+rather than invisible.
 
 Four sibling start refusals get the same row treatment, each with its own fix.
 `parent_identity_changed` and `foreign_private_copy` open the member editor at
