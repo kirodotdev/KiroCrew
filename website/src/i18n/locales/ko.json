@@ -7864,6 +7864,8 @@
         "press_again_to_clear": "지우려면 다시 누르세요",
         "reject": "거부",
         "search": "검색…",
+        "decided_clear_failed": "이 알림을 닫을 수 없습니다. 피드에서 이 알림의 ‘{{button}}’을(를) 눌러 다시 시도하세요.",
+        "decision_recorded": "결정이 기록되었습니다.",
         "show_less": "간략히 보기",
         "show_muted_count": "음소거 표시 ({{count}})",
         "try_a_different_search": "다른 검색어로 시도하세요"

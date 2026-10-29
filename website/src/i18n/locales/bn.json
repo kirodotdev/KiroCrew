@@ -7991,6 +7991,8 @@
         "press_again_to_clear": "মুছতে আবার চাপুন",
         "reject": "প্রত্যাখ্যান করুন",
         "search": "খুঁজুন…",
+        "decided_clear_failed": "এই বিজ্ঞপ্তিটি সরানো যায়নি। আবার চেষ্টা করতে ফিডে এটির “{{button}}” বোতাম চাপো।",
+        "decision_recorded": "তোমার সিদ্ধান্ত রেকর্ড হয়েছে।",
         "show_less": "কম দেখাও",
         "show_muted_count": "মিউট করা দেখাও ({{count}})",
         "try_a_different_search": "অন্য কিছু দিয়ে খুঁজে দেখো"

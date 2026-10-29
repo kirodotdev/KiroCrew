@@ -7991,6 +7991,8 @@
         "press_again_to_clear": "Zum Löschen erneut drücken",
         "reject": "Ablehnen",
         "search": "Suchen…",
+        "decided_clear_failed": "Diese Benachrichtigung konnte nicht verworfen werden. Drücke bei ihr im Feed auf „{{button}}“, um es erneut zu versuchen.",
+        "decision_recorded": "Deine Entscheidung wurde gespeichert.",
         "show_less": "Weniger anzeigen",
         "show_muted_count": "Stummgeschaltete anzeigen ({{count}})",
         "try_a_different_search": "Versuche eine andere Suche"

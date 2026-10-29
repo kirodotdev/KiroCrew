@@ -8118,6 +8118,8 @@
         "press_again_to_clear": "Premi di nuovo per cancellare",
         "reject": "Rifiuta",
         "search": "Cerca…",
+        "decided_clear_failed": "Non è stato possibile ignorare questa notifica. Per riprovare, premi il suo pulsante «{{button}}» nel feed.",
+        "decision_recorded": "La tua decisione è stata registrata.",
         "show_less": "Mostra meno",
         "show_muted_count": "Mostra silenziate ({{count}})",
         "try_a_different_search": "Prova una ricerca diversa"

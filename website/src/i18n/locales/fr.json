@@ -8118,6 +8118,8 @@
         "press_again_to_clear": "Appuie à nouveau pour effacer",
         "reject": "Refuser",
         "search": "Rechercher…",
+        "decided_clear_failed": "Cette notification n’a pas pu être ignorée. Pour réessayer, appuie sur son bouton {{button}} dans le flux.",
+        "decision_recorded": "Ta décision a été enregistrée.",
         "show_less": "Afficher moins",
         "show_muted_count": "Afficher en sourdine ({{count}})",
         "try_a_different_search": "Essaie une autre recherche"

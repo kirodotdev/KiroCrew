@@ -474,6 +474,8 @@ def _audit_and_broadcast_approval(
     approval_id: str,
     approved: bool,
     decision: str = "",
+    *,
+    instance: str = "",
 ) -> None:
     """Audit and broadcast one approval decision."""
     _approvals_for(self).audit_and_broadcast(
@@ -483,6 +485,7 @@ def _audit_and_broadcast_approval(
         approved,
         decision,
         audit_provider=sel,
+        instance=instance,
     )
 
 
