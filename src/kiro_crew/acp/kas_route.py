@@ -214,6 +214,7 @@ def resolve_kas_route(
     *,
     environ: Mapping[str, str] | None = None,
     home: Path | None = None,
+    pin: str = "",
 ) -> KasRoute:
     """The route the next KAS spawn takes, computed fresh. Blocking; never raises.
 
@@ -221,6 +222,8 @@ def resolve_kas_route(
     applies, for the callers that describe a spawn instead of making one
     (``kirocrew doctor``, ``kirocrew kas route``, the install probe). A failed
     kiro-cli lookup answers the relay, whose own error names the failure.
+    *pin* is the session's own Bot pin as stored (``crewmate_harness.route_pin``),
+    judged by rule 2 as the spawn judges it; ``""`` asks about the installation.
 
     """
     from kiro_crew.config.loader import KiroCrewConfig
@@ -232,7 +235,7 @@ def resolve_kas_route(
             return KasRoute(bundle=True, reason=REASON_CONFIGURED)
     except Exception:  # noqa: BLE001 - unreadable config keeps the default route rules
         logger.debug("could not read agent.kas_bundle", exc_info=True)
-    if not automatic_switch_allowed():
+    if not automatic_switch_allowed(pin):
         return RELAY
     try:
         from kiro_crew.acp.client import _resolve_kiro_bin

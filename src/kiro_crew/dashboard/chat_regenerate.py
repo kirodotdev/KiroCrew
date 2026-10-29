@@ -30,6 +30,7 @@ from kiro_crew.dashboard.kiro_readiness import (
     refuse_rerun_after_signed_out_turn,
     reject_if_kiro_unverified,
     rerun_signs_in_via_kiro_cli,
+    turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_buffers import flush_restored_hold
@@ -160,7 +161,12 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     if await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name)):
-        blocked = await reject_if_kiro_unverified(request)
+        # The session the rerun's turn will run on names its harness; the slot
+        # is looked up again after the await, so this read only feeds the gate.
+        harness_turn, turn_session = turn_gate_target(state, name)
+        blocked = await reject_if_kiro_unverified(
+            request, harness_turn=harness_turn, session_key=turn_session
+        )
         if blocked is not None:
             return blocked
     slot = state._slots.get(name)
@@ -527,7 +533,18 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     kiro_turn = await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name))
     if kiro_turn:
-        blocked = await reject_if_kiro_unverified(request)
+        # The session the rerun's turn will run on names its harness; the slot
+        # is looked up again after the await, so this read only feeds the gate.
+        # An edit-resend discards the live conversation before its turn, so the turn
+        # cold-starts and the gate judges the configured route, not the live
+        # process.
+        harness_turn, turn_session = turn_gate_target(state, name)
+        blocked = await reject_if_kiro_unverified(
+            request,
+            harness_turn=harness_turn,
+            session_key=turn_session,
+            turn_reuses_session=False,
+        )
         if blocked is not None:
             return blocked
     slot = state._slots.get(name)

@@ -54,10 +54,19 @@ async def _configured_backend_for_slot(
     """
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
+    return configured_backend_for_session(effective_session_key(slot), config)
+
+
+def configured_backend_for_session(session_key: str | None, config: Any) -> str:
+    """The backend a cold start on *session_key* selects under *config*.
+
+    The session's own pick outranks a crewmate's harness pin, which outranks the
+    member backend. A pin this gateway cannot start raises
+    ``CrewmateHarnessUnavailable``.
+    """
     from kiro_crew.crewmate_harness import crewmate_backend_pin
     from kiro_crew.members import select_provider_backend, session_backend_pick
 
-    session_key = effective_session_key(slot)
     # A session created on a harness reads as that harness before it starts.
     pick = session_backend_pick(session_key)
     return select_provider_backend(
