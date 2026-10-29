@@ -146,10 +146,12 @@ only document naming sha256s — for `latest` alone, so a pinned build fetches t
 pinned version's own artifact URL and verifies it against the committed sha: it
 never reads the mutable manifest, a hotfix rebuild of an older tag keeps working
 after upstream releases, and a version bump without matching sha lines fails
-closed with the bump procedure in the error. The two pin files have no reader
-in a default release: only a `BUNDLE_KIRO_CLI=1` build reads them (the Docker
-image resolves kiro-cli from the upstream `latest` manifest on its own), and
-they stay in the tree for that opt-in. `KIRO_CLI_VERSION=latest`
+closed with the bump procedure in the error. The Docker image reads the same two
+files: `docker/Dockerfile` bind-mounts them from the build context (admitted by
+`.dockerignore`), installs that version's Linux zip after checking it against
+its `kirocli-<arch>-linux.zip` sha line, and never reads the manifest, and
+`publish-docker.yml` labels the image with the pinned version. A
+`BUNDLE_KIRO_CLI=1` desktop build reads them too. `KIRO_CLI_VERSION=latest`
 resolves the manifest instead and takes the version and sha it names, for a local
 build that wants the newest release (still sha256-verified). Bumping both files,
 after testing against the new release, is the whole procedure for
