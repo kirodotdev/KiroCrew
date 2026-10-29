@@ -108,11 +108,11 @@ def test_hand_edited_collision_stays_unavailable_to_picker_and_launch(
 ):
     from types import SimpleNamespace
 
-    from kiro_crew.coder.session_launch import profile_provider
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.sections import SessionEnvironmentsConfig
     from kiro_crew.dashboard.handlers import session_environments as handlers
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
+    from kiro_crew.session_environments.routing import profile_provider
 
     raw = _provider_section()
     raw["coder_url"] = coder_url
@@ -188,7 +188,7 @@ async def test_launch_dispatches_by_id_and_refuses_collisions(tmp_path, monkeypa
     prepare = AsyncMock(return_value="prepared")
     monkeypatch.setattr(SpritesSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("session") == "prepared"
-    prepare.assert_awaited_once_with("session", "sprites-id")
+    prepare.assert_awaited_once_with("session", "sprites-id", progress_key="session")
     raw["profiles"][0]["id"] = "sprites-id"
     reread_config()
     with pytest.raises(SessionEnvironmentUnavailable, match="more than one provider"):
@@ -277,8 +277,11 @@ async def test_a_coder_tagged_session_holding_a_vm_never_moves_to_a_reused_id(
 
     from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
     from kiro_crew.coder import session_launch
-    from kiro_crew.coder.persistent_vm import SessionResource, SessionResourceRegistry
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
+    from kiro_crew.session_environments.persistent_vm import (
+        SessionResource,
+        SessionResourceRegistry,
+    )
     from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
 
     classes = {"sprites": SpritesSessionEnvironments, "boxd": BoxdSessionEnvironments}
@@ -365,12 +368,77 @@ async def test_one_hand_edited_vm_entry_does_not_drop_the_valid_ones(config_file
     assert saved["default_profile"] == section["default_profile"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ("sprites_profiles", "boxd_profiles"))
+async def test_a_list_leaf_write_never_drops_the_default_profile(config_file, key):
+    """A leaf write of one list (a change card, a direct PATCH) is held to what a
+    whole save checks: it may not remove the profile the saved default names."""
+    section = {**_provider_section(), "default_profile": f"{key.split('_')[0]}-id"}
+    config_file.write_text(json.dumps({**_BASE_CONFIG, "session_environments": section}))
+    before = config_file.read_bytes()
+    async with _api() as client:
+        resp = await _patch(client, f"session_environments.{key}", [])
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert body["code"] == "unknown_profile"
+        assert config_file.read_bytes() == before
+        # Keeping it, or moving the default first, is accepted.
+        assert (await _patch(client, f"session_environments.{key}", section[key])).status == 200
+        assert (await _patch(client, "session_environments.default_profile", "")).status == 200
+        assert (await _patch(client, f"session_environments.{key}", [])).status == 200
+    assert _stored(config_file)["session_environments"][key] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ("sprites_profiles", "boxd_profiles"))
+async def test_a_save_omitting_a_vm_list_may_default_to_a_profile_it_keeps(config_file, key):
+    """A whole save that omits the Sprites or boxd list keeps that list, so its
+    default may name a profile only the kept list holds: membership is judged on
+    the merged section, by the change card's pre-check and the PATCH alike."""
+    from kiro_crew.dashboard import change_cards_settings as cards
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    section = {**_provider_section(), "default_profile": ""}
+    config_file.write_text(json.dumps({**_BASE_CONFIG, "session_environments": section}))
+    default = f"{key.split('_')[0]}-id"
+    omitted = {"coder_url": "", "profiles": [], "default_profile": default}
+    cards.check_setting_value(_EDITABLE_CONFIG["session_environments"], omitted)
+    async with _api() as client:
+        resp = await _patch(client, "session_environments", omitted)
+        assert resp.status == 200, await resp.text()
+    saved = _stored(config_file)["session_environments"]
+    assert saved["default_profile"] == default
+    assert saved[key] == section[key]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"coder_url": "", "profiles": [], "default_profile": "gone"},
+        # The save replaces the list that held it, so the merged section lacks it.
+        {"coder_url": "", "profiles": [], "sprites_profiles": [], "default_profile": "sprites-id"},
+    ],
+    ids=["no-such-profile", "list-replaced"],
+)
+async def test_a_whole_save_whose_default_names_no_merged_profile_is_refused(config_file, value):
+    section = {**_provider_section(), "default_profile": ""}
+    config_file.write_text(json.dumps({**_BASE_CONFIG, "session_environments": section}))
+    before = config_file.read_bytes()
+    async with _api() as client:
+        resp = await _patch(client, "session_environments", value)
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "unknown_profile"
+    assert config_file.read_bytes() == before
+
+
 def test_every_vm_provider_is_wired_to_launch_and_the_move_guard():
     """One table names the VM providers; launch and the move guard read the same
     wiring, so a provider listed in one but not the other fails here."""
     from kiro_crew.coder import session_launch
+    from kiro_crew.session_environments import routing
 
-    wired = session_launch._vm_environments()
+    wired = routing._vm_environments()
     assert set(wired) == {provider for provider, _key, _label in se.VM_PROVIDERS}
     assert set(se.PROVIDER_IDS) == {
         session_launch.PROVIDER_ID,
@@ -390,13 +458,14 @@ async def test_the_sweep_and_shutdown_cover_every_vm_provider(monkeypatch, tmp_p
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from kiro_crew.coder import retention, session_launch
     from kiro_crew.config import paths
+    from kiro_crew.session_environments import retention as vm_retention
+    from kiro_crew.session_environments import routing
 
-    monkeypatch.setattr(retention, "_section", AsyncMock(return_value=SimpleNamespace()))
+    monkeypatch.setattr(vm_retention, "_section", AsyncMock(return_value=SimpleNamespace()))
     monkeypatch.setattr(paths, "data_home", lambda: tmp_path)
-    built = await retention._persistent_environments()
-    assert [type(e) for e in built] == list(session_launch._vm_environments().values())
+    built = await vm_retention._persistent_environments()
+    assert [type(e) for e in built] == list(routing._vm_environments().values())
 
 
 @pytest.mark.asyncio
@@ -413,6 +482,7 @@ async def test_with_the_developer_flag_off_no_sprites_or_boxd_path_is_reachable(
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.sections import SessionEnvironmentsConfig
     from kiro_crew.dashboard.handlers import session_environments as handlers
+    from kiro_crew.session_environments import retention as vm_retention
     from kiro_crew.slack import gateway
     from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
 
@@ -422,7 +492,9 @@ async def test_with_the_developer_flag_off_no_sprites_or_boxd_path_is_reachable(
     _reread_config()
     config = SimpleNamespace(session_environments=SessionEnvironmentsConfig.from_raw(raw))
     monkeypatch.setattr(KiroCrewConfig, "load", lambda: config)
-    monkeypatch.setattr(retention, "_section", AsyncMock(return_value=config.session_environments))
+    section = AsyncMock(return_value=config.session_environments)
+    monkeypatch.setattr(retention, "_section", section)
+    monkeypatch.setattr(vm_retention, "_section", section)
     choices.set("dashboard:vm", "sprites-id", "sprites")
     prepare = AsyncMock(return_value="prepared")
     monkeypatch.setattr(SpritesSessionEnvironments, "prepare", prepare)
@@ -432,13 +504,13 @@ async def test_with_the_developer_flag_off_no_sprites_or_boxd_path_is_reachable(
     # Flag on: every path is live, so the assertions below test the flag.
     assert {p["provider"] for p in handlers._profiles()} == {"sprites", "boxd"}
     assert await session_launch.prepare_for_session("dashboard:vm") == "prepared"
-    assert len(await retention._persistent_environments()) == 2
+    assert len(await vm_retention._persistent_environments()) == 2
 
     monkeypatch.delenv("KIROCREW_DEV_MODE")
     assert handlers._profiles() == []
     assert await session_launch.prepare_for_session("dashboard:vm") is None
     assert prepare.await_count == 1
-    assert await retention._persistent_environments() == []
+    assert await vm_retention._persistent_environments() == []
     monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
     gateway._start_coder_retention(config)
     assert gateway._CODER_RETENTION_TASK is None

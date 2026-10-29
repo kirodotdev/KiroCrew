@@ -10051,6 +10051,7 @@
     "apiTokenRetry": "Choose Save settings to try again, or save it yourself in Settings → Secrets as {{name}}.",
     "apiTokenRename": "To save it under another name instead, change the name under Advanced: secret name below, then choose Save settings.",
     "apiTokenMoved": "The secret name changed to {{name}} after you typed the token, perhaps in another window. Choose Save settings again to save it as {{name}}.",
+    "apiTokenConflict": "Another profile has a different token typed for {{name}}, and the vault keeps one token per name. Give one of the profiles its own secret name under Advanced, or type the same token in both, then choose Save settings again.",
     "apiTokenHint": "No token is saved as {{name}} yet. Create one at sprites.dev/account, paste it here and choose Save settings; it is stored securely on this machine and never shown again.",
     "apiTokenListError": "Couldn't check whether a token is saved. Retry to check again.",
     "apiTokenPlaceholder": "Paste a Sprites API token",

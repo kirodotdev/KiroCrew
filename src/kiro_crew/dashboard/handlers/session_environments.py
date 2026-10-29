@@ -32,11 +32,11 @@ def _profiles() -> list[dict[str, object]]:
     Read from the applied config snapshot, the one a remote start and the file
     browser resolve against, so a profile edit the watcher has not reloaded yet
     is never advertised ahead of them. Disk only before any snapshot exists."""
-    from kiro_crew.coder.session_launch import ambiguous_profile_ids
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.session_environments import VM_PROVIDERS
     from kiro_crew.session_environment import session_environments_enabled
+    from kiro_crew.session_environments.routing import ambiguous_profile_ids
 
     if not session_environments_enabled():
         return []
@@ -314,7 +314,7 @@ def _slot_of(session_key: str) -> str:
 
 def _persistent_registries(home: Any) -> list[tuple[str, Any]]:
     from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
-    from kiro_crew.coder.persistent_vm import SessionResourceRegistry
+    from kiro_crew.session_environments.persistent_vm import SessionResourceRegistry
     from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
 
     return [
@@ -331,8 +331,9 @@ def _persistent_workspaces(home: Any) -> list[dict[str, object]]:
     for provider, registry in _persistent_registries(home):
         try:
             rows = registry.all()
-        except SessionEnvironmentUnavailable:
-            continue
+        except SessionEnvironmentUnavailable as exc:
+            # Not an empty inventory: machines and their deadlines may still exist.
+            raise _WorkspacesUnreadable(str(exc)) from exc
         for row in rows:
             out.append(
                 {
@@ -402,9 +403,9 @@ async def _choice_locked(slot: object, session_key: str, profile: str | None) ->
 
 def _saved_for_two_providers(profile: str) -> bool:
     """Whether ``profile`` names profiles of more than one provider (a hand edit)."""
-    from kiro_crew.coder.session_launch import profile_provider
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
+    from kiro_crew.session_environments.routing import profile_provider
 
     try:
         profile_provider(KiroCrewConfig.load().session_environments, profile)

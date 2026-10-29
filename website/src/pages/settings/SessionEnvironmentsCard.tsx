@@ -612,6 +612,16 @@ export function SessionEnvironmentsCard() {
         if (profile.token_secret !== pending.secret) {
           throw new TokenSaveError(rowId, t('sessionEnvironments.apiTokenMoved', { name: profile.token_secret }), profile.token_secret)
         }
+        // Profiles can share one secret name, and the vault keeps one value per
+        // name: two different tokens for it would silently keep only the last.
+        // Refuse before any write; the same token typed twice is stored once.
+        const shared = writes.find(([, earlier]) => earlier.secret === pending.secret)
+        if (shared) {
+          if (shared[1].token !== pending.token) {
+            throw new TokenSaveError(rowId, t('sessionEnvironments.apiTokenConflict', { name: pending.secret }))
+          }
+          continue
+        }
         writes.push([rowId, pending])
       }
       // The configuration first: a draft the gateway refuses writes no
@@ -797,6 +807,8 @@ export function SessionEnvironmentsCard() {
       return next
     })
     setSaved(false)
+    // The check read the saved token; a new one makes its answer stale.
+    checkMutation.reset()
   }
   const rebindToken = (rowId: string, secret: string) => setTokens(current => current[rowId]
     ? { ...current, [rowId]: { ...current[rowId], secret } }
@@ -1178,12 +1190,16 @@ export function SessionEnvironmentsCard() {
                 // Coder line, then what it does for each other provider (boxd
                 // machines are hibernated, coder/retention.py stop_for_shutdown;
                 // a sprite goes cold by itself and is never stopped).
+                // Shown as stored: shutdown acts on every machine still registered,
+                // whatever profiles remain, so an "on" switch stays usable to turn
+                // off even with no profile saved.
                 const notesId = `${controlId}-shutdown-providers`
+                const stopOn = !!config.stop_on_shutdown
                 return <div>
                   <SettingsToggle configKey="session_environments.stop_on_shutdown"
                     label={t('sessionEnvironments.stopOnShutdown')}
-                    description={all.length ? t('sessionEnvironments.stopOnShutdownHint') : t('sessionEnvironments.defaultEnabledNoProfiles')}
-                    checked={!!all.length && config.stop_on_shutdown} disabled={!all.length}
+                    description={all.length || stopOn ? t('sessionEnvironments.stopOnShutdownHint') : t('sessionEnvironments.defaultEnabledNoProfiles')}
+                    checked={stopOn} disabled={!all.length && !stopOn}
                     describedBy={notesId}
                     onChange={on => change({ ...config, stop_on_shutdown: on })} />
                   <ul id={notesId} data-testid="shutdown-provider-notes" className="mr-14 space-y-0.5 text-[12px] text-muted">
