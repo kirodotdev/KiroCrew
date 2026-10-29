@@ -122,6 +122,14 @@ class TestGitlabUrlParsing(unittest.TestCase):
         with self.assertRaises(RepoUrlError):
             gitlab_client.parse_gitlab_repo_url(f"https://gitlab.com/group/{over}")
 
+    def test_a_trailing_newline_cannot_escape_the_segment_bound(self):
+        # `$` also matches just before a final newline, so a bound anchored with it
+        # admits a segment one character past the maximum. `\Z` does not.
+        widest = "a" * gitlab_transport.GITLAB_MAX_SEGMENT_CHARS
+        self.assertIsNotNone(gitlab_transport.SEGMENT_RE.match(widest))
+        self.assertIsNone(gitlab_transport.SEGMENT_RE.match(f"{widest}\n"))
+        self.assertIsNone(gitlab_transport.SEGMENT_RE.match("a\n"))
+
     def test_the_two_bounds_together_cap_the_whole_parsed_value(self):
         # Neither bound alone caps what the parse returns: without the count bound the
         # depth grows, without the size bound one segment does. Together they put a
