@@ -388,7 +388,9 @@ itself:
 - the resolved path must not be a credential or governance location, `/proc`,
   `/sys` or `/dev` — the content is shipped over the wire, so a spec pointing at
   `/proc/<pid>/environ` would exfiltrate the gateway's environment;
-- an empty or unreadable file is an error, not a fallback;
+- an empty or unreadable file is an error, not a fallback; the unreadable
+  error names the agents directory holding the spec and tells the user to fix
+  the `prompt`, delete the spec, or choose another agent;
 - a missing or blank prompt is sent as `"prompt": ""`, so the agent runs on
   KAS's own default prompt alone, as it runs on kiro-cli's (#25320). KAS needs
   the key present, not non-empty: an entry without it is not registered and the
