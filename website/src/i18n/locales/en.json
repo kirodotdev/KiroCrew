@@ -11097,7 +11097,8 @@
       "agents_active_other": "{{n}} active",
       "slots_open_one": "{{n}} slot open",
       "slots_open_other": "{{n}} slots open",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_aria_label": "{{label}} scene: {{desc}}"
     },
     "layoutEditorHarness": {
       "title": "Layout editor harness",
