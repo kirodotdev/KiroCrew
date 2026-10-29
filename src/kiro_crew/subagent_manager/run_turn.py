@@ -6,7 +6,9 @@ dedicated process (``run_start`` decides which), builds the prompt, streams the 
 the retry ladder in its nested ``_stream_with_transient_retry``, answers the child's tool
 prompts through the run's permission ladder (``RunEventCoordinator._permission_policy``),
 and records the completion. It is one function, kept whole so its locals and nested closures
-stay as they are. New work inside a run's turn goes here.
+stay as they are. New work inside a run's turn goes here. The per-prompt usage row's body is
+in ``usage_row`` (the nested ``_persist_usage_row`` calls it), which adds the row's task to
+the manager's ``_report_tasks``.
 
 A function here whose first parameter is ``self`` is a ``RunEventCoordinator`` member: the
 class binds it under the same name in ``subagent_manager/run.py``. The ``*_impl`` ones are
@@ -14,8 +16,7 @@ rebound onto ``kiro_crew.subagent``'s globals by ``bind_component_globals``, so 
 they read unqualified are that module's, imported here for typing only; this module defines
 no other.
 
-The manager fields this module uses. Writes: ``_agents``, ``_conversations``,
-``_report_tasks``. Reads: ``_await_late_start``, ``_clear_tool_dispatch``,
+The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads: ``_await_late_start``, ``_clear_tool_dispatch``,
 ``_completion_keep``, ``_completion_keep_chars``, ``_create_shared_session``,
 ``_ctx_builder``, ``_effective_turn_limit``, ``_ensure_dedicated_start_priced``,
 ``_fire_event``, ``_gate_exit_reset``, ``_gate_wait_mark``, ``_global_approval_mode``,
@@ -80,7 +81,6 @@ if TYPE_CHECKING:
         invalidate_stale_kas_session,
         is_registered_agent_name,
         logger,
-        provider_fallback_active,
         refuse_stale_switch,
         replace_stale_shared_session,
         reproject_claimed_session,
@@ -1038,55 +1038,9 @@ async def _run_inner_impl(
     _row_t0 = [time.monotonic()]
 
     def _persist_usage_row(completion: LLMEvent | None) -> None:
-        # Its inputs are read here, synchronously, and the append itself is
-        # best-effort analytics on a task the manager holds (``_report_tasks``,
-        # which ``cancel_all()`` drains within its bound): no ending waits on
-        # it, so a cancel, the shutdown or a wedged FS can never hold one.
-        try:
-            # circular import: reached while kiro_crew.slack.handler is still
-            # initialising (dashboard/file_api/channel_upload.py imports is_tracked_channel
-            # from it), so a module-scope import raises ImportError under the
-            # suite's import order.
-            from kiro_crew.dashboard.handlers.usage import (
-                persist_token_record_async,
-                read_context_tokens,
-                read_effective_agent,
-            )
+        from kiro_crew.subagent_manager.usage_row import persist_usage_row
 
-            _used, _window = read_context_tokens(client)
-            _usage_row = asyncio.ensure_future(
-                persist_token_record_async(
-                    session_key,
-                    # Blank while a fallback serves this run: the explicit pin
-                    # would bill the fallback's spend to a model that never
-                    # executed; model_source reports what actually ran.
-                    ("" if provider_fallback_active(client) else (info.model or "")),
-                    completion,
-                    provider="claude_code" if is_cc else "acp",
-                    surface="subagent",
-                    # Ownership stamp (see _build_token_record): an app-dispatched
-                    # subagent's spend must be readable by that app's audit — the
-                    # illustrator lane of an app is exactly this path.
-                    app=info.app or "",
-                    # Explicit/inherited `agent` FIRST here — unlike every other
-                    # surface. Under session sharing this subagent reuses the
-                    # PARENT's runtime, so read_effective_agent() would report the
-                    # parent's agent and misattribute a `spawn_run(agent="…")` turn.
-                    # `agent` is already the resolved value (it inherits the parent
-                    # session's agent when the spawn did not name one), and the
-                    # helper stays as the fallback for when it is empty.
-                    agent=agent or read_effective_agent(client) or "",
-                    context_used=_used,
-                    context_window=_window,
-                    elapsed_ms=int((time.monotonic() - _row_t0[0]) * 1000),
-                    model_source=client,
-                )
-            )
-            self._manager._report_tasks.add(_usage_row)
-            _usage_row.add_done_callback(self._manager._report_tasks.discard)
-        except Exception:
-            logger.debug("usage row (subagent) persist failed", exc_info=True)
-        _row_t0[0] = time.monotonic()
+        persist_usage_row(self, completion, session_key, client, info, agent, is_cc, _row_t0)
 
     # Stop-hook continuations this run has sent, the depth a Stop hook reads.
     _stop_continuations = [0]
