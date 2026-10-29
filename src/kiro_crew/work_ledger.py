@@ -520,7 +520,7 @@ def _rebuild_footprint(
         if isinstance(item_id, str) and _ITEM_ID_RE.fullmatch(item_id):
             ids.add(item_id)
         worker = raw.get("worker_session_key")
-        if isinstance(worker, str) and worker:
+        if isinstance(worker, str) and worker and not raw.get("worker_instance_id"):
             workers.add(worker)
     for item_id in sorted(ids):
         paths += [item_path(slot_key, item_id), item_events_path(slot_key, item_id)]
@@ -768,7 +768,8 @@ def _reconcile_bindings(
     named: dict[str, set[str]] = {}
     live: set[str] = set()
     for raw in folded_items:
-        if not isinstance(raw, dict):
+        if not isinstance(raw, dict) or raw.get("worker_instance_id"):
+            # A remote item names a PEER's slot: no binding file routes it here.
             continue
         worker = raw.get("worker_session_key")
         item_id = raw.get("item_id")
@@ -1037,6 +1038,7 @@ from kiro_crew.work_ledger_purge import (  # noqa: E402, F401
     _purge_conductor_locked,
     _remove_contents_locked,
     _remove_lock_shell,
+    _remove_remote_records,
     _unlink_item_locks_in_hold,
     census_items,
     header_damage,
@@ -1107,6 +1109,23 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     _stored_item_cap,
     logger,
 )
+from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
+    CREW_STATES,
+    MAX_INSTANCE_ID_CHARS,
+    MAX_PEER_SLOT_CHARS,
+    REMOTE_DIR,
+    RemoteState,
+    _require_peer_text,
+    apply_remote_bind,
+    apply_remote_report,
+    item_liveness,
+    read_remote_state,
+    remote_dir,
+    remote_liveness,
+    remote_liveness_map,
+    remote_state_path,
+    write_remote_state,
+)
 from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _WARNED_DEPTH_FALLBACKS,
     _decided_after_report,
@@ -1138,6 +1157,7 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _ITEMS_DIR,
     _KEY_FILE,
     _LOCK_FILE,
+    _REMOTE_DIR,
     _UNDELIVERED_DIR,
     DIRTY_FILE,
     RESERVED_ROOT_DIRS,
@@ -1220,6 +1240,7 @@ _OWNERS = (
     "kiro_crew.work_ledger_writes",
     "kiro_crew.work_ledger_purge",
     "kiro_crew.work_ledger_undelivered",
+    "kiro_crew.work_ledger_remote",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)

@@ -19,7 +19,7 @@ from typing import Any, Iterator
 
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.platform_compat import open_lock_file, release_lock, try_acquire_lock
-from kiro_crew.session_ledger import is_link, unlink_lock_in_hold
+from kiro_crew.session_ledger import _store_name, is_link, resolved_within, unlink_lock_in_hold
 from kiro_crew.work_ledger_records import (
     CODE_LEDGER_NOT_FINISHED,
     ITEM_STATES,
@@ -35,7 +35,9 @@ from kiro_crew.work_ledger_store import (
     _ITEMS_DIR,
     _KEY_FILE,
     _LOCK_FILE,
+    _REMOTE_DIR,
     _read_json_record,
+    _work_ledger_root,
     conductor_dir,
     conductor_lock,
 )
@@ -401,7 +403,22 @@ def purge_conductor(slot_key: str, *, allow_unreadable: bool, idle_for: timedelt
     _remove_lock_shell(
         directory, conductor_lock_gone=conductor_lock_gone, item_locks_left=item_locks_left
     )
-    return not directory.exists()
+    gone = not directory.exists()
+    if gone:
+        _remove_remote_records(slot_key)
+    return gone
+
+
+def _remove_remote_records(slot_key: str) -> None:
+    """Drop the board's remote-worker records (``work-ledger/remote/<board>/``).
+
+    Gateway observations about items the purge removed; best effort, since a
+    leftover record names nothing a reader can reach.
+    """
+    remote = resolved_within(_work_ledger_root() / _REMOTE_DIR, _store_name(slot_key))
+    if remote is None or is_link(remote) or not remote.is_dir():
+        return
+    shutil.rmtree(remote, ignore_errors=True)
 
 
 def _purge_conductor_locked(

@@ -434,6 +434,11 @@ class WorkItem:
     verdict: str | None = None
     decision: str = ""
     worker_session_key: str | None = None
+    #: The remote crew the worker runs on (rfc-conductor-remote-dispatch §3), set by
+    #: a remote bind beside ``worker_session_key`` (then the PEER's slot key), else
+    #: ``None``. Serialized only when set, so a board with no remote item is stored
+    #: and read exactly as before the field existed.
+    worker_instance_id: str | None = None
     round: int = 0
     fails: int = 0
     status: str | None = None
@@ -465,6 +470,12 @@ class WorkItem:
         return self.state in TERMINAL_ITEM_STATES
 
     def to_dict(self) -> dict[str, Any]:
+        out = self._base_dict()
+        if self.worker_instance_id:
+            out["worker_instance_id"] = self.worker_instance_id
+        return out
+
+    def _base_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
             "item_id": self.item_id,
@@ -512,6 +523,7 @@ class WorkItem:
             verdict=verdict if verdict in VERDICTS else None,
             decision=_as_str(raw.get("decision")),
             worker_session_key=_as_opt_str(raw.get("worker_session_key")),
+            worker_instance_id=_as_opt_str(raw.get("worker_instance_id")) or None,
             round=_as_int(raw.get("round"), 0),
             fails=_as_int(raw.get("fails"), 0),
             status=status if status in WORKER_STATUSES else None,
