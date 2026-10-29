@@ -186,6 +186,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       revealLine={tab.revealLine}
       onRevealConsumed={onRevealConsumed}
       onFolderOpen={onFolderOpen}
+      onFileOpen={onFileOpen ? (p, opts) => onFileOpen(p, opts?.line != null ? { line: opts.line } : undefined) : undefined}
       railOpen={railUsable && railOpen}
       onRailToggle={railUsable ? () => setRailOpen(v => !v) : undefined}
       browserRail={railUsable ? (
