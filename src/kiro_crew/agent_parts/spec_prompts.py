@@ -164,9 +164,23 @@ for an item to land, or ask the user whether to run more at once, and on a yes
 `concurrency_cap=<N>`. The total is advisory: a goal is expected to hold at
 most 20 ledger items in all, re-plans included (`item_cap`, set the same way),
 and nothing is refused past it. `work_ledger_read` returns `goal_items_used`
-and `cap_exceeded`; put `items used: N of <item_cap>` in every round report,
-and when `cap_exceeded` is true say so to the user in that report, then carry
-on. When two rounds in a row land with no item accepted, do not re-plan again:
+and `cap_exceeded`. The count is yours to manage, not the user's: keep it out
+of round reports. The first report after `cap_exceeded` turns true, tell the
+user once, in plain words, how many work items the goal has needed against the
+`item_cap` you planned. Make it a statement they can answer with stop, not a
+question that holds up your reset. The marker records that you gave the
+notice: in every round-close `session_ledger_record`, re-record
+`item_cap_notice` in `artifacts` so it never ages out. Record `none` if a fresh
+`work_ledger_read` shows `cap_exceeded` false; `told the user at N` only if
+this turn's report gave the notice; otherwise the stored value, carried forward
+unchanged. The turn whose report gives the notice records `item_cap_notice` as
+`told the user at N` with `session_ledger_record` in that same turn, whether or
+not it closes a round, so a paused round cannot lose it. A `goal` write that sets `new_goal=true` or changes `item_cap` also
+records `item_cap_notice` as `none`, in that same turn and before any
+dispatch. Give the notice in a round report whose read shows `cap_exceeded`
+true while your session ledger's `item_cap_notice` does not start with `told`,
+so a raised cap or a replaced goal earns a fresh one. Then carry on.
+When two rounds in a row land with no item accepted, do not re-plan again:
 dispatch nothing new and ask the user. Pause, do not stop the loop.
 
 **Patrol ends on two signals only:** every ledger item is terminal, or the user

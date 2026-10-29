@@ -140,8 +140,8 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
     # ``goal_items_used`` and ``cap_exceeded`` are derived, never stored: the
-    # number the conductor's "items used: N of <item_cap>" line reports, and
-    # whether that line has gone past its cap, both read off the same header.
+    # goal's item count, and whether it has gone past ``item_cap`` (which the
+    # conductor tells the user once), both read off the same header.
     # Advisory: the compact read carries them so a patrol that reads only the
     # status columns still sees a goal spending past what the user expected.
     # ``max_depth`` is the conducting depth cap in force right now (never stored),

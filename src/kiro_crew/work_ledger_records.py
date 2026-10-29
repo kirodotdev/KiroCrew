@@ -316,8 +316,8 @@ class ConductorRecord:
 
         True from the first create past the cap, not at the cap: a goal at twenty
         of twenty has spent what it was allowed. Advisory -- the read reports it beside
-        ``items used: N of M`` and the conductor tells the user; nothing blocks on
-        it. False on a board that never recorded a goal, which has no goal to
+        ``goal_items_used`` and the conductor tells the user once when it turns
+        true; nothing blocks on it. False on a board that never recorded a goal, which has no goal to
         measure: a queue board's count is its whole history.
         """
         return self.goal_version > 0 and self.goal_items_used > self.item_cap
