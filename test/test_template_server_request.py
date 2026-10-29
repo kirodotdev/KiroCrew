@@ -72,16 +72,23 @@ def env(tmp_path, monkeypatch):
         return name, dict(GATEWAY_ENTRY), {"source": "gateway"}
 
     monkeypatch.setattr(capability_catalog, "resolve_server", resolve)
-    monkeypatch.setattr(
-        tsr,
-        "addition_reach_view",
-        lambda state, template: {
+
+    def reach_view(state, template, *, mount_only=False, **_kw):
+        if mount_only:
+            return {
+                "templates": [template, "kirocrew-worker"],
+                "aliases": {},
+                "sessions": ["Default chat"],
+                "members": [],
+            }
+        return {
             "templates": [template, "kirocrew-ledger-conductor"],
             "aliases": {"kirocrew-ledger-conductor": template},
             "sessions": ["Patrol"],
             "members": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr(tsr, "addition_reach_view", reach_view)
     monkeypatch.setattr(tsr, "live_apply", lambda state: True)
     monkeypatch.setattr(tsr, "server_tools", lambda name: ["read_file", "list_dir"])
     monkeypatch.setattr(tsr, "template_declares", lambda template, server: False)
@@ -98,7 +105,9 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tsr, "_rebuild_specs", rebuild)
     monkeypatch.setattr(tsr, "_reach_sessions", reach)
-    monkeypatch.setattr(tsr, "existing_grants", lambda template, server: seen.get("grants", []))
+    monkeypatch.setattr(
+        tsr, "existing_grants", lambda template, server, **_kw: seen.get("grants", [])
+    )
     monkeypatch.setattr(tsr, "_audit", lambda *a, **k: None)
     return seen
 
@@ -473,22 +482,33 @@ def test_the_ledger_alias_records_under_its_target():
     assert "kirocrew-ledger-conductor" in addition_reach("kirocrew-conductor")
 
 
-# ── the default agent and the worker: refused, pointed at the MCP page ──
+# ── the default agent and the worker: a mount-only card ──
 
 
 @pytest.mark.parametrize("template", ["kirocrew", "kirocrew-worker"])
-def test_a_default_or_worker_request_raises_no_card(env, tmp_path, template):
+def test_a_default_or_worker_request_raises_a_mount_only_card(env, tmp_path, template):
+    """Both are recorded on the default spec, which the worker mirrors, and the
+    record never grants a tool: the MCP page's add is the grant path."""
     env["template"] = template
     store = CardStore(tmp_path / "c.json")
 
-    status, body = _run(
-        store, lambda c: _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
-    )
-    # The record's own refusal (``addition_support``): the MCP page, no card.
-    assert (status, body["code"]) == (409, "unsupported")
-    assert body["error"] == additions.DEFAULT_REASON
-    # Nothing was resolved, so nothing could be proposed.
-    assert env["resolved"] == []
+    async def go(c):
+        status, card = await _request(c, {"source": "registry", "registry_id": "io.example/fetch"})
+        step = card["plan"]["apply"][0]
+        applied = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        return status, card, applied.status, applied.url
+
+    status, card, applied, _url = _run(store, go)
+    assert status == 200, card
+    assert card["params"]["template"] == "kirocrew"
+    assert card["params"]["mount_only"] is True
+    assert card["plan"]["apply"][0]["body"]["mount_only"] is True
+    agents_row = {r["label"]: r for r in card["changes"]}["Agents"]
+    assert "kirocrew-worker" in agents_row["add"]
+    assert applied == 200
+    recorded = additions.read_additions("kirocrew")
+    assert set(recorded) == {"fetch"}
+    assert recorded["fetch"].mount_only is True
     assert additions.read_additions("kirocrew-conductor") == {}
 
 

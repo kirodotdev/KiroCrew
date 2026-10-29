@@ -20,11 +20,12 @@ through on its way to a session (the conductor installers, and the spawn of a
 template Kiro Crew does not write). It only ADDS: a server name the template already
 carries is left exactly as the template has it.
 
-The default agent and the worker are not covered, by design. ``kirocrew.json``
-already holds every server installed through the MCP page, and the worker mirrors
-it, so neither needs this record; both are refused (:data:`DEFAULT_REASON`). Every
-other template Kiro Crew writes takes no additions either (:data:`BUILT_IN_REASON`,
-:data:`CREWMATE_REASON`).
+The default agent is covered only for a MOUNT-ONLY addition, recorded under
+``kirocrew`` and mirrored by the worker: the MCP page's add also approves every
+tool, and a mid-chat request must not become a second grant path. A normal
+addition there, and any addition to the worker, is refused
+(:data:`DEFAULT_REASON`), as is every other template Kiro Crew writes
+(:data:`BUILT_IN_REASON`, :data:`CREWMATE_REASON`).
 
 The file is owner-only, every write is atomic, and every read-modify-write holds
 an in-process lock plus a cross-process advisory lock on a sidecar file.
@@ -117,14 +118,23 @@ class McpAddition:
     approved_by: str
     approved_at: str
     card_id: str
+    #: True for a record on the default agent: it mounts the server but never
+    #: grants its tools. The default agent/worker normally take their servers
+    #: from the MCP page, which approves every tool; a mid-chat request must not
+    #: do that. Every other template records a normal addition, whose tools
+    #: prompt until the user grants them through the existing paths.
+    mount_only: bool = False
 
     def to_record(self) -> dict[str, Any]:
-        return {
+        record: dict[str, Any] = {
             "entry": copy.deepcopy(dict(self.entry)),
             "approved_by": self.approved_by,
             "approved_at": self.approved_at,
             "card_id": self.card_id,
         }
+        if self.mount_only:
+            record["mount_only"] = True
+        return record
 
 
 # --------------------------------------------------------------------------- #
@@ -172,6 +182,7 @@ def add_addition(
     card_id: str,
     approved_at: str | None = None,
     only_if_absent: bool = False,
+    mount_only: bool = False,
 ) -> McpAddition | None:
     """Record *server* on *template* and return the stored addition.
 
@@ -189,7 +200,7 @@ def add_addition(
     _check_template(template)
     _check_server(server)
     template = _TEMPLATE_ALIASES.get(template, template)
-    _check_covered(template)
+    _check_covered(template, mount_only=mount_only)
     clean = validate_entry(entry)
     who = _check_text(approved_by, "approved_by")
     card = _check_text(card_id, "card_id")
@@ -202,6 +213,7 @@ def add_addition(
         approved_by=who,
         approved_at=when,
         card_id=card,
+        mount_only=bool(mount_only),
     )
     with _locked():
         data = _read(strict=True)
@@ -427,11 +439,13 @@ NO_SPEC_SERVERS_REASON = (
 )
 
 
-def _template_support(template: str) -> AdditionSupport | None:
+def _template_support(template: str, *, mount_only: bool = False) -> AdditionSupport | None:
     """The refusal for a template this record does not cover, or ``None`` if it does."""
     from kiro_crew.agent_files import is_mate_service_agent
 
     if template in DEFAULT_TEMPLATES:
+        if template == "kirocrew" and mount_only:
+            return None
         return AdditionSupport(False, DEFAULT_REASON)
     if is_mate_service_agent(template):
         return AdditionSupport(False, CREWMATE_REASON)
@@ -440,7 +454,7 @@ def _template_support(template: str) -> AdditionSupport | None:
     return None
 
 
-def addition_support(template: str, backend: str) -> AdditionSupport:
+def addition_support(template: str, backend: str, *, mount_only: bool = False) -> AdditionSupport:
     """Whether an addition to *template* reaches its sessions on *backend*.
 
     Refused for a template the record does not cover: the default agent and the
@@ -459,9 +473,15 @@ def addition_support(template: str, backend: str) -> AdditionSupport:
     if not isinstance(template, str) or not _TEMPLATE_RE.fullmatch(template):
         return AdditionSupport(False, "That agent name is not valid.")
     template = _TEMPLATE_ALIASES.get(template, template)
-    refused = _template_support(template)
+    refused = _template_support(template, mount_only=mount_only)
     if refused is not None:
         return refused
+    if template in DEFAULT_TEMPLATES:
+        from kiro_crew.agent_sdk.drivers.acp import backend_delivers_spec_servers
+
+        if backend_delivers_spec_servers(backend):
+            return AdditionSupport(True)
+        return AdditionSupport(False, NO_SPEC_SERVERS_REASON)
     if template in INSTALLER_MERGED_TEMPLATES:
         from kiro_crew.agent_sdk.drivers.acp import backend_delivers_spec_servers
 
@@ -501,7 +521,7 @@ def merge_at_spawn(template: str | None, spec: dict[str, Any] | None) -> dict[st
     return out
 
 
-def addition_reach(template: str) -> tuple[str, ...]:
+def addition_reach(template: str, *, mount_only: bool = False) -> tuple[str, ...]:
     """Every template one addition to *template* reaches, *template* first.
 
     Two tables decide it, and a test pins both to their owners so this cannot drift:
@@ -521,9 +541,18 @@ def addition_reach(template: str) -> tuple[str, ...]:
     ):
         if name not in reach:
             reach.append(name)
-    if _template_support(canonical) is not None:
+    if _template_support(canonical, mount_only=mount_only) is not None:
         return ()
+    if mount_only and canonical == "kirocrew" and "kirocrew-worker" not in reach:
+        reach.append("kirocrew-worker")
     return tuple(reach)
+
+
+def mount_only_names(template: str) -> frozenset[str]:
+    """Servers recorded mount-only on *template*; empty when none are."""
+    return frozenset(
+        name for name, addition in read_additions(template).items() if addition.mount_only
+    )
 
 
 def validate_entry(entry: object) -> dict[str, Any]:
@@ -594,6 +623,7 @@ def _parse_template(template: str, bucket: Any) -> dict[str, McpAddition]:
                 approved_by=_check_text(stored.get("approved_by"), "approved_by"),
                 approved_at=_check_text(stored.get("approved_at"), "approved_at"),
                 card_id=_check_text(stored.get("card_id"), "card_id"),
+                mount_only=_parse_mount_only(template, stored),
             )
         except AdditionError as exc:
             logger.warning(
@@ -610,11 +640,38 @@ def _check_template(template: object) -> None:
         raise AdditionError("template_invalid")
 
 
-def _check_covered(template: str) -> None:
-    """Refuse a template this record does not cover (``AdditionError``)."""
-    support = _template_support(template)
+def _check_covered(template: str, *, mount_only: bool = False) -> None:
+    """Refuse a template this record does not cover (``AdditionError``).
+
+    The default agent and its worker are covered only for a mount-only record:
+    their normal servers come from the MCP page, whose add also approves every
+    tool, and this record must never become a second path to that grant.
+    """
+    support = _template_support(template, mount_only=mount_only)
     if support is not None:
         raise AdditionError(f"template_not_covered:{template}")
+
+
+def _parse_mount_only(template: str, stored: Mapping[str, Any]) -> bool:
+    """The stored disposition, refusing a default-agent entry without one.
+
+    A hand-edited default-agent entry with no ``mount_only`` would otherwise be
+    merged and, if the same name is also on the MCP page, granted on the next
+    rebuild. The record is owner-only; an entry that does not state the one
+    disposition the default agent allows is unusable.
+    """
+    raw = stored.get("mount_only")
+    if raw is None:
+        if template in DEFAULT_TEMPLATES:
+            raise AdditionError("default_template_requires_mount_only")
+        return False
+    if not isinstance(raw, bool):
+        raise AdditionError("mount_only_invalid")
+    if template == "kirocrew-worker":
+        raise AdditionError("worker_addition_not_recordable")
+    if template in DEFAULT_TEMPLATES and not raw:
+        raise AdditionError("default_template_requires_mount_only")
+    return raw
 
 
 def _check_server(server: object) -> None:

@@ -1039,8 +1039,20 @@ def resolve_mcp_servers(
     return ResolvedServers(_unresolved_this_pass, _oauth_client_targets)
 
 
-def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str, str]) -> None:
-    """Mount every user-installed server, strip disabled ones, and govern their grants."""
+def sync_shared_server_refs(
+    config: dict,
+    sources: McpSources,
+    mounted: dict[str, str],
+    *,
+    mount_only: frozenset[str] = frozenset(),
+) -> None:
+    """Mount every user-installed server, strip disabled ones, and govern their grants.
+
+    *mount_only* names servers recorded as mounted without approval (the default
+    agent's mid-chat additions). They take the same path as a governance-ceiling
+    withhold: the ``@server`` ref stays in ``tools`` so the server runs, and no
+    ``allowedTools`` grant is written, so every call asks.
+    """
     kirocrew_mcp = sources.kirocrew
     shared_mcp = sources.kiro_global
     extra_shared_mcp = sources.provider_global
@@ -1215,8 +1227,12 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             # user-installed MCP server on the primary agent — the same bypass
             # that was closed for app agents, at the second of the two places
             # that write such a list. One predicate serves both.
-            may_auto_approve = auto_approve._may_auto_approve(ref) and not any(
-                _grant_ref_is_in_alias_family(ref, base) for base in _disabled_grant_families
+            may_auto_approve = (
+                auto_approve._may_auto_approve(ref)
+                and not any(
+                    _grant_ref_is_in_alias_family(ref, base) for base in _disabled_grant_families
+                )
+                and not any(_grant_ref_is_in_alias_family(ref, base) for base in mount_only)
             )
             keys = ("tools", "allowedTools") if may_auto_approve else ("tools",)
             for key in keys:
