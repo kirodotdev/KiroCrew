@@ -6,7 +6,7 @@ import { selectComposerBusy, selectProjectChipLocked, selectSlotSubagentsActive,
 import type { TurnItem } from '../types'
 import { messageRowKey } from '../ChatPageMessageContent'
 import { devWatchMessages, inspectorOn, devLog } from '../../../dev/scrollInspector'
-import { type PromptHistoryItem, promptHistoryFromMessages, samePromptHistory } from '../../../components/composerPromptHistory'
+import { useSentPromptHistory } from '../../../components/useSentPromptHistory'
 import { countCompletedTurns } from '../../../lib/completedTurns'
 import { runBelongsToSlot } from '../../../apps/workflows/runModel'
 import { useTipTrigger } from '../../../components/TipCard'
@@ -64,13 +64,6 @@ export function useActiveSlotState({
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
-  // User-sent messages (oldest → newest) for ↑/↓ prompt history in the input.
-  // Deduplicate consecutive identical prompts to match shell/REPL behavior.
-  // `messages` gets a new reference on every streaming chunk; preserve the
-  // previous array when user-message content is unchanged so `sentMessages`
-  // stays referentially stable and doesn't re-run downstream effects.
-  const sentMessagesRef = useRef<PromptHistoryItem[]>([])
-  const sentMessagesSlotRef = useRef<string | null>(null)
   // Per-slot timestamp (ms) of the last soft-stop press, used to arm the
   // force-kill. A force press (second click while soft_pending) arriving
   // within FORCE_KILL_ARMING_MS of that slot's soft stop is treated as an
@@ -78,23 +71,10 @@ export function useActiveSlotState({
   // mashing Stop. Keyed by slot so switching slots can't measure one slot's
   // press against another slot's timestamp.
   const softStopAtMapRef = useRef<Map<string, number>>(new Map())
-  const sentMessages = useMemo(() => {
-    const out = promptHistoryFromMessages(messages)
-    // Reset the cached reference when switching slots — otherwise two
-    // conversations with matching length+tail would share the prior array.
-    if (sentMessagesSlotRef.current !== activeSlot) {
-      sentMessagesSlotRef.current = activeSlot ?? null
-      sentMessagesRef.current = out
-      return out
-    }
-    // Append-only within a slot — full element-wise compare (array is small).
-    const prev = sentMessagesRef.current
-    if (samePromptHistory(prev, out)) {
-      return prev
-    }
-    sentMessagesRef.current = out
-    return out
-  }, [messages, activeSlot])
+  // User-sent prompts (oldest → newest) for ↑/↓ prompt history in the input,
+  // consecutive duplicates collapsed, plus any submitted prompt the transcript
+  // lost; referentially stable while unchanged.
+  const sentMessages = useSentPromptHistory(messages, activeSlot)
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
   // Live mirror for `autoFollowAllowed`, a stable callback several effects
   // depend on: taking `slotRunning` as a dependency would re-attach those

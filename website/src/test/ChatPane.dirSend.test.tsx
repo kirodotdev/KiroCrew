@@ -884,3 +884,34 @@ describe('ChatPane terminal attachment and session boundaries', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 })
+
+/* The grid pane's composer recalls with ↑ on the same terms as ChatPage (it
+ * was passed no history list before), and its send is recorded the same way. */
+describe('ChatPane ↑ prompt recall', () => {
+  it('recalls a prompt from the pane transcript', async () => {
+    const { store } = renderPane('pane-recall')
+    const box = await screen.findByRole('textbox', { name: 'Message input' })
+    act(() => store.dispatch(sseChatMessage({ slot: 'pane-recall', role: 'user', content: 'from the transcript', meta: { mid: 'm-1' } })))
+    await act(async () => { fireEvent.keyDown(box, { key: 'ArrowUp' }) })
+    expect(box).toHaveValue('from the transcript')
+  })
+
+  it('records its send for recall, and ↑ offers it once', async () => {
+    vi.mocked(api.sendChat).mockImplementationOnce(() => new Promise(() => {}))
+    const { store } = renderPane('pane-sent')
+    const box = await screen.findByRole('textbox', { name: 'Message input' })
+    await act(async () => {
+      fireEvent.change(box, { target: { value: 'lost in the pane' } })
+      fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const sendId = (vi.mocked(api.sendChat).mock.calls[0][4] as { sendId: string }).sendId
+    expect(store.getState().chat.sendAttempts?.['pane-sent']).toEqual([{ text: 'lost in the pane', sendId }])
+    expect(box).toHaveValue('')
+    await act(async () => { fireEvent.keyDown(box, { key: 'ArrowUp' }) })
+    expect(box).toHaveValue('lost in the pane')
+    // Its bubble is still on screen, so the record adds no second entry.
+    await act(async () => { fireEvent.keyDown(box, { key: 'ArrowUp' }) })
+    expect(box).toHaveValue('lost in the pane')
+  })
+})

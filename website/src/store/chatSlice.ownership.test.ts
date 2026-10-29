@@ -173,7 +173,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['automations', automations, ['selectAutomationForSlot', 'selectSidebarAutomationRunningKeys']],
   ['side', side, ['beginSideQueueEdit', 'finishSideQueueEdit', 'forgetSideSteerSubmittedText', 'noteSideQueueDroppedByClose', 'queueEditBroadcastAt', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'setSideQueueEditDraft', 'takeSideQueueDroppedByClose', 'takeSideSteerDroppedByClose', 'takeSideQueueEditForClose']],
   ['selectors', selectors, [
-    'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendAccepted', 'selectSendConfirmed', 'selectSlotMessages',
+    'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSlotMessages',
     'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
     'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],

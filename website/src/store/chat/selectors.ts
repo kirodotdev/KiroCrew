@@ -8,7 +8,7 @@ import { slotIsRemoteBound } from '../dashboardSlice'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import type { InjectKind } from '../../pages/chat/RecoveryCard'
-import type { SlotState } from './state'
+import type { SendAttempt, SlotState } from './state'
 import { safeKey } from './wire'
 import { selectSlotSubagentsActive } from './subagents'
 import { slotRowByKey } from '../slotIndex'
@@ -40,6 +40,10 @@ export const selectSlotTurnFromWake = (state: RootState, slot: string): boolean 
   }
   return false
 }
+const EMPTY_SEND_ATTEMPTS: SendAttempt[] = []
+/** The prompts this tab submitted in `slot`, oldest first (see `ChatState.sendAttempts`). */
+export const selectSendAttempts = (state: RootState, slot: string | null | undefined): SendAttempt[] =>
+  (slot ? state.chat.sendAttempts?.[safeKey(slot)] : undefined) ?? EMPTY_SEND_ATTEMPTS
 /** Only a server-confirmed row for THIS send proves delivery, even if the POST
  *  subsequently fails. An optimistic bubble or identical text proves nothing. */
 export const selectSendConfirmed = (state: RootState, slot: string, sendId: string): boolean =>

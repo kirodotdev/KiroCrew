@@ -62,6 +62,10 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 export type EndedTurn = { gen: string; turn: number }
+/** One prompt this tab submitted: the bubble text and the send's own id. */
+export type SendAttempt = { text: string; sendId: string }
+/** Retention bound for `ChatState.sendAttempts`, per slot. */
+export const SEND_ATTEMPTS_PER_SLOT_MAX = 50
 
 /** Live progress entry for a dynamic-workflow run. Folded from workflow_run_event
  *  WS messages so the chat can show status while a run executes. */
@@ -615,6 +619,12 @@ export interface ChatState {
   /** Reasoning blocks whose anchoring row is above the loaded window, per slot.
    *  Client-only, so this is their only copy until the anchor pages back in. */
   thinkingOrphans: Record<string, Array<ParkedThinking<ChatMessage>>>
+  /** Prompts whose optimistic bubble this tab minted, per slot, oldest first
+   *  (capped at `SEND_ATTEMPTS_PER_SLOT_MAX`). Client-only. ↑/↓ recall reads
+   *  it so a prompt whose row later vanished from the transcript (a refresh
+   *  that dropped the optimistic row, a send that never landed) can still be
+   *  recalled; an attempt whose `sendId` is on a row is skipped there. */
+  sendAttempts?: Record<string, SendAttempt[]>
   /** Path B: per-slot live stream state so a non-active pane shows its own
    *  streaming/tool/idle indicator (mirrors slotActivity for tool events).
    *  `tick` is the entry's receipt order: `state` is written only through

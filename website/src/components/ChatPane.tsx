@@ -68,6 +68,7 @@ import { answerRejectedMessage } from '../utils/questionAnswers'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 import type { ChatPaneProps } from './ChatPaneProps'
 import { useChatPaneDraft } from './useChatPaneDraft'
+import { useSentPromptHistory } from './useSentPromptHistory'
 import { useChatPaneUploads } from './useChatPaneUploads'
 import { useChatPanePickerModels, useChatPanePickerActions } from './useChatPanePickers'
 import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
@@ -171,6 +172,8 @@ export default function ChatPane({
   const transcriptRestoreOwned = useCallback(() => listRef.current?.restoreGate ?? false, [])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
+  // ↑/↓ prompt history for this pane's composer, on the same terms as ChatPage.
+  const sentMessages = useSentPromptHistory(allMessages, slotKey)
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
   // Consume a Side Chat → composer hand-off staged for THIS pane's slot. Keyed
   // by slot so a member's hand-off merges into that member's own composer and
@@ -1098,6 +1101,7 @@ export default function ChatPane({
           slotApprovalChrome={crewApprovalDecidableHere(paneSlot, 'worker_split_pane')}
           disabled={paneCrewRootClosed}
           lockedPlaceholder={paneCrewRootClosed ? '' : undefined}
+          sentMessages={sentMessages}
           // A chat bound to a Session Environment runs in its workspace, so a `!`
           // command would land on this machine instead: refused like a remote
           // crew's, and held while that placement is still unread.
