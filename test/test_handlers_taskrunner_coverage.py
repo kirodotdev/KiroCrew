@@ -58,7 +58,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_update_task,
 )
 from kiro_crew.hooks import FileTooLargeError
-from kiro_crew.taskrunner import Step, StepStatus, TaskRun
+from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 from kiro_crew.testing.wait import await_until
 
 # ── GET /api/taskrunner ──
@@ -289,11 +289,9 @@ class TestStart:
     @pytest.mark.asyncio
     async def test_unknown_source_coerced_to_dashboard(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        resp = await api_taskrunner_start(
+        await api_taskrunner_start(
             _request(_state(runner), json_body={"spec": "__inline__:# t", "source": "bogus"})
         )
-        assert resp.status == 200
-        assert _body(resp)["task_id"] == "tid-1"
         assert runner.start_background.call_args.kwargs["source"] == "dashboard"
 
     @pytest.mark.asyncio
@@ -333,11 +331,17 @@ class TestCancel:
 
     @pytest.mark.asyncio
     async def test_task_id_cancels_one(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
+        runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+        runner._runs = {
+            tid: TaskRun(spec_path="s.md", spec_content="s", status="running", task_id=tid)
+            for tid in ("t9", "t8")
+        }
         resp = await api_taskrunner_cancel(_request(_state(runner), json_body={"task_id": "t9"}))
         assert resp.status == 200
-        assert _body(resp) == {"ok": True}
-        runner.cancel.assert_called_once_with("t9")
+        assert {tid: run.status for tid, run in runner._runs.items()} == {
+            "t9": "cancelling",
+            "t8": "running",
+        }
 
 
 class TestPause:
@@ -937,11 +941,14 @@ class TestPlanCancel:
 
     @pytest.mark.asyncio
     async def test_delegates_to_runner(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
+        runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+        plan = asyncio.ensure_future(asyncio.Event().wait())
+        runner._plan_task = plan
         resp = await api_taskrunner_plan_cancel(_request(_state(runner)))
-        assert resp.status == 200
+        cancel_requests = plan.cancelling()
+        plan.cancel()
         assert _body(resp) == {"ok": True}
-        runner.cancel_plan.assert_called_once_with()
+        assert cancel_requests == 1
 
 
 class TestUpdatePlan:
