@@ -150,12 +150,13 @@ _KIRO_WINDOWS: dict[str, int] = {}
 
 # Supplementary static windows for models the canonical registry does not carry
 # and kiro-cli does not advertise — chiefly fully-qualified provider model ids
-# and legacy Claude snapshots. Folded here (rather than a separate
-# ``model_tokens.json``, which would be a second, drifting source of truth) so
-# ``model_window`` is the ONE
-# authority. Consulted AFTER the canonical registry (so a canonical/alias hit
-# wins) but BEFORE the ``[1m]`` heuristic. Keys are matched exactly first, then
-# by longest-substring (these ids embed the dotted model name).
+# and legacy Claude snapshots. Kept in this module, not in a data file of its
+# own, so ``model_window`` is the ONE backend authority: the backend package
+# ships no ``model_tokens.json`` (that name is only the frontend's copy,
+# ``website/src/model_tokens.json``). Consulted AFTER the canonical registry
+# (so a canonical/alias hit wins) but BEFORE the ``[1m]`` heuristic. Keys are
+# matched exactly first, then by longest-substring (these ids embed the dotted
+# model name).
 _SUPPLEMENTARY_WINDOWS: dict[str, int] = {
     # Fully-qualified inference-profile + on-demand model ids.
     "anthropic.claude-sonnet-4-20250514-v1:0": 200_000,
