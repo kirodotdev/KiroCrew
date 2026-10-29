@@ -781,6 +781,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             py_result.check_returncode()
             ver = py_result.stdout.strip()
             print(f"  python:      ✅ {venv_py} ({ver})")
+            print(f"  kiro_crew:   ✅ {_mc_version}")
         except Exception as exc:
             print(f"  python:      ❌ venv python broken: {exc}")
             issues.append("venv python")
