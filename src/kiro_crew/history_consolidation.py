@@ -61,6 +61,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
+    _CONSOLIDATION_EMPTY,
     AttemptedSpan,
     _LeaseLostMidRun,
     _no_pass_ran,
@@ -264,6 +265,11 @@ class HistoryConsolidator:
         self._idle_clean: dict[str, tuple[CacheIdentity, int]] = {}
         # Separate offset for prefs-only consolidation (doesn't advance main offset)
         self._prefs_offset: dict[str, int] = {}
+        # key -> (consecutive prefs passes with no usable answer, retry-at wall
+        # time). In memory like _prefs_offset: the preference-only window has no
+        # durable failure record, so this only spaces out re-sends of a prompt
+        # that keeps failing instead of re-sending it on every user turn.
+        self._prefs_retry: dict[str, tuple[int, float]] = {}
         # Session length at the last skill-detection pass, so an unchanged
         # (rotation_generation, message_count) at the last skill-detection
         # pass, so an unchanged session isn't re-judged on every history
@@ -704,6 +710,8 @@ class HistoryConsolidator:
         # does. _count_rows repeats the check for a deadline armed meanwhile.
         if self._inside_retry_deadline(key):
             return
+        if _time.time() < self._prefs_retry.get(key, (0, 0.0))[1]:
+            return
         claim = self._claim_count(key)
         if claim is not None:
             self._start_counted(claim, self._threshold_pass(key, claim))
@@ -745,8 +753,28 @@ class HistoryConsolidator:
         # threshold test skips it until a whole new threshold of messages
         # accumulates — silently dropping its preference/project extraction.
         # A cancellation propagates and leaves the offset alone too.
+        if result is _CONSOLIDATION_EMPTY:
+            # No usable answer: the window stays pending, and the next attempt
+            # waits on the same widening interval the history path's failed
+            # attempts use, so a prompt that fails every time is not re-sent on
+            # every turn.
+            failures = self._prefs_retry.get(key, (0, 0.0))[0] + 1
+            delay = min(
+                _CONSOLIDATION_BACKOFF_MAX_SECS,
+                _CONSOLIDATION_BACKOFF_BASE_SECS * (2 ** min(failures - 1, 64)),
+            )
+            self._prefs_retry[key] = (failures, _time.time() + delay)
+            self._logger.warning(
+                "Preference-only consolidation for %s produced no usable result "
+                "(failure #%d); retrying the same window in %.0fs",
+                key,
+                failures,
+                delay,
+            )
+            return
         if not _no_pass_ran(result):
             self._prefs_offset[key] = total
+            self._prefs_retry.pop(key, None)
 
     def _claim_count(self, key: str) -> _CountClaim | None:
         """Claim *key*'s transcript for one off-loop count; None when one is in flight."""

@@ -2303,7 +2303,15 @@ session-end pass may have claimed the transcript meanwhile), then the
 task. The idle sweep schedules a count only for a key past its throttle, not busy
 and outside its retry deadline, so a key in backoff costs one metadata read and no
 count. `_prefs_offset` advances to the counted total only when the prefs pass
-completes without a refusal, raise or cancellation, and the idle throttle is set
+completes without a refusal, raise or cancellation. A prefs pass whose turn came
+back with no reply or an unparseable one, or could not be dispatched, returns
+`_CONSOLIDATION_EMPTY`; a parsed `{}` is a completed pass with nothing to write,
+because the prefs-only prompt asks the model to omit unchanged keys. On
+`_CONSOLIDATION_EMPTY` the offset stays put, the history span's attempt cap is
+not charged, and `_prefs_retry` arms an in-memory retry-at for the key from
+`_CONSOLIDATION_BACKOFF_BASE_SECS`, doubling per consecutive empty pass up to
+`_CONSOLIDATION_BACKOFF_MAX_SECS`. `maybe_consolidate` schedules nothing for a
+key inside that deadline, and a completed prefs pass clears it. The idle throttle is set
 only when the history pass completes without one. A pass that raises has already
 logged it. A count that fails to read logs a warning and skips that check.
 

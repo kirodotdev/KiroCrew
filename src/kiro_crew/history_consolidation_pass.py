@@ -55,6 +55,7 @@ from kiro_crew.history_consolidation_memory import (
 )
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_BUSY,
+    _CONSOLIDATION_EMPTY,
     _CONSOLIDATION_MAX_HEAD_SLICES,
     _CONSOLIDATION_REFUSED,
     AttemptedSpan,
@@ -103,9 +104,11 @@ async def _consolidate(
     refuses the span, its transcript changes during extraction, or the
     pass loses its consolidation lease to a peer, and
     :data:`_CONSOLIDATION_BUSY` when another process already holds that
-    lease; every other completion returns ``None``. Callers distinguish
-    either from a completed pass with :func:`_no_pass_ran`, never against
-    one instance. A changed source remains pending rather than consuming
+    lease, and :data:`_CONSOLIDATION_EMPTY` when a preference-only pass
+    (*include_history* False) got no usable answer; every other completion
+    returns ``None``. Callers distinguish
+    any of them from a completed pass with :func:`_no_pass_ran`, never
+    against one instance. A changed source remains pending rather than consuming
     the failure/abandon budget of a different span.
     """
     # Every store pass below runs on the background memory pool (mc-membg), so a
@@ -823,7 +826,10 @@ async def _consolidate(
             # on a widening interval instead of on every 60s tick.
             if include_history:
                 await self._note_environment_failure(key, str(exc))
-            return None
+                return None
+            # The preference-only window has no durable backoff; the caller
+            # keeps the window pending and arms its in-memory one.
+            return _CONSOLIDATION_EMPTY
         except _ConsolidationReplyUnusable as exc:
             result = None
             failure = str(exc)
@@ -835,9 +841,19 @@ async def _consolidate(
             # the in-memory throttle while the durable count still says
             # unconsolidated: the span re-bills a full turn every idle window,
             # and immediately after every restart. Charge the attempt.
-            if include_history and not await self._note_failed_attempt(
-                key, attempted, failure, lease
-            ):
+            if not include_history:
+                # A parsed ``{}`` is a valid answer here: the prefs-only prompt
+                # tells the model to omit every key that did not change, so the
+                # pass completed with nothing to write.
+                if isinstance(result, dict):
+                    return None
+                # The attempt cap writes the history span's abandon marker, so
+                # it is not charged here. The preference-only caller keeps the
+                # window pending and arms its in-memory backoff instead.
+                return _CONSOLIDATION_EMPTY
+            if isinstance(result, dict):
+                failure = "empty JSON answer"
+            if not await self._note_failed_attempt(key, attempted, failure, lease):
                 # The lease went to a peer: nothing was charged, and this
                 # is not a completed pass.
                 return _CONSOLIDATION_REFUSED
@@ -1387,7 +1403,9 @@ async def _call_llm(
             _time.monotonic() - t_start,
             result is not None,
         )
-        if result:
+        # A parsed ``{}`` is an answer, not a missing one: the prefs-only prompt
+        # tells the model to omit every unchanged key, so the caller decides it.
+        if result is not None:
             return result
         text = "".join(reply)
         if not text.strip():

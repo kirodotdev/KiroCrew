@@ -79,7 +79,7 @@ _BASE_MODULE_NAMES = frozenset("""
     extracted_lesson_applies frontmatter_value hashlib json live logging math re
     redact_credentials redact_exfiltration_urls run_in_embed_pool scope_is_admissible
     strip_image_refs timezone validate_skill_script
-    Iterator _CONSOLIDATION_BUSY _CONSOLIDATION_LEASE_CEILING_SECS
+    Iterator _CONSOLIDATION_BUSY _CONSOLIDATION_EMPTY _CONSOLIDATION_LEASE_CEILING_SECS
     _CONSOLIDATION_LEASE_RENEW_SECS _LEASE_INCARNATION _LEASE_MONOTONIC _LEASE_PID
     _LEASE_START _LEASE_TOKEN _LeaseLostMidRun _lease_holder_is_live _no_pass_ran os
     platform_compat uuid

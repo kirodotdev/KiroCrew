@@ -102,7 +102,7 @@ class _ConsolidationRefusedSentinel:
 
     Busy and backoff refusals precede dispatch, but a source recheck or lease
     loss can refuse after a provider turn was billed. Callers must leave
-    completion bookkeeping unchanged for either sentinel.
+    completion bookkeeping unchanged for every sentinel.
     """
 
     __slots__ = ()
@@ -111,6 +111,10 @@ class _ConsolidationRefusedSentinel:
 _CONSOLIDATION_REFUSED = _ConsolidationRefusedSentinel()
 #: Another process holds the session's consolidation lease.
 _CONSOLIDATION_BUSY = _ConsolidationRefusedSentinel()
+#: A preference-only pass got no usable answer: the turn was billed and came
+#: back with no reply or an unparseable one, or it could not be dispatched. Nothing was
+#: extracted, so the window stays pending and the caller arms its own backoff.
+_CONSOLIDATION_EMPTY = _ConsolidationRefusedSentinel()
 
 
 def _no_pass_ran(outcome: object) -> bool:
