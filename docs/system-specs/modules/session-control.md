@@ -590,7 +590,7 @@ including both slot ceilings, and returns `{"dry_run": true}` without minting a
 slot or spending a rate-limit token. A refusal there is returned before any
 segment exists. The folder endpoint refuses an agent caller (the internal
 transport) a sibling whose trimmed, case-folded name is already taken under the
-same parent, tested under the folder-store lock (`folder_name_exists`, 409).
+same parent, tested under the folder-store lock (`folder_name_exists`, 409). `PATCH /api/chat/folders/{id}` applies the same test, under the same lock, to an agent rename and to an agent reparent (`chat_folder_move` sends a `parent_id`-only PATCH), comparing the folder's resulting name with the destination's children; a write that changes neither the name nor the parent is not tested.
 When the one colliding sibling belongs to the caller's own principal, the
 endpoint returns it instead (200, `"reused": true` on the response only), so a
 lost race resolves to the winner's folder in the same request. A twin owned by
