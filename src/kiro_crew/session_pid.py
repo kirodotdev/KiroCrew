@@ -1410,6 +1410,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _warn_rss_ceiling_inert_once,
         end_session_leftovers,
         find_session_leftovers,
+        get_session_handle_peak,
         get_session_rss_mb,
     )
     from kiro_crew.session_pid_tracking import (  # noqa: F401

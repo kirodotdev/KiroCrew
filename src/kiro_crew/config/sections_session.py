@@ -272,7 +272,11 @@ class SessionConfig:
             "takes its size, at its second reading of it, is left running and recycled "
             "only once it doubles: so with many MCP servers or a long first turn. Not so "
             "for a process read under the limit more than about twelve minutes before, or for a "
-            "chat recycled in the last 24 hours.",
+            "chat recycled in the last 24 hours. On Windows the figure is the larger "
+            "of the tree's working set and its committed private bytes, because a "
+            "leak that commits gigabytes can keep a small working set. On Windows "
+            "any session tree whose busiest process holds more than 50,000 "
+            "handles is warned about (not recycled), even when this is 0.",
         ),
     )
     watchdog_end_leftovers_mid_turn: bool = field(
