@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import asyncio
     import re
+    import uuid
 
     from kiro_crew.slack.gateway import (
         _BACKGROUND_APPROVAL_SOURCES,
@@ -140,8 +141,20 @@ def _interactive_approval(
         _child_grant_eligible = (not _child_lf) or (
             getattr(event, "child_unconditional_grant_eligible", False) is True
         )
+        # A tool request's id is the backend's JSON-RPC id, counted per connection,
+        # so two runtimes ask with the same one (each sub-agent's first is ``1``).
+        # Every background source shares the dashboard's approval registry, so the
+        # id registered there names THIS call; a reused id would replace the other
+        # request's record and leave it waiting with no card. The backend is still
+        # answered through the event's own id. A spawn id already names one agent,
+        # and the spawn card and ``slot_resolver`` read its form, so it is kept.
+        approval_id = (
+            request_id
+            if request_id.startswith("spawn:")
+            else f"{request_id}-{uuid.uuid4().hex[:12]}"
+        )
         # Background callers pass the authoritative parent session key. Prefer it
-        # over a request-ID resolver because tool permission IDs are opaque UUIDs,
+        # over a request-ID resolver because a tool permission ID names no agent,
         # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
         # as an agent ID loses the dashboard slot and hides the approval prompt.
         # ``dashboard_slot_key`` answers "which tab shows this conversation?", so a
@@ -468,7 +481,7 @@ def _interactive_approval(
                 if self.dashboard_state:
                     dashboard_future = asyncio.ensure_future(
                         self.dashboard_state.request_approval(
-                            request_id,
+                            approval_id,
                             source,
                             event.title,
                             tool_input=event.tool_input,
@@ -522,7 +535,7 @@ def _interactive_approval(
                     _pending_approvals.pop(key, None)
                     # Resolve dashboard approval if Slack responded first
                     if self.dashboard_state:
-                        self.dashboard_state.resolve_approval(request_id, outcome == "approved")
+                        self.dashboard_state.resolve_approval(approval_id, outcome == "approved")
                     if dashboard_future and not dashboard_future.done():
                         dashboard_future.cancel()
 
@@ -550,7 +563,7 @@ def _interactive_approval(
             if raise_when_unreachable and not self._dashboard_client_attached():
                 raise SpawnApprovalUnreachable("no dashboard client is connected")
             return await self.dashboard_state.request_approval(
-                request_id,
+                approval_id,
                 source,
                 event.title,
                 tool_input=event.tool_input,

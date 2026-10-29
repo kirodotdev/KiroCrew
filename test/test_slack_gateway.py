@@ -506,8 +506,11 @@ class TestInteractiveApproval:
 
         assert result is False
         resolver.assert_not_called()
+        # The registered id names this call: the backend's id plus a fresh suffix.
+        registered = ds.request_approval.await_args.args[0]
+        assert registered.startswith("opaque-tool-request-id-")
         ds.request_approval.assert_awaited_once_with(
-            "opaque-tool-request-id",
+            registered,
             "subagent",
             "git diff",
             tool_input="",
@@ -548,7 +551,9 @@ class TestInteractiveApproval:
                 result = await callback(event, "")
         assert result is False
         ds.request_approval.assert_awaited_once()
-        assert ds.request_approval.await_args.args[:3] == ("req-6", "cron", "cmd")
+        registered, source, tool = ds.request_approval.await_args.args[:3]
+        assert registered.startswith("req-6-")
+        assert (source, tool) == ("cron", "cmd")
 
     @pytest.mark.asyncio
     async def test_auto_approve_sources_config(self):
