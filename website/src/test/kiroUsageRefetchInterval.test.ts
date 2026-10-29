@@ -48,7 +48,7 @@ describe('kiroUsageRefetchInterval', () => {
   })
 
   it('drops to the steady cadence on each terminal sentinel', () => {
-    for (const terminal of ['none', 'api-key', 'signin-required'] as const) {
+    for (const terminal of ['none', 'signin-required'] as const) {
       expect(kiroUsageRefetchInterval(terminal, false, 0)).toBe(KIRO_USAGE_STEADY_POLL_MS)
     }
   })
@@ -89,7 +89,8 @@ describe('parseKiroUsagePayload warming vs settled', () => {
 
   it('maps an explicit unavailable answer to a terminal sentinel', () => {
     expect(parseKiroUsagePayload({ usage: { available: false } })).toBe('none')
-    expect(parseKiroUsagePayload({ usage: { available: false, reason: 'api_key_auth' } })).toBe('api-key')
+    // API-key auth is not terminal: the /usage scrape reads its balance, so an unavailable answer is 'none'.
+    expect(parseKiroUsagePayload({ usage: { available: false, reason: 'api_key_auth' } })).toBe('none')
     expect(parseKiroUsagePayload({ usage: { available: false, reason: 'signin_required' } })).toBe('signin-required')
   })
 })
