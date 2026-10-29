@@ -53,6 +53,7 @@ const CHILDREN: Record<string, RegExp> = {
   TaskProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   SubagentProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   WorkflowProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
+  CrewStatusStrip: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   SubagentDeliveryProgress: /className="relative z-\[(\d+)\] mx-auto w-full px-4"/,
   QueueStack: /className="px-4 mx-auto w-full relative" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)', zIndex: (\d+) \}\}/,
 }
@@ -60,6 +61,7 @@ const FILES: Record<keyof typeof CHILDREN | string, string> = {
   TaskProgressBar: 'pages/chat/TaskProgressBar.tsx',
   SubagentProgressBar: 'pages/chat/SubagentProgressBar.tsx',
   WorkflowProgressBar: 'pages/chat/WorkflowProgressBar.tsx',
+  CrewStatusStrip: 'components/crew/CrewStatusStrip.tsx',
   SubagentDeliveryProgress: 'components/QueueStack.tsx',
   QueueStack: 'components/QueueStack.tsx',
 }

@@ -10098,6 +10098,7 @@
       "breadcrumb_label": "Membro da equipe",
       "back_to_main_chat": "Voltar ao chat principal",
       "parent_row_hint": "Mostrando um dos membros da equipe",
+      "status_strip_open": "Status da equipe. Abrir a lista da equipe",
       "steer_too_long": "Uma mensagem para {{name}} pode ter no máximo {{max}} caracteres. Encurte-a para enviar.",
       "steer_placeholder": "Mensagem para {{name}}: ele a lê antes do próximo passo",
       "summary_approval": "Aprovação necessária · {{n}}",

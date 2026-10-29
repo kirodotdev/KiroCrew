@@ -7,13 +7,13 @@
  * a Crew Mode page found here comes from ChatPage's own branch.
  */
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
-import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, act, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import chatReducer, { appendMessage } from '../store/chatSlice'
+import chatReducer, { appendMessage, closeActivityPanel } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
@@ -332,6 +332,46 @@ describe('Ultra Mode on ChatPage', () => {
     await waitFor(() => expect(screen.getByTestId('crew-breadcrumb-root')).toHaveTextContent('Toy Flag Review'))
     expect(screen.getByTestId('crew-worker-breadcrumb')).toHaveTextContent('Done')
     expect(screen.getByTestId('crew-worker-root-closed')).toHaveTextContent('Main chat is closed. Open it again to message Worker B.')
+  })
+
+  it("shows the conductor's worker counts above its composer while the side panel is closed, and opens it", async () => {
+    const R = (key: string, group: string) => ({ key, title: key, agent: 'kirocrew-worker', status: 'idle', group, last_activity: '', ledger_item: '', created_by: 'slot-a' })
+    crewWorkers.mockImplementation(() => Promise.resolve({ root: 'slot-a', workers: [R('w1', 'working'), R('w2', 'approval'), R('w3', 'done')] }))
+    const store = await renderWith({ messages: [{ role: 'user', content: 'go' }], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+    // Entering a root opens the panel on the Crew tab once; the strip is for after the person closes it.
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
+    expect(screen.queryByTestId('crew-status-strip')).toBeNull()
+    act(() => { store.dispatch(closeActivityPanel()) })
+    const strip = await screen.findByTestId('crew-status-strip')
+    expect(within(strip).getAllByTestId('crew-status-chip').map(c => c.getAttribute('data-group'))).toEqual(['approval', 'working', 'done'])
+    fireEvent.click(strip)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    // The panel now says it: the strip stands down rather than repeat it.
+    await waitFor(() => expect(screen.queryByTestId('crew-status-strip')).toBeNull())
+  })
+
+  it('shows no worker strip while the side panel is open, or with no workers', async () => {
+    const R = { key: 'w1', title: 'w1', agent: 'kirocrew-worker', status: 'working', group: 'working', last_activity: '', ledger_item: '', created_by: 'slot-a' }
+    crewWorkers.mockImplementation(() => Promise.resolve({ root: 'slot-a', workers: [R] }))
+    await renderWith({ messages: [{ role: 'user', content: 'go' }], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true, activityOpen: true })
+    await waitFor(() => expect(crewWorkers).toHaveBeenCalled())
+    expect(screen.queryByTestId('crew-status-strip')).toBeNull()
+    cleanup()
+    crewWorkers.mockClear()
+    const empty = Promise.resolve({ root: 'slot-a', workers: [] })
+    crewWorkers.mockImplementation(() => empty)
+    await renderWith({ messages: [{ role: 'user', content: 'go' }], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+    // The empty list has been read and settled before the absence is judged.
+    await waitFor(() => expect(crewWorkers).toHaveBeenCalled())
+    await act(async () => { await empty })
+    expect(screen.queryByTestId('crew-status-strip')).toBeNull()
+  })
+
+  it('a plain chat has no worker strip and reads no worker list', async () => {
+    crewWorkers.mockClear()
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
+    expect(screen.queryByTestId('crew-status-strip')).toBeNull()
+    expect(crewWorkers).not.toHaveBeenCalled()
   })
 
   it('a plain chat has no breadcrumb and no steer composer', async () => {

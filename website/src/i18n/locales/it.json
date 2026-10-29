@@ -10098,6 +10098,7 @@
       "breadcrumb_label": "Membro della squadra",
       "back_to_main_chat": "Torna alla chat principale",
       "parent_row_hint": "Mostra uno dei suoi membri della crew",
+      "status_strip_open": "Stato della squadra. Apri l’elenco della squadra",
       "steer_too_long": "Un messaggio per {{name}} può avere al massimo {{max}} caratteri. Accorcialo per inviarlo.",
       "steer_placeholder": "Messaggio per {{name}}: lo legge prima del passo successivo",
       "summary_approval": "Approvazione necessaria · {{n}}",

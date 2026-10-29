@@ -5,6 +5,7 @@ import { Undo2 } from 'lucide-react'
 import { CrewModeComposerChip } from '../../../components/crew/CrewModeMarks'
 import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere, crewModeRoot } from '../../../lib/crewMode'
 import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
+import { CrewStatusStrip } from '../../../components/crew/CrewStatusStrip'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from '../../../components/crew/CrewWorkerComposerGate'
 import { useCrewRoot } from '../../../components/crew/useCrewRoot'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
@@ -389,6 +390,11 @@ export default function ComposerDockView({
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
               <TaskProgressBar slot={activeSlot} />
+              {/* A conductor's workers at a glance while its side panel is not
+                  on screen; the panel's own Workers list says the same thing,
+                  so the strip stands down whenever the panel shows (the same
+                  render guard as the bars below). */}
+              {crewModeRoot(currentSlot) && activeSlot && !(activityOpen && !search.isOpen) && <CrewStatusStrip root={activeSlot} beforeOpen={search.close} />}
               {/* De-duplicate ONLY against the matching sidebar tab (#728): each
                   bar is redundant when the activity sidebar is actually SHOWING
                   its own view (Subagents / Workflows), but on any OTHER tab
