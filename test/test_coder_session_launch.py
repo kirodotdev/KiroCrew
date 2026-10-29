@@ -895,6 +895,7 @@ async def test_health_installs_current_guest_files_when_the_guest_predates_stats
     tmp_path, monkeypatch
 ):
     from kiro_crew.coder import session_browse
+    from kiro_crew.session_environments import browse as vm_browse
 
     # Driven through the real _ask, which owns the one reinstall path: one
     # install and one retry, even when the reinstall does not take.
@@ -919,7 +920,7 @@ async def test_health_installs_current_guest_files_when_the_guest_predates_stats
         monkeypatch.setattr(session_browse, "_resolve", fake_resolve)
         monkeypatch.setattr(session_browse, "run_collect", old_guest)
         # The fake is dialled by a local command, like coder ssh or boxd.
-        monkeypatch.setattr(session_browse, "_command_shell_types", lambda: (SimpleNamespace,))
+        monkeypatch.setattr(vm_browse, "_command_shell_types", lambda: (SimpleNamespace,))
         monkeypatch.setattr(session_browse, "RemoteWorkerLaunch", FakeLaunch)
         health = await session_browse.session_health("k")
         assert installs == [True]

@@ -1621,8 +1621,12 @@ async def resume_slot_from_history(
             # second pass below, so those stay the last awaits before the publish.
             from kiro_crew.coder.retention import keep_reopened
 
-            kept_remote = tuple(dict.fromkeys((history_key, effective_session_key(slot))))
-            kept_reason = await keep_reopened(kept_remote)
+            kept_keys = tuple(dict.fromkeys((history_key, effective_session_key(slot))))
+            if defer_clear:
+                # Only a session this resume reopens from closed goes back on
+                # retention when refused: an open one was never archived.
+                kept_remote = kept_keys
+            kept_reason = await keep_reopened(kept_keys)
             if kept_reason is not None:
                 return ResumeOutcome(
                     refusal=(await _discard())

@@ -20534,6 +20534,7 @@
     "apiTokenRetry": "Elige Guardar ajustes para reintentarlo, o guárdalo tú en Configuración → Secretos como {{name}}.",
     "apiTokenRename": "Para guardarlo con otro nombre, cambia el nombre en Avanzado: nombre del secreto, más abajo, y elige Guardar ajustes.",
     "apiTokenMoved": "El nombre del secreto cambió a {{name}} después de que escribieras el token, quizá en otra ventana. Elige Guardar ajustes otra vez para guardarlo como {{name}}.",
+    "apiTokenConflict": "Otro perfil tiene escrito un token distinto para {{name}}, y el almacén guarda un token por nombre. Dale a uno de los perfiles su propio nombre de secreto en Avanzado, o escribe el mismo token en ambos, y elige Guardar ajustes otra vez.",
     "apiTokenHint": "Aún no hay ningún token guardado como {{name}}. Crea uno en sprites.dev/account, pégalo aquí y elige Guardar ajustes; se guarda de forma segura en esta máquina y no se vuelve a mostrar.",
     "apiTokenListError": "No se pudo comprobar si hay un token guardado. Reintenta para comprobarlo de nuevo.",
     "apiTokenPlaceholder": "Pega un token de la API de Sprites",

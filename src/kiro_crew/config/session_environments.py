@@ -264,15 +264,12 @@ def validate_session_environments(value: object) -> dict[str, Any]:
         result["sprites_profiles"] = validate_sprites_profiles(value["sprites_profiles"])
     if "boxd_profiles" in value:
         result["boxd_profiles"] = validate_boxd_profiles(value["boxd_profiles"])
-    saved_ids = _refuse_shared_ids(result)
+    _refuse_shared_ids(result)
     if "default_profile" in value:
-        default = validate_default_profile(value["default_profile"])
-        # Only an id this save keeps: a removed profile cannot stay the default.
-        if default and default not in saved_ids:
-            raise SessionEnvironmentsError(
-                f"default_profile {default!r} is not one of the saved profiles"
-            )
-        result["default_profile"] = default
+        # Shape only. Which profile it names is judged on the merged section at
+        # write time: a save that omits sprites_profiles or boxd_profiles keeps
+        # the saved list, so its default may name a profile only that list holds.
+        result["default_profile"] = validate_default_profile(value["default_profile"])
     if "stop_on_shutdown" in value:
         result["stop_on_shutdown"] = validate_stop_on_shutdown(value["stop_on_shutdown"])
     return result
