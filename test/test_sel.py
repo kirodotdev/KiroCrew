@@ -1379,6 +1379,39 @@ class TestInferSource:
     def test_infer_source(self, key, expected):
         assert _infer_source(key) == expected
 
+    def test_infer_source_still_files_the_bare_dashboard_key_under_slack(self):
+        # Governance binds a profile through _infer_source, so the audit-label fix
+        # for the dashboard handlers' bare caller leaves it unchanged.
+        assert _infer_source("dashboard") == "slack"
+
+
+class TestDashboardHandlerRowsCarryTheDashboardSource:
+    """The dashboard's own handlers log under the bare caller ``"dashboard"``."""
+
+    def test_a_file_read_row_from_the_dashboard_carries_source_dashboard(self, log, sel_dir):
+        log.log_tool_invocation(
+            session_key="dashboard", tool_name="file_read", outcome="success", resources="/x"
+        )
+        data = json.loads((sel_dir / "security_events.jsonl").read_text(encoding="utf-8"))
+        assert data["source"] == "dashboard"
+        assert data["caller_identity"] == "dashboard"
+
+    def test_an_explicit_source_still_wins(self, log, sel_dir):
+        log.log_tool_invocation(
+            session_key="dashboard", source="cron", tool_name="file_read", outcome="success"
+        )
+        data = json.loads((sel_dir / "security_events.jsonl").read_text(encoding="utf-8"))
+        assert data["source"] == "cron"
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [("dashboard:slot0", "dashboard"), ("C08HZAWV4TP:thread123", "slack"), ("", "unknown")],
+    )
+    def test_other_keys_keep_their_inferred_source(self, log, sel_dir, key, expected):
+        log.log_tool_invocation(session_key=key, tool_name="file_read", outcome="success")
+        data = json.loads((sel_dir / "security_events.jsonl").read_text(encoding="utf-8"))
+        assert data["source"] == expected
+
 
 class TestSingleton:
     def test_returns_same_instance(self, sel_dir):
