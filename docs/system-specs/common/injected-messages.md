@@ -699,9 +699,10 @@ next turn into the same slot:
   MCP tools `monitor_start` and `monitor_update` carry it in their input schemas, and
   `monitor_update` treats an explicit empty string as "clear", so a banner set once can
   be removed without tearing the loop down. It is capped at `MAX_BANNER_CHARS` (500),
-  two orders of magnitude under the 8000-char `message` limit, because the two fields
-  have different jobs: `message` is an instruction re-delivered to the model every
-  cycle, a banner is one display line.
+  well under what `message` may hold (8000 characters through the HTTP API, about 1,500
+  through the MCP tools, whose whole request shares the 3,800-character directive cap),
+  because the two fields have different jobs: `message` is an instruction re-delivered
+  to the model every cycle, a banner is one display line.
 - **A non-blank banner on a channel-bound loop is refused with 400.** A `slack:` /
   `discord:` / `webex:` loop delivers the nudge as the turn's own input and has no
   separate display surface to shorten, so storing one would be dead config the runtime

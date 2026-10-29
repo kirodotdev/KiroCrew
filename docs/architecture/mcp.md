@@ -4881,7 +4881,17 @@ from every tool response, so every directive silently failed. A machine-facing
 framing token must not depend on characters that sanitizers and normalizers
 legitimately rewrite. `encode()` refuses above `MAX_DIRECTIVE_CHARS` (3800), under
 the ACP tool-result truncation bound, so an oversized payload fails loudly
-instead of losing its trailing marker.
+instead of losing its trailing marker. The bound covers the whole result: the
+confirmation text, the marker and the JSON payload, where a non-ASCII character is
+escaped to six characters or more. So the refusal names the largest argument (a field
+inside the request when the tool wraps it, as `monitor_update` wraps its fields in
+`patch`) and the least number of characters to cut from the end of it, counted at each
+character's encoded size. A `monitor_start` cut that changes the
+subject the loop infers from its message also changes the confirmation, so it can need
+a few more. `monitor_start` and `monitor_update` advertise a message budget of about 1,500
+characters (`_MONITOR_MESSAGE_BUDGET_CHARS` in `mcp_tools/control_parts/schemas.py`)
+rather than their 8000-character entry bound. `test/test_directive_tool_size_limits.py`
+fails when a message of the advertised size stops fitting.
 
 A tail-anchored marker must survive delivery, and a rejection must not be able to
 carry one. `validate_tool_args` reports an unknown field by echoing the argument
