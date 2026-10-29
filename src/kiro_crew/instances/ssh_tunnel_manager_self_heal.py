@@ -186,6 +186,9 @@ async def _recover_after(self: SshTunnelManager, instance_id: str, delay: float)
     if instance_id in self._reconfiguring:
         # Scheduled just before the barrier went up, or the barrier rose
         # during the backoff: either way this attempt holds stale coordinates.
+        # Logged like ``_on_tunnel_exit``'s own skip: a recovery that ends here
+        # otherwise leaves no line at all for an instance that stays down.
+        logger.info("Skipping self-heal for %s: reconfiguration in progress", instance_id)
         return
     try:
         await self._recover(instance_id)
@@ -407,7 +410,14 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
         inst = await asyncio.to_thread(self._registry.get, instance_id)
         current = self._tunnels.get(instance_id)
         if inst is None or current is None:
-            return  # disconnected / removed while we waited
+            # Disconnected or removed while we waited. Logged: this is the one
+            # recovery exit that otherwise leaves no record, and an instance
+            # left down with no line is what an operator cannot diagnose.
+            logger.info(
+                "Self-heal for %s not run: the instance was disconnected or removed",
+                instance_id,
+            )
+            return
         if current.status.state == TunnelState.CONNECTED:
             self._recover_attempts.pop(instance_id, None)
             return  # already healthy (e.g. user reconnected)
