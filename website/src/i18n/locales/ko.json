@@ -12653,6 +12653,8 @@
       "filter_recent_description": "선택한 기간에 활동한 세션만 표시",
       "filter_running": "진행 중",
       "filter_running_description": "에이전트가 작업 중인 세션만 표시",
+      "filter_not_running": "진행 중 아님",
+      "filter_not_running_description": "에이전트가 작업 중인 세션 숨기기",
       "filter_tags": "태그 필터: {{name}}",
       "filter_unhide_named": "{{filter}} 세션 숨기기 해제",
       "filter_unread": "읽지 않음",

@@ -13039,6 +13039,8 @@
       "filter_recent_description": "Mostra solo le sessioni attive nel periodo selezionato",
       "filter_running": "In corso",
       "filter_running_description": "Mostra solo le sessioni su cui l’agente sta lavorando attivamente",
+      "filter_not_running": "Non in corso",
+      "filter_not_running_description": "Nascondi le sessioni su cui l'agente sta lavorando attivamente",
       "filter_tags": "Filtra i tag: {{name}}",
       "filter_unhide_named": "Smetti di nascondere le sessioni {{filter}}",
       "filter_unread": "Non lette",

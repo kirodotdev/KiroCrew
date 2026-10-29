@@ -12653,6 +12653,8 @@
       "filter_recent_description": "仅显示所选时间窗口内活跃过的会话",
       "filter_running": "运行中",
       "filter_running_description": "仅显示代理正在处理的会话",
+      "filter_not_running": "未运行",
+      "filter_not_running_description": "隐藏代理正在处理的会话",
       "filter_tags": "筛选标签：{{name}}",
       "filter_unhide_named": "停止隐藏“{{filter}}”会话",
       "filter_unread": "未读",

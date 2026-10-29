@@ -6083,6 +6083,8 @@
       "filter_unread_description": "Show only sessions with unread messages",
       "filter_running": "In progress",
       "filter_running_description": "Show only sessions the agent is actively working on",
+      "filter_not_running": "Not in progress",
+      "filter_not_running_description": "Hide sessions the agent is actively working on",
       "filter_pinned": "Pinned",
       "filter_pinned_description": "Show only sessions you have pinned",
       "filter_recent": "Recent",

@@ -12846,6 +12846,8 @@
       "filter_recent_description": "শুধু নির্বাচিত সময়সীমার মধ্যে সক্রিয় ছিল এমন সেশনগুলো দেখায়",
       "filter_running": "চলমান",
       "filter_running_description": "শুধু যেসব সেশনে এজেন্ট সক্রিয়ভাবে কাজ করছে সেগুলো দেখায়",
+      "filter_not_running": "চলমান নয়",
+      "filter_not_running_description": "এজেন্ট সক্রিয়ভাবে কাজ করছে এমন সেশনগুলো লুকায়",
       "filter_tags": "ট্যাগ ফিল্টার: {{name}}",
       "filter_unhide_named": "{{filter}} সেশনগুলো লুকানো বন্ধ করো",
       "filter_unread": "অপঠিত",

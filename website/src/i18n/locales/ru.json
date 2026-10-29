@@ -13232,6 +13232,8 @@
       "filter_recent_description": "Показывать только сессии, активные в выбранном периоде",
       "filter_running": "В работе",
       "filter_running_description": "Показывать только сессии, над которыми агент активно работает",
+      "filter_not_running": "Не в работе",
+      "filter_not_running_description": "Скрывать сессии, над которыми агент активно работает",
       "filter_tags": "Фильтр по тегам: {{name}}",
       "filter_unhide_named": "Больше не скрывать сессии «{{filter}}»",
       "filter_unread": "Непрочитанные",
