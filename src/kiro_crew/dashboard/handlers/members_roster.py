@@ -457,9 +457,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # legacy kirocrew row, the reserved `default` member) is listed
                 # only once its DM thread holds a message, and is otherwise
                 # reached through the search box. A boolean, never the id.
-                "dashboard_created": name != RESERVED_DEFAULT_MEMBER
-                and agent_cfg.source == _SOURCE_KIROCREW
-                and _member_is_created(agent_cfg.member_id),
+                # The rule is owned by `members.is_person_created_crewmate`, which the
+                # `kirocrew.inventory.members` gauge counts with too.
+                "dashboard_created": members_mod.is_person_created_crewmate(name, agent_cfg),
                 # A crew's IDENTITY: who it is, and the phrasings that should
                 # reach it. Both are operator-authored prose already stored on the
                 # crew, and both are needed off-config — a roster that shows a

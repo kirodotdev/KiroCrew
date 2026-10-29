@@ -64,6 +64,7 @@ name                                       value      attributes      source
 ``kirocrew.inventory.mcp.servers``         count      ``class``       MCP roster
 ``kirocrew.inventory.config.toggle``       0/1        ``key``         config flags
 ``kirocrew.inventory.webhooks.registered`` count      —               ``hooks.json``
+``kirocrew.inventory.members``             count      —               crew roster config
 ``kirocrew.inventory.probe.failures``      count      ``probe``       this module
 =========================================  =========  ==============  ==================
 
@@ -132,6 +133,7 @@ knowledge documents        ``sqlite3`` connect + one indexed COUNT(*)   300s TTL
 lessons                    mtime-cached JSONL read                      store's own
 MCP servers                a few small ``json.loads``                   none
 registered webhooks        one small ``json.loads`` of ``hooks.json``   none
+members                    fingerprint-cached config read (2 stats)     none
 =========================  ===========================================  ==========
 
 Nothing here walks a whole data directory, opens a write connection, or creates a
@@ -188,6 +190,7 @@ GAUGE_LESSONS = "kirocrew.inventory.lessons"
 GAUGE_MCP_SERVERS = "kirocrew.inventory.mcp.servers"
 GAUGE_CONFIG_TOGGLE = "kirocrew.inventory.config.toggle"
 GAUGE_WEBHOOKS_REGISTERED = "kirocrew.inventory.webhooks.registered"
+GAUGE_MEMBERS = "kirocrew.inventory.members"
 GAUGE_PROBE_FAILURES = "kirocrew.inventory.probe.failures"
 
 ALL_METRIC_NAMES = (
@@ -200,6 +203,7 @@ ALL_METRIC_NAMES = (
     GAUGE_MCP_SERVERS,
     GAUGE_CONFIG_TOGGLE,
     GAUGE_WEBHOOKS_REGISTERED,
+    GAUGE_MEMBERS,
     GAUGE_PROBE_FAILURES,
 )
 
@@ -228,6 +232,7 @@ PROBE_LESSONS = "lessons"
 PROBE_MCP = "mcp"
 PROBE_CONFIG_TOGGLES = "config_toggles"
 PROBE_WEBHOOKS = "webhooks"
+PROBE_MEMBERS = "members"
 
 ALL_PROBES = (
     PROBE_CRONS,
@@ -239,6 +244,7 @@ ALL_PROBES = (
     PROBE_MCP,
     PROBE_CONFIG_TOGGLES,
     PROBE_WEBHOOKS,
+    PROBE_MEMBERS,
 )
 
 #: The knowledge table this module counts. A named constant rather than a literal
@@ -643,6 +649,44 @@ def read_registered_webhooks() -> Optional[int]:
     return count
 
 
+def read_members() -> Optional[int]:
+    """Count of crewmates the person created on this install (the Crewmates page).
+
+    Reduced by ``members.count_person_created_crewmates``, the owner of the
+    roster's own ``dashboard_created`` rule, so the gauge cannot drift from which
+    rows the Crewmates page lists as created by the person. Mate (shipped with the
+    product), package-synced and app-made crews, legacy rows and the reserved
+    ``default`` member are not counted: on a busy host the package-synced rows are
+    the large majority of the raw roster, and counting them would bury the number
+    this gauge exists to show.
+
+    One fingerprint-cached config load per collection, the same cost as the config
+    toggles, so it is uncached for the same reason. No name, slug or member id
+    leaves the process: the count rides in the VALUE.
+
+    An empty roster is a real 0, the steady state of an install whose person has
+    not created a crewmate yet. A HALF-READ config is a fault, not a count: the
+    loader does not raise on an unreadable base or overlay file, it keeps going
+    with what it could read, so the crewmates held in the unreadable file would
+    silently drop out and publish a false decrease -- possibly a false 0. Those
+    cases record a ``members`` probe failure and return ``None``, the same as a
+    config read that raises.
+
+    One case this cannot separate: a file that parses but whose ``agents`` value
+    is not an object. The loader reads that section as empty without marking it
+    degraded, so it arrives identical to an install with no crews and reads 0 --
+    the same limit :func:`read_mcp_server_classes` documents for its roster.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.members import count_person_created_crewmates
+
+    cfg = KiroCrewConfig.load()
+    if cfg._base_unreadable or cfg._overlay_unreadable:
+        _note_probe_failure(PROBE_MEMBERS)
+        return None
+    return count_person_created_crewmates(cfg)
+
+
 def read_mcp_server_classes() -> Optional[dict[str, int]]:
     """MCP server counts split into first-party and third-party.
 
@@ -845,6 +889,12 @@ def register_inventory_gauges(meter: "Meter") -> None:
             callbacks=[_observations(PROBE_WEBHOOKS, read_registered_webhooks)],
             unit="1",
             description="Webhook callback contexts registered on this install",
+        )
+        meter.create_observable_gauge(
+            GAUGE_MEMBERS,
+            callbacks=[_observations(PROBE_MEMBERS, read_members)],
+            unit="1",
+            description="Crewmates the person created on this install",
         )
         meter.create_observable_gauge(
             GAUGE_PROBE_FAILURES,
