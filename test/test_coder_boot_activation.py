@@ -185,16 +185,18 @@ async def test_registry_only_boot_sweeps_and_shutdown_keeps_owned_vms(
     from unittest.mock import AsyncMock
 
     from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
-    from kiro_crew.coder import persistent_vm, retention
-    from kiro_crew.coder.persistent_vm import SessionResource, stamp
+    from kiro_crew.coder import retention
     from kiro_crew.config import paths
+    from kiro_crew.session_environments import persistent_vm
+    from kiro_crew.session_environments import retention as vm_retention
+    from kiro_crew.session_environments.persistent_vm import SessionResource, stamp
     from kiro_crew.sprites_session import launch as sprites_launch
 
     cfg = config(sprites_profiles=[], boxd_profiles=[])
     monkeypatch.setattr(gateway.live, "snapshot", lambda: cfg)
     monkeypatch.setattr(paths, "data_home", lambda: tmp_path)
     monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
-    monkeypatch.setattr(retention, "_last_vm_sweep_error", {})
+    monkeypatch.setattr(vm_retention, "_last_vm_sweep_error", {})
     monkeypatch.setattr(persistent_vm, "_last_delete_error", {})
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     monkeypatch.setattr(persistent_vm, "now_utc", lambda: now)

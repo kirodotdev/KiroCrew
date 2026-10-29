@@ -612,11 +612,10 @@ describe('Coder setup and saved profile management', () => {
     })
   })
 
-  it('disables the shutdown switch until a profile exists', async () => {
-    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], default_profile: '', stop_on_shutdown: true } as Section }
+  it('keeps the shutdown switch off and locked until a profile exists', async () => {
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], default_profile: '', stop_on_shutdown: false } as Section }
     await mounted()
     const stop = () => screen.getByRole('switch', { name: 'Stop workspaces when Kiro Crew shuts down' })
-    // Shown off while it cannot apply, so it never reads as "on and locked".
     expect(stop()).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getAllByText('Save a profile above to turn this on.')).toHaveLength(2)
     fireEvent.click(stop())
@@ -624,8 +623,24 @@ describe('Coder setup and saved profile management', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add Coder profile' }))
     expect(stop()).not.toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByText(/Off: they keep running, so chats reconnect faster/)).toBeInTheDocument()
-    expect(stop()).toBeChecked()
+    expect(stop()).not.toBeChecked()
     expect(writes).toEqual([])
+  })
+
+  it('shows a stored "on" shutdown switch as on, and lets it be turned off, with no profile left', async () => {
+    // Shutdown still stops or hibernates every registered machine, so a switch
+    // drawn off here would hide that the next restart acts on them.
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], default_profile: '', stop_on_shutdown: true } as Section }
+    await mounted()
+    const stop = () => screen.getByRole('switch', { name: 'Stop workspaces when Kiro Crew shuts down' })
+    expect(stop()).toBeChecked()
+    expect(stop()).not.toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText(/Off: they keep running, so chats reconnect faster/)).toBeInTheDocument()
+    fireEvent.click(stop())
+    expect(stop()).not.toBeChecked()
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({ stop_on_shutdown: false })
   })
 })
 
@@ -1578,6 +1593,45 @@ describe('Profile draft identity', () => {
     expect(screen.getAllByLabelText(TOKEN_LABEL)).toEqual([tokenB, tokenA])
     expect(within(screen.getByRole('group', { name: 'Renamed A' })).getByLabelText(TOKEN_LABEL)).toBe(tokenA)
     expect(within(screen.getByRole('group', { name: 'Fly B' })).getByLabelText(TOKEN_LABEL)).toBe(tokenB)
+  })
+
+  it.each([
+    ['different tokens', 'token-for-b', false],
+    ['the same token', 'token-for-a', true],
+  ])('refuses two profiles sharing a secret name when their typed tokens differ, and stores a matching one once (%s)', async (_label, typedB, saves) => {
+    const a = { id: 'fly-a', name: 'Fly A', token_secret: 'SPRITES_TOKEN', workdir: '/workspace/a' }
+    const b = { id: 'fly-b', name: 'Fly B', token_secret: 'SPRITES_TOKEN', workdir: '/workspace/b' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [a, b] } }
+    const vault: { name: string; value: string }[] = []
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: vault.map(row => row.name), managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        vault.push(await request.json() as { name: string; value: string })
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expandAll()
+    const [tokenA, tokenB] = screen.getAllByLabelText(TOKEN_LABEL)
+    fireEvent.change(tokenA, { target: { value: 'token-for-a' } })
+    fireEvent.change(tokenB, { target: { value: typedB } })
+    fireEvent.change(screen.getAllByLabelText('Profile name')[0], { target: { value: 'Renamed A' } })
+    fireEvent.click(save())
+    if (saves) {
+      // One value for one key: stored once, nothing overwritten.
+      await screen.findByText('Settings saved.')
+      expect(vault).toEqual([{ name: 'SPRITES_TOKEN', value: 'token-for-a' }])
+      return
+    }
+    // Two values for one key would silently keep only the last: refuse before
+    // any write, keep both drafts, and say how to tell them apart.
+    expect(await screen.findByText(/Another profile has a different token typed for SPRITES_TOKEN/)).toBeVisible()
+    expect(vault).toEqual([])
+    expect(writes).toEqual([])
+    expect(screen.queryByText('Settings saved.')).toBeNull()
+    expect(tokenA).toHaveValue('token-for-a')
+    expect(tokenB).toHaveValue('token-for-b')
   })
 
   it('keeps a token draft mounted across a settings refetch without configuration edits', async () => {

@@ -2,9 +2,9 @@
 
 Archive stops it and stamps ``deletion_due_at``; a reopen clears the stamp, and
 :func:`sweep_due` deletes due workspaces once proven. Nothing raises into close.
-Sprites and boxd sessions keep one VM each (``coder/persistent_vm.py``); their
-archive, sweep and shutdown run here too, under the same per-session lifecycle
-lock and generation.
+Sprites and boxd sessions keep one VM each (``session_environments/persistent_vm.py``);
+their archive, sweep and shutdown (``session_environments/retention.py``) run
+from here, under the same per-session lifecycle lock and generation.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from weakref import WeakValueDictionary
 from kiro_crew.coder.client import CoderClientError
 from kiro_crew.coder.registry import DELETING, WorkspaceBinding, WorkspaceRegistryCorrupt
 from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
+from kiro_crew.session_environments import retention as vm_retention
+from kiro_crew.session_environments.retention import _section
 
 logger = logging.getLogger(__name__)
 
@@ -70,37 +72,6 @@ def _now() -> datetime:
 
 def _stamp(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
-
-
-async def _live_config() -> Any:
-    """The live config, or a fresh load before the gateway publishes one."""
-    from kiro_crew.config import live
-    from kiro_crew.config.loader import KiroCrewConfig
-
-    config = live.snapshot()
-    if config is None:
-        config = await asyncio.to_thread(KiroCrewConfig.load)
-    return config
-
-
-async def _section() -> Any:
-    return (await _live_config()).session_environments
-
-
-async def _persistent_environments() -> list[Any]:
-    """Every VM provider's environments, so their saved rows are swept even after
-    every profile of that provider is removed; none while the developer flag is
-    off (no VM call then runs for any row). Read from the one provider table
-    (``session_launch._vm_environments``), never listed here."""
-    from kiro_crew.coder.session_launch import _vm_environments
-    from kiro_crew.config.paths import data_home
-    from kiro_crew.session_environment import session_environments_enabled
-
-    if not session_environments_enabled():
-        return []
-    section = await _section()
-    home = await asyncio.to_thread(data_home)
-    return [cls(section, home) for cls in _vm_environments().values()]
 
 
 async def _environments() -> Optional[Any]:
@@ -231,7 +202,7 @@ async def _archive(
 ) -> None:
     try:
         environments = await _environments()
-        persistent = await _persistent_environments()
+        persistent = await vm_retention._persistent_environments()
         for key, lifecycle, generation in requests:
             async with lifecycle.lock:
                 if generation != lifecycle.generation:
@@ -253,15 +224,7 @@ async def _archive(
                             "Archived session workspace: could not schedule its release",
                             exc_info=True,
                         )
-                for provider in persistent:
-                    try:
-                        await provider.archive_session(key)
-                    except Exception:  # noqa: BLE001 -- never surfaces into the close
-                        logger.warning(
-                            "Archived session %s machine: could not schedule its deletion",
-                            provider.label,
-                            exc_info=True,
-                        )
+                await vm_retention.archive_vms(persistent, key)
     except Exception:  # noqa: BLE001 -- never surfaces into a close that already succeeded
         logger.warning("Archived session workspace: could not schedule its release", exc_info=True)
 
@@ -326,7 +289,7 @@ async def _reopen(requests: tuple[tuple[str, SessionLifecycle], ...]) -> Optiona
 
     try:
         environments = await _environments()
-        persistent = await _persistent_environments()
+        persistent = await vm_retention._persistent_environments()
     except Exception:  # noqa: BLE001 -- no registry readable: nothing is known pending
         logger.warning("Reopened session workspace: could not read its registries", exc_info=True)
         return None
@@ -339,21 +302,9 @@ async def _reopen(requests: tuple[tuple[str, SessionLifecycle], ...]) -> Optiona
                 except SessionEnvironmentUnavailable as exc:
                     # Mid-delete: the next start says so and gets a fresh one.
                     logger.info("Reopened session workspace: %s", exc)
-            for provider in persistent:
-                try:
-                    await provider.reopen_session(key)
-                except Exception as exc:  # noqa: BLE001 -- the other providers still run
-                    logger.warning(
-                        "Reopened session %s machine: could not keep it",
-                        provider.label,
-                        exc_info=True,
-                    )
-                    reason = str(exc) if isinstance(exc, SessionEnvironmentUnavailable) else ""
-                    failure = failure or (
-                        reason
-                        or f"its {provider.label} machine's deletion could not be cancelled; "
-                        "try again"
-                    )
+            # Every key's VMs are kept, even after an earlier key failed.
+            reason = await vm_retention.reopen_vms(persistent, key)
+            failure = failure or reason
     return failure
 
 
@@ -362,8 +313,6 @@ async def _reopen(requests: tuple[tuple[str, SessionLifecycle], ...]) -> Optiona
 #: service manager's SIGKILL; the guest's own timeouts stop what it misses (a
 #: sprite goes cold, a boxd machine hibernates).
 SHUTDOWN_STOP_SECS = GRACEFUL_SHUTDOWN_SECS * 0.8
-#: boxd machines hibernated at once on shutdown (each is two CLI calls).
-_SHUTDOWN_HIBERNATE_PARALLEL = 8
 
 
 async def stop_on_shutdown_enabled() -> bool:
@@ -409,31 +358,7 @@ async def stop_for_shutdown() -> dict[str, int]:
                 logger.info("Shutdown: Coder workspace stop failed (%s); auto-stop applies", exc)
 
     async def boxd() -> None:
-        from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
-        from kiro_crew.config.paths import data_home
-
-        environments = BoxdSessionEnvironments(await _section(), await asyncio.to_thread(data_home))
-        rows = await asyncio.to_thread(environments.registry.all)
-        if not rows:
-            return  # no CLI call, so a gateway without boxd pays nothing
-        cli = await environments.cli()
-        # In parallel, a few at a time: one by one, the later machines would
-        # outlast the shutdown budget and stay running.
-        gate = asyncio.Semaphore(_SHUTDOWN_HIBERNATE_PARALLEL)
-
-        async def hibernate(row: Any) -> None:
-            async with gate:
-                try:
-                    record = await cli.get(row.name)
-                    if record is None:
-                        return
-                    environments.check_identity(row, record)
-                    await cli.hibernate(row.name)
-                    counts["boxd"] += 1
-                except Exception as exc:  # noqa: BLE001 -- boxd idles it on its own
-                    logger.info("Shutdown: boxd hibernate failed (%s); boxd idles it", exc)
-
-        await asyncio.gather(*(hibernate(row) for row in rows))
+        await vm_retention.hibernate_boxd_for_shutdown(counts)
 
     async def guarded(name: str, step: Callable[[], Any]) -> None:
         try:
@@ -532,31 +457,10 @@ async def sweep_due(environments: Any, *, now: Optional[datetime] = None) -> int
     return deleted
 
 
-#: provider label -> the last sweep failure logged for it, so the same failure
-#: every minute is one warning, not sixty.
-_last_vm_sweep_error: dict[str, str] = {}
-
-
-async def _sweep_persistent() -> int:
-    deleted = 0
-    for provider in await _persistent_environments():
-        try:
-            deleted += await provider.sweep_due()
-            _last_vm_sweep_error.pop(provider.label, None)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- one provider never stops the others
-            message = str(exc)
-            if _last_vm_sweep_error.get(provider.label) != message:
-                logger.warning("Archived session %s sweep failed: %s", provider.label, message)
-            _last_vm_sweep_error[provider.label] = message
-    return deleted
-
-
 async def sweep_once() -> int:
     """One sweep on the live config: Sprites and boxd VMs, then Coder (0 without
     it); registry-only unless a row is due, so an idle gateway makes no remote call."""
-    deleted = await _sweep_persistent()
+    deleted = await vm_retention._sweep_persistent()
     environments = await _environments()
     if environments is None:
         return deleted

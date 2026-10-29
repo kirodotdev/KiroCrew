@@ -579,6 +579,15 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             if path_key == "session_environments.default_profile":
                 # Under the lock, against the profiles saved at this write.
                 _check_default_profile_is_saved(section, value)
+            if path_key in (
+                "session_environments.sprites_profiles",
+                "session_environments.boxd_profiles",
+            ):
+                # A list may not drop the profile the saved default names: every
+                # new chat would then run locally, and the next whole save fail.
+                _check_default_profile_is_saved(
+                    {**section, parts[-1]: value}, section.get("default_profile")
+                )
             if path_key == "session_environments" and isinstance(value, dict):
                 # Under the lock, so it merges with what is saved at this write.
                 stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)

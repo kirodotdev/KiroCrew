@@ -3,7 +3,7 @@
 A boxd machine is persistent and hibernates when idle (it then bills for disk
 only), so a session keeps one machine for its life. The lifecycle -- when a
 machine is created, kept or deleted -- is
-:class:`~kiro_crew.coder.persistent_vm.PersistentVmEnvironments`; this module is
+:class:`~kiro_crew.session_environments.persistent_vm.PersistentVmEnvironments`; this module is
 the boxd CLI side of it. An archived session's machine is hibernated, and boxd's
 own ``delete-after`` timer is armed to the same deadline as a backstop, so the
 machine goes even if this gateway never runs again.
@@ -25,9 +25,9 @@ from typing import Any, Optional
 
 from kiro_crew.boxd_session.cli import BoxdCLI, BoxdError
 from kiro_crew.boxd_session.shell import BoxdShell
-from kiro_crew.coder.persistent_vm import PersistentVmEnvironments, SessionResource
 from kiro_crew.config.session_environments import VM_REGISTRY_FILES
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
+from kiro_crew.session_environments.persistent_vm import PersistentVmEnvironments, SessionResource
 
 PROVIDER_ID = "boxd"
 NAME_PREFIX = "kc-"
@@ -88,15 +88,24 @@ class BoxdSessionEnvironments(PersistentVmEnvironments):
                 )
         return record, who
 
-    async def remote_create(self, profile: dict[str, Any], name: str) -> tuple[dict[str, Any], str]:
+    async def remote_credential(self, profile: dict[str, Any]) -> str:
+        return await (await self.cli()).identity()
+
+    async def remote_create(
+        self, profile: dict[str, Any], name: str, *, used: str
+    ) -> dict[str, Any]:
         cli = await self.cli()
-        who = await cli.identity()
-        record = await cli.create(
+        if await cli.identity() != used:
+            # Another account or org since the row recorded this one.
+            raise SessionEnvironmentUnavailable(
+                f"the boxd account or org changed before machine {name} was created; "
+                "nothing was created, start the chat again"
+            )
+        return await cli.create(
             name,
             snapshot=str(profile.get("snapshot") or ""),
             vcpu=int(profile.get("vcpu") or 0),
         )
-        return record, who
 
     async def remote_delete(
         self, profile: Optional[dict[str, Any]], name: str, *, used: str
