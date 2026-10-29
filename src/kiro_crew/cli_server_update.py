@@ -560,6 +560,12 @@ def _update(force: bool = False) -> None:
     # fails must not change the outcome or the exit code.
     _revalidate_gateway_update_check()
 
+    # A running gateway keeps serving the code it imported at boot, so the pulled
+    # revision takes effect only after a restart -- the same hint the wheel,
+    # managed-venv and provider paths print.
+    print("\n  Restart the gateway to use the new version:")
+    print("    kirocrew restart")
+
 
 def _revalidate_gateway_update_check() -> None:
     """Best-effort: tell the running gateway to re-check for updates now.
