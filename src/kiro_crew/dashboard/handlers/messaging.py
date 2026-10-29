@@ -75,6 +75,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _pip_install_channel_available,
+    body_not_object_error,
     guard_owner_surface_routes,
     internal_memory_scope,
     pip_extra_install_command,

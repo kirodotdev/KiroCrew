@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         CronStoreBusy,
         CronStoreUnreadable,
         DashboardState,
+        body_not_object_error,
         logger,
     )
 
@@ -32,6 +33,9 @@ async def api_notification_delete(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
@@ -53,6 +57,9 @@ async def api_notification_ack(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
@@ -67,6 +74,9 @@ async def api_notification_unack(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)

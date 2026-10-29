@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _redact,
         _spawn_scope_refusal,
         body_int,
+        body_not_object_error,
         dashboard_slot_key,
         effective_session_key,
         effort_applied_note,
@@ -235,6 +236,9 @@ async def api_spawn(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     try:
         cleaned = validate_tool_args(
             {
@@ -615,6 +619,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     task = str(body.get("task", "") or "").strip()
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         _spawn_on_loop,
         _stopped_before_start,
         body_int,
+        body_not_object_error,
         dashboard_slot_key,
         effective_session_key,
         internal_memory_scope,
@@ -267,6 +268,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     message = str(body.get("message", "") or "").strip()
     if not message:
         return web.json_response(
@@ -384,6 +388,9 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     batch_id = str(body.get("batch_id", "") or "")[:32]
     if not batch_id or not batch_id.isalnum():
         return web.json_response({"error": "valid batch_id required"}, status=400)
@@ -419,6 +426,9 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     ids = body.get("ids")
     if not ids or not isinstance(ids, list):
         return web.json_response(

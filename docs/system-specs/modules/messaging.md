@@ -1698,6 +1698,13 @@ the facade reaches moved code. New work goes to the owner of its responsibility:
 | `channel_folder_backfill.py` | `POST /api/channel-folders/backfill`, filing a channel's existing sessions |
 | `browser_routes.py` | the browser routes: attach token, the native panel's command bus, the Playwright CLI install, the browser view and open |
 
+An owner route that parses its body with `await request.json()` and then reads it
+with `body.get()` returns `body_not_object_error(body)` right after the parse:
+valid JSON that is not an object (a list, a string, a number) is answered
+`400 body_not_object`, the answer `read_bounded_json` gives, instead of raising
+`AttributeError` as a 500. Pinned per route by
+`test/test_messaging_api_non_object_body.py`.
+
 The facade keeps the code repository guards read there by path, and the shared
 pieces. That is `api_send_message` itself, which redacts and authorizes the Slack
 target and injects into an origin session between the read and the delivery. It
