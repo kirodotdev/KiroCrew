@@ -22,9 +22,11 @@ that every retained refusal is bounded and cleaned before it is kept.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,11 +45,42 @@ TOGGLED = {**MANAGED, "disabled": False, "disabledTools": ["learn_add"]}
 
 @pytest.fixture
 def tree(tmp_path, monkeypatch):
+    with _tree(tmp_path, monkeypatch) as built:
+        yield built
+
+
+@contextlib.contextmanager
+def _tree(tmp_path, monkeypatch):
     """A kiro home, a project and the global settings file, all under tmp.
 
     ``kirocrew`` is a search agent by name; ``plain`` maps no skill and never asks
     for the element, so it shows which agents a restriction touches.
+
+    Every projection prepared here is released when the tree closes, before
+    ``tmp_path`` is removed. A projection left to its finalizer ends whenever the
+    collector frees it, on the reaper or a prune thread, and that prune recreates
+    ``kiro/agents`` and the side directory under a path pytest has already removed
+    and may hand, by the same name, to the next test while its setup runs.
     """
+    prepared: list[projection.NativeSkillProjection] = []
+    real_prepare = projection.prepare_native_skill_projection
+
+    def _prepare(*args, **kwargs):
+        result = real_prepare(*args, **kwargs)
+        if result is not None:
+            prepared.append(result)
+        return result
+
+    monkeypatch.setattr(projection, "prepare_native_skill_projection", _prepare)
+    try:
+        yield _build_tree(tmp_path, monkeypatch)
+    finally:
+        # Off the event loop, so each end prunes inline and is done on return.
+        for each in prepared:
+            each.release()
+
+
+def _build_tree(tmp_path, monkeypatch) -> SimpleNamespace:
     monkeypatch.delenv("KIROCREW_NATIVE_SKILL_PROJECTION", raising=False)
     home = tmp_path / "kiro"
     agents = home / "agents"
@@ -565,6 +598,25 @@ async def test_a_restriction_written_after_the_spawn_refuses_the_next_session_by
     fresh = projection.prepare_native_skill_projection(tree.project)
     assert fresh.search_agents == {"kirocrew"} and fresh.errors == {}
     assert message == f"Agent 'kirocrew': {_withheld(fresh, tree)}"
+
+
+def test_the_tree_ends_its_projections_before_tmp_path_is_removed(tmp_path, monkeypatch):
+    """Once the tree closes, no projection it prepared can still prune into it.
+
+    pytest removes a passing test's ``tmp_path`` and reuses the name for the next
+    test, so a prune that runs after the removal recreates ``kiro/agents`` under
+    that next test's setup. The late end is run here by hand, where the collector
+    would run it, so the race is reproduced without waiting for the collector.
+    """
+    with _tree(tmp_path, monkeypatch) as built:
+        prepared = projection.prepare_native_skill_projection(built.project)
+        assert prepared is not None
+        late_end = prepared._lease_finalizer
+    shutil.rmtree(tmp_path / "kiro")
+    shutil.rmtree(tmp_path / "crew", ignore_errors=True)
+    if late_end is not None and late_end.alive:
+        late_end()
+    assert not built.agents.exists(), "a projection ended after its tree was removed"
 
 
 @pytest.mark.asyncio
