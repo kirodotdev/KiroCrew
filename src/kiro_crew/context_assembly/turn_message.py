@@ -775,11 +775,12 @@ def build_message(
         # set, which, like scoped_skills, reads from *project* alone.
         template_root = project or template_dir
         pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root)
-        mapped = (
-            pinned
-            if pinned is not None
-            else (ctx.agent_skill_globs(agent, project_dir=template_root) if agent else [])
-        )
+        if pinned is not None:
+            mapped = pinned
+        elif agent:
+            mapped = ctx.agent_skill_globs(agent, project_dir=template_root)
+        else:
+            mapped = []
         if mapped:
             allowed = {
                 row["key"] for row in self.skills.scoped_skills(project_dir=project, only=mapped)
