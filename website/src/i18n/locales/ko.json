@@ -9136,7 +9136,7 @@
     },
     "welcomeView": {
       "incognito": "시크릿",
-      "incognito_desc": "기존 메모리를 사용하지만 새로운 학습 내용은 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다.",
+      "incognito_desc": "기존 메모리를 사용하지만 새로운 학습 내용은 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다. 목표 루프는 사용할 수 없습니다.",
       "suggestion_daily_reminder": "매일 알림 설정",
       "suggestion_review_changes": "최신 변경 사항 검토",
       "suggestion_search_code": "사용 예시를 코드에서 검색",
@@ -9150,7 +9150,7 @@
       "incognito_active_switch_to_persistent": "시크릿 — 영구 모드로 전환",
       "temporary": "임시",
       "temporary_active_switch_to_persistent": "임시 — 영구 모드로 전환",
-      "temporary_desc": "메모리를 사용하지 않고 새로운 학습 내용도 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다.",
+      "temporary_desc": "메모리를 사용하지 않고 새로운 학습 내용도 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다. 목표 루프는 사용할 수 없습니다.",
       "what_can_i_do_for_you": "무엇을 도와드릴까요?",
       "greeting_what_are_we_building_today": "오늘은 무엇을 만들어 볼까요?",
       "greeting_where_should_we_start": "어디서부터 시작할까요?",

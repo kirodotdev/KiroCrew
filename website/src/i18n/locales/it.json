@@ -9416,7 +9416,7 @@
     },
     "welcomeView": {
       "incognito": "Incognito",
-      "incognito_desc": "Usa la memoria esistente, ma non apprende lezioni. Conserva la trascrizione per ripristinare la scheda.",
+      "incognito_desc": "Usa la memoria esistente, ma non apprende lezioni. Conserva la trascrizione per ripristinare la scheda. I cicli obiettivo non sono disponibili.",
       "suggestion_daily_reminder": "Imposta un promemoria giornaliero",
       "suggestion_review_changes": "Rivedi le mie ultime modifiche",
       "suggestion_search_code": "Cerca esempi di utilizzo nel codice",
@@ -9430,7 +9430,7 @@
       "incognito_active_switch_to_persistent": "Incognito — passa alla modalità persistente",
       "temporary": "Temporaneo",
       "temporary_active_switch_to_persistent": "Temporaneo — passa alla modalità persistente",
-      "temporary_desc": "Non usa la memoria e non apprende lezioni. Conserva la trascrizione per ripristinare la scheda.",
+      "temporary_desc": "Non usa la memoria e non apprende lezioni. Conserva la trascrizione per ripristinare la scheda. I cicli obiettivo non sono disponibili.",
       "what_can_i_do_for_you": "Cosa posso fare per te?",
       "greeting_what_are_we_building_today": "Cosa costruiamo oggi?",
       "greeting_where_should_we_start": "Da dove iniziamo?",

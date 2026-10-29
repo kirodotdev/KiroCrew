@@ -9136,7 +9136,7 @@
     },
     "welcomeView": {
       "incognito": "プライベート",
-      "incognito_desc": "既存のメモリを使いますが、新しいレッスンは学習しません。タブを復元できるよう、会話記録は保持します。",
+      "incognito_desc": "既存のメモリを使いますが、新しいレッスンは学習しません。タブを復元できるよう、会話記録は保持します。ゴールループは使えません。",
       "suggestion_daily_reminder": "毎日のリマインダーを設定",
       "suggestion_review_changes": "最新の変更をレビュー",
       "suggestion_search_code": "コード使用例を検索",
@@ -9150,7 +9150,7 @@
       "incognito_active_switch_to_persistent": "プライベート — 永続モードに切り替える",
       "temporary": "一時的",
       "temporary_active_switch_to_persistent": "一時的 — 永続モードに切り替える",
-      "temporary_desc": "メモリを使わず、新しいレッスンも学習しません。タブを復元できるよう、会話記録は保持します。",
+      "temporary_desc": "メモリを使わず、新しいレッスンも学習しません。タブを復元できるよう、会話記録は保持します。ゴールループは使えません。",
       "what_can_i_do_for_you": "何かお手伝いできることはありますか？",
       "greeting_what_are_we_building_today": "今日は何を作りましょうか？",
       "greeting_where_should_we_start": "どこから始めましょうか？",

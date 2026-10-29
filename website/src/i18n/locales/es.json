@@ -9416,7 +9416,7 @@
     },
     "welcomeView": {
       "incognito": "Incógnito",
-      "incognito_desc": "Usa la memoria existente, pero no aprende lecciones. Conserva la transcripción para recuperar la pestaña.",
+      "incognito_desc": "Usa la memoria existente, pero no aprende lecciones. Conserva la transcripción para recuperar la pestaña. Los bucles de objetivo no están disponibles.",
       "suggestion_daily_reminder": "Configurar un recordatorio diario",
       "suggestion_review_changes": "Revisar mis últimos cambios",
       "suggestion_search_code": "Buscar ejemplos de uso en el código",
@@ -9430,7 +9430,7 @@
       "incognito_active_switch_to_persistent": "Incógnito — cambiar al modo persistente",
       "temporary": "Temporal",
       "temporary_active_switch_to_persistent": "Temporal — cambiar al modo persistente",
-      "temporary_desc": "No usa la memoria ni aprende lecciones. Conserva la transcripción para recuperar la pestaña.",
+      "temporary_desc": "No usa la memoria ni aprende lecciones. Conserva la transcripción para recuperar la pestaña. Los bucles de objetivo no están disponibles.",
       "what_can_i_do_for_you": "¿Qué puedo hacer por ti?",
       "greeting_what_are_we_building_today": "¿Qué construimos hoy?",
       "greeting_where_should_we_start": "¿Por dónde empezamos?",

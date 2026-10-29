@@ -9136,7 +9136,7 @@
     },
     "welcomeView": {
       "incognito": "隐身",
-      "incognito_desc": "使用现有记忆，但不会学习新经验。保留聊天记录以便恢复标签页。",
+      "incognito_desc": "使用现有记忆，但不会学习新经验。保留聊天记录以便恢复标签页。无法使用目标循环。",
       "suggestion_daily_reminder": "设置每日提醒",
       "suggestion_review_changes": "审查我最新的更改",
       "suggestion_search_code": "在代码中搜索用法示例",
@@ -9150,7 +9150,7 @@
       "incognito_active_switch_to_persistent": "隐身 — 切换到持久模式",
       "temporary": "临时",
       "temporary_active_switch_to_persistent": "临时 — 切换到持久模式",
-      "temporary_desc": "不使用记忆，也不会学习新经验。保留聊天记录以便恢复标签页。",
+      "temporary_desc": "不使用记忆，也不会学习新经验。保留聊天记录以便恢复标签页。无法使用目标循环。",
       "what_can_i_do_for_you": "我能帮你做什么？",
       "greeting_what_are_we_building_today": "今天我们要构建什么？",
       "greeting_where_should_we_start": "我们从哪里开始？",

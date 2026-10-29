@@ -9276,7 +9276,7 @@
     },
     "welcomeView": {
       "incognito": "Inkognito",
-      "incognito_desc": "Nutzt vorhandene Erinnerungen, lernt aber keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
+      "incognito_desc": "Nutzt vorhandene Erinnerungen, lernt aber keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs. Zielschleifen sind nicht verfügbar.",
       "suggestion_daily_reminder": "Eine tägliche Erinnerung einrichten",
       "suggestion_review_changes": "Meine neuesten Änderungen überprüfen",
       "suggestion_search_code": "Code nach Verwendungsbeispielen durchsuchen",
@@ -9290,7 +9290,7 @@
       "incognito_active_switch_to_persistent": "Inkognito — zum dauerhaften Modus wechseln",
       "temporary": "Temporär",
       "temporary_active_switch_to_persistent": "Temporär — zum dauerhaften Modus wechseln",
-      "temporary_desc": "Verwendet keine Erinnerungen und lernt keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
+      "temporary_desc": "Verwendet keine Erinnerungen und lernt keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs. Zielschleifen sind nicht verfügbar.",
       "what_can_i_do_for_you": "Was kann ich für dich tun?",
       "greeting_what_are_we_building_today": "Was bauen wir heute?",
       "greeting_where_should_we_start": "Womit fangen wir an?",
