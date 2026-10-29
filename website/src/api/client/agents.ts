@@ -7,6 +7,7 @@
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
+import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
 
 /** One row of GET /api/members — a global crew as a Crew Members roster entry.
@@ -60,9 +61,17 @@ export interface MemberRosterRow {
   source?: 'kirocrew' | 'builtin' | 'package' | string
   /** User's favourite mark; toggled via PUT /api/agents/{name}. */
   starred?: boolean
-  /** Created on the dashboard: `source` is `kirocrew` AND the record carries
-   *  a member id. Listed on the roster unasked. Absent on an older gateway. */
+  /** The person created this crewmate (the Crewmates page's create, or an
+   *  approved `crewmate.create` / `crewmate.import` card): `source` is
+   *  `kirocrew` AND the record carries a member id. Never true for the reserved
+   *  `default` member. Listed on the roster even with an empty chat. Absent on
+   *  an older gateway. */
   dashboard_created?: boolean
+  /** The reserved `default` row only: its DM thread holds a message the person
+   *  sent (not a welcome, a scheduled run, an auto-nudge or a relayed
+   *  `session_send`). The roster lists `default` only when this is true.
+   *  Absent on every other row and on an older gateway. */
+  has_user_dm_message?: boolean
   /** The Crewmates-page DM thread holds at least one message (a live slot's
    *  unflushed rows included). Listed on the roster unasked. Absent on an
    *  older gateway. */
@@ -320,8 +329,11 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // turn only on the empty pinned thread of Mate or of a crewmate whose
     // create asked for it (`first_greeting`), at most once
     // ever, and answers every other case with the outcome that declined it.
+    // `X-UI-Lang` is the language this tab renders: the greeting has no user
+    // text to follow, so on a "follow the browser" install it is the only
+    // language the server can write the welcome in.
     memberGreet: (slug: string) =>
-      post('/api/members/' + encodeURIComponent(slug) + '/greet').then(j) as Promise<{ outcome: string }>,
+      post('/api/members/' + encodeURIComponent(slug) + '/greet', undefined, undefined, { 'X-UI-Lang': activeLocale() }).then(j) as Promise<{ outcome: string }>,
     // Fresh start on a crewmate's pinned thread: stop any turn, then drop the
     // conversation so the next turn starts clean. Same slot key; the
     // transcript stays. `reset_at` is the server's time of the reset; `outcome`

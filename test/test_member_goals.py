@@ -656,6 +656,51 @@ def test_each_check_in_is_dispatched_as_a_plain_hidden_turn(
     assert kwargs == {"human_seen": False}
 
 
+@pytest.mark.parametrize("cadence", ["daily", "weekly", "monthly", "heartbeat"])
+@pytest.mark.parametrize("language", ["zh-CN", ""])
+def test_a_check_in_carries_the_users_language(
+    _floor_monkeypatch, cadence: str, language: str
+) -> None:
+    """A check-in has no tab behind it: the configured language rides in its prompt."""
+    _seed()
+    slug = _slug(ORDINARY)
+    state = FakeState()
+    slot = _thread(state, ORDINARY, user_sent=False)
+    slot.task = None
+    member_goals.set_goal(slug, ORDINARY, "Keep docs current", by="user")
+    member_goals.set_schedules(slug, ORDINARY, {cadence: True})
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    _floor_monkeypatch.setattr(mate_welcome, "hidden_turn_language", lambda *a: language)
+
+    class Job:
+        managed_by = goal_reminder.managed_key(slug, cadence)
+
+    assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
+    ((args, _kwargs),) = sent
+    # One language sentence: the configured tag replaces the preamble's own.
+    if language:
+        assert mate_welcome.LANGUAGE_DEFAULT not in args[2]
+        assert args[2].count("BCP-47 tag zh-CN") == 1
+        assert "in this thread" in args[2]
+    else:
+        assert args[2].count(mate_welcome.LANGUAGE_DEFAULT) == 1
+
+
+def test_hidden_turn_language_reads_the_configured_dashboard_language(
+    _floor_monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = SimpleNamespace(dashboard=SimpleNamespace(language="zh-CN"))
+    _floor_monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    assert mate_welcome.hidden_turn_language() == "zh-CN"
+
+
 @pytest.mark.parametrize(
     ("change", "outcome"),
     [

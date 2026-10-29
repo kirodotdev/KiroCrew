@@ -74,6 +74,20 @@ def test_a_moved_crewmate_tells_its_user_once_and_never_on_a_later_start(dispatc
     assert dispatched[0][1].startswith(notice.WORKER_UPGRADE_PREFIX)
 
 
+def test_a_move_that_changed_the_kit_names_the_change_in_its_one_notice(dispatched):
+    slot = _thread("atlas")
+    notice.mark_notice_owed("atlas", "it no longer has tool 'execute_bash'")
+
+    asyncio.run(_offer(_State(slot)))
+    asyncio.run(_offer(_State(slot)))  # a later start: still one notice
+
+    assert len(dispatched) == 1
+    key, prompt = dispatched[0]
+    assert key == slot.key and prompt.startswith(notice.NOTICE_PROMPT)
+    assert "it no longer has tool 'execute_bash'" in prompt
+    assert "request_capabilities" in prompt
+
+
 def test_a_crewmate_created_after_the_upgrade_owes_no_notice(dispatched):
     slot = _thread("nova")
     # Its own directory exists, as any crewmate's does once it has been used.
@@ -128,8 +142,8 @@ def test_the_migration_owes_the_notice_only_for_crewmates_it_moved(monkeypatch, 
 def test_a_crewmate_the_migration_left_behind_tells_its_user_why_once(
     monkeypatch, tmp_path, dispatched
 ):
-    """``orbit`` would gain a shell its template does not give it, so it stays on
-    its template; its thread says so once, with the migration's own reason."""
+    """``orbit``'s template denies writes under ``/etc``, which its worker would not
+    keep, so it stays on its template; its thread says so once, with the reason."""
     _migrate_atlas_and_orbit(monkeypatch, tmp_path)
     assert notice.claim_kept_notice(members_mod.member_slug("atlas"), "atlas") == ""
     slot = _thread("orbit")
@@ -140,7 +154,7 @@ def test_a_crewmate_the_migration_left_behind_tells_its_user_why_once(
     assert len(dispatched) == 1
     key, prompt = dispatched[0]
     assert key == slot.key and prompt.startswith(notice.WORKER_UPGRADE_PREFIX)
-    assert "execute_bash" in prompt and "left as it was" in prompt
+    assert "toolsSettings" in prompt and "left as it was" in prompt
 
 
 def test_a_left_behind_crewmate_that_moves_later_never_says_it_was_left(
@@ -156,7 +170,8 @@ def test_a_left_behind_crewmate_that_moves_later_never_says_it_was_left(
     cfg = _migrate_atlas_and_orbit(monkeypatch, tmp_path)
     shell = paths_mod.kiro_agents_dir() / "shell.json"
     spec = json.loads(shell.read_text(encoding="utf-8"))
-    shell.write_text(json.dumps({**spec, "tools": ["fs_read"]}), encoding="utf-8")
+    spec.pop("toolsSettings")
+    shell.write_text(json.dumps(spec), encoding="utf-8")
     assert migrate_existing_crewmates(cfg).migrated == ["orbit"]
     slot = _thread("orbit")
 
@@ -201,7 +216,7 @@ def test_a_kept_notice_claimed_while_the_thread_is_busy_follows_its_next_turn_en
 
 
 def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
-    """``atlas`` moves; ``orbit``'s worker would gain ``execute_bash``, so it stays."""
+    """``atlas`` moves; ``orbit``'s worker would not keep its write limit, so it stays."""
     import json
 
     import kiro_crew.config.paths as paths_mod
@@ -218,7 +233,13 @@ def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
     (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
     (user / "plain.json").write_text(json.dumps({**base, "name": "plain"}), encoding="utf-8")
     (user / "shell.json").write_text(
-        json.dumps({**base, "name": "shell", "tools": ["fs_read", "execute_bash"]}),
+        json.dumps(
+            {
+                **base,
+                "name": "shell",
+                "toolsSettings": {"fs_write": {"deniedPaths": ["/etc/**"]}},
+            }
+        ),
         encoding="utf-8",
     )
     cfg = KiroCrewConfig()

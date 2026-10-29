@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         _is_declared_builtin_mcp_server,
         _is_deepseek_read_only_builtin,
         _is_first_party_app,
+        _is_first_party_read_only_mcp_tool,
         _is_harness_read_only_builtin,
         _is_host_read_only_builtin,
         _normalize_tool_name,
@@ -95,6 +96,7 @@ class GateFacts:
         agent: str,
         app: str,
         classifier_only: bool,
+        trust_reads: bool = False,
     ) -> None:
         self.manager = manager
         self.call = call
@@ -102,6 +104,10 @@ class GateFacts:
         self.agent = agent
         self.app = app
         self.classifier_only = classifier_only
+        #: The surface's Reads approval mode is on for this call. Read by the
+        #: read-only tier alone (``_tier_read_only``), for the first-party MCP
+        #: proof; no deny tier, governance or grant tier consults it.
+        self.trust_reads = trust_reads
         self._memo: dict[str, Any] = {}
 
     def _once(self, key: str, compute: Callable[[], Any]) -> Any:
@@ -1118,6 +1124,14 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     ``kind="read"`` or titled ``Read …`` is not auto-approved; an MCP-served tool,
     which carries no host-trusted read-only marker, is not provable either. Off the
     flag the interactive path keeps its ACP-kind allow-list and title fallback.
+
+    One MCP identity IS a host-trusted marker, and only under the surface's Reads
+    approval mode (``GateFacts.trust_reads``): Kiro Crew's own read-only tools,
+    the exact ``(server, tool)`` pairs of ``_FIRST_PARTY_READ_ONLY_MCP_TOOLS``
+    carried with ``identity_trusted`` (``_is_first_party_read_only_mcp_tool``).
+    That proof runs after the confirm-list check and before the kind logic, so a
+    confirm-listed call still asks and the kind kiro-cli omits on an MCP frame
+    cannot refuse it.
     """
     call = facts.call
     # A session whose own approver must judge every read (heartbeat: no human behind
@@ -1151,6 +1165,22 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
             return ToolHookResult.auto_approve(read_only=True)
         return None
     from kiro_crew.slack.gateway import _is_read_only_tool
+
+    # Reads mode's one MCP proof: Kiro Crew's OWN read-only tools, named by the
+    # host-trusted ``(server, tool)`` pair (``_FIRST_PARTY_READ_ONLY_MCP_TOOLS``).
+    # Only when the surface said its Reads approval mode is on (``trust_reads``):
+    # under Normal the call still asks, and Trust / YOLO approve it on their own
+    # terms. Keyed on identity alone -- the ACP ``kind`` is not consulted because
+    # kiro-cli stamps none on an MCP tool_call frame, and the title never proves
+    # anything. Sits AFTER the confirm-list check above, so an operator who
+    # listed ``@kirocrew-core`` or the tool still gets the prompt, and after every
+    # deny tier and governance, so nothing a tier refused is re-admitted. The same
+    # tool name on another server, an untrusted identity, and every other
+    # ``kirocrew-core`` tool fall through unchanged.
+    if facts.trust_reads and _is_first_party_read_only_mcp_tool(
+        call.mcp_tool, call.mcp_server, mcp_identity_trusted=call.identity_trusted
+    ):
+        return ToolHookResult.auto_approve(read_only=True)
 
     kind = (call.kind or "").strip().lower()
     if facts.classifier_only:

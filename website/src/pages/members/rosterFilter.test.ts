@@ -99,17 +99,19 @@ describe('narrowRoster', () => {
 })
 
 /** A roster as a real host serves it. `has_dm_message` is the DM thread holding
- *  a message, whoever sent it; `dashboard_created` is source kirocrew AND a
- *  member id, and no longer lists a row by itself. */
+ *  a message, whoever sent it; `dashboard_created` is a crewmate the person
+ *  created (source kirocrew AND a member id), listed even with an empty chat;
+ *  `has_user_dm_message` is the reserved `default` row's own, stricter signal. */
 const NO = { dashboard_created: false, has_dm_message: false }
 const MIXED = [
-  // The built-in default crewmate: a row like any other, no message -> hidden.
-  { name: 'default', ...NO, source: 'builtin' },
+  // The reserved default member, no message the person sent -> hidden.
+  { name: 'default', ...NO, has_user_dm_message: false, source: 'builtin' },
   // Dashboard-created, greeting never landed, but starred: listed.
   { name: 'radar', display_name: 'Issue Radar', ...NO, dashboard_created: true, source: 'kirocrew', starred: true },
   // Dashboard-created AND a message in the thread: listed.
   { name: 'oncall', dashboard_created: true, has_dm_message: true, source: 'kirocrew' },
-  // Dashboard-created, no message, not starred -> hidden (an empty thread).
+  // Created by the person (on the page, or by approving Mate's card), chat
+  // never opened, not starred -> listed: the person asked for it.
   { name: 'fresh', ...NO, dashboard_created: true, source: 'kirocrew' },
   // Legacy kirocrew row: no member id, no message -> hidden.
   { name: 'legacy-aim', ...NO, source: 'kirocrew' },
@@ -123,7 +125,7 @@ const MIXED = [
   { name: 'older-gateway', source: 'package' },
 ]
 const byName = (n: string) => MIXED.find((m) => m.name === n)!
-const LISTED = ['radar', 'oncall', 'app-used', 'older-gateway']
+const LISTED = ['radar', 'oncall', 'fresh', 'app-used', 'older-gateway']
 
 describe('listedByDefault / rosterShows', () => {
   it('lists a row whose DM thread holds a message, whoever sent it, and a starred one', () => {
@@ -132,12 +134,38 @@ describe('listedByDefault / rosterShows', () => {
     expect(listedByDefault(byName('radar'))).toBe(true)
     expect(listedByDefault(byName('older-gateway'))).toBe(true)
   })
-  it('hides an empty thread, whatever made the row: default, dashboard-created, app, sync, legacy', () => {
-    for (const n of ['default', 'fresh', 'app-bot', 'pkg-tool', 'legacy-aim']) expect(listedByDefault(byName(n))).toBe(false)
+  it('hides an empty thread on every auto-generated row: default, app, sync, legacy', () => {
+    for (const n of ['default', 'app-bot', 'pkg-tool', 'legacy-aim']) expect(listedByDefault(byName(n))).toBe(false)
+  })
+  it('lists a crewmate the person created even while its chat is empty and never opened', () => {
+    expect(listedByDefault(byName('fresh'))).toBe(true)
+    // The same empty thread on a row the person did not create stays hidden.
+    expect(listedByDefault({ ...byName('fresh'), dashboard_created: false })).toBe(false)
+  })
+  it('lists the reserved default member only once the person sent it a message', () => {
+    const base = { name: 'default', source: 'builtin', dashboard_created: false }
+    // A gateway welcome, a scheduled run or a relay filled the thread: still hidden.
+    expect(listedByDefault({ ...base, has_dm_message: true, has_user_dm_message: false })).toBe(false)
+    expect(listedByDefault({ ...base, has_dm_message: false, has_user_dm_message: false })).toBe(false)
+    expect(listedByDefault({ ...base, has_dm_message: true, has_user_dm_message: true })).toBe(true)
+    // Even a row that looks person-created never lists default by that alone.
+    expect(listedByDefault({ ...base, source: 'kirocrew', dashboard_created: true, has_dm_message: false, has_user_dm_message: false })).toBe(false)
+    // Starring it is the person's own mark.
+    expect(listedByDefault({ ...base, has_dm_message: false, has_user_dm_message: false, starred: true })).toBe(true)
+    // An older gateway sends no has_user_dm_message: its has_dm_message rule stands.
+    expect(listedByDefault({ ...base, has_dm_message: true })).toBe(true)
+  })
+  it('an upgraded roster whose default thread holds only gateway rows lists only Mate', () => {
+    const upgraded = [
+      { name: 'default', source: 'builtin', has_dm_message: true, has_user_dm_message: false },
+      { name: 'mate', ...NO, source: 'builtin' },
+      { name: 'kirocrew-conductor', ...NO, source: 'builtin' },
+    ]
+    expect(names(rosterPopulation(upgraded, EMPTY_QUERY))).toEqual(['mate'])
   })
   it('lists Mate, the first mate, from the start; a fresh roster shows Mate and not the default mate', () => {
     const fresh = [
-      { name: 'default', ...NO, source: 'builtin' },
+      { name: 'default', ...NO, has_user_dm_message: false, source: 'builtin' },
       { name: 'mate', ...NO, source: 'builtin' },
     ]
     expect(names(rosterPopulation(fresh, EMPTY_QUERY))).toEqual(['mate'])
@@ -170,7 +198,7 @@ describe('rosterPopulation', () => {
   })
   it('a search only ADDS the hidden rows it reaches; it never shrinks the population', () => {
     expect(names(rosterPopulation(MIXED, { ...EMPTY_QUERY, search: 'pkg' }))).toEqual([
-      'radar', 'oncall', 'pkg-tool', 'app-used', 'older-gateway',
+      'radar', 'oncall', 'fresh', 'pkg-tool', 'app-used', 'older-gateway',
     ])
     expect(names(rosterPopulation(MIXED, { ...EMPTY_QUERY, search: 'zzz' }))).toEqual(LISTED)
   })

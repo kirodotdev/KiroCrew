@@ -278,6 +278,15 @@ def _notices(state: Any) -> set[str]:
     return notices
 
 
+def _notice_prompts(state: Any) -> dict[str, str]:
+    """The prompt of each thread's claimed upgrade notice, when it names what changed."""
+    prompts = getattr(state, "_mate_notice_prompts", None)
+    if not isinstance(prompts, dict):
+        prompts = {}
+        state._mate_notice_prompts = prompts
+    return prompts
+
+
 def _kept_notices(state: Any) -> dict[str, str]:
     """Threads whose claimed kept notice (its prompt) is still to be delivered."""
     kept = getattr(state, "_mate_kept_notices", None)
@@ -305,14 +314,16 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if not is_crewmate_thread(slot) or slot.key in _notice_checked(state):
         return False
     _notice_checked(state).add(slot.key)
-    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice
+    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice_prompt
 
     binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
     slug = members_mod.slug_from_dm_slot_key(slot.key)
     if not binding or binding.get("member") != slot.agent or not slug:
         return False
-    if await asyncio.to_thread(claim_notice, slug, slot.agent):
+    prompt = await asyncio.to_thread(claim_notice_prompt, slug, slot.agent)
+    if prompt:
         _notices(state).add(slot.key)
+        _notice_prompts(state)[slot.key] = prompt
     else:
         # Not moved: a crewmate the migration left where it was says why, once.
         kept = await asyncio.to_thread(claim_kept_notice, slug, slot.agent)
@@ -361,7 +372,8 @@ async def _flush(state: Any, key: str) -> None:
             from kiro_crew.mate_upgrade_notice import NOTICE_PROMPT
 
             _notices(state).discard(key)
-            dispatch_hidden_turn(state, slot, NOTICE_PROMPT, human_seen=False)
+            prompt = _notice_prompts(state).pop(key, NOTICE_PROMPT)
+            dispatch_hidden_turn(state, slot, prompt, human_seen=False)
             logger.info("upgrade notice started on %s", key)
             continue
         if _idle(slot) and key in _kept_notices(state):

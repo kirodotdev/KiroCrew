@@ -582,7 +582,11 @@ allowlist would have decided -- rather than reverting to default-open.
 Dashboard tool approvals offer four decisions, in widening scope: `trust_command`
 (this exact command, session-scoped), `trust_base` (the base command glob, e.g.
 `ls *`, plus the bare binary, session-scoped), `trust_reads` (read-only bash for
-the slot), and `trust` (all tools for the slot). `yolo` is the global escalation.
+the slot, plus Kiro Crew's own read-only MCP tools -- `@kirocrew-core/memory_recall`
+and the rest of the closed `hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS` set, matched on
+the trusted `(server, tool)` identity the transport stamped, never on the title; every
+other MCP call still prompts), and `trust` (all tools for the slot). `yolo` is the
+global escalation.
 
 `trust_command` and `trust_base` can also be timed. The chat approval prompt
 offers each one for an hour or for the rest of the user's day, beside the grant
