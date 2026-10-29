@@ -87,6 +87,10 @@ async def api_log_level(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     level_name = body.get("level", "").upper()
     if not apply_log_level(level_name, source="dashboard"):
         return web.json_response({"error": f"invalid level: {level_name}"}, status=400)

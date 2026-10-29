@@ -880,6 +880,10 @@ async def api_update_simulate(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         body = {}
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
 
     # Simulate a pre-flight rejection (e.g. dirty working tree)
     if body.get("reject"):

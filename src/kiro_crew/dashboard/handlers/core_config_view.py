@@ -24,7 +24,10 @@ from kiro_crew.config.loader import (
     SUBAGENT_MAX_TURNS_CEILING,
     KiroCrewConfig,
 )
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    body_not_object_error,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.external_text import redact_external_text as _redact_external
 
@@ -313,6 +316,9 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return _deny("invalid JSON")
+        if body_not_object_error(body) is not None:
+            # The same answer, through ``_deny`` so it is audited like every refusal.
+            return _deny("body must be a JSON object", code="body_not_object")
         agent_settings = body.get("agent")
         if not isinstance(agent_settings, dict):
             return _deny("agent must be an object")

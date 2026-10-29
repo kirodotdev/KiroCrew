@@ -183,6 +183,24 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             {"error": {"message": "invalid JSON", "type": "invalid_request_error"}},
             status=400,
         )
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if body_not_object_error(body) is not None:
+        # This route speaks the OpenAI error shape its clients parse, so the
+        # refusal keeps that shape. The shared code rides inside it, where an
+        # OpenAI client reads it, and at the top level, where every dashboard
+        # error carries its machine-readable code.
+        return web.json_response(
+            {
+                "error": {
+                    "message": "body must be a JSON object",
+                    "type": "invalid_request_error",
+                    "code": "body_not_object",
+                },
+                "code": "body_not_object",
+            },
+            status=400,
+        )
 
     model = body.get("model")
     messages = body.get("messages", [])

@@ -45,7 +45,7 @@ from kiro_crew.dashboard.folder_ownership import (  # re-exported: callers impor
     _is_descendant,
     _subtree_holds_foreign_folder,
 )
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import body_not_object_error, read_bounded_json
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     deny_app_slot_access,
@@ -178,6 +178,8 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     folder_id = str(body.get("folder_id") or "")
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
@@ -330,6 +332,8 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # Optional generation token, the same one api_chat_slot_folder reads: the
     # ``chat_session_pin`` MCP tool resolves the slot from an earlier
     # ``/api/chat/slots`` read, and the slot key can be recreated for a
@@ -1114,6 +1118,8 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     mode = _coerce_requested_mode(body.get("mode", ""))
     if mode not in _VALID_MODES:
         return web.json_response({"error": "invalid mode"}, status=400)

@@ -59,6 +59,7 @@ from ._shared import (
     _read_session_key,
     active_project_dir,
     active_project_state,
+    body_not_object_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -1081,6 +1082,8 @@ async def api_steering_create(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content is required"}, status=400)
@@ -1338,6 +1341,8 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content is required"}, status=400)
