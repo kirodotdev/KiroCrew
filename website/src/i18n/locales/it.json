@@ -6696,10 +6696,13 @@
           "actions": "Azioni",
           "cycle_light_dark_system": "Alterna chiaro / scuro / sistema",
           "keyboard_shortcuts_help": "Guida alle scorciatoie da tastiera",
+          "new_session": "Nuova sessione",
+          "open_shortcuts": "Apri scorciatoie",
           "pin_current_session": "Fissa la sessione corrente",
           "pin_this_chat_to_the_top": "Fissa questa chat in alto",
           "remove_pin_from_this_chat": "Non fissare più questa chat",
           "start_a_fresh_chat": "Avvia una nuova chat",
+          "toggle_theme": "Cambia tema",
           "unpin_current_session": "Non fissare più la sessione corrente"
         },
         "allAggregator": {

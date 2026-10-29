@@ -6582,10 +6582,13 @@
           "actions": "कार्रवाइयाँ",
           "cycle_light_dark_system": "लाइट / डार्क / सिस्टम के बीच बदलें",
           "keyboard_shortcuts_help": "कीबोर्ड शॉर्टकट की मदद",
+          "new_session": "नया सत्र",
+          "open_shortcuts": "शॉर्टकट खोलो",
           "pin_current_session": "मौजूदा सत्र पिन करें",
           "pin_this_chat_to_the_top": "इस चैट को सबसे ऊपर पिन करें",
           "remove_pin_from_this_chat": "इस चैट से पिन हटाएँ",
           "start_a_fresh_chat": "नई चैट शुरू करें",
+          "toggle_theme": "थीम बदलो",
           "unpin_current_session": "मौजूदा सत्र अनपिन करें"
         },
         "allAggregator": {

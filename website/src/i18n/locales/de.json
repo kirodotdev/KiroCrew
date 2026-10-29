@@ -6582,10 +6582,13 @@
           "actions": "Aktionen",
           "cycle_light_dark_system": "Hell / Dunkel / System durchschalten",
           "keyboard_shortcuts_help": "Hilfe zu Tastenkürzeln",
+          "new_session": "Neue Sitzung",
+          "open_shortcuts": "Tastenkürzel öffnen",
           "pin_current_session": "Aktuelle Sitzung anpinnen",
           "pin_this_chat_to_the_top": "Diesen Chat oben anpinnen",
           "remove_pin_from_this_chat": "Die Anpinnung von diesem Chat entfernen",
           "start_a_fresh_chat": "Einen neuen Chat starten",
+          "toggle_theme": "Erscheinungsbild wechseln",
           "unpin_current_session": "Aktuelle Sitzung abpinnen"
         },
         "allAggregator": {

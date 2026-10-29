@@ -6468,10 +6468,13 @@
           "actions": "アクション",
           "cycle_light_dark_system": "ライト / ダーク / システムを切り替え",
           "keyboard_shortcuts_help": "キーボードショートカットのヘルプ",
+          "new_session": "新しいセッション",
+          "open_shortcuts": "ショートカットを開く",
           "pin_current_session": "現在のセッションをピン留め",
           "pin_this_chat_to_the_top": "このチャットを上部にピン留め",
           "remove_pin_from_this_chat": "このチャットのピン留めを削除",
           "start_a_fresh_chat": "新しいチャットを開始",
+          "toggle_theme": "テーマを切り替え",
           "unpin_current_session": "現在のセッションのピン留めを解除"
         },
         "allAggregator": {

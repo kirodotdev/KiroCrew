@@ -6468,10 +6468,13 @@
           "actions": "작업",
           "cycle_light_dark_system": "라이트 · 다크 · 시스템 순환",
           "keyboard_shortcuts_help": "키보드 단축키 도움말",
+          "new_session": "새 세션",
+          "open_shortcuts": "단축키 열기",
           "pin_current_session": "현재 세션 고정",
           "pin_this_chat_to_the_top": "이 채팅을 맨 위에 고정",
           "remove_pin_from_this_chat": "이 채팅의 고정 해제",
           "start_a_fresh_chat": "새 채팅 시작",
+          "toggle_theme": "테마 전환",
           "unpin_current_session": "현재 세션 고정 해제"
         },
         "allAggregator": {
