@@ -74,7 +74,7 @@ which restates what a member's DM session carries in its context.
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
 | `src/kiro_crew/dashboard/handlers/members.py` and its `members_<role>.py` owners | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Mate teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Mates page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
-| `website/src/pages/KiroCrewAgentsPage.tsx` | The mate roster, mounted as the **Mates** tab of `CapabilitiesPage` (Customize), and a host of the one mate editor. The page holds the roster query, the create door (`NewCrewmateDialog`), the deep links (`?crew=`, `&avatar=1`, `&pane=capabilities`, `?new=1`), the fresh-roster admission latch the editor opens behind, and the editor's guide facts, and composes the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`) and the binding fields every crew form shares (`KiroCrewAgentsPageFields.tsx`; consumers import them from the page, which re-exports each). Editing a mate opens `components/crew/CrewEditorModal.tsx` (`CrewEditorNextDialog` driven by `useCrewEditor`), the same editor the Mates page opens in place; that hook keeps its own `INHERIT_MODEL` twin |
+| `website/src/pages/KiroCrewAgentsPage.tsx` | The mate roster, mounted as the **Mates** tab of `CapabilitiesPage` (Customize), and a host of the one mate editor. The page holds the roster query, the create door (`NewCrewmateDialog`), the deep links (`?crew=`, `&avatar=1`, `&pane=capabilities`, `?new=1`), the fresh-roster admission latch the editor opens behind, and the editor's guide facts, and composes the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`) and mounts the binding fields every crew form shares (`components/crew/crewFields.tsx`; each consumer imports them from there, and the page re-exports each for its existing importers). Editing a mate opens `components/crew/CrewEditorModal.tsx` (`CrewEditorNextDialog` driven by `useCrewEditor`), the same editor the Mates page opens in place; that hook re-exports `INHERIT_MODEL` from `crewFields.tsx` |
 | `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it, so `triggers` has no editing surface |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A mate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
@@ -1564,10 +1564,9 @@ mate's chat and asks for no greeting. The dialog's own success path (cache
 invalidation, the post-failure reconcile, the goal stored as
 `description`) is identical on both doors; only the caller's `onCreated`
 differs. `NewCrewmateDialog` imports its field frame and field components from
-`KiroCrewAgentsPage` (which re-exports them from `KiroCrewAgentsPageFields.tsx`),
-so the two pages cannot drift; the resulting call-time
-import cycle is resolved because both reference the other's bindings only inside
-component bodies.
+`components/crew/crewFields.tsx`, the same module the crew editor mounts them
+from, so the two forms cannot drift. That module imports no page, so neither
+consumer closes an import cycle through it.
 
 The roster lists a row unasked (`listedByDefault`) when the user starred it;
 when it is Mate, the first mate (key `mate`), listed from the start so its

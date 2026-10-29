@@ -7,7 +7,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 // The crew editor's create dialog, shared the way the Crewmates dialog shares it.
-import { WorkspaceModal } from '../KiroCrewAgentsPage'
+import { WorkspaceModal } from '../../components/crew/crewFields'
 import { useProvider } from '../../providers'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'

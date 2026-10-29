@@ -92,7 +92,7 @@ import {
   TriggersField,
   WorkspaceField,
   WorkspaceModal,
-} from '../KiroCrewAgentsPage'
+} from '../../components/crew/crewFields'
 
 /** The template a new crewmate is built from unless Advanced settings picks
  *  another: the built-in kiro agent every install ships, which leads the

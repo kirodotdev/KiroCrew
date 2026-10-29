@@ -16,7 +16,7 @@ import { parseErrorCode, reportForError, type ErrorReport } from '../utils/error
 import { crewWorkerKitApi, crewWorkerKitKey } from '../api/crewCapabilities'
 import { DEFAULT_TEMPLATE, kitTemplateName, templateDisplayName } from '../components/crew/builtFromName'
 import { workerKitErrorText } from '../components/crew/workerKitErrors'
-import { memberMemoryState } from './KiroCrewAgentsPageFields'
+import { memberMemoryState } from '../components/crew/crewFields'
 
 export type MemoryStores = Record<string, { memory_version?: number; owner_member?: string }>
 

@@ -13,10 +13,7 @@ import { useGuardedLeave, usePublishNavigationStake, useRegisterNavigationLeaveG
 // after", and an Advanced fold for the rest. Creating a crew from the
 // capabilities roster opens THIS same dialog: a create IS one
 // `POST /api/agents`, so the two doors share one form (the dialog's own header
-// note). This file exports the fields the dialog mounts, so the import is a
-// call-time cycle (both reference the other's bindings only inside component
-// bodies, never at module top level) — the same shape MembersPage already pulls
-// both modules in through.
+// note).
 import NewCrewmateDialog, { type CreatedCrewmate } from './members/NewCrewmateDialog'
 
 import { i18nT } from '../i18n/t'
@@ -45,13 +42,11 @@ export {
   displayNameFallback,
   TriggersField,
   SessionColorField,
-} from './KiroCrewAgentsPageFields'
-export type { MemberMemoryState } from './KiroCrewAgentsPageFields'
+} from '../components/crew/crewFields'
+export type { MemberMemoryState } from '../components/crew/crewFields'
 
 // The crewmate editor — the same one the Crewmates page opens in place. Lazy so
-// its code stays off the main App chunk until a crewmate is edited; it also
-// imports the shared fields from this page, so a static import here would be a
-// module cycle.
+// its code stays off the main App chunk until a crewmate is edited.
 const CrewEditorModal = lazy(() => import('../components/crew/CrewEditorModal'))
 
 function errorText(e: unknown): string {
