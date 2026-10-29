@@ -513,11 +513,14 @@ async def test_delivered_orphan_survives_audit_and_tombstone_failures():
 
 
 @pytest.mark.asyncio
-async def test_orphan_dm_delegates_to_callback():
+async def test_orphan_dm_delegates_to_callback(caplog):
     dm = AsyncMock(return_value=True)
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
-    await mgr._send_orphan_slack_dm("orphan msg")
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+        await mgr._send_orphan_slack_dm("orphan msg")
     dm.assert_awaited_once_with("orphan msg")
+    # A delivered notice does not also fall through to the undelivered log line.
+    assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"] == []
 
 
 @pytest.mark.asyncio

@@ -1184,6 +1184,23 @@ class TestDigestHoldDeadline:
         mgr.batch_members_pending = MagicMock(return_value=pending)
         return mgr
 
+    def _flushes(self, mgr: SubagentManager, now: float) -> list[SubagentInfo]:
+        """Run the sweep on a loop through a recording completion consumer and
+        return the flush-only records it announced."""
+        announced: list[SubagentInfo] = []
+
+        async def _record(info: SubagentInfo) -> None:
+            announced.append(info)
+
+        async def _drive() -> None:
+            mgr._sweep_digest_holds(now)
+            await asyncio.wait_for(asyncio.gather(*mgr._tasks.values()), _ANNOUNCE_WAIT_SECS)
+
+        mgr._on_done = _record
+        with patch("kiro_crew.subagent.sel"):
+            asyncio.run(_drive())
+        return [info for info in announced if info._digest_flush_only]
+
     def test_hold_within_deadline_is_not_flushed(self):
         """A wave whose members finish close together must still deliver ONE
         consolidated digest — the deadline is a latency cap, not a per-member
@@ -1196,12 +1213,10 @@ class TestDigestHoldDeadline:
         m = self._held_member(0)
         m._digest_held_at = now - 5.0
         mgr._agents["h0"] = m
-        with patch.object(mgr, "force_digest_flush") as forced:
-            mgr._sweep_digest_holds(now)
-            forced.assert_not_called()
-            # Control: the same hold is flushed once it is past the deadline.
-            mgr._sweep_digest_holds(m._digest_held_at + DIGEST_HOLD_SECS + 1.0)
-        forced.assert_called_once()
+        assert self._flushes(mgr, now) == []
+        # Control: the same hold is flushed once it is past the deadline.
+        flushes = self._flushes(mgr, m._digest_held_at + DIGEST_HOLD_SECS + 1.0)
+        assert [(f.batch_id, f.parent_session_key) for f in flushes] == [("wv", "dashboard:main")]
 
     def test_expired_hold_forces_flush(self):
         """THE BUG: two members finished, the third is still running, so
@@ -1235,13 +1250,10 @@ class TestDigestHoldDeadline:
         m = self._held_member(0)
         m._digest_held_at = now - 100_000.0
         mgr._agents["h0"] = m
-        with patch.object(mgr, "force_digest_flush") as forced:
-            with patch("kiro_crew.subagent.DIGEST_HOLD_SECS", 0.0):
-                mgr._sweep_digest_holds(now)
-            forced.assert_not_called()
-            # Control: with the deadline back on, the same aged hold is flushed.
-            mgr._sweep_digest_holds(now)
-        forced.assert_called_once()
+        with patch("kiro_crew.subagent.DIGEST_HOLD_SECS", 0.0):
+            assert self._flushes(mgr, now) == []
+        # Control: with the deadline back on, the same aged hold is flushed.
+        assert [f.batch_id for f in self._flushes(mgr, now)] == ["wv"]
 
     def test_unheld_members_never_trip_the_sweep(self):
         """``_digest_held_at`` is the sweep's ONLY input: a delivered member
@@ -1254,13 +1266,10 @@ class TestDigestHoldDeadline:
         m._digest_held = True  # restart-safety flag stays set after the flush…
         m._digest_held_at = 0.0  # …but the hold clock was stopped
         mgr._agents["h0"] = m
-        with patch.object(mgr, "force_digest_flush") as forced:
-            mgr._sweep_digest_holds(now + DIGEST_HOLD_SECS * 10)
-            forced.assert_not_called()
-            # Control: a running hold clock on the same member does trip the sweep.
-            m._digest_held_at = now
-            mgr._sweep_digest_holds(now + DIGEST_HOLD_SECS * 10)
-        forced.assert_called_once()
+        assert self._flushes(mgr, now + DIGEST_HOLD_SECS * 10) == []
+        # Control: a running hold clock on the same member does trip the sweep.
+        m._digest_held_at = now
+        assert [f.batch_id for f in self._flushes(mgr, now + DIGEST_HOLD_SECS * 10)] == ["wv"]
 
     def test_force_digest_flush_builds_flush_only_record(self):
         mgr = self._mgr()

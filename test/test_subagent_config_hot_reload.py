@@ -143,15 +143,15 @@ class TestReconfigureDerivesEveryField:
 
     @pytest.mark.asyncio
     async def test_untouched_change_is_ignored(self) -> None:
-        mgr = _mgr()
-        mgr.reconfigure = AsyncMock()  # type: ignore[method-assign]
-        await _dispatch(KiroCrewConfig(), "agent.model")
-        mgr.reconfigure.assert_not_awaited()
-        # A watched path through the same dispatcher does reach the stub, so
-        # the absence above is the prefix filter and not a detached mock.
-        watched = KiroCrewConfig()
-        await _dispatch(watched, "agent.max_subagents")
-        mgr.reconfigure.assert_awaited_once_with(watched)
+        mgr = _mgr(max_concurrent=4)
+        fresh = KiroCrewConfig()
+        fresh.agent.max_subagents = 7
+        await _dispatch(fresh, "agent.model")
+        assert mgr.max_concurrent == 4
+        # A watched path through the same dispatcher does reach the manager, so
+        # the unchanged cap above is the prefix filter and not a detached manager.
+        await _dispatch(fresh, "agent.max_subagents")
+        assert mgr.max_concurrent == 7
 
     @pytest.mark.asyncio
     async def test_pool_size_change_recomputes_the_cap(self) -> None:
