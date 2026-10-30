@@ -13,7 +13,7 @@
  *  peer or a config value: the Console URL is validated by the server and again
  *  here, and the other links are fixed public documentation pages. */
 import { ExternalLink, Smartphone } from 'lucide-react'
-import type { SetupPath, SetupPathCapability } from '../../api/sharedCrew'
+import type { SetupPath, SetupPathCapability, TailnetDirect } from '../../api/sharedCrew'
 import { consoleUrl, type CrewModeResponse } from '../../api/sharedCrewMode'
 import { SETUP_PATH_ORDER } from '../../api/sharedCrewUi'
 import { SettingsCard, SettingsSection } from '../../components/settings'
@@ -25,6 +25,9 @@ import { i18nT } from '../../i18n/t'
 /** Fixed public documentation pages, never configurable. */
 export const TAILSCALE_SHARING_DOCS_URL = 'https://tailscale.com/kb/1084/sharing'
 export const SESSION_MANAGER_DOCS_URL = 'https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html'
+/** The one fixed, public page where a tailnet's users are managed. Removing a
+ *  person from this Crew is removing them there. */
+export const TAILSCALE_USERS_URL = 'https://login.tailscale.com/admin/users'
 
 export function TeamConfigInvalid({ mode }: { mode: CrewModeResponse }) {
   const reason = mode.team_config.reason || 'invalid'
@@ -74,8 +77,16 @@ function DocLink({ href, label, testId }: { href: string; label: string; testId:
   )
 }
 
-/** Network mode: every adapter, read-only, with its honest status. */
-export function NetworkAdapters({ adapters }: { adapters: CrewModeResponse['adapters'] }) {
+/** The Tailscale row's badge: the live direct listener when it is up, else the
+ *  setup state. It says the listener is on, never that the viewer can reach it. */
+function tailscaleBadge(row: SetupPathCapability | undefined, direct: TailnetDirect | undefined) {
+  if (direct?.state === 'active') return <Badge variant="ok" data-testid="adapter-tailscale-listening">{i18nT('sharedCrew.adapter_tailscale_listening')}</Badge>
+  return statusBadge(row)
+}
+
+/** Network mode: every adapter, read-only, with its honest status. Tailscale is
+ *  first, and the section opens the page. */
+export function NetworkAdapters({ adapters, direct }: { adapters: CrewModeResponse['adapters']; direct?: TailnetDirect }) {
   return (
     <SettingsSection title={i18nT('sharedCrew.adapters_title')}>
       <SettingsCard>
@@ -84,10 +95,18 @@ export function NetworkAdapters({ adapters }: { adapters: CrewModeResponse['adap
             <li key={path} className="flex flex-col gap-1 py-2.5 min-w-0" data-testid={`adapter-${path}`} data-state={adapters[path]?.state ?? 'unavailable'}>
               <div className="flex items-center gap-2 min-w-0 flex-wrap">
                 <span className="text-sm font-medium text-text-strong">{adapterName(path)}</span>
-                {statusBadge(adapters[path])}
+                {path === 'tailscale' ? tailscaleBadge(adapters[path], direct) : statusBadge(adapters[path])}
               </div>
               <p className="text-[13px] text-muted">{adapterBody(path)}</p>
-              {path === 'tailscale' && <DocLink href={TAILSCALE_SHARING_DOCS_URL} label={i18nT('sharedCrew.adapter_tailscale_docs')} testId="adapter-tailscale-docs" />}
+              {path === 'tailscale' && (
+                <>
+                  <p className="text-[12px] text-muted" data-testid="adapter-tailscale-scope">{i18nT('sharedCrew.adapter_tailscale_scope')}</p>
+                  <div className="flex items-center gap-x-4 gap-y-1 flex-wrap min-w-0">
+                    <DocLink href={TAILSCALE_SHARING_DOCS_URL} label={i18nT('sharedCrew.adapter_tailscale_docs')} testId="adapter-tailscale-docs" />
+                    <DocLink href={TAILSCALE_USERS_URL} label={i18nT('sharedCrew.adapter_tailscale_manage')} testId="adapter-tailscale-manage" />
+                  </div>
+                </>
+              )}
               {path === 'systems_manager' && <DocLink href={SESSION_MANAGER_DOCS_URL} label={i18nT('sharedCrew.adapter_ssm_docs')} testId="adapter-ssm-docs" />}
             </li>
           ))}

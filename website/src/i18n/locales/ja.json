@@ -20170,6 +20170,9 @@
     "waitlist_err_ack": "先に共有の確認をしてください。",
     "waitlist_approved_at": "承認: {{when}}",
     "adapter_tailscale_docs": "Tailscale の共有ドキュメント",
+    "adapter_tailscale_manage": "Tailscale でメンバーを管理",
+    "adapter_tailscale_listening": "tailnet で待ち受け中",
+    "adapter_tailscale_scope": "自分の tailnet の中だけで共有されます。",
     "created_by_with_login": "作成者: {{name}}（{{login}}）",
     "invite_key_connect": "接続",
     "filter_unavailable": "この Crew では作成者でセッションを絞り込めません。",
@@ -20258,7 +20261,7 @@
     "invite_reusable": "再利用できるリンク",
     "mode_invalid_body": "この Crew のチーム設定に問題があるため、チームメンバーのアクセスはオフになっています。この Crew を管理する人が設定を直すまでオフのままです。このマシンでは引き続き使えます。",
     "waitlist_waiting_title": "承認待ち",
-    "access_tailscale": "tailnet 上のユーザーは Tailscale 経由でこの Crew にアクセスします。接続できる人を変えるには、Tailscale でユーザーとアクセスルールを管理してください。",
+    "access_tailscale": "<tip>tailnet</tip> 上のユーザーは Tailscale 経由でこの Crew にアクセスします。接続できる人を変えるには、Tailscale でユーザーとアクセスルールを管理してください。",
     "queued_personal": "あなたの個人上限に空きが出るのを待っています",
     "first_share_confirm": "共有する",
     "invite_err_auth": "Tailscale がこのキーを受け付けませんでした。誤り、取り消し、期限切れの可能性があります。",
@@ -20297,6 +20300,7 @@
     "invite_list_title": "招待",
     "setup_list_label": "共有アクセスの設定方法",
     "refused_crew_queue": "この Crew の共有キューがいっぱいです。メッセージは入力欄に残っています。キューが進んでから再送してください。",
-    "source_session_creator": "セッションを作成"
+    "source_session_creator": "セッションを作成",
+    "tailnet_definition": "tailnet は、あなたの Tailscale アカウントにサインインしたデバイスのプライベートネットワークです。"
   }
 }

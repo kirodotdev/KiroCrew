@@ -10731,7 +10731,7 @@
   },
   "sharedCrew": {
     "access_console": "Access to this Crew is managed in the console your organization uses for Kiro sign-in.",
-    "access_tailscale": "People on your tailnet reach this Crew through Tailscale. To change who can connect, manage users and access rules in Tailscale.",
+    "access_tailscale": "People on your <tip>tailnet</tip> reach this Crew through Tailscale. To change who can connect, manage users and access rules in Tailscale.",
     "access_tailscale_link": "Open Tailscale users",
     "access_title": "Who can connect",
     "answered_by_person": "Answered by {{name}}",
@@ -10844,6 +10844,9 @@
     "adapters_title": "How people connect",
     "adapter_tailscale_body": "People reach this Crew through Tailscale. Invite them above, or share this machine in Tailscale.",
     "adapter_tailscale_docs": "Tailscale sharing docs",
+    "adapter_tailscale_manage": "Manage people in Tailscale",
+    "adapter_tailscale_listening": "Listening on your tailnet",
+    "adapter_tailscale_scope": "Shared only inside your own tailnet.",
     "adapter_ssm_body": "Access through AWS Systems Manager is set by IAM and Session Manager, not here. Those connections reach this Crew as local connections, so their work is credited to whoever runs this Crew. Give Session Manager access only to people who may act as them.",
     "adapter_ssm_docs": "Session Manager docs",
     "remote_control_title": "Remote Control",
@@ -10948,6 +10951,7 @@
     "first_share_stop_tailscale": "To stop sharing, revoke their invite under Invites on this page, or remove them from your tailnet in Tailscale.",
     "first_share_stop_local": "To stop sharing, remove them under Approved or revoke their invite under Invites on this page.",
     "invite_key_remove_title": "Remove the Tailscale API key?",
-    "invite_key_remove_body": "This can't be undone. To invite again you'll need to paste a new key. People already in keep their access."
+    "invite_key_remove_body": "This can't be undone. To invite again you'll need to paste a new key. People already in keep their access.",
+    "tailnet_definition": "Your tailnet is the private network of devices signed in to your Tailscale account."
   }
 }

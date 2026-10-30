@@ -18,13 +18,15 @@
  *  who has been seen, each network adapter read-only and Remote Control; a
  *  Console Crew shows read-only Team Access and its Console link only; an
  *  invalid team setup shows an error, never the personal surface. */
+import type { ReactNode } from 'react'
+import { Trans } from 'react-i18next'
 import { ExternalLink, Users } from 'lucide-react'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { Badge, Btn, ContentSkeleton, EmptyState } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { capabilityUsable, membershipPointer, principalInitials, principalName, sharedAccessConfigured, type PeopleRow, type PeopleSource } from '../../api/sharedCrewUi'
 import { SharedAccessSetup } from './SharedAccessSetup'
-import { ConsoleAccess, NetworkAdapters, RemoteControlCard, TeamConfigInvalid } from './PeopleModes'
+import { ConsoleAccess, NetworkAdapters, RemoteControlCard, TAILSCALE_USERS_URL, TeamConfigInvalid } from './PeopleModes'
 import { TailscaleInvites } from './TailscaleInvites'
 import { TailscaleAccess } from './TailscaleAccess'
 import { avatarUrl } from '../../api/sharedCrewInvites'
@@ -33,9 +35,12 @@ import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople } fro
 import { fmtDateTime, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { TailnetDirectLink, tailnetDirectActive } from '../../components/TailnetDirectLink'
+import InfoTip from '../../components/InfoTip'
 
-/** The one fixed, public page where a tailnet's users are managed. */
-const TAILSCALE_USERS_URL = 'https://login.tailscale.com/admin/users'
+/** The catalog marks the first "tailnet" with `<tip>`; it gets the definition. */
+function TailnetTerm({ children }: { children?: ReactNode }) {
+  return <>{children}<span className="inline-flex align-middle ml-0.5"><InfoTip text={i18nT('sharedCrew.tailnet_definition')} /></span></>
+}
 
 function sourceLabel(source: PeopleSource): string {
   switch (source) {
@@ -155,6 +160,7 @@ function PeopleContent({ capabilities, data, modeData }: {
   const attributionReason = capabilities.reasons?.attribution
   const adapters = modeData?.adapters ?? capabilities.setup_paths ?? {}
   const direct = capabilities.tailnet_direct
+  const adaptersSection = <NetworkAdapters adapters={adapters} direct={direct} />
   const networkExtras = (
     <>
       {tailnetDirectActive(direct) && (
@@ -167,7 +173,6 @@ function PeopleContent({ capabilities, data, modeData }: {
       )}
       <TailscaleAccess />
       <TailscaleInvites />
-      <NetworkAdapters adapters={adapters} />
       <RemoteControlCard />
     </>
   )
@@ -175,6 +180,7 @@ function PeopleContent({ capabilities, data, modeData }: {
     const unnamed = attributionReason === 'platform_unprovable' || attributionReason === 'daemon_same_user'
     return (
       <div className="flex flex-col gap-4" data-testid="people-network-unattributed">
+      {adaptersSection}
       <EmptyState
         icon={<Users size={20} />}
         title={i18nT(unnamed ? 'sharedCrew.people_unnamed_title' : 'sharedCrew.people_unavailable_title')}
@@ -193,6 +199,7 @@ function PeopleContent({ capabilities, data, modeData }: {
   const directoryOn = capabilityUsable(data.directory.state) && capabilityUsable(capabilities.authoritative_directory)
   return (
     <div className="flex flex-col gap-4" data-testid="people-panel">
+      {adaptersSection}
       <SettingsSection title={i18nT('sharedCrew.people_seen_title')}>
         <SettingsCard>
           <p className="text-[13px] text-muted">{i18nT('sharedCrew.people_seen_note')}</p>
@@ -225,7 +232,9 @@ function PeopleContent({ capabilities, data, modeData }: {
       </SettingsSection>
       <SettingsSection title={i18nT('sharedCrew.access_title')}>
         <SettingsCard>
-          <p className="text-[13px] text-muted">{i18nT('sharedCrew.access_tailscale')}</p>
+          <p className="text-[13px] text-muted" data-testid="access-tailscale">
+            <Trans i18nKey="sharedCrew.access_tailscale" components={{ tip: <TailnetTerm /> }} />
+          </p>
           {pointer === 'tailscale_admin' && (
             <a className="inline-flex items-center gap-1 text-[13px] text-accent pt-1" href={TAILSCALE_USERS_URL} target="_blank" rel="noopener noreferrer" data-testid="tailscale-admin-link">
               {i18nT('sharedCrew.access_tailscale_link')}

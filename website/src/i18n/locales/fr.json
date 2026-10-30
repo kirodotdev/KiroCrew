@@ -20792,6 +20792,9 @@
     "waitlist_err_ack": "Confirme d'abord l'avertissement de partage.",
     "waitlist_approved_at": "Approuvé : {{when}}",
     "adapter_tailscale_docs": "Doc Tailscale sur le partage",
+    "adapter_tailscale_manage": "Gérer les personnes dans Tailscale",
+    "adapter_tailscale_listening": "À l'écoute sur ton tailnet",
+    "adapter_tailscale_scope": "Partagé uniquement dans ton propre tailnet.",
     "created_by_with_login": "Créée par {{name}} ({{login}})",
     "invite_key_connect": "Connecter",
     "filter_unavailable": "Ce Crew ne peut pas filtrer les sessions par créateur.",
@@ -20880,7 +20883,7 @@
     "invite_reusable": "Lien réutilisable",
     "mode_invalid_body": "La configuration d’équipe de cette Crew n’est pas valide, donc l’accès de tes coéquipiers est coupé. Il le reste jusqu’à ce que la personne qui gère cette Crew corrige la configuration. Sur cette machine, tu peux toujours l’utiliser.",
     "waitlist_waiting_title": "En attente de toi",
-    "access_tailscale": "Les personnes de ton tailnet accèdent à ce Crew via Tailscale. Pour changer qui peut se connecter, gère les utilisateurs et les règles d'accès dans Tailscale.",
+    "access_tailscale": "Les personnes de ton <tip>tailnet</tip> accèdent à ce Crew via Tailscale. Pour changer qui peut se connecter, gère les utilisateurs et les règles d'accès dans Tailscale.",
     "queued_personal": "attend une place dans ta limite personnelle",
     "first_share_confirm": "Partager",
     "invite_err_auth": "Tailscale a refusé cette clé. Elle est peut-être erronée, révoquée ou expirée.",
@@ -20919,6 +20922,7 @@
     "invite_list_title": "Invitations",
     "setup_list_label": "Façons de configurer l’accès partagé",
     "refused_crew_queue": "La file partagée de ce Crew est pleine. Ton message est toujours dans la zone de saisie. Renvoie-le quand la file avance.",
-    "source_session_creator": "A créé des sessions"
+    "source_session_creator": "A créé des sessions",
+    "tailnet_definition": "Ton tailnet est le réseau privé des appareils connectés à ton compte Tailscale."
   }
 }

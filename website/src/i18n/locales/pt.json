@@ -20792,6 +20792,9 @@
     "waitlist_err_ack": "Confirme primeiro o aviso de compartilhamento.",
     "waitlist_approved_at": "Aprovado: {{when}}",
     "adapter_tailscale_docs": "Documentação de compartilhamento do Tailscale",
+    "adapter_tailscale_manage": "Gerenciar pessoas no Tailscale",
+    "adapter_tailscale_listening": "Escutando na sua tailnet",
+    "adapter_tailscale_scope": "Compartilhado só dentro da sua própria tailnet.",
     "created_by_with_login": "Criada por {{name}} ({{login}})",
     "invite_key_connect": "Conectar",
     "filter_unavailable": "Este Crew não consegue filtrar sessões por criador.",
@@ -20880,7 +20883,7 @@
     "invite_reusable": "Link reutilizável",
     "mode_invalid_body": "A configuração de equipe desta Crew não é válida, então o acesso dos colegas está desativado. Continua assim até que quem administra esta Crew corrija a configuração. Nesta máquina você ainda pode usá-la.",
     "waitlist_waiting_title": "Esperando por você",
-    "access_tailscale": "As pessoas da sua tailnet chegam a este Crew pelo Tailscale. Para mudar quem pode se conectar, gerencie usuários e regras de acesso no Tailscale.",
+    "access_tailscale": "As pessoas da sua <tip>tailnet</tip> chegam a este Crew pelo Tailscale. Para mudar quem pode se conectar, gerencie usuários e regras de acesso no Tailscale.",
     "queued_personal": "aguardando vaga no seu limite pessoal",
     "first_share_confirm": "Compartilhar",
     "invite_err_auth": "O Tailscale não aceitou esta chave. Ela pode estar errada, revogada ou expirada.",
@@ -20919,6 +20922,7 @@
     "invite_list_title": "Convites",
     "setup_list_label": "Formas de configurar o acesso compartilhado",
     "refused_crew_queue": "A fila compartilhada deste Crew está cheia. Sua mensagem continua no editor. Envie de novo quando a fila andar.",
-    "source_session_creator": "Criou sessões"
+    "source_session_creator": "Criou sessões",
+    "tailnet_definition": "Sua tailnet é a rede privada dos dispositivos conectados à sua conta do Tailscale."
   }
 }

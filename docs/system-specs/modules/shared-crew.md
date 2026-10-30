@@ -242,7 +242,7 @@ setup guidance and session list follow it, and the modes never mix:
 | Mode | When | People shows | Session list |
 |---|---|---|---|
 | `personal` | no setup path is available or degraded, and no principal but the local operator viewing has been seen (the operator's bootstrap subjects `local-app`, `local-startup` and the configured owner are the same person; session creators are matched by id, never by a stored provenance) | setup guidance with each adapter's honest status, personal Remote Control | no creator bylines, no All/Mine control |
-| `network` | a Tailscale or Systems Manager path is on, or a network person or another operator has been seen | who has been seen (labelled as seen), each adapter read-only, personal Remote Control | bylines, filter |
+| `network` | a Tailscale or Systems Manager path is on, or a network person or another operator has been seen | each adapter read-only (first on the page, Tailscale first), who has been seen (labelled as seen), personal Remote Control | bylines, filter |
 | `invalid` | the tailnet login allowlist could not be read | one error state with the reason code | bylines, filter |
 
 A team configuration is refused (`crew_mode.team_config_problem`) with reason
@@ -1366,6 +1366,19 @@ A source answers from state it already holds; it does no I/O on the request path
   `backend`, `laptop` and `laptop_reason` (`battery_present`, `no_battery`,
   `unknown`), from `host_power.note_host`, which `host_power.probe_after_start`
   runs in a background task after the listener is up (see Access set, Keep awake).
+
+In network mode the "How people connect" section opens the People page, with the
+Tailscale row first. Its badge reads "Listening on your tailnet" while
+`tailnet_direct.state` is `active`, and the adapter's setup state otherwise; it
+reports the gateway's own listener and never claims the viewer can reach it. Under
+the row a line says the Crew is shared only inside the owner's tailnet (messages
+still go to the model service, so it does not say the data stays on owned
+machines). Next to the sharing docs link sits "Manage people in Tailscale"
+(`https://login.tailscale.com/admin/users`, a fixed URL, new tab, `noopener
+noreferrer`): removing a person from this Crew is removing them in Tailscale. In
+"Who can connect", the first "tailnet" carries an `InfoTip` defining it as the
+private network of devices signed in to the owner's Tailscale account (the catalog
+marks the word with `<tip>`, rendered through `Trans`).
 
 The People surface (Settings > People) shows one setup empty state while no setup
 path is `available` and no one but the viewer has been seen: it names the three paths, each with the availability its

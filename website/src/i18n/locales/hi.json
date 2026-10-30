@@ -20481,6 +20481,9 @@
     "waitlist_err_ack": "पहले साझा करने की चेतावनी की पुष्टि करो।",
     "waitlist_approved_at": "मंज़ूरी {{when}}",
     "adapter_tailscale_docs": "Tailscale शेयरिंग डॉक्स",
+    "adapter_tailscale_manage": "Tailscale में लोगों को संभालें",
+    "adapter_tailscale_listening": "तुम्हारे tailnet पर सुन रहा है",
+    "adapter_tailscale_scope": "सिर्फ़ तुम्हारे अपने tailnet के अंदर साझा।",
     "created_by_with_login": "{{name}} ({{login}}) ने बनाया",
     "invite_key_connect": "जोड़ो",
     "filter_unavailable": "यह Crew सत्रों को बनाने वाले के आधार पर फ़िल्टर नहीं कर सकता।",
@@ -20569,7 +20572,7 @@
     "invite_reusable": "दोबारा इस्तेमाल होने वाला लिंक",
     "mode_invalid_body": "इस Crew का टीम सेटअप सही नहीं है, इसलिए साथियों की पहुँच बंद है। जब तक इस Crew को चलाने वाला सेटअप ठीक नहीं करता, यह बंद रहेगी। इस मशीन पर तुम इसे अब भी इस्तेमाल कर सकते हो।",
     "waitlist_waiting_title": "तुम्हारा इंतज़ार",
-    "access_tailscale": "तुम्हारे tailnet के लोग Tailscale के ज़रिए इस Crew तक पहुँचते हैं। कौन जुड़ सकता है यह बदलने के लिए Tailscale में उपयोगकर्ता और पहुँच नियम संभालें।",
+    "access_tailscale": "तुम्हारे <tip>tailnet</tip> के लोग Tailscale के ज़रिए इस Crew तक पहुँचते हैं। कौन जुड़ सकता है यह बदलने के लिए Tailscale में उपयोगकर्ता और पहुँच नियम संभालें।",
     "queued_personal": "तुम्हारी निजी सीमा में जगह का इंतज़ार",
     "first_share_confirm": "साझा करो",
     "invite_err_auth": "Tailscale ने यह कुंजी नहीं मानी। यह गलत, रद्द या समाप्त हो सकती है।",
@@ -20608,6 +20611,7 @@
     "invite_list_title": "आमंत्रण",
     "setup_list_label": "साझा एक्सेस सेट करने के तरीके",
     "refused_crew_queue": "इस Crew की साझा कतार भरी है। तुम्हारा संदेश अब भी कंपोज़र में है। कतार आगे बढ़ने पर फिर भेजें।",
-    "source_session_creator": "सत्र बनाए"
+    "source_session_creator": "सत्र बनाए",
+    "tailnet_definition": "तुम्हारा tailnet उन डिवाइसों का निजी नेटवर्क है जो तुम्हारे Tailscale खाते में साइन इन हैं।"
   }
 }

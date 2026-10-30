@@ -21103,6 +21103,9 @@
     "waitlist_err_ack": "Сначала подтверди предупреждение о доступе.",
     "waitlist_approved_at": "Одобрен: {{when}}",
     "adapter_tailscale_docs": "Документация Tailscale о доступе",
+    "adapter_tailscale_manage": "Управлять людьми в Tailscale",
+    "adapter_tailscale_listening": "Слушает в твоей tailnet",
+    "adapter_tailscale_scope": "Доступно только внутри твоей собственной tailnet.",
     "created_by_with_login": "Создал(а) {{name}} ({{login}})",
     "invite_key_connect": "Подключить",
     "filter_unavailable": "Этот Crew не умеет фильтровать сеансы по создателю.",
@@ -21191,7 +21194,7 @@
     "invite_reusable": "Многоразовая ссылка",
     "mode_invalid_body": "Командная настройка этой Crew некорректна, поэтому доступ для коллег выключен. Он останется выключенным, пока тот, кто управляет этой Crew, не исправит настройку. На этом компьютере ею по-прежнему можно пользоваться.",
     "waitlist_waiting_title": "Ждут тебя",
-    "access_tailscale": "Люди из твоей tailnet попадают в этот Crew через Tailscale. Чтобы изменить, кто может подключаться, управляй пользователями и правилами доступа в Tailscale.",
+    "access_tailscale": "Люди из твоей <tip>tailnet</tip> попадают в этот Crew через Tailscale. Чтобы изменить, кто может подключаться, управляй пользователями и правилами доступа в Tailscale.",
     "queued_personal": "ждёт места в твоём личном лимите",
     "first_share_confirm": "Открыть доступ",
     "invite_err_auth": "Tailscale не принял этот ключ. Возможно, он неверный, отозван или истёк.",
@@ -21230,6 +21233,7 @@
     "invite_list_title": "Приглашения",
     "setup_list_label": "Способы настроить общий доступ",
     "refused_crew_queue": "Общая очередь этого Crew заполнена. Твоё сообщение осталось в поле ввода. Отправь его снова, когда очередь продвинется.",
-    "source_session_creator": "Создавал сеансы"
+    "source_session_creator": "Создавал сеансы",
+    "tailnet_definition": "Tailnet — это частная сеть устройств, вошедших в твой аккаунт Tailscale."
   }
 }

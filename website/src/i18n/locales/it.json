@@ -20792,6 +20792,9 @@
     "waitlist_err_ack": "Prima conferma l'avviso di condivisione.",
     "waitlist_approved_at": "Approvato: {{when}}",
     "adapter_tailscale_docs": "Documentazione Tailscale sulla condivisione",
+    "adapter_tailscale_manage": "Gestisci le persone in Tailscale",
+    "adapter_tailscale_listening": "In ascolto sulla tua tailnet",
+    "adapter_tailscale_scope": "Condiviso solo dentro la tua tailnet.",
     "created_by_with_login": "Creata da {{name}} ({{login}})",
     "invite_key_connect": "Collega",
     "filter_unavailable": "Questo Crew non può filtrare le sessioni per autore.",
@@ -20880,7 +20883,7 @@
     "invite_reusable": "Link riutilizzabile",
     "mode_invalid_body": "La configurazione di team di questa Crew non è valida, quindi l’accesso dei colleghi è disattivato. Resta così finché chi gestisce questa Crew non la corregge. Su questa macchina puoi continuare a usarla.",
     "waitlist_waiting_title": "In attesa di te",
-    "access_tailscale": "Le persone della tua tailnet raggiungono questo Crew tramite Tailscale. Per cambiare chi può connettersi, gestisci utenti e regole di accesso in Tailscale.",
+    "access_tailscale": "Le persone della tua <tip>tailnet</tip> raggiungono questo Crew tramite Tailscale. Per cambiare chi può connettersi, gestisci utenti e regole di accesso in Tailscale.",
     "queued_personal": "in attesa di posto nel tuo limite personale",
     "first_share_confirm": "Condividi",
     "invite_err_auth": "Tailscale non ha accettato questa chiave. Potrebbe essere errata, revocata o scaduta.",
@@ -20919,6 +20922,7 @@
     "invite_list_title": "Inviti",
     "setup_list_label": "Modi per configurare l’accesso condiviso",
     "refused_crew_queue": "La coda condivisa di questo Crew è piena. Il tuo messaggio è ancora nell'editor. Invialo di nuovo quando la coda avanza.",
-    "source_session_creator": "Ha creato sessioni"
+    "source_session_creator": "Ha creato sessioni",
+    "tailnet_definition": "La tua tailnet è la rete privata dei dispositivi che hanno effettuato l'accesso al tuo account Tailscale."
   }
 }

@@ -20481,6 +20481,9 @@
     "waitlist_err_ack": "Bestätige zuerst den Hinweis zum Teilen.",
     "waitlist_approved_at": "Freigegeben: {{when}}",
     "adapter_tailscale_docs": "Tailscale-Doku zum Teilen",
+    "adapter_tailscale_manage": "Personen in Tailscale verwalten",
+    "adapter_tailscale_listening": "Lauscht in deinem Tailnet",
+    "adapter_tailscale_scope": "Nur in deinem eigenen Tailnet geteilt.",
     "created_by_with_login": "Erstellt von {{name}} ({{login}})",
     "invite_key_connect": "Verbinden",
     "filter_unavailable": "Diese Crew kann Sitzungen nicht nach Ersteller filtern.",
@@ -20569,7 +20572,7 @@
     "invite_reusable": "Mehrfach nutzbarer Link",
     "mode_invalid_body": "Die Team-Einrichtung dieser Crew ist ungültig, daher ist der Zugriff für Teammitglieder ausgeschaltet. Er bleibt aus, bis die Person, die diese Crew betreibt, die Einrichtung korrigiert. Auf diesem Rechner kannst du sie weiter nutzen.",
     "waitlist_waiting_title": "Wartet auf dich",
-    "access_tailscale": "Personen in deinem Tailnet erreichen diese Crew über Tailscale. Um zu ändern, wer sich verbinden kann, verwalte Benutzer und Zugriffsregeln in Tailscale.",
+    "access_tailscale": "Personen in deinem <tip>Tailnet</tip> erreichen diese Crew über Tailscale. Um zu ändern, wer sich verbinden kann, verwalte Benutzer und Zugriffsregeln in Tailscale.",
     "queued_personal": "wartet auf Platz in deinem persönlichen Limit",
     "first_share_confirm": "Teilen",
     "invite_err_auth": "Tailscale hat diesen Schlüssel abgelehnt. Er ist vielleicht falsch, widerrufen oder abgelaufen.",
@@ -20608,6 +20611,7 @@
     "invite_list_title": "Einladungen",
     "setup_list_label": "Wege, den gemeinsamen Zugriff einzurichten",
     "refused_crew_queue": "Die gemeinsame Warteschlange dieser Crew ist voll. Deine Nachricht ist noch im Eingabefeld. Sende sie erneut, sobald die Warteschlange vorankommt.",
-    "source_session_creator": "Hat Sitzungen erstellt"
+    "source_session_creator": "Hat Sitzungen erstellt",
+    "tailnet_definition": "Dein Tailnet ist das private Netzwerk der Geräte, die bei deinem Tailscale-Konto angemeldet sind."
   }
 }

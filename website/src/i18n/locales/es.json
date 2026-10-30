@@ -20792,6 +20792,9 @@
     "waitlist_err_ack": "Primero confirma el aviso de compartir.",
     "waitlist_approved_at": "Aprobado: {{when}}",
     "adapter_tailscale_docs": "Documentación de Tailscale sobre compartir",
+    "adapter_tailscale_manage": "Gestionar personas en Tailscale",
+    "adapter_tailscale_listening": "Escuchando en tu tailnet",
+    "adapter_tailscale_scope": "Solo se comparte dentro de tu propia tailnet.",
     "created_by_with_login": "Creada por {{name}} ({{login}})",
     "invite_key_connect": "Conectar",
     "filter_unavailable": "Este Crew no puede filtrar sesiones por creador.",
@@ -20880,7 +20883,7 @@
     "invite_reusable": "Enlace reutilizable",
     "mode_invalid_body": "La configuración de equipo de esta Crew no es válida, así que el acceso de tus compañeros está desactivado. Seguirá así hasta que quien administra esta Crew la corrija. En este equipo puedes seguir usándola.",
     "waitlist_waiting_title": "Esperándote",
-    "access_tailscale": "Las personas de tu tailnet llegan a este Crew a través de Tailscale. Para cambiar quién puede conectarse, gestiona los usuarios y las reglas de acceso en Tailscale.",
+    "access_tailscale": "Las personas de tu <tip>tailnet</tip> llegan a este Crew a través de Tailscale. Para cambiar quién puede conectarse, gestiona los usuarios y las reglas de acceso en Tailscale.",
     "queued_personal": "esperando hueco en tu límite personal",
     "first_share_confirm": "Compartir",
     "invite_err_auth": "Tailscale no aceptó esta clave. Puede ser incorrecta, estar revocada o caducada.",
@@ -20919,6 +20922,7 @@
     "invite_list_title": "Invitaciones",
     "setup_list_label": "Formas de configurar el acceso compartido",
     "refused_crew_queue": "La cola compartida de este Crew está llena. Tu mensaje sigue en el editor. Vuelve a enviarlo cuando avance la cola.",
-    "source_session_creator": "Creó sesiones"
+    "source_session_creator": "Creó sesiones",
+    "tailnet_definition": "Tu tailnet es la red privada de los dispositivos que iniciaron sesión en tu cuenta de Tailscale."
   }
 }

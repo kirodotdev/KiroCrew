@@ -20481,6 +20481,9 @@
     "waitlist_err_ack": "আগে শেয়ার করার সতর্কতা নিশ্চিত করো।",
     "waitlist_approved_at": "অনুমোদন {{when}}",
     "adapter_tailscale_docs": "Tailscale শেয়ারিং ডকস",
+    "adapter_tailscale_manage": "Tailscale-এ লোকজন পরিচালনা করো",
+    "adapter_tailscale_listening": "তোমার tailnet-এ শুনছে",
+    "adapter_tailscale_scope": "শুধু তোমার নিজের tailnet-এর ভেতরে শেয়ার করা।",
     "created_by_with_login": "{{name}} ({{login}}) তৈরি করেছেন",
     "invite_key_connect": "যুক্ত করো",
     "filter_unavailable": "এই Crew নির্মাতা অনুযায়ী সেশন ফিল্টার করতে পারে না।",
@@ -20569,7 +20572,7 @@
     "invite_reusable": "পুনঃব্যবহারযোগ্য লিংক",
     "mode_invalid_body": "এই Crew-এর টিম সেটআপ ঠিক নেই, তাই সতীর্থদের অ্যাক্সেস বন্ধ আছে। যিনি এই Crew চালান তিনি সেটআপ ঠিক না করা পর্যন্ত এটি বন্ধ থাকবে। এই মেশিনে তুমি এখনও এটি ব্যবহার করতে পারবে।",
     "waitlist_waiting_title": "তোমার অপেক্ষায়",
-    "access_tailscale": "তোমার tailnet-এর লোকেরা Tailscale দিয়ে এই Crew-এ পৌঁছায়। কে সংযোগ করতে পারবে তা বদলাতে Tailscale-এ ব্যবহারকারী ও অ্যাক্সেস নিয়ম পরিচালনা করো।",
+    "access_tailscale": "তোমার <tip>tailnet</tip>-এর লোকেরা Tailscale দিয়ে এই Crew-এ পৌঁছায়। কে সংযোগ করতে পারবে তা বদলাতে Tailscale-এ ব্যবহারকারী ও অ্যাক্সেস নিয়ম পরিচালনা করো।",
     "queued_personal": "তোমার ব্যক্তিগত সীমায় জায়গার অপেক্ষায়",
     "first_share_confirm": "শেয়ার করো",
     "invite_err_auth": "Tailscale এই কী নেয়নি। এটি ভুল, প্রত্যাহৃত বা মেয়াদোত্তীর্ণ হতে পারে।",
@@ -20608,6 +20611,7 @@
     "invite_list_title": "আমন্ত্রণ",
     "setup_list_label": "শেয়ার করা অ্যাক্সেস সেট আপের উপায়",
     "refused_crew_queue": "এই Crew-এর ভাগ করা সারি পূর্ণ। তোমার বার্তা এখনও কম্পোজারে আছে। সারি এগোলে আবার পাঠাও।",
-    "source_session_creator": "সেশন তৈরি করেছেন"
+    "source_session_creator": "সেশন তৈরি করেছেন",
+    "tailnet_definition": "তোমার tailnet হলো তোমার Tailscale অ্যাকাউন্টে সাইন ইন করা ডিভাইসগুলোর ব্যক্তিগত নেটওয়ার্ক।"
   }
 }

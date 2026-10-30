@@ -20170,6 +20170,9 @@
     "waitlist_err_ack": "请先确认共享提示。",
     "waitlist_approved_at": "批准于 {{when}}",
     "adapter_tailscale_docs": "Tailscale 共享文档",
+    "adapter_tailscale_manage": "在 Tailscale 中管理成员",
+    "adapter_tailscale_listening": "正在你的 tailnet 上监听",
+    "adapter_tailscale_scope": "只在你自己的 tailnet 内共享。",
     "created_by_with_login": "由 {{name}}（{{login}}）创建",
     "invite_key_connect": "连接",
     "filter_unavailable": "此 Crew 无法按创建者筛选会话。",
@@ -20258,7 +20261,7 @@
     "invite_reusable": "可重复使用的链接",
     "mode_invalid_body": "此 Crew 的团队设置无效，队友访问已关闭。管理此 Crew 的人修好设置前会一直关闭。你仍可在这台机器上使用它。",
     "waitlist_waiting_title": "等你批准",
-    "access_tailscale": "你的 tailnet 中的人通过 Tailscale 访问此 Crew。要更改谁可以连接，请在 Tailscale 中管理用户和访问规则。",
+    "access_tailscale": "你的 <tip>tailnet</tip> 中的人通过 Tailscale 访问此 Crew。要更改谁可以连接，请在 Tailscale 中管理用户和访问规则。",
     "queued_personal": "正在等待你个人限额的空位",
     "first_share_confirm": "共享",
     "invite_err_auth": "Tailscale 不接受这个密钥。它可能有误、已被撤销或已过期。",
@@ -20297,6 +20300,7 @@
     "invite_list_title": "邀请",
     "setup_list_label": "设置共享访问的方式",
     "refused_crew_queue": "此 Crew 的共享队列已满。你的消息仍在输入框中。等队列推进后再发送。",
-    "source_session_creator": "创建过会话"
+    "source_session_creator": "创建过会话",
+    "tailnet_definition": "tailnet 是登录你 Tailscale 账号的设备组成的私有网络。"
   }
 }

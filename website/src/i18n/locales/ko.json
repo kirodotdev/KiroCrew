@@ -20170,6 +20170,9 @@
     "waitlist_err_ack": "먼저 공유 안내를 확인하세요.",
     "waitlist_approved_at": "승인: {{when}}",
     "adapter_tailscale_docs": "Tailscale 공유 문서",
+    "adapter_tailscale_manage": "Tailscale에서 사용자 관리",
+    "adapter_tailscale_listening": "tailnet에서 수신 중",
+    "adapter_tailscale_scope": "내 tailnet 안에서만 공유됩니다.",
     "created_by_with_login": "{{name}}({{login}}) 님이 만듦",
     "invite_key_connect": "연결",
     "filter_unavailable": "이 Crew는 만든 사람으로 세션을 필터링할 수 없습니다.",
@@ -20258,7 +20261,7 @@
     "invite_reusable": "재사용 링크",
     "mode_invalid_body": "이 Crew의 팀 설정이 올바르지 않아 팀원 액세스가 꺼져 있습니다. 이 Crew를 운영하는 사람이 설정을 고칠 때까지 꺼진 상태로 유지됩니다. 이 컴퓨터에서는 계속 사용할 수 있습니다.",
     "waitlist_waiting_title": "승인 대기",
-    "access_tailscale": "tailnet의 사용자는 Tailscale을 통해 이 Crew에 접속합니다. 접속할 수 있는 사람을 바꾸려면 Tailscale에서 사용자와 접근 규칙을 관리하세요.",
+    "access_tailscale": "<tip>tailnet</tip>의 사용자는 Tailscale을 통해 이 Crew에 접속합니다. 접속할 수 있는 사람을 바꾸려면 Tailscale에서 사용자와 접근 규칙을 관리하세요.",
     "queued_personal": "개인 한도에 자리가 나기를 기다리는 중",
     "first_share_confirm": "공유",
     "invite_err_auth": "Tailscale이 이 키를 받지 않았습니다. 틀렸거나 취소되었거나 만료되었을 수 있습니다.",
@@ -20297,6 +20300,7 @@
     "invite_list_title": "초대",
     "setup_list_label": "공유 액세스 설정 방법",
     "refused_crew_queue": "이 Crew의 공유 대기열이 가득 찼습니다. 메시지는 입력창에 남아 있습니다. 대기열이 줄면 다시 보내세요.",
-    "source_session_creator": "세션을 만듦"
+    "source_session_creator": "세션을 만듦",
+    "tailnet_definition": "tailnet은 내 Tailscale 계정에 로그인한 기기들의 사설 네트워크입니다."
   }
 }
