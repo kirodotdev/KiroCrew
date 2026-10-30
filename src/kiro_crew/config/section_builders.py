@@ -64,6 +64,8 @@ from kiro_crew.config.memory_sections import (
     _read_auto_add_documents,
 )
 from kiro_crew.config.sections import (
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
     CODE_CHANNEL_DEFAULT_MAX,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
@@ -619,7 +621,21 @@ def _build_code_channel_defaults(raw: object) -> CodeChannelDefaultsConfig:
         agent=_code_channel_default_str(data.get("agent")),
         model=_code_channel_default_str(data.get("model")),
         reasoning_effort=effort if is_valid_effort(effort) else None,
+        approval_mode=_code_channel_approval_mode(data.get("approval_mode")),
     )
+
+
+def _code_channel_approval_mode(raw: object) -> str | None:
+    """A stored approval mode that changes anything (``trust_reads`` / ``trust``).
+
+    ``ask`` is the default, so it reads as unset like every other "no default"
+    spelling; an unknown value reads as unset too -- the fail-safe direction, a
+    channel that asks -- rather than as a posture nobody chose.
+    """
+    value = _code_channel_default_str(raw)
+    if value in CODE_CHANNEL_APPROVAL_MODES and value != CODE_CHANNEL_APPROVAL_ASK:
+        return value
+    return None
 
 
 def _build_telegram_config(telegram_data: dict) -> TelegramConfig:

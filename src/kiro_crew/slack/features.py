@@ -22,8 +22,8 @@ both are read here so every caller answers "is it on?" the same way:
 :func:`agent_sessions_enabled` and :func:`code_channels_enabled`). :func:`available` is the
 capability alone, for the settings page.
 
-``code_channel_defaults`` is the folder / agent / model / effort a new
-code-channel session starts with; :func:`resolve_code_channel_session` applies
+``code_channel_defaults`` is the folder / agent / model / effort / approval
+mode a new code-channel session starts with; :func:`resolve_code_channel_session` applies
 the resolution order. The config readers and the resolver are pure; the
 capability record is the one piece of process state, guarded by a lock.
 """
@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
 from kiro_crew import slack_manifest
+from kiro_crew.config.sections_slack import CODE_CHANNEL_APPROVAL_ASK, CODE_CHANNEL_APPROVAL_MODES
 from kiro_crew.effort import is_valid_effort
 
 logger = logging.getLogger(__name__)
@@ -84,11 +85,15 @@ class CodeChannelDefaults:
     agent: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    #: ``trust_reads`` / ``trust``; ``None`` is ``ask`` (every tool asks).
+    approval_mode: str | None = None
 
     @property
     def is_empty(self) -> bool:
         """True when no default is set at all."""
-        return not (self.folder or self.agent or self.model or self.reasoning_effort)
+        return not (
+            self.folder or self.agent or self.model or self.reasoning_effort or self.approval_mode
+        )
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,9 @@ class ResolvedCodeChannelSession:
     #: :data:`AUTO_FOLDER_AGENT`) through the sidebar's folder-create path, then
     #: file the session into the new folder's id.
     folder_auto_create: bool = False
+    #: ``ask`` / ``trust_reads`` / ``trust``: the approval mode the session is
+    #: created in. Always set, so every reader sees one of the three values.
+    approval_mode: str = CODE_CHANNEL_APPROVAL_ASK
 
 
 def _slack_section(cfg: Any) -> Any:
@@ -319,11 +327,15 @@ def code_channel_defaults(cfg: Any) -> CodeChannelDefaults:
     """``slack.code_channel_defaults`` as a frozen value, invalid fields unset."""
     raw = getattr(_slack_section(cfg), "code_channel_defaults", None)
     effort = _opt_str(getattr(raw, "reasoning_effort", None))
+    approval = _opt_str(getattr(raw, "approval_mode", None))
+    if approval not in CODE_CHANNEL_APPROVAL_MODES or approval == CODE_CHANNEL_APPROVAL_ASK:
+        approval = None
     return CodeChannelDefaults(
         folder=_opt_str(getattr(raw, "folder", None)),
         agent=_opt_str(getattr(raw, "agent", None)),
         model=_opt_str(getattr(raw, "model", None)),
         reasoning_effort=effort if is_valid_effort(effort) else None,
+        approval_mode=approval,
     )
 
 
@@ -433,6 +445,7 @@ def resolve_code_channel_session(
     * agent: ``defaults.agent`` > the folder's ``default_agent`` > *slack_agent*
       (the agent Slack already uses for the originating conversation);
     * model / effort: ``defaults`` only -- unset means the agent's own;
+    * approval mode: ``defaults`` only -- unset means ``ask``;
     * project: the folder's ``project_dir`` (nearest ancestor that declares one)
       > *origin_project_dir* (the project the origin thread is bound to) > none.
 
@@ -487,4 +500,5 @@ def resolve_code_channel_session(
         folder_missing=bool(defaults.folder) and folder is None,
         folder_path=folder_path,
         folder_auto_create=auto_create,
+        approval_mode=defaults.approval_mode or CODE_CHANNEL_APPROVAL_ASK,
     )
