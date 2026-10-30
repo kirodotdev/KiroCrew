@@ -3443,7 +3443,22 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   or `failed` parent leaves them running. `taskq_expire_waits` (once per second
   on the pump path) fails waits past `deadline_at` and cancels their live runs.
   `spawn_sub_agents`' own blocking wait is this W3 record; its `still_running`
-  return (wait expiry) stays as specified below and cancels nothing.
+  return (wait expiry) stays as specified below and cancels nothing. The
+  gateway never infers deferral for the awaited set: the blocked tool releases
+  the members it settled as deferral-held explicitly, once, through
+  `POST /api/spawn/{parent}/release-deferred` (callable only by the attested
+  `subagent:<parent>` session itself), and `taskq_release_deferred_async`
+  drops those that are still non-terminal children of the parent, keeps later
+  registrations of the same wait from awaiting them again, and requests the
+  resume once nothing awaited is left. Each release reconciles the STORED wait
+  record, the one `WaitLedger.on_child_terminal` reads, in one read-modify-write
+  on the store's writer thread, and updates the in-memory record only after that
+  write lands. The ids join the run's released set first, so a registration
+  posted earlier lands before the read and is corrected, and one posted later
+  leaves them out. A resend after a failed write therefore corrects the stored
+  record even when memory no longer lists the id. Releases for one parent run
+  one at a time under that run's release lock. A registration drops the run's
+  released ids from the record it already holds as well as from the ids it adds.
 
 ## Fairness lanes and the child reserve (RFC §6, §13 Q3 / Q5)
 

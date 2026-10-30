@@ -95,6 +95,10 @@ def _held_by_a_deferral(record: Mapping[str, Any]) -> bool:
     )
 
 
+#: The release route's retryable answer (the gateway's ``TASK_STORE_UNAVAILABLE_CODE``);
+#: spelled here so this MCP-side module does not import the gateway's admission package.
+_TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
+
 #: Server-side hold per resume-poll request (seconds); under the client GET
 #: timeout so a held request never reads as a hang.
 RESUME_HOLD_SECS = 8.0
@@ -118,6 +122,37 @@ class _ResumeHold:
             self.parent_id = parent_session[len("subagent:") :]
         self.deadline = deadline
         self.held = False
+        # The release is sent once, and again only after an answer that says
+        # acceptance is unknown or the task store could not complete it.
+        self.released = False
+
+    def release_deferred(self, ids: set[str]) -> None:
+        """Tell the gateway to stop awaiting *ids*, the members settled as deferral-held.
+
+        The gateway never infers deferral for the parent's ``waiting_children``
+        record; without this, a deferred member would hold the parent's resume
+        until it ends. Sent once before the first probe. A transport failure or
+        retryable store outage sends it again on the next probe; every final
+        answer, a refusal included, is sent only once.
+        """
+        if self.released or not self.parent_id or not ids:
+            return
+        try:
+            res = mcp_core._post(
+                f"/api/spawn/{self.parent_id}/release-deferred",
+                {"ids": sorted(ids)},
+                timeout=10,
+                session_key=f"subagent:{self.parent_id}",
+            )
+        except Exception:
+            return  # transport: try again on the next probe
+        if isinstance(res, dict) and (
+            res.get("transport_error")
+            or res.get("retry")
+            or res.get("code") == _TASK_STORE_UNAVAILABLE_CODE
+        ):
+            return
+        self.released = True
 
     def probe(self) -> tuple[bool, dict[str, Any] | None]:
         """``(done, note)``: ``done`` False means ask again; ``note`` is the
@@ -305,6 +340,9 @@ class _SubAgentsStep(DeferredTool):
         self.next_ping = now + self.KEEPALIVE_SECS  # first keepalive after 60s, not immediately
         self.next_due = now
         self.wait_settled: set[str] = set()
+        # The part of ``wait_settled`` settled because a gate deferral holds it;
+        # the hold releases these from the parent's wait (``release_deferred``).
+        self.deferral_settled: set[str] = set()
         self.phase = "submit" if agents_input is not None else "poll"
         self.hold = _ResumeHold(parent_session, self.deadline)
         self.resume_note: dict[str, Any] | None = None
@@ -448,6 +486,7 @@ class _SubAgentsStep(DeferredTool):
             # until the grant or its bound, so a grant is seen at once. Bounded
             # by the same deadline; on expiry the results are still returned,
             # with the pending resume named.
+            self.hold.release_deferred(self.deferral_settled)
             done, self.resume_note = self.hold.probe()
             if done:
                 self.phase = "collect"
@@ -477,8 +516,11 @@ class _SubAgentsStep(DeferredTool):
         all_settled = True
         for aid in [a for a in self.sa_ids if a not in self.wait_settled]:
             sa_st = mcp_core._get(f"/api/spawn/{aid}")
-            if sa_st.get("done") or _held_by_a_deferral(sa_st):
+            if sa_st.get("done"):
                 self.wait_settled.add(aid)
+            elif _held_by_a_deferral(sa_st):
+                self.wait_settled.add(aid)
+                self.deferral_settled.add(aid)
             elif not sa_st.get("error"):
                 all_settled = False
                 break
