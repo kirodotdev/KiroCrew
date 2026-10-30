@@ -77,7 +77,7 @@ function withBoxes(): void {
 }
 
 afterEach(() => {
-  document.body.innerHTML = ''
+  document.body.replaceChildren()
   const w = window as unknown as Record<string, unknown>
   delete w.__kcRefs
   delete w.__kcRefDocObj

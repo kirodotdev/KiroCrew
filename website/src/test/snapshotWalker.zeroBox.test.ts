@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { setHtml } from './domFixture'
 
 const HARNESS_DIR = join(__dirname, '../../../src/kiro_crew/browser_harness')
 
@@ -47,7 +48,7 @@ afterEach(() => {
   if (realOffsetParent) Object.defineProperty(HTMLElement.prototype, 'offsetParent', realOffsetParent)
   boxes.clear()
   hitAt = () => null
-  document.body.innerHTML = ''
+  document.body.replaceChildren()
 })
 
 const $ = (sel: string) => document.querySelector(sel) as HTMLElement
@@ -57,10 +58,10 @@ const named = (nodes: Node[], name: string) => nodes.find(n => n.name === name)
 
 /** A login form inside a 0 x 0 host, its fields drawn in the host's open shadow root. */
 function zeroHost(style = '') {
-  document.body.innerHTML = `<main><auth-flow style="${style}"></auth-flow></main>`
+  setHtml(document.body, `<main><auth-flow style="${style}"></auth-flow></main>`)
   const host = $('auth-flow')
   const root = host.attachShadow({ mode: 'open' })
-  root.innerHTML = '<input id="u" type="text" aria-label="Email or username"><button>Log In</button>'
+  setHtml(root, '<input id="u" type="text" aria-label="Email or username"><button>Log In</button>')
   boxes.set($('main'), [0, 0, 800, 600])
   // The host itself is NOT boxed: 0 x 0, no offsetParent, like Reddit's.
   boxes.set(root.querySelector('#u') as Element, [20, 20, 300, 30])
@@ -91,7 +92,7 @@ describe('a 0 x 0 box in the snapshot', () => {
   })
 
   it('never lists the 0 x 0 box itself, even when it is a control', () => {
-    document.body.innerHTML = '<main><a href="/x" id="z"><span id="in">Inner</span></a></main>'
+    setHtml(document.body, '<main><a href="/x" id="z"><span id="in">Inner</span></a></main>')
     boxes.set($('main'), [0, 0, 800, 600])
     boxes.set($('#in'), [0, 0, 50, 20])
     const nodes = snapshot()
@@ -101,8 +102,8 @@ describe('a 0 x 0 box in the snapshot', () => {
 
 describe('a covered text box in the snapshot', () => {
   function form() {
-    document.body.innerHTML = `<main><input id="u" type="email" aria-label="Email"><button>Continue</button>
-      <div id="consent" role="dialog"><button>Reject all</button></div></main>`
+    setHtml(document.body, `<main><input id="u" type="email" aria-label="Email"><button>Continue</button>
+      <div id="consent" role="dialog"><button>Reject all</button></div></main>`)
     boxes.set($('main'), [0, 0, 800, 600]); boxes.set($('#u'), [20, 20, 300, 30])
     boxes.set($('main > button'), [20, 60, 100, 30]); boxes.set($('#consent'), [0, 0, 800, 600])
     boxes.set($('#consent button'), [300, 500, 100, 30])

@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { setHtml, appendHtml } from './domFixture'
 
 const HARNESS_DIR = join(__dirname, '../../../src/kiro_crew/browser_harness')
 
@@ -52,7 +53,7 @@ afterEach(() => {
   if (realOffsetParent) Object.defineProperty(HTMLElement.prototype, 'offsetParent', realOffsetParent)
   boxes.clear()
   hitAt = () => null
-  document.body.innerHTML = ''
+  document.body.replaceChildren()
 })
 
 const $ = (sel: string) => document.querySelector(sel) as HTMLElement
@@ -68,9 +69,9 @@ const askOk = (i: Inspect) => i.visible && (!i.covered || i.labelCovered) && !i.
 
 /** An identifier-first page: the email field, then the password field set up by *pw*. */
 function page(pw: string, extra = '') {
-  document.body.innerHTML = `<main><div class="f"><input id="u" type="email" aria-label="Email">
+  setHtml(document.body, `<main><div class="f"><input id="u" type="email" aria-label="Email">
     <div class="pw"><input id="p" type="password" aria-label="Password" ${pw}>${extra}</div>
-    <button>Next</button></div></main>`
+    <button>Next</button></div></main>`)
   box('main', [0, 0, 800, 600]); box('.f', [10, 10, 400, 300]); box('#u', [20, 20, 300, 30])
   box('.pw', [20, 60, 300, 30]); box('#p', [20, 60, 300, 30]); box('button', [20, 120, 100, 30])
   hitAt = (x, y) => (y >= 60 && y < 90 ? $('#p') : null)
@@ -88,12 +89,12 @@ describe('a password input in the snapshot', () => {
     ['read-only', 'readonly', () => {}, 'disabled'],
     ['aria-disabled', 'aria-disabled="true"', () => {}, 'disabled'],
     ['under another element', '', () => {
-      $('.pw').insertAdjacentHTML('beforeend', '<div id="cover"></div>')
+      appendHtml($('.pw'), '<div id="cover"></div>')
       box('#cover', [20, 60, 300, 30])
       hitAt = () => $('#cover')
     }, 'covered'],
     ['under its own label', '', () => {
-      $('.pw').insertAdjacentHTML('beforeend', '<label for="p" id="lab">Password</label>')
+      appendHtml($('.pw'), '<label for="p" id="lab">Password</label>')
       box('#lab', [24, 64, 100, 20])
       hitAt = () => $('#lab')
     }, ''],

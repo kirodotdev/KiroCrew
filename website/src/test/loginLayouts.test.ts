@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { setHtml } from './domFixture'
 
 const HARNESS_DIR = join(__dirname, '../../../src/kiro_crew/browser_harness')
 
@@ -54,10 +55,10 @@ afterEach(() => {
   if (realOffsetParent) Object.defineProperty(HTMLElement.prototype, 'offsetParent', realOffsetParent)
   boxes.clear()
   hitAt = () => null
-  document.body.innerHTML = ''
+  document.body.replaceChildren()
 })
 
-const html = (s: string) => { document.body.innerHTML = s }
+const html = (s: string) => { setHtml(document.body, s) }
 const $ = (sel: string) => document.querySelector(sel) as HTMLElement
 const box = (sel: string, b: Box) => boxes.set($(sel), b)
 
