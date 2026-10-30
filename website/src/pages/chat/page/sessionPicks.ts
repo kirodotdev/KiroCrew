@@ -354,6 +354,26 @@ export function useSessionChoices({
     setModelDropdown(false)
     if (modelPickerReturnsFocusRef.current) focusComposer()
   }, [switchModel, setModelDropdown, modelPickerReturnsFocusRef])
+  // The composer's backend chip: pick the harness this chat's next turns run on
+  // ('' clears to the gateway default). Same switch protocol as the model pick
+  // beside it; the backend swap itself happens between turns server-side.
+  const pickBackend = useCallback(async (backend: string) => {
+    if (!activeSlot) return
+    dispatch(setAgentSwitchNotice(null))
+    try {
+      await performSlotSwitch('backend', activeSlot, backend,
+        async () => {
+          const r = await api.chatSlotBackend(activeSlot, backend)
+          return r?.backend ?? backend
+        },
+        (value) => dispatch(updateSlot({ key: activeSlot, backend: value })))
+      void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
+    } catch (e) {
+      dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
+      // eslint-disable-next-line no-console -- surface switchBackend failures for debugging
+      console.error('switchBackend failed', e)
+    }
+  }, [activeSlot, dispatch, queryClient])
   const setProject = useCallback(async (path: string) => {
     if (!activeSlot) { setPendingProject(path); return }
     // Counted per slot, so overlapping picks clear only when the last one
@@ -388,6 +408,6 @@ export function useSessionChoices({
   // holds the turn-preparation lock, so a cold spawn can take seconds (#20351).
   const projectSwitching = !!activeSlot && (projectSwitches[activeSlot] ?? 0) > 0
   return {
-    approve, dismissApproval, switchAgent, pickModel, setProject, projectSwitching,
+    approve, dismissApproval, switchAgent, pickModel, pickBackend, setProject, projectSwitching,
   }
 }

@@ -88,6 +88,7 @@ export interface AgentSwitchValue {
  *  instead of a convention. */
 export interface SlotSwitchValueMap {
   model: string
+  backend: string
   project: string
   agent: AgentSwitchValue
   reasoning_effort: string
