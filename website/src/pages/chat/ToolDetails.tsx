@@ -225,7 +225,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, input
         </>
       )}
       {reallyEmpty && (
-        <div className="text-[12px] leading-5 text-muted/60 italic">
+        <div className="text-[12px] leading-5 text-muted italic">
           {hasEntry ? i18nT('pages.chat.toolDetails.no_input_or_output_captured_for_this_tool_call') : i18nT('pages.chat.toolDetails.details_unavailable_for_historical_tool_calls')}
         </div>
       )}

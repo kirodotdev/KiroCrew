@@ -334,7 +334,7 @@ export function EmptyState({ icon, title, subtitle, action, testId = 'empty-stat
     <div className="flex flex-col items-center justify-center py-12 gap-2 animate-rise" data-testid={testId}>
       <div className="text-[40px] opacity-[.12] select-none">{icon}</div>
       <div className="text-muted text-sm font-medium" data-testid={`${testId}-title`}>{title}</div>
-      {subtitle && <div className="text-muted/60 text-[13px] text-center max-w-[320px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
+      {subtitle && <div className="text-muted text-[13px] text-center max-w-[320px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
       {action && <div className="mt-2" data-testid={`${testId}-action`}>{action}</div>}
     </div>
   )

@@ -549,7 +549,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             <button
               type="button"
               data-testid="subagent-overflow-row"
-              className="w-full flex items-center gap-1.5 rounded-sm text-left text-[12px] text-muted/60 hover:bg-accent/5 transition-colors cursor-pointer bg-transparent border-none"
+              className="w-full flex items-center gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer bg-transparent border-none"
               onClick={() => dispatch(openActivityToTab('subagents'))}
               aria-label={i18nT('pages.chat.subagentProgressBar.show_more_running_in_sidebar', { count: hiddenCount })}
             >

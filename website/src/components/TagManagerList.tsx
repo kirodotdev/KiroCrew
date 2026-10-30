@@ -524,7 +524,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
           aria-disabled={storeDegraded}
           aria-describedby={storeDegraded ? policyUnavailableId : undefined}
           disabled={storeDegraded}
-          className="flex-1 min-w-0 bg-transparent border-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex-1 min-w-0 bg-transparent border-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted disabled:cursor-not-allowed disabled:opacity-50"
           {...ime.bindComposition()}
           onChange={e => {
             newTagDraftRevision.current += 1
