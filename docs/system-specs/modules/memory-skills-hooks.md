@@ -369,6 +369,15 @@ self-healing derived-index behavior.
 
 ### Consolidation (`history.py` `HistoryConsolidator`)
 
+One pass runs at a time per gateway process, across every session and every
+`HistoryConsolidator` instance: `_consolidate` waits on
+`consolidation_gate.consolidation_pass_gate()` (one slot, one per event loop) after its
+incognito and persistence checks and before it takes the session's lease. A queued
+pass holds no lease and its key stays in `_running`, so a duplicate trigger for it
+stays a no-op. The gate is released first in the pass's `finally`. Without it each
+idle or ending session started its own multi-minute pass, and several at once in
+the process serving HTTP and the websocket starved the event loop.
+
 For V2, `VectorMemoryStore.apply_consolidation` is the publication boundary.
 The original transcript snapshot determines a stable source span; the caller
 revalidates it after extraction. One immediate SQLite transaction publishes facts,

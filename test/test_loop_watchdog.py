@@ -1320,3 +1320,70 @@ def test_disarm_inherited_alarm_is_a_no_op_without_a_process_alarm(
         loop_watchdog, "arm_process_alarm", lambda secs: pytest.fail("no timer on this platform")
     )
     assert loop_watchdog.disarm_inherited_alarm() is False
+
+
+# ── Sustained lag ────────────────────────────────────────────────────────────
+
+
+def _beat_after(wd: LoopStallWatchdog, clock: _Clock, gap: float) -> None:
+    clock.advance(gap)
+    wd.beat()
+    wd.check()
+
+
+def test_three_late_beats_in_a_row_open_one_lag_episode(caplog) -> None:
+    wd, clock, dumps = _make()
+    wd.beat()
+    with caplog.at_level(logging.WARNING, logger="test.loop_watchdog"):
+        for _ in range(5):
+            _beat_after(wd, clock, 5.0 + 3.0)
+    assert wd.lagging
+    assert wd.sustained_lag_episodes == 1
+    assert sum("event loop lagging" in r.getMessage() for r in caplog.records) == 1
+    assert dumps == []
+
+
+def test_two_late_beats_are_not_sustained() -> None:
+    wd, clock, _ = _make()
+    wd.beat()
+    _beat_after(wd, clock, 8.0)
+    _beat_after(wd, clock, 8.0)
+    _beat_after(wd, clock, 5.1)
+    _beat_after(wd, clock, 8.0)
+    assert not wd.lagging
+    assert wd.sustained_lag_episodes == 0
+
+
+def test_an_on_time_beat_ends_the_episode_and_a_new_one_counts_again(caplog) -> None:
+    wd, clock, _ = _make()
+    wd.beat()
+    for _ in range(3):
+        _beat_after(wd, clock, 9.0)
+    with caplog.at_level(logging.INFO, logger="test.loop_watchdog"):
+        _beat_after(wd, clock, 5.0)
+    assert not wd.lagging
+    assert any("recovered from sustained lag" in r.getMessage() for r in caplog.records)
+    for _ in range(3):
+        _beat_after(wd, clock, 9.0)
+    assert wd.sustained_lag_episodes == 2
+
+
+def test_recovery_names_the_worst_beat_of_the_opening_streak(caplog) -> None:
+    wd, clock, _ = _make()
+    wd.beat()
+    for gap in (15.0, 13.0, 8.0):
+        _beat_after(wd, clock, gap)
+    assert wd.lagging
+    with caplog.at_level(logging.INFO, logger="test.loop_watchdog"):
+        _beat_after(wd, clock, 5.0)
+    recovered = [r.getMessage() for r in caplog.records if "recovered" in r.getMessage()]
+    assert recovered == ["event loop recovered from sustained lag (worst 10.0s)"]
+
+
+def test_a_poll_with_no_new_beat_takes_no_sample() -> None:
+    wd, clock, _ = _make()
+    wd.beat()
+    _beat_after(wd, clock, 9.0)
+    for _ in range(5):
+        wd.check()
+    assert not wd.lagging

@@ -8116,6 +8116,7 @@
       "save_failed_typed": "Dieses AWS-Profil konnte nicht gespeichert werden. Prüfe den Namen und versuche es erneut.",
       "applies_next": "Die Auswahl führt jetzt nichts aus. Sie legt nur fest, welches AWS-Profil neue Chats in diesem Ordner verwenden.",
       "read_failed": "Das AWS-Profil dieses Projekts konnte nicht gelesen werden",
+      "read_unreachable": "Das Gateway ist ausgelastet und hat nicht geantwortet. Versuch es gleich noch einmal.",
       "row_title": "AWS-Profil für {{name}}"
     },
     "projectPicker": {
