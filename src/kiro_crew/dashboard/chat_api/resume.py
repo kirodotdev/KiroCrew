@@ -1761,6 +1761,12 @@ async def resume_slot_from_history(
                         409,
                     )
                 )
+            # Join a live alias only now, past every refusal and with no await
+            # before the publish: a join writes the shared binding, and a refused
+            # build's ``_discard`` could not take that write back.
+            from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+            bind_transcript(state, slot)
             state._slots[slot.key] = slot
         except BaseException:
             await asyncio.shield(_discard())

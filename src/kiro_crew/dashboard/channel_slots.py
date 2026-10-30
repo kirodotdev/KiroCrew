@@ -75,7 +75,7 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
-from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
+from kiro_crew.dashboard.transcript_binding import bind_transcript, seed_project_from_disk
 from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.history_projection import METADATA_LINE_CORRUPT
 from kiro_crew.loop_lock import LoopBoundLock
@@ -480,6 +480,7 @@ def _rebind_unbound_channel_slot(
         return False
     slot.linked_session_key = session_key
     note_crew_log_class(state, slot)
+    bind_transcript(state, slot)
     # Flagged, or the periodic flush skips it and the next restart refuses all over again.
     slot._dirty = True
     # The rebind changes the slot's effective key, so the registry still holds the
