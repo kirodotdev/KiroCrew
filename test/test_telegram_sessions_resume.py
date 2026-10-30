@@ -152,25 +152,26 @@ class TestTelegramInboundResumeRouting:
     @pytest.mark.asyncio
     async def test_failed_refusal_delivery_leaves_settlement_owed(self, tmp_path: Any) -> None:
         dispatcher, client, _, _ = _dispatcher(tmp_path)
-        decision = RoutingDecision(refusal="Detached")
-        dispatcher._session_resume.route = AsyncMock(return_value=decision)
-        dispatcher._session_resume.settle = AsyncMock()
+        resume = dispatcher._session_resume
+        await resume.expectations.record("chat:7", "dashboard:gone", "Launch plan")
         client.send_fails = True
 
         await dispatcher.handle_message(_dm("continue"))
 
-        dispatcher._session_resume.settle.assert_not_awaited()
+        owed = await resume.expectations.get("chat:7")
+        assert owed is not None and not owed.retired
 
     @pytest.mark.asyncio
     async def test_successful_refusal_delivery_settles(self, tmp_path: Any) -> None:
-        dispatcher, _, _, _ = _dispatcher(tmp_path)
-        decision = RoutingDecision(refusal="Detached")
-        dispatcher._session_resume.route = AsyncMock(return_value=decision)
-        dispatcher._session_resume.settle = AsyncMock()
+        dispatcher, client, _, _ = _dispatcher(tmp_path)
+        resume = dispatcher._session_resume
+        await resume.expectations.record("chat:7", "dashboard:gone", "Launch plan")
 
         await dispatcher.handle_message(_dm("continue"))
 
-        dispatcher._session_resume.settle.assert_awaited_once_with(7, None, decision)
+        assert any("Launch plan" in text for text, _ in client.sent)
+        settled = await resume.expectations.get("chat:7")
+        assert settled is not None and settled.retired
 
     @pytest.mark.asyncio
     async def test_topic_routing_locks_are_isolated(self, tmp_path: Any) -> None:
