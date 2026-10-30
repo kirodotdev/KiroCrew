@@ -10693,7 +10693,14 @@
       "grant_not_approved": "未承認",
       "grants_reconsent_api": "API アクセス: アプリが自身のトークンでこれらの {{productName}} API パスを呼び出せるようにします。",
       "grants_reconsent_events": "WebSocket イベント: アプリがこれらのダッシュボードのリアルタイムイベントを受信または送信できるようにします。",
-      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
+      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。",
+      "auto_update_title": "更新",
+      "auto_update_label": "自動的に更新",
+      "auto_update_hint": "常に：確認せずにこのアプリの新しいバージョンをインストールします。しない：このバージョンのままにします。新しい権限を求める更新は常にあなたの確認を待ちます。",
+      "auto_update_follow": "アプリの更新設定に従う（{{mode}}）",
+      "auto_update_always": "常に",
+      "auto_update_never": "しない",
+      "auto_update_save_failed": "このアプリの更新設定を保存できませんでした。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
@@ -18465,6 +18472,20 @@
         "none_enabled": "有効なアプリはありません。",
         "load_failed": "アプリを読み込めませんでした。",
         "failed_to_save": "{{app}} のモデルを保存できませんでした。"
+      },
+      "appUpdates": {
+        "title": "アプリの更新",
+        "mode_label": "アプリを自動的に更新",
+        "mode_hint": "オフ：インストール済みアプリの新しいバージョンが公開されたときに一度だけ通知します。確認：その通知に「更新」ボタンを追加します。自動：アプリがアイドル状態になったらインストールします。新しい権限を求める更新は常にあなたの確認を待ちます。",
+        "mode_off": "オフ",
+        "mode_ask": "確認",
+        "mode_on": "自動",
+        "interval_label": "アプリの更新を確認",
+        "interval_hint": "自動更新するアプリがあるとき、ゲートウェイがアプリレジストリを更新する頻度です。",
+        "interval_hours": "{{hours}} 時間ごと",
+        "interval_days": "{{days}} 日ごと",
+        "save_failed": "アプリの更新設定を保存できませんでした。",
+        "load_failed": "アプリの更新設定を読み込めませんでした。"
       }
     },
     "settingsPage": {

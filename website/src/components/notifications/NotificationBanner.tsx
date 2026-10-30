@@ -19,7 +19,7 @@ import {
   loadBannerEnabled, shouldBannerNote,
 } from '../../hooks/notificationBanner'
 import type { Notification } from '../../types'
-import { notePriority, safeInternalUrl } from './notifMeta'
+import { notePriority, safeInternalUrl, noteActionState } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
 import SwipeToDismiss from './SwipeToDismiss'
 import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
@@ -328,7 +328,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
   // The ack is awaited before the card goes, so a rejected ack leaves the
   // card in place with a notice instead of a vanished card and a note the
   // server still holds unread.
-  const runAction = useCallback((n: Notification, url: string) => {
+  const runAction = useCallback((n: Notification, url: string, state?: { autoAction: 'update' }) => {
     showLocalCrew()
     leave(async () => {
       const result = await dispatch(ackNotification(n.ts))
@@ -338,7 +338,8 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
       }
       setAckFailed(prev => { const { [n.ts]: _drop, ...rest } = prev; void _drop; return rest })
       removeNotes([n.ts])
-      navigate(url)
+      if (state) navigate(url, { state })
+      else navigate(url)
     }, url)
   }, [dispatch, removeNotes, leave, navigate, showLocalCrew])
 
@@ -419,7 +420,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
               ? [{ id: 'review', label: i18nT('components.notifications.notificationBanner.review_action'), tone: 'accent', onClick: () => openNote(n) }]
               : urlActions.map((a, i) => ({
                 id: a.id, label: a.label, tone: i === urlActions.length - 1 ? 'accent' : 'text',
-                onClick: () => runAction(n, a.safeUrl!),
+                onClick: () => runAction(n, a.safeUrl!, noteActionState(n, a, a.safeUrl!)),
               }))
             const variants = {
               exit: (custom: ExitDeltas | undefined) => exitTarget(custom?.[n.ts], reduced),

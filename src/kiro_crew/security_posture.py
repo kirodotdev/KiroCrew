@@ -389,6 +389,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/routes_lifecycle.py",
         "apps/routes_listing.py",
         "apps/routes_registry.py",
+        # Redacts an automatic update's error text before it becomes a bell note,
+        # the same scrub routes_registry applies to a manual registry install's
+        # error. The note then goes through the notification coordinator, which
+        # is the registered sink and redacts every note again.
+        "apps/auto_update.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py and the cron.py owners) are the covered surfaces.

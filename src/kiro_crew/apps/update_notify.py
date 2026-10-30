@@ -50,6 +50,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.auto_update import effective_mode, eligible_names
 from kiro_crew.apps.registry_pipeline.catalog import _version_newer
 from kiro_crew.apps.update_status import publishable_version
 from kiro_crew.atomic_write import atomic_write
@@ -132,18 +133,33 @@ def _updatable(row: dict[str, Any]) -> bool:
     )
 
 
-def _pending(rows: list[Any]) -> dict[str, tuple[str, str]]:
+def _pending(rows: list[Any], config: Any = None) -> dict[str, tuple[str, str]]:
     """``name -> (published version, installed version)`` for updatable rows.
+
+    An app whose effective update mode (:func:`auto_update.effective_mode`) is
+    ``on`` AND that the automatic updater can update (``auto_update.eligible_names``,
+    a ``registry:`` source) is left out: the updater installs it and posts its own
+    note for the outcome, so announcing it here as well would say the same
+    release twice. An ``on`` app the updater cannot touch, such as one installed
+    from a local folder, is still announced here. ``never`` is announced like ``off``: the pin stops the install, not
+    the news that a newer version exists.
 
     Both versions go through ``publishable_version``: they end up in a note the
     gateway speaks, and the published one is text a registry author controls. A
     row whose published version fails the check is not announced at all.
     """
     pending: dict[str, tuple[str, str]] = {}
+    automatic: set[str] | None = None
     for row in rows:
         if not isinstance(row, dict) or not _updatable(row):
             continue
         name = row.get("name")
+        if config is not None and isinstance(name, str) and effective_mode(config, name) == "on":
+            # Read lazily: most listings have no ``on`` app and pay nothing.
+            if automatic is None:
+                automatic = eligible_names()
+            if name in automatic:
+                continue
         published = publishable_version(row.get("version"))
         if not isinstance(name, str) or not name or not published:
             continue
@@ -182,7 +198,7 @@ def _upkeep(
     return kept
 
 
-def _note(name: str, published: str, installed: str) -> dict[str, Any]:
+def _note(name: str, published: str, installed: str, *, ask: bool = False) -> dict[str, Any]:
     """One note, ready for ``state.notify``.
 
     Titled by the app's NAME, not its display name. A display name on an
@@ -193,17 +209,29 @@ def _note(name: str, published: str, installed: str) -> dict[str, Any]:
 
     The version leads the title rather than trailing a sentence, so the part the
     feed truncates first is the word "available", not the version.
+
+    With *ask* (``app_updates.mode`` ``ask``) the note carries an Update button.
+    The note itself opens the app's page; the button opens it with the page's
+    Update flow already started (``noteActionState`` in the frontend sets the
+    router state ``AppDetailPage`` acts on), so its consent dialog still shows
+    what is being installed. Router state, because only an in-app click can set
+    it: a link from another site cannot start an install.
     """
-    body = (f"You have {installed}. " if installed else "") + "Open it to update."
-    return {
+    lead = f"You have {installed}. " if installed else ""
+    body = lead + ("Press Update to install it." if ask else "Open it to update.")
+    url = f"/apps/detail/{name}"
+    note: dict[str, Any] = {
         "title": f"{name} {published} available",
         "body": body,
         "meta": {"app": name, "latestVersion": published, "installedVersion": installed},
-        "url": f"/apps/detail/{name}",
+        "url": url,
     }
+    if ask:
+        note["actions"] = [{"id": "update", "label": "Update", "url": url}]
+    return note
 
 
-def prepare_app_update_notes(rows: list[Any]) -> list[dict[str, Any]]:
+def prepare_app_update_notes(rows: list[Any], config: Any = None) -> list[dict[str, Any]]:
     """Update the ledger from *rows* and return the notes that are now due.
 
     Blocking (ledger I/O): run off the loop. Hand the result to
@@ -217,7 +245,11 @@ def prepare_app_update_notes(rows: list[Any]) -> list[dict[str, Any]]:
     not be worked out is a worse outcome than a missing note.
     """
     try:
-        pending = _pending(rows)
+        if config is None:
+            from kiro_crew.config import KiroCrewConfig
+
+            config = KiroCrewConfig.load()
+        pending = _pending(rows, config)
         lock_path = _ledger_lock_path()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open_lock_file(lock_path) as fd, file_lock(fd, exclusive=True, required=True):
@@ -233,7 +265,10 @@ def prepare_app_update_notes(rows: list[Any]) -> list[dict[str, Any]]:
             ledger = _upkeep(known, rows, pending)
             if ledger != known and not _write_ledger(ledger):
                 return []
-        return [_note(name, published, installed) for name, published, installed in due]
+        return [
+            _note(name, published, installed, ask=effective_mode(config, name) == "ask")
+            for name, published, installed in due
+        ]
     except Exception:
         logger.warning("could not work out which app updates to announce", exc_info=True)
         return []
@@ -255,6 +290,7 @@ def deliver_app_update_notes(state: Any, notes: list[dict[str, Any]]) -> list[st
                 note["body"],
                 meta=note["meta"],
                 url=note["url"],
+                actions=note.get("actions"),
                 channel=NOTE_CHANNEL,
             )
         except Exception:

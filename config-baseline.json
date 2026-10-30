@@ -10658,6 +10658,73 @@
       "defaultValue": ""
     },
     {
+      "path": "apps.*.auto_update",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Update automatically",
+      "help": "Overrides 'Update apps automatically' for this app. Empty follows the global setting, 'always' updates this app automatically whatever the global setting says, and 'never' keeps it at its installed version.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "always",
+        "never"
+      ],
+      "defaultValue": ""
+    },
+    {
+      "path": "app_updates",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "App updates",
+      "help": "Whether installed apps update themselves when a newer version is published.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "mode": "off",
+        "check_interval_hours": 6
+      }
+    },
+    {
+      "path": "app_updates.mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Update apps automatically",
+      "help": "'off' tells you once when a new version of an installed app is published. 'ask' does the same and puts an Update button on the note. 'on' installs it once the app is idle, through the same steps as the Update button. An update that asks for new permissions always waits for you.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "ask",
+        "on"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "app_updates.check_interval_hours",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Check interval (hours)",
+      "help": "How often the gateway refreshes the app registries and looks for newer versions of installed apps while 'Update apps automatically' is on, or when any app is set to update always. 1 to 168.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 6
+    },
+    {
       "path": "auto_update",
       "kind": "core",
       "type": "boolean",

@@ -20,7 +20,7 @@ from kiro_crew.agent_sdk.backends import (
     resolve_cc_permission_mode,
 )
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
-from kiro_crew.config.integration_sections import AppSettingsConfig, AwsConfig
+from kiro_crew.config.integration_sections import AppSettingsConfig, AppUpdatesConfig, AwsConfig
 from kiro_crew.config.loader_agents import resolve_crew_identity
 from kiro_crew.config.loader_builders import (
     _restore_stored_harness_fields,
@@ -412,6 +412,13 @@ class KiroCrewConfig:
         default_factory=dict,
         metadata=_meta("Apps", "Per-app user settings, keyed by the app's manifest name."),
     )
+    app_updates: AppUpdatesConfig = field(
+        default_factory=AppUpdatesConfig,
+        metadata=_meta(
+            "App updates",
+            "Whether installed apps update themselves when a newer version is published.",
+        ),
+    )
     auto_update: bool = field(
         default=True,
         metadata=_meta(
@@ -678,7 +685,14 @@ class KiroCrewConfig:
             "default_workspace": self.default_workspace,
             "memory_stores": {name: asdict(ms_cfg) for name, ms_cfg in self.memory_stores.items()},
             "default_memory_store": self.default_memory_store,
-            "apps": {name: asdict(app_cfg) for name, app_cfg in self.apps.items()},
+            # ``auto_update`` only when set: its empty value means "follow the
+            # global setting", and writing it into every app's entry would turn
+            # each model pick into a two-key record nobody asked for.
+            "apps": {
+                name: {k: v for k, v in asdict(app_cfg).items() if k != "auto_update" or v}
+                for name, app_cfg in self.apps.items()
+            },
+            "app_updates": asdict(self.app_updates),
             "stt": asdict(self.stt),
             "computer_use": asdict(self.computer_use),
             "aws": asdict(self.aws),

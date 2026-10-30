@@ -552,6 +552,59 @@ def update_app(
     )
     widened_grants = any(_held_back_entries(approved_grants, manifest.permissions).values())
 
+    # An automatic update has no consent moment, so it refuses ANY widening here,
+    # against the manifest that would actually run, before a file moves. The
+    # registry pipeline checks its prefetched manifest earlier to skip the clone;
+    # this is the check that binds.
+    from kiro_crew.apps import update_consent
+
+    if update_consent.permission_widening_refused():
+        from kiro_crew.apps.registry_pipeline.catalog import _version_newer
+
+        # An automatic update installs only a version newer than the one it
+        # replaces. The index it was chosen from can name a newer version than
+        # the source actually carries.
+        if not _version_newer(manifest.version, old_version):
+            return AppResult(
+                ok=False,
+                name=name,
+                error=(
+                    f"the source has version {manifest.version!r}, which is not newer "
+                    f"than the installed {old_version!r}"
+                ),
+                error_code=update_consent.NOT_NEWER_CODE,
+            )
+        if old_manifest is None:
+            # No baseline to compare with, so nothing is known to be approved.
+            sel().log_api_access(
+                caller="app_update",
+                operation="auto_update_consent",
+                outcome="rejected",
+                resources=f"name={name!r} version={manifest.version}",
+                error="installed manifest unreadable",
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=update_consent.UNREADABLE_BASELINE_REFUSAL,
+                error_code=update_consent.NEEDS_CONSENT_CODE,
+            )
+        widened = update_consent.widened_permissions(old_manifest.permissions, manifest.permissions)
+        if widened:
+            sel().log_api_access(
+                caller="app_update",
+                operation="auto_update_consent",
+                outcome="rejected",
+                resources=f"name={name!r} version={manifest.version}",
+                error=",".join(widened),
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=update_consent.consent_refusal(widened),
+                error_code=update_consent.NEEDS_CONSENT_CODE,
+            )
+
     # Carry every persisted field forward from ``existing``, overriding only
     # what the update changes. Keeping this metadata inside the file transaction
     # means any write failure restores the old tree and old metadata together.

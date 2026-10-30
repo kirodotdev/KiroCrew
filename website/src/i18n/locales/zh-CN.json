@@ -10693,7 +10693,14 @@
       "grant_not_approved": "未批准",
       "grants_reconsent_api": "API 访问：允许应用用自己的令牌调用这些 {{productName}} API 路径。",
       "grants_reconsent_events": "WebSocket 事件：允许应用接收或发送这些仪表板实时事件。",
-      "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。"
+      "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。",
+      "auto_update_title": "更新",
+      "auto_update_label": "自动更新",
+      "auto_update_hint": "始终：不经询问安装此应用的新版本。从不：保持当前版本。需要新权限的更新始终等待你确认。",
+      "auto_update_follow": "遵循应用更新设置（{{mode}}）",
+      "auto_update_always": "始终",
+      "auto_update_never": "从不",
+      "auto_update_save_failed": "无法保存此应用的更新设置。"
     },
     "appPage": {
       "loading_app": "加载应用…",
@@ -18465,6 +18472,20 @@
         "none_enabled": "没有已启用的应用。",
         "load_failed": "无法加载你的应用。",
         "failed_to_save": "无法保存 {{app}} 的模型。"
+      },
+      "appUpdates": {
+        "title": "应用更新",
+        "mode_label": "自动更新应用",
+        "mode_hint": "关闭：已安装应用发布新版本时通知你一次。询问：在该通知中添加“更新”按钮。自动：在应用空闲时安装新版本。需要新权限的更新始终等待你确认。",
+        "mode_off": "关闭",
+        "mode_ask": "询问",
+        "mode_on": "自动",
+        "interval_label": "检查应用更新",
+        "interval_hint": "有应用设为自动更新时，网关刷新应用注册表的频率。",
+        "interval_hours": "每 {{hours}} 小时",
+        "interval_days": "每 {{days}} 天",
+        "save_failed": "无法保存应用更新设置。",
+        "load_failed": "无法加载应用更新设置。"
       }
     },
     "settingsPage": {

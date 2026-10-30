@@ -11003,7 +11003,14 @@
       "grant_not_approved": "sin aprobar",
       "grants_reconsent_api": "Acceso a la API: permite que la app llame a estas rutas de la API de {{productName}} con su propio token.",
       "grants_reconsent_events": "Eventos de WebSocket: permite que la app reciba o envíe estos eventos del panel en tiempo real.",
-      "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos."
+      "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos.",
+      "auto_update_title": "Actualizaciones",
+      "auto_update_label": "Actualizar automáticamente",
+      "auto_update_hint": "Siempre instala las versiones nuevas de esta app sin preguntar. Nunca la mantiene en esta versión. Una actualización que pide permisos nuevos siempre te espera.",
+      "auto_update_follow": "Seguir el ajuste de actualizaciones ({{mode}})",
+      "auto_update_always": "Siempre",
+      "auto_update_never": "Nunca",
+      "auto_update_save_failed": "No se pudo guardar el ajuste de actualización de esta app."
     },
     "appPage": {
       "loading_app": "Cargando la app…",
@@ -19057,6 +19064,20 @@
         "none_enabled": "No hay apps habilitadas.",
         "load_failed": "No se pudieron cargar tus apps.",
         "failed_to_save": "No se pudo guardar el modelo de {{app}}."
+      },
+      "appUpdates": {
+        "title": "Actualizaciones de apps",
+        "mode_label": "Actualizar apps automáticamente",
+        "mode_hint": "Desactivado te avisa una vez cuando se publica una versión nueva de una app instalada. Preguntar añade un botón Actualizar a ese aviso. Automático la instala cuando la app está inactiva. Una actualización que pide permisos nuevos siempre te espera.",
+        "mode_off": "Desactivado",
+        "mode_ask": "Preguntar",
+        "mode_on": "Automático",
+        "interval_label": "Buscar actualizaciones de apps",
+        "interval_hint": "Cada cuánto actualiza el gateway los registros de apps mientras alguna app se actualiza automáticamente.",
+        "interval_hours": "Cada {{hours}} h",
+        "interval_days": "Cada {{days}} d",
+        "save_failed": "No se pudo guardar el ajuste de actualización de apps.",
+        "load_failed": "No se pudieron cargar los ajustes de actualización de apps."
       }
     },
     "settingsPage": {

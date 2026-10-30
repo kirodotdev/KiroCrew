@@ -16,6 +16,7 @@ import ReportProblemCard from './ReportProblemCard'
 import { ARM_POLL_FAILURE_THRESHOLD, AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand } from './AboutPanelUpdateFlow'
 import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
 import { api } from '../../api/client'
+import { AppUpdatesSection } from './AppUpdatesSection'
 import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
@@ -1607,6 +1608,10 @@ export function AboutPanel() {
           </SettingsLink>
         </div>
       </Card>
+
+      {/* Installed apps' own updates, beside the gateway's: same page a user
+          opens to decide how this install stays current. */}
+      <AppUpdatesSection />
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (

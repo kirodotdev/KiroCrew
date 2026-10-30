@@ -10693,7 +10693,14 @@
       "grant_not_approved": "승인되지 않음",
       "grants_reconsent_api": "API 액세스: 앱이 자체 토큰으로 이 {{productName}} API 경로를 호출할 수 있게 합니다.",
       "grants_reconsent_events": "WebSocket 이벤트: 앱이 이 대시보드 실시간 이벤트를 받거나 보낼 수 있게 합니다.",
-      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다."
+      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다.",
+      "auto_update_title": "업데이트",
+      "auto_update_label": "자동 업데이트",
+      "auto_update_hint": "항상: 묻지 않고 이 앱의 새 버전을 설치합니다. 안 함: 이 버전으로 유지합니다. 새 권한을 요청하는 업데이트는 항상 사용자의 확인을 기다립니다.",
+      "auto_update_follow": "앱 업데이트 설정 따르기({{mode}})",
+      "auto_update_always": "항상",
+      "auto_update_never": "안 함",
+      "auto_update_save_failed": "이 앱의 업데이트 설정을 저장하지 못했습니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -18465,6 +18472,20 @@
         "none_enabled": "활성화된 앱이 없습니다.",
         "load_failed": "앱을 불러오지 못했습니다.",
         "failed_to_save": "{{app}}의 모델을 저장하지 못했습니다."
+      },
+      "appUpdates": {
+        "title": "앱 업데이트",
+        "mode_label": "앱 자동 업데이트",
+        "mode_hint": "끔: 설치된 앱의 새 버전이 게시되면 한 번 알려 줍니다. 묻기: 그 알림에 업데이트 버튼을 추가합니다. 자동: 앱이 유휴 상태일 때 설치합니다. 새 권한을 요청하는 업데이트는 항상 사용자의 확인을 기다립니다.",
+        "mode_off": "끔",
+        "mode_ask": "묻기",
+        "mode_on": "자동",
+        "interval_label": "앱 업데이트 확인",
+        "interval_hint": "자동 업데이트하는 앱이 있을 때 게이트웨이가 앱 레지스트리를 새로 고치는 주기입니다.",
+        "interval_hours": "{{hours}}시간마다",
+        "interval_days": "{{days}}일마다",
+        "save_failed": "앱 업데이트 설정을 저장하지 못했습니다.",
+        "load_failed": "앱 업데이트 설정을 불러오지 못했습니다."
       }
     },
     "settingsPage": {

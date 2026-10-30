@@ -20,6 +20,7 @@ import { isNotFoundError } from '../api/apiError'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import { uiLocation } from '../uiLocations/uiLocation'
 import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
+import AppAutoUpdateCard from '../components/appstore/AppAutoUpdateCard'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isTrustDeniedError, useTrustGate,
@@ -427,13 +428,19 @@ export default function AppDetailPage() {
   // an absent app) would run third-party setup code with gateway privileges
   // without user intent. Router state can only be produced by an in-app
   // navigate() call, so it cannot be forged from outside the app.
-  const autoActionTriggered = useRef(false)
+  //
+  // The route keeps this component mounted when one detail page navigates to
+  // another, so `app` can still hold the previous app for a render after the
+  // name changes. The action fires only once the loaded app is the routed one,
+  // and at most once per navigation (``location.key``), not once per mount.
+  const autoActionConsumedFor = useRef<string | null>(null)
   useEffect(() => {
-    if (!app || autoActionTriggered.current) return
+    if (!app || app.name !== name) return
+    if (autoActionConsumedFor.current === location.key) return
     const stateAction = (location.state as { autoAction?: string } | null)?.autoAction
     if (stateAction !== 'install' && stateAction !== 'update') return
     if (stateAction === 'install' && app.installed) return
-    autoActionTriggered.current = true
+    autoActionConsumedFor.current = location.key
     // Clear the state so a refresh or Back/Forward doesn't re-fire it.
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
     // An installed app whose bytes came from a directory on this machine has no
@@ -446,7 +453,7 @@ export default function AppDetailPage() {
       return
     }
     handleInstall()
-  }, [app, location]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [app, name, location]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The registry install itself. Resolves `'trust-required'` when the gateway
@@ -1486,6 +1493,9 @@ export default function AppDetailPage() {
               </div>
             </Card>
           )}
+
+          {/* Automatic updates: only where the gateway could update this app itself. */}
+          {app.installed && canUpdate && isRegistrySourced(app) && <AppAutoUpdateCard name={app.name} />}
 
           {/* Tags */}
           {(app.tags || []).length > 0 && (

@@ -203,6 +203,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // would mean the extractor never looks at the file at all.
   'DecisionsPointPanel.tsx': DEVELOPER_PREVIEWS,
   'AboutPanel.tsx': 'about',
+  // The App updates group AboutPanel mounts below the gateway's own update rows.
+  'AppUpdatesSection.tsx': 'about',
   // AboutPanel.tsx's owners (the in-app update step-up and request card; a gateway
   // install's Updates card body). Mapped with it so a control either one gains stays
   // indexed on the About tab.

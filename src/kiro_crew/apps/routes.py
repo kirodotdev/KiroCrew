@@ -150,6 +150,7 @@ from kiro_crew.apps.registry_pipeline.subprocess_env import (
 from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
 from kiro_crew.apps.routes_enable import handle_disable_app, handle_enable_app, handle_open_app
 from kiro_crew.apps.routes_install import (
+    apply_app_update,
     handle_install_app,
     handle_register_external,
     handle_update_app,
@@ -320,7 +321,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sync_builtin_config,
     )
     from kiro_crew.apps.routes_install import (  # noqa: F401
+        _locked_preflight,
         _resync_app_crons_after_update,
+        _startup_refusal_body,
+        _update_from_path,
+        _update_from_registry,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
         _app_may_run_after_install,
