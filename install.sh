@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# KiroCrew Installer
-# One-command setup for macOS and Linux. Public build — no Brazil workspace,
-# no internal tooling required. Uses python3/pip (backend) + npm/vite (frontend).
+# Kiro Crew from-source installer (contributor layout)
+# Builds the git clone it sits in, on macOS and Linux. Public build — no Brazil
+# workspace, no internal tooling required. Uses python3/pip (backend) +
+# npm/vite (frontend).
+#
+# This is NOT the end-user install. The result follows the clone's checked-out
+# branch, and `main` is the Nightly lane: dev builds (0.X.0.devYYYYMMDD) ahead of
+# Stable, which the desktop app and the one-line install follow. For a Stable
+# install on a laptop or a server, use the signed wheel instead:
+#   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 #
 # Usage (from a local clone):
 #   git clone https://github.com/kirodotdev/KiroCrew.git
@@ -140,6 +147,39 @@ spinner() {
 
 has() { command -v "$1" >/dev/null 2>&1; }
 
+# What the clone is checked out at, as `branch:<name>`, `detached:<tag or sha>`,
+# or `unknown` (no git, or not a work tree). A from-source install follows
+# exactly this, so it decides which lane the box ends up on.
+source_checkout_ref() {
+    _ref="$(git -C "$KIROCREW_APP_DIR" symbolic-ref --short -q HEAD 2>/dev/null)" \
+        && [ -n "$_ref" ] && { printf 'branch:%s\n' "$_ref"; return 0; }
+    _ref="$(git -C "$KIROCREW_APP_DIR" describe --tags --exact-match HEAD 2>/dev/null \
+        || git -C "$KIROCREW_APP_DIR" rev-parse --short HEAD 2>/dev/null)" \
+        && [ -n "$_ref" ] && { printf 'detached:%s\n' "$_ref"; return 0; }
+    printf 'unknown\n'
+}
+
+# Say which lane this install follows and where the Stable install lives, so a
+# box set up from a clone does not land on Nightly by surprise.
+source_lane_notice() {
+    _lane_ref="$(source_checkout_ref)"
+    case "$_lane_ref" in
+        branch:main)
+            warn "This clone is on ${BOLD}main${RESET}: the install follows the ${BOLD}Nightly${RESET} lane"
+            detail "(dev builds ahead of Stable). This installer is for contributors." ;;
+        branch:*)
+            warn "This clone is on branch ${BOLD}${_lane_ref#branch:}${RESET}: the install follows that branch, not a release lane." ;;
+        detached:*)
+            warn "This clone is pinned at ${BOLD}${_lane_ref#detached:}${RESET} (detached HEAD): git pull and kirocrew update cannot update it." ;;
+        *)
+            warn "This is a from-source install: it follows the clone, not a release lane." ;;
+    esac
+    # Named by URL and guide, not as a `curl … | sh` line: this script never
+    # prints or runs a pipe-to-shell (test_installer_tool_pins.py).
+    detail "For Stable on a laptop or server, use the one-line install of the signed"
+    detail "wheel instead: https://download.crew.kiro.dev/cli.sh (docs/guides/install.md)."
+}
+
 # True only when a usable node is on PATH: present AND at or above the build's
 # supported floor. `has node` alone was not enough -- Amazon Linux 2023 ships
 # node 18, so the "already installed" branch matched, every install branch
@@ -186,6 +226,9 @@ if [ ! -f "$KIROCREW_APP_DIR/pyproject.toml" ]; then
     die "Run this from inside a KiroCrew clone (pyproject.toml not found in $KIROCREW_APP_DIR).
      git clone https://github.com/kirodotdev/KiroCrew.git && cd kirocrew && bash install.sh"
 fi
+
+source_lane_notice
+echo ""
 
 # ══════════════════════════════════════════════════════════════════════
 # Step 1: Dependencies
@@ -869,5 +912,16 @@ if [ "$(uname)" != "Darwin" ]; then
 fi
 echo "  ${DIM}────────────────────────────────────────${RESET}"
 echo ""
-echo "  ${DIM}Update anytime:${RESET}  ${GREEN}git pull && bash install.sh${RESET}"
+source_lane_notice
+echo ""
+case "$(source_checkout_ref)" in
+    branch:*)
+        echo "  ${DIM}Update anytime:${RESET}  ${GREEN}git pull && bash install.sh${RESET}"
+        detail "The dashboard Update (kirocrew update) resets this clone to its origin branch"
+        detail "when it is only behind; a clone both ahead and behind is refused, and --force"
+        detail "discards its local commits." ;;
+    detached:*)
+        detail "A detached checkout has no branch to update from: switch to a branch"
+        detail "(git switch main) before updating, or use the one-line install." ;;
+esac
 echo ""
