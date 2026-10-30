@@ -25,6 +25,9 @@ def _service() -> ag.AdmissionService:
         ("taskrunner:t1", "taskrunner:t1:runtime"),
         ("taskrunner:t1", "taskrunner:t1:autoapprove"),
         ("cron:job1", "cron:job1:run-7"),
+        ("wf:r1", "wf:r1:3"),
+        ("wf-pool:r1", "wf-pool:r1:0"),
+        ("wf-worker:r1", "wf-worker:r1:9f86d081"),
     ],
 )
 def test_a_run_worker_key_inherits_the_run_binding(bound, worker):
@@ -123,3 +126,54 @@ def test_a_delayed_child_start_keeps_its_own_admitted_principal(monkeypatch):
     svc.bind_session("dashboard:tab", "p_bob")
     assert containment.run_principal(info) == "p_alice"
     assert containment.run_principal(info, own_only=True) == "p_alice"
+
+
+def test_a_workflow_attach_names_every_worker_namespace():
+    from kiro_crew.dashboard.handlers import workflows
+
+    keys = workflows._workflow_worker_keys("r1")
+    assert keys == ("wf:r1", "wf-pool:r1", "wf-unpooled:r1", "wf-worker:r1")
+    svc = _service()
+    for key in keys:
+        svc.bind_session(key, "p_alice", "w-root")
+    for worker in ("wf:r1:0", "wf-pool:r1:2", "wf-unpooled:r1:1", "wf-worker:r1:ab"):
+        assert svc.budget_for_session(worker) == "p_alice"
+
+
+def test_an_http_launch_runs_in_the_admitted_principal_scope():
+    """A parentless spawn's task copies the admitted budget before the attach."""
+    from types import SimpleNamespace
+
+    from kiro_crew.shared_crew import admission_entry, containment
+
+    admitted = ag.Admission(None, "admitted", work=SimpleNamespace(budget_key="p_alice"))
+    with containment.principal_scope("p_outer"):
+        with admission_entry.admitted_scope(admitted):
+            assert containment._SCOPE_PRINCIPAL.get() == "p_alice"
+        with admission_entry.admitted_scope(ag.Admission(None, "passthrough")):
+            assert containment._SCOPE_PRINCIPAL.get() == "p_outer"
+
+
+@pytest.mark.parametrize(
+    ("reason", "noted"),
+    [
+        (ag.ReasonCode.QUEUE_EXPIRED, True),
+        (ag.ReasonCode.CANCELLED_BY_USER, False),
+    ],
+)
+def test_an_admission_that_ends_before_the_turn_hands_the_queue_off(reason, noted):
+    """The dispatch is marked unstarted so its done callback ends the chat cycle."""
+    from types import SimpleNamespace
+
+    from kiro_crew.shared_crew import turn_gate
+
+    rows: list[tuple] = []
+    slot = SimpleNamespace(
+        _turn_generation=7,
+        _unstarted_generation=-1,
+        append=lambda *a, **_k: rows.append(a),
+    )
+    admission = ag.Admission(None, "queued", work=SimpleNamespace(reason=reason))
+    turn_gate.note_admission_ended(slot, admission)
+    assert slot._unstarted_generation == 7
+    assert bool(rows) is noted

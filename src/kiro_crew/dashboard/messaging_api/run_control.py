@@ -623,8 +623,13 @@ async def _retry_failed_run(
             _memory_mode=execution.memory_mode,
             _execution_context=execution.to_record(),
         )
+        import contextlib
+
+        from kiro_crew.shared_crew.admission_entry import admitted_scope
+
         try:
-            info = await start
+            with admitted_scope(admission) if admission is not None else contextlib.nullcontext():
+                info = await start
         except BaseException:
             # The spawn may have accepted its durable row before it raised (a
             # cancelled request included), so whether a successor exists is unknown:

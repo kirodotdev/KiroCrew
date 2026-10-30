@@ -187,6 +187,29 @@ async def admit_queued_send(
     )
 
 
+async def refuse_if_slot_closed(state: Any, slot: Any, admission: _gate.Admission) -> Any:
+    """409 ``slot_closed`` when *slot* closed while its queued send was admitted, else None.
+
+    The admission await can outlive a close; the accepted parked work is then
+    cancelled rather than acknowledged onto a slot nothing will drain.
+    """
+    from aiohttp import web
+
+    from kiro_crew.dashboard.chat_slack import slot_is_live
+
+    if slot_is_live(state, slot):
+        return None
+    work = admission.work
+    if not admission.passthrough and admission.service is not None and work is not None:
+        try:
+            await admission.service.cancel(
+                work.work_id, expected_revision=work.revision, reason=ReasonCode.CANCELLED_BY_USER
+            )
+        except Exception:  # noqa: BLE001 -- the refusal stands; restart reconcile settles it
+            logger.debug("shared crew: cancelling %s for a closed slot failed", work.work_id)
+    return web.json_response({"error": "session closed", "code": "slot_closed"}, status=409)
+
+
 def stamp_queued_work(slot: Any, queue_id: str, admission: _gate.Admission) -> None:
     """Name *admission*'s parked work on the queue entry *queue_id*, for the drain."""
     if admission.passthrough or admission.work is None or not queue_id:
@@ -256,6 +279,8 @@ async def admitted_chat_turn(
             ended.work.state.value,
             ended.work.reason.value if ended.work.reason else "",
         )
+        # The callback reads why it ended from the admission it was handed.
+        admission.work = ended.work
         on_ended()
         return None
     finally:
@@ -342,6 +367,21 @@ def subagent_cancel(manager: Any, loop: Any) -> Callable[[AcceptedWork], None]:
             logger.debug("shared crew: subagent cancel failed", exc_info=True)
 
     return cancel
+
+
+def admitted_scope(admission: _gate.Admission) -> Any:
+    """Run a manager launch in *admission*'s principal slice; no-op when it has none.
+
+    The run task copies this scope when it is created, which can be before
+    ``attach_child`` binds the run key (an immediate, parentless start).
+    """
+    import contextlib
+
+    from kiro_crew.shared_crew.containment import principal_scope
+
+    if admission.passthrough or admission.work is None:
+        return contextlib.nullcontext()
+    return principal_scope(admission.work.budget_key)
 
 
 async def admit_subagent(request: Any, state: Any, parent_session: str) -> _gate.Admission:
@@ -571,6 +611,7 @@ __all__ = [
     "chat_replay_response",
     "explicit_idempotency_key",
     "queued_work_ids",
+    "refuse_if_slot_closed",
     "stamp_queued_work",
     "admit_app_spawn",
     "admit_background_run",
@@ -586,6 +627,7 @@ __all__ = [
     "admission_receipt",
     "admit_chat_turn",
     "admit_subagent",
+    "admitted_scope",
     "mark_admission_pending",
     "subagent_cancel",
     "subagent_probe",

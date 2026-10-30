@@ -282,6 +282,22 @@ def _note_not_started(slot: Any, reason: ReasonCode | None) -> None:
         logger.debug("shared crew: could not note an unstarted turn", exc_info=True)
 
 
+def note_admission_ended(slot: Any, admission: _gate.Admission) -> None:
+    """A dispatched chat turn whose admission ended before it ran (expiry, refusal).
+
+    Marks the dispatch unstarted, so its done callback hands the slot's queue off
+    and ends the chat cycle (``turn_dispatch.mark_turn_unstarted``), and tells the
+    sender why unless a person stopped it.
+    """
+    from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
+
+    mark_turn_unstarted(slot)
+    work = admission.work
+    reason = work.reason if work is not None else None
+    if reason not in (ReasonCode.CANCELLED_BY_USER, ReasonCode.ACCESS_REMOVED):
+        _note_not_started(slot, reason)
+
+
 async def admit_turn(
     *,
     budget_key: str,
@@ -572,6 +588,7 @@ __all__ = [
     "gate_turn",
     "initiated_by",
     "mark_admitted",
+    "note_admission_ended",
     "queued_initiator",
     "queued_work",
     "TurnRefused",

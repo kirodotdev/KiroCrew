@@ -441,7 +441,11 @@ def test_a_crew_with_only_its_operator_is_personal(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("memory_store", ["", "owner-notes"])
-async def test_replacement_notice_matches_store_read_audience(tmp_path, audit_events, memory_store):
+async def test_replacement_notice_matches_store_read_audience(
+    tmp_path, audit_events, memory_store, _floor_monkeypatch
+):
+    # The collaborator audience exists only with the preview on (``shared_crew.preview``).
+    _floor_monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
     store = _store(tmp_path)
     slot = _Slot()
     state = _state(slot)

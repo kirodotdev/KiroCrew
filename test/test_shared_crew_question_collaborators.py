@@ -68,6 +68,8 @@ LOCAL = Principal(
 @pytest.fixture(autouse=True)
 def _hermetic_home(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    # These cases pin the preview-on audience (``shared_crew.preview``).
+    _floor_monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
 
 
 @pytest.fixture
@@ -309,3 +311,14 @@ def test_only_membership_provenances_are_collaborators():
     for p in (DIRECT, LOCAL, Principal.unknown()):
         assert not collaborators.is_collaborator_actor(ctx(p))
     assert not collaborators.is_collaborator_actor(None)
+
+
+def test_with_the_preview_off_only_the_owner_sees_question_cards(_floor_monkeypatch):
+    """Gate off: no tailnet member is a collaborator and no collaborator socket is sent to."""
+    _floor_monkeypatch.delenv("KIROCREW_SHARED_CREW_PREVIEW", raising=False)
+    assert not collaborators.is_collaborator_actor(_ctx(BOB))
+    assert not collaborators.is_collaborator_actor(_ctx(LISTENER))
+    ws = MagicMock(closed=False)
+    ws.get.side_effect = lambda key, default=None: {"_is_dashboard_user": True}.get(key, default)
+    state = MagicMock(_ws_clients=[ws], _owner_ws_clients=set())
+    assert collaborators._collaborator_sockets(state) == []

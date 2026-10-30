@@ -414,32 +414,35 @@ async def api_spawn(request: web.Request) -> web.Response:
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
-    info = await _spawn_on_loop(
-        state,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        max_turns=max_turns,
-        cwd=cwd,
-        model=model or None,
-        reasoning_effort=reasoning_effort,
-        backend=backend,
-        label=str(cleaned.get("label") or ""),
-        approval_mode=approval_mode or None,
-        silent=silent,
-        batch_id=batch_id,
-        batch_total=batch_total,
-        keep=keep,
-        include_memory=cleaned.get("include_memory", True) is not False,
-        include_lessons=cleaned.get("include_lessons", True) is not False,
-        include_project=cleaned.get("include_project", True) is not False,
-        memory_store=child_memory_store,
-        crew=crew,
-        _memory_mode=admitted_mode,
-        _execution_context=admitted_execution.to_record(),
-        _parent_spawn_policy=parent_spawn_policy,
-        _parent_project_dirs=parent_dirs,
-    )
+    from kiro_crew.shared_crew.admission_entry import admitted_scope
+
+    with admitted_scope(child_admission):
+        info = await _spawn_on_loop(
+            state,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            max_turns=max_turns,
+            cwd=cwd,
+            model=model or None,
+            reasoning_effort=reasoning_effort,
+            backend=backend,
+            label=str(cleaned.get("label") or ""),
+            approval_mode=approval_mode or None,
+            silent=silent,
+            batch_id=batch_id,
+            batch_total=batch_total,
+            keep=keep,
+            include_memory=cleaned.get("include_memory", True) is not False,
+            include_lessons=cleaned.get("include_lessons", True) is not False,
+            include_project=cleaned.get("include_project", True) is not False,
+            memory_store=child_memory_store,
+            crew=crew,
+            _memory_mode=admitted_mode,
+            _execution_context=admitted_execution.to_record(),
+            _parent_spawn_policy=parent_spawn_policy,
+            _parent_project_dirs=parent_dirs,
+        )
     if not info or (info.done and info.error):
         await child_admission.abandon()
     else:
@@ -682,17 +685,20 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     child_admission = await admit_subagent(request, state, parent_session)
     if child_admission.rejected:
         return child_admission.refusal_response()
-    info = await _continue_on_loop(
-        state,
-        conv_id,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        model=model or None,
-        max_turns=max_turns,
-        cwd=resumed_cwd,
-        _memory_mode=admitted_mode,
-    )
+    from kiro_crew.shared_crew.admission_entry import admitted_scope
+
+    with admitted_scope(child_admission):
+        info = await _continue_on_loop(
+            state,
+            conv_id,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            model=model or None,
+            max_turns=max_turns,
+            cwd=resumed_cwd,
+            _memory_mode=admitted_mode,
+        )
     if not info or (info.done and info.error):
         await child_admission.abandon()
     else:

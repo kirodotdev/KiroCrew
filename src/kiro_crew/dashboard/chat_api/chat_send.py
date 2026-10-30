@@ -1229,6 +1229,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             return _queued_admission.refusal_response()
         if _queued_admission.replayed:
             return _sc_entry.chat_replay_response(_queued_admission, slot_key=slot.key)
+        if (
+            _closed := await _sc_entry.refuse_if_slot_closed(state, slot, _queued_admission)
+        ) is not None:
+            return _closed
         qid = queue_for_next_turn(
             state,
             slot,
@@ -1264,10 +1268,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         )
         _sc_entry.stamp_queued_work(slot, qid, _queued_admission)
         _send_race.commit_request(request, message_id=qid)
-        if not _queued_admission.passthrough:
-            # The admission await may have outlived the running turn's handoff:
-            # the guarded drain starts the entry if the slot went idle meanwhile.
-            await _drain_parked_queues(state, [slot.key])
+        # The admission await (a config refresh included, even when admission
+        # turns out off) may have outlived the running turn's handoff: the
+        # guarded drain starts the entry if the slot went idle meanwhile.
+        await _drain_parked_queues(state, [slot.key])
         return web.json_response(
             {"ok": True, "queued": True, "queue_id": qid},
             headers=_sc_entry.admission_headers(_queued_admission),
@@ -1307,6 +1311,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             return _held_admission.refusal_response()
         if _held_admission.replayed:
             return _sc_entry.chat_replay_response(_held_admission, slot_key=slot.key)
+        if (
+            _closed := await _sc_entry.refuse_if_slot_closed(state, slot, _held_admission)
+        ) is not None:
+            return _closed
 
         # Same entry-meta contract as the busy-slot branch: the client's `sendId`
         # and attachment lists ride on the queue entry so the drained row
@@ -1368,8 +1376,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         state.broadcast_ws("queue_push", _hold_push)
         if _behind_parked:
             await _start_next_queued_turn(state, slot)
-        elif not _held_admission.passthrough:
-            # The admission await may have outlived the sub-agent hold.
+        elif not subagents_hold_user_messages(state, _sub_key):
+            # The admission await (a config refresh included, even when admission
+            # turns out off) outlived the sub-agent hold: nothing else will drain
+            # the entry, so start it now. A hold still in force keeps it parked.
             await _drain_parked_queues(state, [slot.key])
         # Same receipt contract as the busy-slot queue branch: `queue_id` binds
         # the sender's pre-send composer state to this exact entry. An entry the
@@ -1689,6 +1699,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # removes that person (``access_set.stop_work``).
         from kiro_crew.shared_crew.admission_gate import actor_budget as _turn_actor_budget
         from kiro_crew.shared_crew.turn_gate import initiated_by as _turn_initiated_by
+        from kiro_crew.shared_crew.turn_gate import note_admission_ended
+
+        def _admission_ended() -> None:
+            # Expired or refused before it ran: end the cycle and hand off the queue.
+            note_admission_ended(slot, turn_admission)
+            state.push_slots_update()
 
         with _turn_initiated_by("" if request_app else _turn_actor_budget(request)):
             task = spawn_guarded_turn(
@@ -1701,7 +1717,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                         slot, _run_chat(state, slot, message, **_turn_kwargs)
                     ),
                     still_live=lambda: slot_is_live(state, slot),
-                    on_ended=state.push_slots_update,
+                    on_ended=_admission_ended,
                 ),
             )
         turn_dispatched = True

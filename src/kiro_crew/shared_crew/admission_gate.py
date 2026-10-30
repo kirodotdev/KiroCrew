@@ -132,7 +132,14 @@ _RETRY_AFTER: Mapping[ReasonCode, int] = {
 _SESSION_BINDINGS_MAX = 20000
 #: Run namespaces whose workers use ``<bound key>:<suffix>`` session keys; an
 #: unbound worker key inherits its run's binding (``AdmissionService._binding``).
-_WORKER_SUBKEY_NAMESPACES = ("taskrunner:", "cron:")
+_WORKER_SUBKEY_NAMESPACES = (
+    "taskrunner:",
+    "cron:",
+    "wf:",
+    "wf-pool:",
+    "wf-unpooled:",
+    "wf-worker:",
+)
 _QUEUE_IDS_MAX = 4096
 #: Unattached work ended before its execution started, remembered so the late
 #: start can be stopped (bounded, in memory).

@@ -88,6 +88,15 @@ async def _json_response_off_loop(payload: Any, *, status: int = 200) -> web.Res
     return web.Response(text=text, status=status, content_type="application/json")
 
 
+def _workflow_worker_keys(run_id: str) -> tuple[str, ...]:
+    """The keys a run's worker sessions sit under (``wf:<run>:<n>`` and its kin).
+
+    Bound to the run's admitted budget at attach, so a worker's ``spawn_run`` is
+    charged to the person who started the workflow (``AdmissionService._binding``).
+    """
+    return tuple(f"{prefix}:{run_id}" for prefix in ("wf", "wf-pool", "wf-unpooled", "wf-worker"))
+
+
 def _svc(request: web.Request):
     state: DashboardState = request.app["state"]
     return getattr(state, "workflow_service", None)
@@ -532,7 +541,9 @@ async def _start_admitted(
         await run_admission.abandon()
         raise
     if "run_id" in out:
-        await run_admission.attach_child(str(out["run_id"]))
+        await run_admission.attach_child(
+            str(out["run_id"]), also=_workflow_worker_keys(str(out["run_id"]))
+        )
     else:
         await run_admission.abandon()
     return out
@@ -598,7 +609,9 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         await run_admission.abandon()
         return _error("could not start workflow", "workflow_run_failed", 500)
     if "run_id" in out:
-        await run_admission.attach_child(str(out["run_id"]))
+        await run_admission.attach_child(
+            str(out["run_id"]), also=_workflow_worker_keys(str(out["run_id"]))
+        )
     else:
         await run_admission.abandon()
     status = 200 if "run_id" in out else 400

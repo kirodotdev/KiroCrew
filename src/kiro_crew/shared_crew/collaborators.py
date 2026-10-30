@@ -36,8 +36,14 @@ _MEMBER_PROVENANCES = frozenset({Provenance.TAILSCALE_SERVE, Provenance.TAILSCAL
 
 
 def is_collaborator_actor(actor: object) -> bool:
-    """Whether *actor* is a person admitted through a membership boundary."""
-    if not isinstance(actor, ActorContext):
+    """Whether *actor* is a person admitted through a membership boundary.
+
+    Never with the Shared Crew preview off (``shared_crew.preview``): only the
+    owner then reads, answers or receives a question card, as before Shared Crew.
+    """
+    from kiro_crew.shared_crew.preview import preview_enabled
+
+    if not preview_enabled() or not isinstance(actor, ActorContext):
         return False
     principal = actor.principal
     return (
@@ -67,6 +73,10 @@ def is_collaborator_request(request: Any) -> bool:
 
 
 def _collaborator_sockets(state: Any) -> list[Any]:
+    from kiro_crew.shared_crew.preview import preview_enabled
+
+    if not preview_enabled():
+        return []
     clients = getattr(state, "_ws_clients", None)
     if not isinstance(clients, list):
         return []
