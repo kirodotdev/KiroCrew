@@ -140,7 +140,12 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                     )
                 await self._alert_cron_failure(job, gate_reason, denied=True)
                 return None
-            return await goal_reminder.fire(self.dashboard_state, job)
+            outcome = await goal_reminder.fire(self.dashboard_state, job)
+            # The run's summary in the job's history: a check-in delivers
+            # nothing itself, so without it a skip ("the mate is busy") would
+            # read as a success that said nothing, silent job or not.
+            job.set_run_result(redact(outcome))
+            return outcome
 
         cap = await self._cron_capture(job)
 

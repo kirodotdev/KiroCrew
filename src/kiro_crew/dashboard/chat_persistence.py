@@ -180,6 +180,12 @@ def _transcripts_may_be_remote_only() -> bool:
 #: endpoint re-creates and re-binds the slot on the next page open).
 _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 
+#: Sentinel: the slot is a member key whose binding is intact but names a
+#: crewmate id the Crew config read did not resolve. Not published either, but
+#: the open-tab restore keeps the key in its reopen seed and a later pass
+#: (``dashboard.member_slot_retry``) tries it again.
+_DEFER_MEMBER_RESTORE: tuple[str, str] = ("", "__defer__")
+
 
 # Fallback effort levels — used when no ACP session has reported its config
 # yet (cold start). Sourced from the shared ``effort.py`` vocabulary so every
