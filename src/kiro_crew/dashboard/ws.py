@@ -577,7 +577,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
         # SubagentManager._run: `conversation_key or subagent:<id>`.
         "child_session": getattr(a, "conversation_key", "") or f"subagent:{a.id}",
         "task": _r(a.task),
-        "agent": _r(a.agent),
+        "agent": _r(getattr(a, "run_agent", a.agent)),
         "label": _r(getattr(a, "label", "") or ""),
         "model": a.resolved_model,
         "requested_model": _r(a.requested_model),
@@ -1439,7 +1439,7 @@ async def _serve_ws(
                                                 "stopped": a.user_stopped,
                                                 "outcome": a.outcome,
                                                 "task": _r(a.task),
-                                                "agent": _r(a.agent),
+                                                "agent": _r(getattr(a, "run_agent", a.agent)),
                                                 "label": _r(getattr(a, "label", "") or ""),
                                                 "model": a.resolved_model,
                                                 "requested_model": _r(a.requested_model),

@@ -354,6 +354,8 @@ async def fork_session(
         posture["trust_reads"] = bool(getattr(live_caller, "_trust_reads", False))
         child._trust = posture["trust"]
         child._trust_reads = posture["trust_reads"]
+        # Follows the caller's later mode changes too (``approval_inheritance``).
+        child._posture_inherited = True
         if clean_title:
             child.title = clean_title
             child._titled = True

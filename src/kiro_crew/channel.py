@@ -202,6 +202,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # blocked for, one step shallower.
     "session_status",
     "session_create",
+    # Creates, opens, binds and seeds a worker in one call: session_create's and
+    # session_send's containment reasons together.
+    "work_dispatch",
     "session_fork",
     "session_close",
     # The tree verbs, blocked on the containment reason the rest share: a channel

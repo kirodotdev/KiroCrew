@@ -206,6 +206,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     reload_slot_session,
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
+    _apply_inherited_postures,
     _approval_target_required,
     _deny_approval_mode,
     _deny_trust_pattern,
@@ -217,6 +218,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _internal_session_approval_refusal,
     _pending_elicitation_ids,
     _still_owning,
+    _sweep_pending_approvals,
     api_chat_mode,
     api_chat_slot_approve,
     apply_approval_mode,
@@ -229,6 +231,7 @@ from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     _created_slot_row,
     _default_template_stamp,
     _persist_app_agent_owner,
+    _persist_birth_line,
     _retract_failed_newborn,
     api_chat_slot_create,
 )

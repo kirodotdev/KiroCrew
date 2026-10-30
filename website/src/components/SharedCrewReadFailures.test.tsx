@@ -34,7 +34,7 @@ vi.mock('../api/client', () => ({ api: {
 
 const person = (id: string) => ({ id, kind: 'human' as const, display: { name: id, login: '', captured_at: null } })
 const capabilities = { ...ALL_UNAVAILABLE, attribution: 'available' as const, presence: 'available' as const, queueing: 'available' as const,
-  shared_crew_preview: true,
+  preview: true,
   tailnet_direct: { state: 'active' as const, reason: '', method: 'cli', owner_login: 'owner@example.test', urls: ['http://crew.tail123.ts.net:5476/'], addresses: ['100.64.0.1'] },
 }
 const mode: CrewModeResponse = { schema_version: 1, mode: 'network', crew_id: 'crew-failure-test', viewer: person('p_me'),

@@ -20,6 +20,12 @@ from kiro_crew.shared_crew.identity import tailnet_principal
 
 
 @pytest.fixture(autouse=True)
+def _shared_crew_preview_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the preview's behaviour; the gate itself has its own tests."""
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+
+
+@pytest.fixture(autouse=True)
 def _fresh() -> Iterator[None]:
     tailnet_live_allowlist.reset_for_tests()
     access_set.reset_for_tests()

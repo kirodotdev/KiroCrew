@@ -89,6 +89,10 @@ class CronJob:
     thread_ts: str | None = None
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
+    # Monotonic per-job order for explicit pause/resume requests, including a
+    # repeated request whose booleans already have that value. A pending run
+    # record uses it to keep a newer user choice while merging runtime fields.
+    user_pause_generation: int = 0
     auto_paused: bool = (
         False  # True when paused by execution after repeated failures; cleared on re-enable/success
     )
@@ -179,6 +183,14 @@ class CronJob:
     # leave the store's pause state and failure count as they find them. None
     # for a record no run stamped: the run's pause state is applied as is.
     auto_paused_at_start: bool | None = None
+    # Runtime-only, set only on a scheduled cancel or reap's frozen settlement
+    # record (``cron_service/settlement.py``). ``settlement_failure_counted`` is
+    # True when the record counted this run's failure, so the job it lands on
+    # decides the auto-pause with its own stored limit.
+    # ``settlement_pause_audited`` is True once a save landed that pause and its
+    # ``cron_auto_pause`` row was written, so a later save writes no second row.
+    settlement_failure_counted: bool = False
+    settlement_pause_audited: bool = False
     context_enabled: bool = False
     agent_id: str = ""
     # Member identity is distinct from the provider template in agent_id.
@@ -529,15 +541,28 @@ class CronJob:
         that resume. ``failure_recorded`` is still set, so the
         timeout arm and the reaper treat this run's failure as handled.
         """
-        self.failure_recorded = True
-        if self.auto_paused_at_start and not self.auto_paused:
-            return
-        self.consecutive_failures += 1
-        limit = self.auto_pause_limit()
-        if limit is not None and self.consecutive_failures >= limit and not self.auto_paused:
+        if self.count_failure() and self.failure_limit_reached():
             self.enabled = False
             self.auto_paused = True
             self._audit_pause_change("auto_paused")
+
+    def count_failure(self) -> bool:
+        """The counting half of :meth:`record_failure`: True when the failure counted.
+
+        A scheduled cancel or reap counts on its frozen record and leaves the pause
+        to the job the store hands back, whose limit may have been saved during the
+        run (``cron_service/settlement.py``).
+        """
+        self.failure_recorded = True
+        if self.auto_paused_at_start and not self.auto_paused:
+            return False
+        self.consecutive_failures += 1
+        return True
+
+    def failure_limit_reached(self) -> bool:
+        """Whether a job not yet auto-paused has reached its consecutive-failure limit."""
+        limit = self.auto_pause_limit()
+        return limit is not None and self.consecutive_failures >= limit and not self.auto_paused
 
     def record_success(self) -> None:
         """Reset the failure counter and lift any execution auto-pause.

@@ -7004,6 +7004,12 @@
       "default_destination_load_failed": "crew를 불러오지 못했습니다.",
       "default_destination_retry": "다시 시도"
     },
+    "folderProjectHint": {
+      "differs": "여기서 명령, 파일, 검색은 이 폴더의 {{folder}}이(가) 아니라 {{current}}을(를) 사용합니다.",
+      "keep_current": "{{current}} 유지",
+      "switch_note": "전환하면 다음 메시지부터 {{path}}에서 새 에이전트 세션이 시작됩니다. 여기의 메시지는 남고, 프로젝트 선택기로 다시 전환할 수 있습니다.",
+      "use_folder_project": "{{folder}}(으)로 전환"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "폴더 제안",
       "move_to_folder_prompt": "이 세션을 이 폴더로 이동할까요?",
@@ -9157,7 +9163,7 @@
     },
     "welcomeView": {
       "incognito": "시크릿",
-      "incognito_desc": "기존 메모리를 사용하지만 새로운 학습 내용은 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다.",
+      "incognito_desc": "기존 메모리를 사용하지만 새로운 학습 내용은 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다. 목표 루프는 사용할 수 없습니다.",
       "suggestion_daily_reminder": "매일 알림 설정",
       "suggestion_review_changes": "최신 변경 사항 검토",
       "suggestion_search_code": "사용 예시를 코드에서 검색",
@@ -9171,7 +9177,7 @@
       "incognito_active_switch_to_persistent": "시크릿 — 영구 모드로 전환",
       "temporary": "임시",
       "temporary_active_switch_to_persistent": "임시 — 영구 모드로 전환",
-      "temporary_desc": "메모리를 사용하지 않고 새로운 학습 내용도 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다.",
+      "temporary_desc": "메모리를 사용하지 않고 새로운 학습 내용도 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다. 목표 루프는 사용할 수 없습니다.",
       "what_can_i_do_for_you": "무엇을 도와드릴까요?",
       "greeting_what_are_we_building_today": "오늘은 무엇을 만들어 볼까요?",
       "greeting_where_should_we_start": "어디서부터 시작할까요?",
@@ -9816,6 +9822,7 @@
       "composer_chip_label": "이 채팅에서 Crew Mode가 켜져 있습니다",
       "breadcrumb_label": "크루원",
       "back_to_main_chat": "메인 채팅으로 돌아가기",
+      "parent_row_hint": "이 채팅의 크루 멤버를 보는 중",
       "steer_too_long": "{{name}}에게 보내는 메시지는 최대 {{max}}자까지입니다. 줄여서 보내세요.",
       "steer_placeholder": "{{name}}에게 메시지: 다음 단계 전에 읽습니다",
       "summary_approval": "승인 필요 · {{n}}",

@@ -17,7 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import work_ledger
+from kiro_crew import work_ledger, work_preview
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard.handlers.work_ledger_caller import (
     _caller_key,
@@ -57,7 +57,12 @@ from kiro_crew.dashboard.handlers.work_ledger_refusals import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import work as work_metrics
-from kiro_crew.validation import WORK_REPORT_SCHEMA, ValidationError, validate_tool_args
+from kiro_crew.validation import (
+    WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
+    WORK_REPORT_SCHEMA,
+    ValidationError,
+    validate_tool_args,
+)
 from kiro_crew.work_ledger import WorkLedgerError
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
@@ -163,8 +168,12 @@ async def api_work_report(request: web.Request) -> web.Response:
     if bad is not None:
         return bad
     assert body is not None
+    # ``reply`` is a status only under the remote-dispatch preview; with it off the
+    # schema, and so the refusal, is the one from before the status existed.
+    remote_dispatch = await asyncio.to_thread(work_preview.remote_dispatch)
+    schema = WORK_REPORT_REMOTE_DISPATCH_SCHEMA if remote_dispatch else WORK_REPORT_SCHEMA
     try:
-        cleaned = validate_tool_args(_drop_nulls(body), WORK_REPORT_SCHEMA)
+        cleaned = validate_tool_args(_drop_nulls(body), schema)
     except ValidationError as exc:
         return _refuse_400(_validation_code(exc), str(exc))
     try:

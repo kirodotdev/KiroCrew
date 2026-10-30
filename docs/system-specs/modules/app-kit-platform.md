@@ -1230,7 +1230,10 @@ for all of them, as `src/kiro_crew/docs/agent-spec-fields.md` (Resources)
 documents. The catalog lists each skill once, under whichever link its walk reached
 first; `_alias_selected` in `skill_runtime/catalog.py` still selects a row listed
 under its flat link when the namespaced link one level under the mapping's literal
-prefix resolves to the same target. Each link is a
+prefix resolves to the same target. The exact read served while the catalog is
+`building` (`skill_runtime/search.py`) and the dashboard's "used by" annotation
+(`_shared_skill_listing.py`) apply the same rule through `_alias_matches`, for a
+path inside the skills roots only. Each link is a
 symlink on POSIX and a **directory junction** on Windows, via
 `platform_compat.symlink_or_junction`.
 

@@ -33,7 +33,9 @@ async def _run_child(
 ):
     """Run one child and return (the prompts it was sent, the hook fire calls in order).
 
-    *on_fire*, when given, is called with (manager, info) inside every hook fire."""
+    *on_fire*, when given, is called with (manager, info) inside every prompt-hook
+    fire (AgentSpawn, UserPromptSubmit). The Stop fire after the prompt ends is not
+    a prompt hook, so it is left out."""
     from kiro_crew.subagent import SubagentInfo, SubagentManager
 
     prompts: list[str] = []
@@ -56,7 +58,7 @@ async def _run_child(
     manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
 
     async def _fire(event, *_a, **_kw):  # type: ignore[no-untyped-def]
-        if on_fire is not None:
+        if on_fire is not None and event in ("AgentSpawn", "UserPromptSubmit"):
             on_fire(manager, info)
         return results.get(event, [])
 

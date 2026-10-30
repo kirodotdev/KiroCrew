@@ -289,9 +289,11 @@ class TestStart:
     @pytest.mark.asyncio
     async def test_unknown_source_coerced_to_dashboard(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        await api_taskrunner_start(
+        resp = await api_taskrunner_start(
             _request(_state(runner), json_body={"spec": "__inline__:# t", "source": "bogus"})
         )
+        assert resp.status == 200
+        assert _body(resp)["task_id"] == "tid-1"
         assert runner.start_background.call_args.kwargs["source"] == "dashboard"
 
     @pytest.mark.asyncio
@@ -332,7 +334,9 @@ class TestCancel:
     @pytest.mark.asyncio
     async def test_task_id_cancels_one(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        await api_taskrunner_cancel(_request(_state(runner), json_body={"task_id": "t9"}))
+        resp = await api_taskrunner_cancel(_request(_state(runner), json_body={"task_id": "t9"}))
+        assert resp.status == 200
+        assert _body(resp) == {"ok": True}
         runner.cancel.assert_called_once_with("t9")
 
 
@@ -934,7 +938,9 @@ class TestPlanCancel:
     @pytest.mark.asyncio
     async def test_delegates_to_runner(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        await api_taskrunner_plan_cancel(_request(_state(runner)))
+        resp = await api_taskrunner_plan_cancel(_request(_state(runner)))
+        assert resp.status == 200
+        assert _body(resp) == {"ok": True}
         runner.cancel_plan.assert_called_once_with()
 
 

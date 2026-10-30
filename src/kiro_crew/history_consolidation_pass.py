@@ -1299,7 +1299,8 @@ async def _call_llm(
     prompt never reached the provider at all — no session manager, or the
     background session could not be acquired because kiro-cli is missing, not
     logged in, or failing to start — or the provider sent back no text and
-    billed nothing, as a throttled provider does once its own retries run out.
+    billed nothing, as a throttled provider does once its own retries run out,
+    or the turn failed with ``AcpAuthRequired`` because the login lapsed.
     Billing that reads zero counts as nothing only on a provider whose
     ``reports_turn_usage`` is True; elsewhere an empty reply is charged.
     That case is signalled separately rather than folded into ``None``
@@ -1314,7 +1315,9 @@ async def _call_llm(
 
     Once ``stream_and_collect_json`` is entered the prompt counts as sent: a
     failure inside it may still have been billed, so it returns ``None`` and is
-    charged rather than risk an unbounded retry loop over real spend.
+    charged rather than risk an unbounded retry loop over real spend. The one
+    exception is ``AcpAuthRequired`` raised before any text streamed, on a backend
+    that reports usage and shows none billed: a signed-out kiro-cli ran no model.
     """
     if not self._sessions:
         self._logger.warning("LLM consolidation skipped — no session manager")
@@ -1384,7 +1387,27 @@ async def _call_llm(
                 # attachment, so no readable file may become an image block.
                 allow_image=False,
             )
-        except Exception:
+        except Exception as exc:
+            # A signed-out kiro-cli runs no model and clears on the next login, so
+            # an overnight lapse must not spend the attempt cap. Only when nothing
+            # streamed and a usage-reporting backend shows no billing on any
+            # attempt: absent metering proves nothing, so that turn is charged.
+            # Matched by class name: the ACP exception type lives behind the
+            # agent-SDK import boundary, which application code may not cross
+            # (the same handle as ``_is_auth_required`` in dashboard/chat_threads.py).
+            if (
+                type(exc).__name__ == "AcpAuthRequired"
+                and not reply
+                and getattr(client, "reports_turn_usage", False) is True
+                and not usage_has_billing(
+                    provider_last_turn_usage(client, since=stats_before, consume=False)
+                )
+            ):
+                self._logger.warning(
+                    "LLM consolidation turn needs a kiro-cli login after %.1fs",
+                    _time.monotonic() - t_start,
+                )
+                raise _ConsolidationNotDispatched("kiro-cli not logged in") from exc
             # The model and the prompt size are the two facts a context-window
             # overflow or a 429 is diagnosed from.
             self._logger.warning(

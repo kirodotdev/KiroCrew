@@ -7127,6 +7127,12 @@
       "default_destination_load_failed": "crew लोड नहीं हो सकीं।",
       "default_destination_retry": "फिर से कोशिश करो"
     },
+    "folderProjectHint": {
+      "differs": "यहाँ कमांड, फ़ाइलें और खोज {{current}} का इस्तेमाल करती हैं, इस फ़ोल्डर के {{folder}} का नहीं।",
+      "keep_current": "{{current}} रखो",
+      "switch_note": "स्विच करने पर अगले मैसेज से {{path}} में नया एजेंट सत्र शुरू होगा। यहाँ के मैसेज बने रहेंगे, और प्रोजेक्ट पिकर से वापस बदल सकते हो।",
+      "use_folder_project": "{{folder}} पर स्विच करो"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",
       "move_to_folder_prompt": "क्या इस सत्र को इस फ़ोल्डर में ले जाएँ?",
@@ -9297,7 +9303,7 @@
     },
     "welcomeView": {
       "incognito": "गुप्त",
-      "incognito_desc": "मौजूदा मेमोरी का उपयोग करता है, लेकिन कोई नई सीख नहीं लेता। टैब वापस पाने के लिए ट्रांसक्रिप्ट रखता है।",
+      "incognito_desc": "मौजूदा मेमोरी का उपयोग करता है, लेकिन कोई नई सीख नहीं लेता। टैब वापस पाने के लिए ट्रांसक्रिप्ट रखता है। लक्ष्य लूप उपलब्ध नहीं हैं।",
       "suggestion_daily_reminder": "रोज़ का रिमाइंडर सेट करो",
       "suggestion_review_changes": "मेरे नवीनतम बदलावों की समीक्षा करो",
       "suggestion_search_code": "उपयोग उदाहरणों के लिए कोड खोजें",
@@ -9311,7 +9317,7 @@
       "incognito_active_switch_to_persistent": "गुप्त — स्थायी मोड पर जाएँ",
       "temporary": "अस्थायी",
       "temporary_active_switch_to_persistent": "अस्थायी — स्थायी मोड पर जाएँ",
-      "temporary_desc": "मेमोरी का उपयोग नहीं करता और कोई नई सीख नहीं लेता। टैब वापस पाने के लिए ट्रांसक्रिप्ट रखता है।",
+      "temporary_desc": "मेमोरी का उपयोग नहीं करता और कोई नई सीख नहीं लेता। टैब वापस पाने के लिए ट्रांसक्रिप्ट रखता है। लक्ष्य लूप उपलब्ध नहीं हैं।",
       "what_can_i_do_for_you": "तुम्हारे लिए क्या कर सकता हूँ?",
       "greeting_what_are_we_building_today": "आज हम क्या बना रहे हैं?",
       "greeting_where_should_we_start": "कहाँ से शुरू करते हैं?",
@@ -9961,6 +9967,7 @@
       "composer_chip_label": "इस चैट के लिए Crew Mode चालू है",
       "breadcrumb_label": "टीम सदस्य",
       "back_to_main_chat": "मुख्य चैट पर लौटो",
+      "parent_row_hint": "इसके एक क्रू सदस्य को दिखाया जा रहा है",
       "steer_too_long": "{{name}} को संदेश अधिकतम {{max}} अक्षरों का हो सकता है। भेजने के लिए इसे छोटा करो।",
       "steer_placeholder": "{{name}} को संदेश: यह अगले कदम से पहले इसे पढ़ेगा",
       "summary_approval": "स्वीकृति चाहिए · {{n}}",

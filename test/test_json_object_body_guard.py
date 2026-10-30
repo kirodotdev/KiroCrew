@@ -355,6 +355,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # prompts, or injected context/note content stay uncapped.
     "chat_api/chat_send.py::_api_chat_send": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/slot_create.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # A hub's decision on a remote work item: one string, capped by the store.
+    "handlers/remote_work_item.py::api_chat_slot_work_item_patch": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/continue_turn.py::api_chat_slot_end_wait": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/turn_stop.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),

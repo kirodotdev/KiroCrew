@@ -126,3 +126,13 @@ html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):act
 .crew-tone-muted {
   color: color-mix(in srgb, var(--muted) 50%, var(--text-strong, var(--text)));
 }
+
+/* The session list's Crew Mode root row while the chat pane shows one of its
+   workers. Workers are not listed, so the root stays marked as the worker's
+   parent: a light tint and a purple edge, weaker than the active row's fill.
+   No glow, no shadow. */
+.session-row.session-crew-parent {
+  background-color: color-mix(in srgb, var(--aim) 10%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--aim) 45%, var(--border));
+  outline-offset: -1px;
+}

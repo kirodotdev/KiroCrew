@@ -711,9 +711,6 @@ recover.
   declarer.** All four construction sites take the single-tenant reading, so the
   model-wait DEAD verdict is not degraded on a shared runtime. Wiring it means
   passing a lease-plus-claim count from each site.
-- **A shared runtime dying during session start advances every auto-nudge loop's
-  start-failure streak on that process** (issue #14657). The start path raises
-  without carrying the runtime's identity, so the death cannot be attributed.
 - **`providers/base.py` still exposes process-shaped members.** Abort does not use
   them: it takes the opaque `RuntimeAbortTarget` from `runtime_abort_target()`. The remaining members are the bulk of what the pid
   reader ratchet still counts; each needs classifying as a session-level question,

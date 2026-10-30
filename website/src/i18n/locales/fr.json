@@ -7250,6 +7250,12 @@
       "default_destination_load_failed": "Impossible de charger les crews.",
       "default_destination_retry": "Réessayer"
     },
+    "folderProjectHint": {
+      "differs": "Ici, les commandes, les fichiers et la recherche utilisent {{current}}, et non {{folder}} de ce dossier.",
+      "keep_current": "Garder {{current}}",
+      "switch_note": "Le changement démarre une nouvelle session de l’agent dans {{path}} à ton prochain message. Les messages d’ici restent, et le sélecteur de projet permet de revenir.",
+      "use_folder_project": "Passer à {{folder}}"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",
       "move_to_folder_prompt": "Déplacer cette session vers ce dossier ?",
@@ -9437,7 +9443,7 @@
     },
     "welcomeView": {
       "incognito": "Incognito",
-      "incognito_desc": "Utilise la mémoire existante, mais n’apprend aucune leçon. Conserve la transcription pour restaurer l’onglet.",
+      "incognito_desc": "Utilise la mémoire existante, mais n’apprend aucune leçon. Conserve la transcription pour restaurer l’onglet. Les boucles d’objectif ne sont pas disponibles.",
       "suggestion_daily_reminder": "Configurer un rappel quotidien",
       "suggestion_review_changes": "Examiner mes dernières modifications",
       "suggestion_search_code": "Rechercher des exemples d'utilisation dans le code",
@@ -9451,7 +9457,7 @@
       "incognito_active_switch_to_persistent": "Incognito — passer au mode persistant",
       "temporary": "Temporaire",
       "temporary_active_switch_to_persistent": "Temporaire — passer au mode persistant",
-      "temporary_desc": "N’utilise pas la mémoire et n’apprend aucune leçon. Conserve la transcription pour restaurer l’onglet.",
+      "temporary_desc": "N’utilise pas la mémoire et n’apprend aucune leçon. Conserve la transcription pour restaurer l’onglet. Les boucles d’objectif ne sont pas disponibles.",
       "what_can_i_do_for_you": "Que puis-je faire pour toi ?",
       "greeting_what_are_we_building_today": "Que construisons-nous aujourd'hui ?",
       "greeting_where_should_we_start": "Par où commençons-nous ?",
@@ -10106,6 +10112,7 @@
       "composer_chip_label": "Crew Mode est activé pour cette discussion",
       "breadcrumb_label": "Membre de l’équipe",
       "back_to_main_chat": "Revenir au chat principal",
+      "parent_row_hint": "Affiche l’un de ses membres d’équipe",
       "steer_too_long": "Un message pour {{name}} peut compter au plus {{max}} caractères. Raccourcis-le pour l'envoyer.",
       "steer_placeholder": "Message pour {{name}} : il le lit avant sa prochaine étape",
       "summary_approval": "Approbation requise · {{n}}",

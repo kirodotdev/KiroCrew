@@ -133,8 +133,13 @@ class CapabilityReport:
         """The wire body: the frozen fields plus the additive report keys.
 
         ``setup_paths`` is each shared-access setup path's availability.
+        ``preview`` is whether this gateway runs the Shared Crew preview
+        (``KIROCREW_SHARED_CREW_PREVIEW=1``); off, every switch reads as default.
         """
+        from kiro_crew.shared_crew.preview import preview_enabled
+
         body = self.capabilities.to_dict()
+        body["preview"] = preview_enabled()
         body["reasons"] = dict(self.reasons)
         body["setup_paths"] = setup_paths_dict()
         direct = tailnet_direct()

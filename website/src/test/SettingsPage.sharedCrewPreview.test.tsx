@@ -51,7 +51,7 @@ afterEach(() => { cleanup() })
 
 describe('Settings > People behind the Shared Crew preview', () => {
   it.each([
-    ['preview off', { ...ALL_UNAVAILABLE, shared_crew_preview: false }],
+    ['preview off', { ...ALL_UNAVAILABLE, preview: false }],
     ['an older gateway without the field', { ...ALL_UNAVAILABLE }],
   ])('%s: no People tab and no People panel, even at its own URL', async (_name, answer) => {
     caps.mockResolvedValue(answer)
@@ -73,7 +73,7 @@ describe('Settings > People behind the Shared Crew preview', () => {
   })
 
   it('preview on: the People tab and panel show as today', async () => {
-    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, shared_crew_preview: true })
+    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, preview: true })
     mount('/settings/people')
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
     expect(peopleRow().length).toBeGreaterThan(0)

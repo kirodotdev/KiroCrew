@@ -414,6 +414,9 @@ class TestWhatThisSetGrants:
         "session_release",
         "session_read_message",
         "session_summary",
+        # Create, open, bind and seed in one call: no route the four-call path
+        # does not already reach, called as the same caller (rfc-work-dispatch.md).
+        "work_dispatch",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | MOVE_TOOLS | PIN_TOOLS | SESSION_TOOLS
 
@@ -450,6 +453,9 @@ class TestWhatThisSetGrants:
         tags = {n for n in names if n.startswith("chat_tag_")}
         pins = {n for n in names if n.startswith("chat_session_")}
         session = {n for n in names if n.startswith("session_")}
+        # The one dispatch verb: session control's create and send, with the ledger's
+        # create and bind, in one call (rfc-work-dispatch.md).
+        session |= {n for n in names if n == "work_dispatch"}
         assert folder, "the folder-organization tools left this set"
         assert tags, "the tag-organization tools left this set"
         assert pins, "the pin and pinned-order tools left this set"

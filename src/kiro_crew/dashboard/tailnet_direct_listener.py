@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.sections_shared_crew import SharedCrewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,18 @@ REASON_BIND_NOT_LOOPBACK = "bind_not_loopback"
 _OWNER_AFTER_START = (tailnet_direct.REASON_DISABLED, REASON_BIND_NOT_LOOPBACK)
 #: The config :func:`resolve` saw, for the access-set install :func:`start` runs.
 _PENDING_INSTALL: list[KiroCrewConfig] = []
+
+
+def _shared(cfg: KiroCrewConfig) -> SharedCrewConfig:
+    """``dashboard.shared_crew`` as the preview gate lets it read.
+
+    Without ``KIROCREW_SHARED_CREW_PREVIEW=1`` both switches read as off whatever
+    config.json says: the listener never starts and no person is approved here.
+    """
+    from kiro_crew.config.sections_shared_crew import SharedCrewConfig
+    from kiro_crew.shared_crew.preview import preview_enabled
+
+    return cfg.dashboard.shared_crew if preview_enabled() else SharedCrewConfig()
 
 
 def _install_access_set(cfg: KiroCrewConfig) -> None:
@@ -41,7 +54,7 @@ def _install_access_set(cfg: KiroCrewConfig) -> None:
 
     unknown = tailnet_identity_unknown(cfg.degraded_sections)
     seed = None if unknown else tuple(cfg.dashboard.tailscale.allowed_logins)
-    access_set.install(seed, local_authorization=cfg.dashboard.shared_crew.local_authorization)
+    access_set.install(seed, local_authorization=_shared(cfg).local_authorization)
 
 
 def _resolve_blocking(
@@ -59,14 +72,12 @@ def prepare_access_set(cfg: KiroCrewConfig) -> None:
     ``allowed_logins``. Both the dashboard and the headless API server call it.
     """
     _PENDING_INSTALL.clear()
-    if not (cfg.dashboard.tailscale.enabled or cfg.dashboard.shared_crew.tailnet_direct):
+    if not (cfg.dashboard.tailscale.enabled or _shared(cfg).tailnet_direct):
         # No tailnet path is on: nothing reads the access set.
         return
     from kiro_crew.shared_crew import access_set
 
-    access_set.install_placeholder(
-        local_authorization=cfg.dashboard.shared_crew.local_authorization
-    )
+    access_set.install_placeholder(local_authorization=_shared(cfg).local_authorization)
     _PENDING_INSTALL.append(cfg)
 
 
@@ -109,7 +120,7 @@ def _install_after_bind(resolution: tailnet_direct.DirectResolution | None) -> N
 def _resolve_gate(
     cfg: KiroCrewConfig, port: int, local_only: bool
 ) -> tailnet_direct.DirectResolution:
-    if not cfg.dashboard.shared_crew.tailnet_direct:
+    if not _shared(cfg).tailnet_direct:
         return tailnet_direct.DirectResolution(
             tailnet_direct.STATE_OFF, tailnet_direct.REASON_DISABLED
         )

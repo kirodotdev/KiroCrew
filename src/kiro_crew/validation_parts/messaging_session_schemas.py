@@ -523,6 +523,29 @@ SESSION_SEND_SCHEMA = ToolSchema(
     ],
 )
 
+#: ``work_dispatch``: ``action=create``'s two fields, ``session_create``'s fields
+#: under the same bounds, the session's own title and the seed ``session_send`` takes.
+WORK_DISPATCH_SCHEMA = ToolSchema(
+    tool_name="work_dispatch",
+    fields=[
+        FieldSpec("title", str, required=True, max_len=200),
+        FieldSpec("acceptance", dict, required=True),
+        FieldSpec("agent", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("agent_kind", str, required=False, allowed=frozenset({"template"})),
+        FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("session_title", str, required=False, default="", max_len=200),
+        FieldSpec("seed", str, required=True, max_len=MAX_LONG_STRING),
+        FieldSpec(
+            "model",
+            str,
+            required=False,
+            default="",
+            max_len=MAX_SHORT_STRING,
+            pattern=_MODEL_NAME_RE,
+        ),
+        FieldSpec("reasoning_effort", str, required=False, max_len=32),
+    ],
+)
 
 SESSION_BROADCAST_SCHEMA = ToolSchema(
     tool_name="session_broadcast",

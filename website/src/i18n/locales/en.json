@@ -4728,6 +4728,12 @@
       "rows": "rows",
       "showing_500_of": "Showing 500 of"
     },
+    "folderProjectHint": {
+      "differs": "Commands, files and search here use {{current}}, not this folder's {{folder}}.",
+      "keep_current": "Keep {{current}}",
+      "switch_note": "Switching starts a fresh agent session in {{path}} on your next message. The messages here stay, and the project picker can switch back.",
+      "use_folder_project": "Switch to {{folder}}"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "Folder suggestion",
       "no_thanks": "Not now",

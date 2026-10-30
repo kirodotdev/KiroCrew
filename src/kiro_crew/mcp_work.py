@@ -66,15 +66,18 @@ from urllib.parse import urlencode
 # Same cross-module reuse as ``mcp_dashboard``: the authenticated loopback client
 # to the gateway lives in ``mcp_core``, and its heavy dependencies are
 # function-local so importing it here is cheap.
+from kiro_crew import work_preview
 from kiro_crew.mcp_core import _get, _post, _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     MCP_WORK_SCHEMAS,
+    WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
     clamp_report,
     sanitize_string,
     validate_tool_args,
 )
+from kiro_crew.work_vocab import worker_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -319,8 +322,37 @@ def fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
 _fit_ledger = fit_ledger
 
 
-def _tool_definitions() -> list[dict[str, Any]]:
-    """The tool surface this server advertises."""
+#: What ``work_report``'s description says about ``reply`` while
+#: ``work_ledger.remote_dispatch`` is on. With it off the description is unchanged.
+_REPLY_WAKES = "'blocked', 'question', 'reply' and 'done' wake it"
+_REPLY_SENTENCE = (
+    " 'reply' answers a follow-up the conductor sent you: it wakes the conductor, "
+    "needs no evidence and claims nothing finished."
+)
+
+
+def _tool_definitions(remote_dispatch: bool = False) -> list[dict[str, Any]]:
+    """The tool surface this server advertises.
+
+    *remote_dispatch* is ``work_ledger.remote_dispatch``: on, ``work_report`` also
+    offers ``reply``; off (the default), every definition is the one from before it.
+    """
+    tools = _base_tool_definitions()
+    if remote_dispatch:
+        report = next(t for t in tools if t["name"] == "work_report")
+        status = report["inputSchema"]["properties"]["status"]
+        status["enum"] = list(worker_statuses(True))
+        status["description"] = "Where the work stands, in one of five values."
+        report["description"] = (
+            report["description"]
+            .replace("'blocked', 'question' and 'done' wake it", _REPLY_WAKES, 1)
+            .replace(" Write facts and pointers", _REPLY_SENTENCE + " Write facts and pointers", 1)
+        )
+    return tools
+
+
+def _base_tool_definitions() -> list[dict[str, Any]]:
+    """The tool surface with the remote-dispatch preview off."""
     return [
         {
             "name": "work_brief",
@@ -374,7 +406,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["progress", "done", "blocked", "question"],
+                        "enum": list(worker_statuses(False)),
                         "description": "Where the work stands, in one of four values.",
                     },
                     "summary": {
@@ -655,12 +687,18 @@ def _list_tools() -> list[dict[str, Any]]:
     by identity would make a worker's missing conductor tools look like a broken
     install rather than a refusal it can read.
     """
-    return _tool_definitions()
+    return _tool_definitions(work_preview.remote_dispatch())
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Validate tool arguments against schema. Returns cleaned args."""
+    """Validate tool arguments against schema. Returns cleaned args.
+
+    ``work_report`` admits ``reply`` only while ``work_ledger.remote_dispatch`` is on;
+    the gateway route and the store decide the same way on their own read.
+    """
     schema = MCP_WORK_SCHEMAS.get(name)
+    if name == "work_report" and work_preview.remote_dispatch():
+        schema = WORK_REPORT_REMOTE_DISPATCH_SCHEMA
     if schema:
         return validate_tool_args(args, schema)
     return args

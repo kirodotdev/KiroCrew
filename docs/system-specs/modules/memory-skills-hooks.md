@@ -3427,7 +3427,12 @@ of producing a traceback on every idle tick. On a backend in
 billing, as a throttled provider does once its own retries run out, takes the
 same backoff and spends no attempt. Any other empty reply, one that billed or
 one from a backend outside that set, consumes an attempt as `empty reply`, and
-so does a reply that does not parse.
+so does a reply that does not parse. A turn that fails with `AcpAuthRequired`
+(kiro-cli signed out) takes the same backoff and spends no attempt, on the same
+terms: nothing streamed, and a backend in that set shows no billing on any
+attempt of the turn. An auth failure after text or billing, or from a backend
+outside that set, is charged like any other failed turn, so a login lapse
+overnight cannot abandon a span unread.
 
 ### Cross-Platform
 

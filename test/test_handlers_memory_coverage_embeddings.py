@@ -30,6 +30,7 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
 from kiro_crew.embeddings import CustomModelSpec
+from kiro_crew.embeddings_shared import ReembedProgress
 from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
@@ -675,7 +676,8 @@ class _ApplyHarness:
         reconcile_error: Exception | None = None,
         serving: bool = False,
     ) -> None:
-        self.prog = MagicMock()
+        # Wraps the real progress object: its snapshot is what the status endpoint serves.
+        self.prog = MagicMock(wraps=ReembedProgress())
         self.embedder = MagicMock(model_id="m", dim=1024)
         self.embedder.is_ready.return_value = ready
         if has_wait_ready:
@@ -732,12 +734,17 @@ async def _run_apply(store: Any, raw: str) -> None:
     await asyncio.to_thread(mem_mod._apply_embedding_model, store, raw, loop)
 
 
+def _progress(step: str, error: str = "", done: int = 0, total: int = 0) -> dict[str, object]:
+    return {"step": step, "done": done, "total": total, "error": error}
+
+
 class TestApplyEmbeddingModelWorker:
     @pytest.mark.asyncio
     async def test_revalidation_failure_installs_nothing(self) -> None:
         store = _apply_store()
         with _ApplyHarness(validate=(Path("/x"), "sensitive path", "denied")) as h:
             await _run_apply(store, "/x")
+        assert h.prog.snapshot() == _progress("failed", "sensitive path")
         h.prog.fail.assert_called_once_with("sensitive path")
         h.install.assert_not_called()
         store.begin_space_change.assert_not_called()
@@ -747,6 +754,7 @@ class TestApplyEmbeddingModelWorker:
         store = _apply_store()
         with _ApplyHarness() as h:
             await _run_apply(store, "/m/new.gguf")
+        assert h.prog.snapshot() == _progress("done", done=7, total=7)
         h.install.assert_called_once_with(h.candidate)
         store.begin_space_change.assert_called_once()
 
@@ -755,6 +763,7 @@ class TestApplyEmbeddingModelWorker:
         store = _apply_store()
         with _ApplyHarness() as h:
             await _run_apply(store, "")
+        assert h.prog.snapshot() == _progress("done", done=7, total=7)
         h.install.assert_called_once_with(h.bundled)
         h.activate.assert_called_once()
         h.prog.finish.assert_called_once_with(7)
@@ -773,6 +782,8 @@ class TestApplyEmbeddingModelWorker:
         h.rollback.assert_awaited_once()
         h.reset.assert_called_once()
         assert "could not be removed" in h.prog.fail.call_args[0][0]
+        assert h.prog.snapshot()["step"] == "failed"
+        assert "could not be removed" in str(h.prog.snapshot()["error"])
 
     @pytest.mark.asyncio
     async def test_load_failure_drops_the_candidate_and_fails(self) -> None:
@@ -781,6 +792,8 @@ class TestApplyEmbeddingModelWorker:
             await _run_apply(store, "")
         h.reset.assert_called_once()
         assert "did not load" in h.prog.fail.call_args[0][0]
+        assert h.prog.snapshot()["step"] == "failed"
+        assert "did not load" in str(h.prog.snapshot()["error"])
         h.activate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -790,6 +803,7 @@ class TestApplyEmbeddingModelWorker:
             await _run_apply(store, "")
         h.embedder.is_ready.assert_called_once()
         h.activate.assert_called_once()
+        assert h.prog.snapshot() == _progress("done", done=7, total=7)
 
     @pytest.mark.asyncio
     async def test_unreconciled_space_rolls_back_and_restores_the_width(self) -> None:
@@ -801,6 +815,8 @@ class TestApplyEmbeddingModelWorker:
         # Width restored to the model being restored, not left on the new one.
         assert store.set_embedding_dim.call_args_list[-1][0][0] == 512
         assert "could not be removed" in h.prog.fail.call_args[0][0]
+        assert h.prog.snapshot()["step"] == "failed"
+        assert "could not be removed" in str(h.prog.snapshot()["error"])
         h.write.assert_awaited_once_with("", 1024)
         h.rollback.assert_awaited_once()
         h.activate.assert_not_called()
@@ -815,6 +831,7 @@ class TestApplyEmbeddingModelWorker:
         store.backfill_missing_embeddings.assert_not_called()
         h.rollback.assert_not_awaited()
         h.prog.fail.assert_called_once_with("config.json could not be parsed")
+        assert h.prog.snapshot() == _progress("failed", "config.json could not be parsed")
         h.activate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -825,6 +842,7 @@ class TestApplyEmbeddingModelWorker:
         h.reset.assert_called_once()
         assert store.set_embedding_dim.call_args_list[-1][0][0] == 512
         h.prog.fail.assert_called_once_with("disk full")
+        assert h.prog.snapshot() == _progress("failed", "disk full")
 
     @pytest.mark.asyncio
     async def test_blank_exception_message_falls_back_to_the_class_name(self) -> None:
@@ -832,6 +850,7 @@ class TestApplyEmbeddingModelWorker:
         with _ApplyHarness(reconcile_error=RuntimeError()) as h:
             await _run_apply(store, "")
         h.prog.fail.assert_called_once_with("RuntimeError")
+        assert h.prog.snapshot() == _progress("failed", "RuntimeError")
 
     @pytest.mark.asyncio
     async def test_failure_after_activation_keeps_the_serving_model(self) -> None:
@@ -843,6 +862,8 @@ class TestApplyEmbeddingModelWorker:
         h.activate.assert_called_once()
         h.reset.assert_not_called()
         h.prog.fail.assert_called_once_with("backfill died")
+        # The run had started over all 7 rows before the backfill failed.
+        assert h.prog.snapshot() == _progress("failed", "backfill died", total=7)
 
     @pytest.mark.asyncio
     async def test_no_retarget_means_no_width_restore(self) -> None:
@@ -853,6 +874,7 @@ class TestApplyEmbeddingModelWorker:
         # set_embedding_dim was called once (the retarget attempt), never again.
         store.set_embedding_dim.assert_called_once_with(1024)
         assert h.prog.fail.call_args[0][0] == "boom"
+        assert h.prog.snapshot() == _progress("failed", "boom")
 
 
 class TestConfigWritesRunOffTheEventLoop:

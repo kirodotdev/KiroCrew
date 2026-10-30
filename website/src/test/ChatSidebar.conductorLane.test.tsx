@@ -170,7 +170,7 @@ function renderSidebar(
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={rows as never} activeSlot={null} unreadSlots={unreadSlots as never}
+              slots={rows as never} activeSlot={(chatExtra.activeSlot as string | undefined) ?? null} unreadSlots={unreadSlots as never}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
             />
           </MemoryRouter>
@@ -257,6 +257,32 @@ describe('chat sidebar — conductor lane', () => {
     expect(getByTestId('crew-root-summary')).not.toHaveTextContent('Needs you')
     // Only the root wears the eyebrow.
     expect(getAllByTestId('crew-eyebrow')).toHaveLength(1)
+  })
+
+  it('marks the root row as the parent while one of its unlisted workers is in the pane', async () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    const { container } = renderSidebar(slots, [], null, { activeSlot: 'k-w1' }, [], slots)
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(card).toHaveAttribute('data-crew-parent', 'true')
+    expect(card).toHaveClass('session-crew-parent')
+    expect(within(card).getByTestId('crew-parent-hint')).toHaveTextContent('Showing one of its crew members')
+    // The parent is marked, not made the active row.
+    expect(card).not.toHaveAttribute('aria-current')
+    expect(container.querySelectorAll('[data-crew-parent="true"]')).toHaveLength(1)
+  })
+
+  it('marks no parent while a plain chat is in the pane', async () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    const { container } = renderSidebar(slots, [], null, { activeSlot: 'k-plain' }, [], slots)
+    expect(container.querySelector('[data-crew-parent]')).toBeNull()
+    expect(container.querySelector('[data-testid="crew-parent-hint"]')).toBeNull()
   })
 
   it("folds the workers summary into the row's one status line, in place of its last message", async () => {

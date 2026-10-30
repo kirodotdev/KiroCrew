@@ -23,7 +23,13 @@ from typing import Any
 from aiohttp import WSCloseCode, web
 
 from kiro_crew.shared_crew import access_set, host_power
-from kiro_crew.shared_crew.routes_invites import WS_ACTOR_KEY, _actor, _error, _owner_refusal
+from kiro_crew.shared_crew.routes_invites import (
+    WS_ACTOR_KEY,
+    _actor,
+    _error,
+    _owner_refusal,
+    preview_only,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +93,7 @@ async def _owner_or_local_refusal(request: web.Request) -> web.Response | None:
     return refused
 
 
+@preview_only
 async def api_access(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -104,6 +111,7 @@ async def api_access(request: web.Request) -> web.Response:
     return web.json_response(body, headers={"Cache-Control": "no-store"})
 
 
+@preview_only
 async def api_ack(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -115,6 +123,7 @@ async def api_ack(request: web.Request) -> web.Response:
     return web.json_response({"acknowledged": True})
 
 
+@preview_only
 async def api_approve(request: web.Request) -> web.Response:
     refused = await _owner_or_local_refusal(request)
     if refused is not None:
@@ -133,6 +142,7 @@ async def api_approve(request: web.Request) -> web.Response:
     return web.json_response({"approved": row})
 
 
+@preview_only
 async def api_dismiss(request: web.Request) -> web.Response:
     refused = await _owner_or_local_refusal(request)
     if refused is not None:
@@ -147,6 +157,7 @@ async def api_dismiss(request: web.Request) -> web.Response:
     return web.json_response({"dismissed": user_id})
 
 
+@preview_only
 async def api_remove(request: web.Request) -> web.Response:
     refused = await _owner_or_local_refusal(request)
     if refused is not None:

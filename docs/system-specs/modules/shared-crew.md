@@ -32,6 +32,24 @@ Status: proof of concept. `shared_crew.wiring` and `shared_crew.lifecycle` conne
 the sections below at gateway start (`dashboard.server`). With every switch at its default the gateway
 behaves as a single-operator Crew, and the direct tailnet listener binds nothing.
 
+### Release gate
+
+Shared Crew is behind one release gate until the owner ships it: the gateway
+environment variable `KIROCREW_SHARED_CREW_PREVIEW=1`
+(`shared_crew.preview.preview_enabled`, true only for exactly `1`). It is not a
+config field, so no Settings row, change card or `propose_change` path can set it.
+
+- Gate off (the default): `config.sections_shared_crew.load_shared_crew_config`, the
+  runtime's one reader of the section, returns `SharedCrewConfig()` whatever
+  config.json says. `admission_enabled`, `hard_limits` and every other
+  `dashboard.shared_crew` switch read as their default, fair admission stays a
+  pass-through and the gateway behaves as it did before Shared Crew. The stored
+  values are not rewritten: only the runtime read is gated, so a save keeps them.
+- Gate on: config decides, as every section below describes.
+
+`GET /api/shared-crew/capabilities` reports the gate as `preview` (true or false).
+Each field's help in the Settings schema says it requires the variable.
+
 ## 2. Identity
 
 ### Principal
@@ -89,6 +107,14 @@ approvals still match the stable user id. The display name is a label only. The
 device a person was seen from is the node key.
 
 #### Direct tailnet listener
+
+Release gate (requires `KIROCREW_SHARED_CREW_PREVIEW=1`): with the gate off,
+`tailnet_direct_listener` reads `dashboard.shared_crew.tailnet_direct` and
+`local_authorization` as off whatever config.json says, so the listener never
+starts and nobody is approved in Crew. The invite, credential and avatar routes
+under `/api/shared-crew/tailscale/` and the `/api/shared-crew/access` routes
+answer 404 (`routes_invites.preview_only`), and the invite poller does not run.
+With the gate on, everything below applies unchanged.
 
 With `dashboard.shared_crew.tailnet_direct` on (it is off by default; a value that
 is not a boolean reads as off) and Tailscale running, the gateway also listens on this
@@ -1250,7 +1276,7 @@ The client never resubmits a send on its own.
 The sharing surfaces require `KIROCREW_SHARED_CREW_PREVIEW=1` on the gateway:
 the Settings > People tab (with its invite, share and access cards) and the
 direct tailnet link in the phone dialog render only while
-`GET /api/shared-crew/capabilities` reports `shared_crew_preview: true`
+`GET /api/shared-crew/capabilities` reports `preview: true`
 (`sharedCrewUi.sharedCrewPreviewOn`). A missing field, an older gateway or a
 failed read keeps them hidden, and no browser setting turns them on.
 

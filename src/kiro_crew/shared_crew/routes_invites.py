@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import functools
 import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
@@ -116,6 +117,28 @@ async def _json(request: web.Request) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
+Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+
+
+def preview_only(handler: Handler) -> Handler:
+    """404 while the Shared Crew preview is off (``KIROCREW_SHARED_CREW_PREVIEW``).
+
+    The route answers as if it did not exist, so nothing here can be used, or
+    turned on, by accident before the owner ships Shared Crew.
+    """
+
+    @functools.wraps(handler)
+    async def gated(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.shared_crew.preview import preview_enabled
+
+        if not preview_enabled():
+            raise web.HTTPNotFound()
+        return await handler(request)
+
+    return gated
+
+
+@preview_only
 async def api_status(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -135,6 +158,7 @@ async def api_status(request: web.Request) -> web.Response:
     return web.json_response(view)
 
 
+@preview_only
 async def api_connect(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -150,6 +174,7 @@ async def api_connect(request: web.Request) -> web.Response:
     return web.json_response(view)
 
 
+@preview_only
 async def api_disconnect(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -158,6 +183,7 @@ async def api_disconnect(request: web.Request) -> web.Response:
     return web.json_response(await invites.status_view())
 
 
+@preview_only
 async def api_create(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -185,6 +211,7 @@ async def api_create(request: web.Request) -> web.Response:
     return web.json_response({"invites": made})
 
 
+@preview_only
 async def api_resend(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -196,6 +223,7 @@ async def api_resend(request: web.Request) -> web.Response:
     return web.json_response({"resent": True})
 
 
+@preview_only
 async def api_revoke(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -210,6 +238,7 @@ async def api_revoke(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+@preview_only
 async def api_upload_avatar(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -244,6 +273,7 @@ async def api_upload_avatar(request: web.Request) -> web.Response:
     return web.json_response({"avatar_id": avatar_id})
 
 
+@preview_only
 async def api_avatar(request: web.Request) -> web.Response:
     """An avatar image, to any dashboard user: People rows show it to everyone."""
     if not _dashboard_user(request):
@@ -298,7 +328,12 @@ def _closer_for(app: web.Application) -> Any:
 
 
 async def _start_poller(app: web.Application) -> None:
+    from kiro_crew.shared_crew.preview import preview_enabled
+
     invites.connection_closer = _closer_for(app)
+    if not preview_enabled():
+        # The invite routes answer 404 without the preview; nothing reads Tailscale.
+        return
     app[_POLLER_KEY] = asyncio.create_task(invites.poll_forever())
 
 

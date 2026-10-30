@@ -7127,6 +7127,12 @@
       "default_destination_load_failed": "crew লোড করা যায়নি।",
       "default_destination_retry": "আবার চেষ্টা করো"
     },
+    "folderProjectHint": {
+      "differs": "এখানে কমান্ড, ফাইল আর খোঁজ {{current}} ব্যবহার করে, এই ফোল্ডারের {{folder}} নয়।",
+      "keep_current": "{{current}} রাখো",
+      "switch_note": "বদলালে পরের মেসেজে {{path}}-এ নতুন এজেন্ট সেশন শুরু হবে। এখানের মেসেজ থেকে যাবে, আর প্রজেক্ট পিকার দিয়ে আবার ফিরে যেতে পারো।",
+      "use_folder_project": "{{folder}}-এ যাও"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "ফোল্ডার প্রস্তাব",
       "move_to_folder_prompt": "এই সেশনটি কি এই ফোল্ডারে সরাবেন?",
@@ -9297,7 +9303,7 @@
     },
     "welcomeView": {
       "incognito": "ছদ্মবেশী",
-      "incognito_desc": "বিদ্যমান মেমরি ব্যবহার করে, কিন্তু নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে।",
+      "incognito_desc": "বিদ্যমান মেমরি ব্যবহার করে, কিন্তু নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে। গোল লুপ ব্যবহার করা যায় না।",
       "suggestion_daily_reminder": "একটা দৈনিক রিমাইন্ডার সেট করো",
       "suggestion_review_changes": "আমার সর্বশেষ পরিবর্তনগুলো পর্যালোচনা করো",
       "suggestion_search_code": "ব্যবহারের উদাহরণের জন্য কোড খুঁজুন",
@@ -9311,7 +9317,7 @@
       "incognito_active_switch_to_persistent": "ছদ্মবেশী — স্থায়ী মোডে বদলান",
       "temporary": "অস্থায়ী",
       "temporary_active_switch_to_persistent": "অস্থায়ী — স্থায়ী মোডে বদলান",
-      "temporary_desc": "মেমরি ব্যবহার করে না এবং নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে।",
+      "temporary_desc": "মেমরি ব্যবহার করে না এবং নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে। গোল লুপ ব্যবহার করা যায় না।",
       "what_can_i_do_for_you": "তোমার জন্য কী করতে পারি?",
       "greeting_what_are_we_building_today": "আজ আমরা কী তৈরি করছি?",
       "greeting_where_should_we_start": "আমরা কোথা থেকে শুরু করব?",
@@ -9961,6 +9967,7 @@
       "composer_chip_label": "এই চ্যাটে Crew Mode চালু আছে",
       "breadcrumb_label": "দলের সদস্য",
       "back_to_main_chat": "মূল চ্যাটে ফিরে যাও",
+      "parent_row_hint": "এর একজন ক্রু সদস্যকে দেখানো হচ্ছে",
       "steer_too_long": "{{name}}-কে পাঠানো বার্তা সর্বোচ্চ {{max}} অক্ষরের হতে পারে। পাঠাতে এটি ছোট করো।",
       "steer_placeholder": "{{name}}-কে বার্তা দাও: পরের ধাপের আগে এটি পড়বে",
       "summary_approval": "অনুমোদন দরকার · {{n}}",

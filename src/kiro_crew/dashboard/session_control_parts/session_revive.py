@@ -637,6 +637,18 @@ async def revive_session(
                 "creator_slot_cap_reached",
                 429,
             )
+        from kiro_crew.dashboard.approval_inheritance import (
+            inherit_posture,
+            is_profile_worker,
+        )
+
+        if built._created_by == caller_key and not is_profile_worker(built):
+            # Its verified creator brought it back: it takes the creator's posture
+            # as it is now, as session_create hands it at birth, and follows the
+            # creator's later mode changes (``approval_inheritance``). A crewmate's
+            # own worker is left to its Profile, which its first turn seeds
+            # (``crewmate_approval.seed_for_turn``), as create leaves it.
+            inherit_posture(built, live_caller)
         return None
 
     outcome = await resume_slot_from_history(

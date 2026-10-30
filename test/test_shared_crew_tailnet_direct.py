@@ -35,6 +35,13 @@ from kiro_crew.shared_crew import access, capabilities, people, wiring
 from kiro_crew.shared_crew.contracts import ACTOR_REQUEST_KEY, PrincipalKind, Provenance
 from kiro_crew.shared_crew.identity import direct_principal
 
+
+@pytest.fixture(autouse=True)
+def _shared_crew_preview_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the preview's behaviour; the gate itself has its own tests."""
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+
+
 OWNER_IP = "100.64.0.1"
 PORT = 5476
 KEY_A = "nodekey:" + "a" * 64

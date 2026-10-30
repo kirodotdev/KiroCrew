@@ -427,8 +427,12 @@ def prompt_context(recovery: list[dict[str, str]]) -> str:
     )
 
 
-def notify_user_input(request: web.Request, slot: Any) -> None:
-    """Apply the direct-send nudge semantics using authenticated request claims."""
+def notify_user_input(request: web.Request, slot: Any, *, person: bool = True) -> None:
+    """Apply the direct-send nudge semantics using authenticated request claims.
+
+    *person* False (an agent-origin send) never counts as the human, whatever the
+    request's claims say: it can only narrow.
+    """
     try:
         from kiro_crew.autonudge import get_instance
 
@@ -436,7 +440,8 @@ def notify_user_input(request: web.Request, slot: Any) -> None:
         if autonudge is not None:
             autonudge.notify_user_input(
                 slot.key,
-                human=request.get("is_dashboard_user") is True
+                human=person
+                and request.get("is_dashboard_user") is True
                 and request.get("internal_auth") is not True,
             )
     except Exception:

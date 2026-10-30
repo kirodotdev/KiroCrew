@@ -586,7 +586,9 @@ def _url_payload_command(n: int) -> str:
 #: is still withheld when the account is a zero-padded 6-10 digit bot id
 #: (``_BOT_ID_LENGTHS``). Four constants, one predicate, its call in the rejection arm,
 #: their comments and their manifest lines; the exemption only narrows.
-_PACKAGE_LINE_BUDGET = 32_899
+#: Raised again, from 32,899, for ``redaction.py``'s hold on a whole SRI digest that a
+#: streamed delta cuts: it is counted on top of the ARN exemption above.
+_PACKAGE_LINE_BUDGET = 32_909
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

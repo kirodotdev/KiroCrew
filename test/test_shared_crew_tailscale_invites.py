@@ -37,6 +37,13 @@ from kiro_crew.shared_crew.tailscale_api import (
     basic_auth,
 )
 
+
+@pytest.fixture(autouse=True)
+def _shared_crew_preview_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the preview's behaviour; the gate itself has its own tests."""
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+
+
 KEY = "tskey-api-kAbC123CNTRL-Zz9yYxXwWvV"
 OTHER_KEY = "tskey-api-kOther1CNTRL-Qq1"
 NODE_KEY = "nodekey:abc123"

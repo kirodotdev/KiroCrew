@@ -620,6 +620,8 @@ def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
                 sharing._trust = True
             else:
                 sharing._trust_reads = True
+            # The Profile decides this slot's mode, not its creator's changes.
+            sharing._posture_inherited = False
     state.sessions.set_approval_policy(key, "auto" if effective == "trust" else "")
     try:
         _sel().log_api_access(

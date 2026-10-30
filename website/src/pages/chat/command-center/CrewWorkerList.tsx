@@ -9,7 +9,9 @@ import { useAppDispatch, useAppSelector, useAppStore, type RootState } from '../
 import { closeActivityPanel, openActivityPanel, resumeFromHistory, switchSlot } from '../../../store/chatSlice'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { openPanelView } from '../../../hooks/usePanelTabs'
-import { CrewStatusDot } from '../../../components/crew/CrewModeMarks'
+import { ChevronLeft } from 'lucide-react'
+import { CrewGhostBadge, CrewStatusDot } from '../../../components/crew/CrewModeMarks'
+import { useCrewBack } from '../../../components/crew/useCrewBack'
 import { CREW_GROUP_LABEL_KEY, crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, groupCrewWorkers, liveCrewWorkers, mergeCrewWorkers, orderUnderDispatcher } from '../../../lib/crewWorkers'
 import CrewTimeline from './CrewTimeline'
 
@@ -179,6 +181,8 @@ export default function CrewWorkerList({ root, viewing, active }: {
   // whatever the depth. The note names it for readers too, not the indent alone.
   const titleOf = (key: string) => all.find(w => w.key === key)?.title || t('commandCenter.worker_untitled')
   return <div className="h-full flex flex-col min-w-0" data-testid="crew-worker-list">
+    {/* A worker on screen: one click back to its root, above both views. */}
+    {viewing && viewing !== root && <CrewPanelBack root={root} />}
     {!isMobile && <CrewViewSwitch view={view} onChange={setView} />}
     {/* A failed reopen, above both views so the Timeline's lanes report it too.
         Nothing to lose: the composer's draft is saved per chat (utils/chatDrafts),
@@ -209,6 +213,27 @@ export default function CrewWorkerList({ root, viewing, active }: {
       ))}
     </div>}
     <p className="shrink-0 border-t border-border px-3 py-2 text-[12px] text-muted" data-testid="crew-projects-soon">{t('commandCenter.projects_coming_soon')}</p>
+  </div>
+}
+
+/** The panel's way back to the root while one of its workers is on screen: the
+ *  same Back the worker view's breadcrumb carries, naming the root it returns to.
+ *  Desktop keeps the panel open on the root. */
+function CrewPanelBack({ root }: { root: string }) {
+  const { t } = useTranslation()
+  const { back, label, rootClosed, rootTitle, reopenFailed } = useCrewBack(root)
+  return <div className="shrink-0 px-3 pt-3">
+    <button type="button" onClick={back} data-testid="crew-panel-back" data-root-closed={rootClosed ? 'true' : undefined}
+      aria-label={`${label} · ${rootTitle}`}
+      className="w-full min-h-11 flex items-center gap-2 rounded-lg border border-border bg-bg-elevated px-2.5 py-2 text-left text-[13px] text-text hover:bg-bg-hover cursor-pointer">
+      <ChevronLeft size={14} aria-hidden="true" className="shrink-0 text-muted" />
+      <span className="font-medium shrink-0">{label}</span>
+      <span className="ml-auto flex items-center gap-1.5 min-w-0" title={rootTitle}>
+        <CrewGhostBadge size={16} />
+        <span className="crew-grad-text truncate">{rootTitle}</span>
+      </span>
+    </button>
+    {reopenFailed && <div className="pt-2"><ErrorNotice variant="inline" message={t('commandCenter.worker_reopen_failed')} askAgent /></div>}
   </div>
 }
 

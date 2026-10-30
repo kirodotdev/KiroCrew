@@ -236,4 +236,54 @@ describe('CrewWorkerList (design B)', () => {
     expect(screen.getByTestId('crew-workers-none')).toBeInTheDocument()
     expect(api.crewWorkers).not.toHaveBeenCalled()
   })
+
+  it('viewing a worker: a Back row returns to the root and keeps the panel open', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    const store = renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />, [
+      { key: 'root-1', title: 'Sample goal', crew_mode_root: true },
+      { key: 'w-need', title: 'Worker B', crew_root: 'root-1' },
+    ])
+    await screen.findByText('Worker A')
+    const back = screen.getByTestId('crew-panel-back')
+    expect(back).toHaveTextContent('Back to main chat')
+    expect(back).toHaveTextContent('Sample goal')
+    expect(back).toHaveAccessibleName('Back to main chat · Sample goal')
+    // A real button, so Tab and Enter reach it.
+    expect(back.tagName).toBe('BUTTON')
+    fireEvent.click(back)
+    expect(store.getState().chat.activeSlot).toBe('root-1')
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(panel.openPanelView).toHaveBeenCalledWith('root-1', 'workers')
+  })
+
+  it('viewing the root itself: no Back row', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    await screen.findByText('Worker A')
+    expect(screen.queryByTestId('crew-panel-back')).toBeNull()
+  })
+
+  it('a worker whose root is closed: the Back row reopens the main chat, never a dead switch', async () => {
+    api.crewWorkers.mockResolvedValue({ ...WORKERS, root_closed: true, root_title: 'Saved goal' })
+    api.resumeChatSlot.mockResolvedValue({ ok: true, key: 'root-1', messages: [] })
+    // No 'root-1' row: the root's tab is closed.
+    const store = renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />, [{ key: 'w-need', title: 'Worker B', crew_root: 'root-1' }])
+    await screen.findByText('Worker A')
+    const back = screen.getByTestId('crew-panel-back')
+    expect(back).toHaveAttribute('data-root-closed', 'true')
+    expect(back).toHaveTextContent('Open main chat')
+    await waitFor(() => expect(back).toHaveTextContent('Saved goal'))
+    fireEvent.click(back)
+    await vi.waitFor(() => expect(store.getState().chat.activeSlot).toBe('root-1'))
+    expect(api.resumeChatSlot).toHaveBeenCalledWith('dashboard_root-1', 'Saved goal')
+  })
+
+  it('a failed reopen of a closed root says so under the Back row', async () => {
+    api.crewWorkers.mockResolvedValue({ ...WORKERS, root_closed: true, root_title: 'Saved goal' })
+    api.resumeChatSlot.mockResolvedValue({ ok: false })
+    renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />, [{ key: 'w-need', title: 'Worker B', crew_root: 'root-1' }])
+    await screen.findByText('Worker A')
+    fireEvent.click(screen.getByTestId('crew-panel-back'))
+    expect(await screen.findByText('Could not reopen that session. Try again.')).toBeInTheDocument()
+  })
 })

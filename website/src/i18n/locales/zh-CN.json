@@ -7004,6 +7004,12 @@
       "default_destination_load_failed": "无法加载 crew。",
       "default_destination_retry": "重试"
     },
+    "folderProjectHint": {
+      "differs": "此处的命令、文件和搜索使用 {{current}}，而不是此文件夹的 {{folder}}。",
+      "keep_current": "保留 {{current}}",
+      "switch_note": "切换后，下一条消息会在 {{path}} 中启动新的智能体会话。这里的消息会保留，也可以用项目选择器切换回来。",
+      "use_folder_project": "切换到 {{folder}}"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",
       "move_to_folder_prompt": "要将此会话移动到此文件夹吗？",
@@ -9157,7 +9163,7 @@
     },
     "welcomeView": {
       "incognito": "隐身",
-      "incognito_desc": "使用现有记忆，但不会学习新经验。保留聊天记录以便恢复标签页。",
+      "incognito_desc": "使用现有记忆，但不会学习新经验。保留聊天记录以便恢复标签页。无法使用目标循环。",
       "suggestion_daily_reminder": "设置每日提醒",
       "suggestion_review_changes": "审查我最新的更改",
       "suggestion_search_code": "在代码中搜索用法示例",
@@ -9171,7 +9177,7 @@
       "incognito_active_switch_to_persistent": "隐身 — 切换到持久模式",
       "temporary": "临时",
       "temporary_active_switch_to_persistent": "临时 — 切换到持久模式",
-      "temporary_desc": "不使用记忆，也不会学习新经验。保留聊天记录以便恢复标签页。",
+      "temporary_desc": "不使用记忆，也不会学习新经验。保留聊天记录以便恢复标签页。无法使用目标循环。",
       "what_can_i_do_for_you": "我能帮你做什么？",
       "greeting_what_are_we_building_today": "今天我们要构建什么？",
       "greeting_where_should_we_start": "我们从哪里开始？",
@@ -9816,6 +9822,7 @@
       "composer_chip_label": "这个对话已开启 Crew Mode",
       "breadcrumb_label": "团队成员",
       "back_to_main_chat": "返回主聊天",
+      "parent_row_hint": "正在查看它的一位团队成员",
       "steer_too_long": "发给 {{name}} 的消息最多 {{max}} 个字符。请缩短后再发送。",
       "steer_placeholder": "给 {{name}} 的消息：它会在下一步之前读取",
       "summary_approval": "需要批准 · {{n}}",

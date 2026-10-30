@@ -21,6 +21,13 @@ from kiro_crew.dashboard.tailnet import TailnetTrust
 from kiro_crew.dashboard.tailnet_direct import DirectGate, DirectResolution, SelfNode
 from kiro_crew.shared_crew import access, access_set
 
+
+@pytest.fixture(autouse=True)
+def _shared_crew_preview_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the preview's behaviour; the gate itself has its own tests."""
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+
+
 PORT = 5476
 OWNER = SelfNode(
     addresses=("100.64.0.1", "fd7a:115c:a1e0::1"),

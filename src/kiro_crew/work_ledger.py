@@ -1052,6 +1052,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     CODE_CACHE_DIRTY,
     CODE_CREW_LOG_INCOMPLETE,
     CODE_DEPTH_EXCEEDED,
+    CODE_DUPLICATE_ITEM,
     CODE_FIELD_TOO_LONG,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
     CODE_INVALID_ACTION,
@@ -1191,6 +1192,7 @@ from kiro_crew.work_ledger_undelivered import (  # noqa: E402, F401
     undelivered_seen,
 )
 from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
+    _admit_create_locked,
     _create_item,
     _header_under_lock,
     _read_binding_text,
@@ -1204,6 +1206,7 @@ from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
     apply_conductor_action,
     apply_person_steer,
     apply_worker_report,
+    create_bound_item,
     ensure_conductor,
     read_binding,
     read_work_brief,
@@ -1228,6 +1231,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
+    from kiro_crew import work_preview  # noqa: F401
     from kiro_crew.atomic_write import read_bytes_with_retry  # noqa: F401
     from kiro_crew.config.paths import data_home  # noqa: F401
     from kiro_crew.platform_compat import (  # noqa: F401
@@ -1256,4 +1260,5 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         WORK_VERDICTS,
         WORK_WORKER_STATUSES,
         work_event_id,
+        worker_statuses,
     )

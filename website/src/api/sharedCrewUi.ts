@@ -107,7 +107,7 @@ export const ALL_UNAVAILABLE: SharedCrewCapabilities = {
  *  Only a literal `true` turns it on: a missing field, an older gateway or a
  *  failed read all keep the sharing surfaces hidden. */
 export function sharedCrewPreviewOn(capabilities: SharedCrewCapabilities): boolean {
-  return capabilities.shared_crew_preview === true
+  return capabilities.preview === true
 }
 
 /** A capability the UI may lean on: `available` or `degraded`. */

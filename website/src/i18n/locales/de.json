@@ -7127,6 +7127,12 @@
       "default_destination_load_failed": "Crews konnten nicht geladen werden.",
       "default_destination_retry": "Erneut versuchen"
     },
+    "folderProjectHint": {
+      "differs": "Befehle, Dateien und Suche verwenden hier {{current}}, nicht {{folder}} dieses Ordners.",
+      "keep_current": "{{current}} behalten",
+      "switch_note": "Beim Wechsel startet deine nächste Nachricht eine neue Agent-Sitzung in {{path}}. Die Nachrichten hier bleiben, und über die Projektauswahl kannst du zurückwechseln.",
+      "use_folder_project": "Zu {{folder}} wechseln"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "Ordnervorschlag",
       "move_to_folder_prompt": "Diese Sitzung in diesen Ordner verschieben?",
@@ -9297,7 +9303,7 @@
     },
     "welcomeView": {
       "incognito": "Inkognito",
-      "incognito_desc": "Nutzt vorhandene Erinnerungen, lernt aber keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
+      "incognito_desc": "Nutzt vorhandene Erinnerungen, lernt aber keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs. Zielschleifen sind nicht verfügbar.",
       "suggestion_daily_reminder": "Eine tägliche Erinnerung einrichten",
       "suggestion_review_changes": "Meine neuesten Änderungen überprüfen",
       "suggestion_search_code": "Code nach Verwendungsbeispielen durchsuchen",
@@ -9311,7 +9317,7 @@
       "incognito_active_switch_to_persistent": "Inkognito — zum dauerhaften Modus wechseln",
       "temporary": "Temporär",
       "temporary_active_switch_to_persistent": "Temporär — zum dauerhaften Modus wechseln",
-      "temporary_desc": "Verwendet keine Erinnerungen und lernt keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
+      "temporary_desc": "Verwendet keine Erinnerungen und lernt keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs. Zielschleifen sind nicht verfügbar.",
       "what_can_i_do_for_you": "Was kann ich für dich tun?",
       "greeting_what_are_we_building_today": "Was bauen wir heute?",
       "greeting_where_should_we_start": "Womit fangen wir an?",
@@ -9961,6 +9967,7 @@
       "composer_chip_label": "Crew Mode ist für diesen Chat an",
       "breadcrumb_label": "Crew-Mitglied",
       "back_to_main_chat": "Zurück zum Hauptchat",
+      "parent_row_hint": "Zeigt eines seiner Crew-Mitglieder",
       "steer_too_long": "Eine Nachricht an {{name}} darf höchstens {{max}} Zeichen lang sein. Kürze sie zum Senden.",
       "steer_placeholder": "Nachricht an {{name}}: liest sie vor dem nächsten Schritt",
       "summary_approval": "Freigabe nötig · {{n}}",

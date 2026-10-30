@@ -7004,6 +7004,12 @@
       "default_destination_load_failed": "crew を読み込めませんでした。",
       "default_destination_retry": "再試行"
     },
+    "folderProjectHint": {
+      "differs": "ここでのコマンド、ファイル、検索はこのフォルダーの {{folder}} ではなく {{current}} を使います。",
+      "keep_current": "{{current}} のままにする",
+      "switch_note": "切り替えると、次のメッセージで {{path}} の新しいエージェントセッションが始まります。ここのメッセージは残り、プロジェクトピッカーで元に戻せます。",
+      "use_folder_project": "{{folder}} に切り替え"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",
       "move_to_folder_prompt": "このセッションをこのフォルダーに移動しますか？",
@@ -9157,7 +9163,7 @@
     },
     "welcomeView": {
       "incognito": "プライベート",
-      "incognito_desc": "既存のメモリを使いますが、新しいレッスンは学習しません。タブを復元できるよう、会話記録は保持します。",
+      "incognito_desc": "既存のメモリを使いますが、新しいレッスンは学習しません。タブを復元できるよう、会話記録は保持します。ゴールループは使えません。",
       "suggestion_daily_reminder": "毎日のリマインダーを設定",
       "suggestion_review_changes": "最新の変更をレビュー",
       "suggestion_search_code": "コード使用例を検索",
@@ -9171,7 +9177,7 @@
       "incognito_active_switch_to_persistent": "プライベート — 永続モードに切り替える",
       "temporary": "一時的",
       "temporary_active_switch_to_persistent": "一時的 — 永続モードに切り替える",
-      "temporary_desc": "メモリを使わず、新しいレッスンも学習しません。タブを復元できるよう、会話記録は保持します。",
+      "temporary_desc": "メモリを使わず、新しいレッスンも学習しません。タブを復元できるよう、会話記録は保持します。ゴールループは使えません。",
       "what_can_i_do_for_you": "何かお手伝いできることはありますか？",
       "greeting_what_are_we_building_today": "今日は何を作りましょうか？",
       "greeting_where_should_we_start": "どこから始めましょうか？",
@@ -9816,6 +9822,7 @@
       "composer_chip_label": "このチャットでは Crew Mode がオンです",
       "breadcrumb_label": "クルーメンバー",
       "back_to_main_chat": "メインチャットに戻る",
+      "parent_row_hint": "このチャットのクルーメンバーを表示中",
       "steer_too_long": "{{name}} へのメッセージは {{max}} 文字までです。短くしてから送信してください。",
       "steer_placeholder": "{{name}} へメッセージ: 次のステップの前に読みます",
       "summary_approval": "承認が必要 · {{n}}",

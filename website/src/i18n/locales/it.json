@@ -7250,6 +7250,12 @@
       "default_destination_load_failed": "Impossibile caricare le crew.",
       "default_destination_retry": "Riprova"
     },
+    "folderProjectHint": {
+      "differs": "Qui comandi, file e ricerca usano {{current}}, non {{folder}} di questa cartella.",
+      "keep_current": "Mantieni {{current}}",
+      "switch_note": "Cambiando, il prossimo messaggio avvia una nuova sessione dell’agente in {{path}}. I messaggi qui restano e puoi tornare indietro dal selettore di progetto.",
+      "use_folder_project": "Passa a {{folder}}"
+    },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggerimento cartella",
       "move_to_folder_prompt": "Spostare questa sessione in questa cartella?",
@@ -9437,7 +9443,7 @@
     },
     "welcomeView": {
       "incognito": "Incognito",
-      "incognito_desc": "Usa la memoria esistente, ma non apprende lezioni. Conserva la trascrizione per ripristinare la scheda.",
+      "incognito_desc": "Usa la memoria esistente, ma non apprende lezioni. Conserva la trascrizione per ripristinare la scheda. I cicli obiettivo non sono disponibili.",
       "suggestion_daily_reminder": "Imposta un promemoria giornaliero",
       "suggestion_review_changes": "Rivedi le mie ultime modifiche",
       "suggestion_search_code": "Cerca esempi di utilizzo nel codice",
@@ -9451,7 +9457,7 @@
       "incognito_active_switch_to_persistent": "Incognito — passa alla modalità persistente",
       "temporary": "Temporaneo",
       "temporary_active_switch_to_persistent": "Temporaneo — passa alla modalità persistente",
-      "temporary_desc": "Non usa la memoria e non apprende lezioni. Conserva la trascrizione per ripristinare la scheda.",
+      "temporary_desc": "Non usa la memoria e non apprende lezioni. Conserva la trascrizione per ripristinare la scheda. I cicli obiettivo non sono disponibili.",
       "what_can_i_do_for_you": "Cosa posso fare per te?",
       "greeting_what_are_we_building_today": "Cosa costruiamo oggi?",
       "greeting_where_should_we_start": "Da dove iniziamo?",
@@ -10106,6 +10112,7 @@
       "composer_chip_label": "Crew Mode è attivo per questa chat",
       "breadcrumb_label": "Membro della squadra",
       "back_to_main_chat": "Torna alla chat principale",
+      "parent_row_hint": "Mostra uno dei suoi membri della crew",
       "steer_too_long": "Un messaggio per {{name}} può avere al massimo {{max}} caratteri. Accorcialo per inviarlo.",
       "steer_placeholder": "Messaggio per {{name}}: lo legge prima del passo successivo",
       "summary_approval": "Approvazione necessaria · {{n}}",

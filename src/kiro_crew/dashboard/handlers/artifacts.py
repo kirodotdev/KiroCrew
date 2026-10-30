@@ -81,6 +81,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _ARTIFACT_FOLDER_ICON_NEXT,
         _ARTIFACT_FOLDER_ICON_TASKS,
         _cancel_artifact_folder_icon_tasks,
+        _prune_icon_state_from_other_loops,
         _serialize_folder,
         _set_pinned_and_reload,
         _spawn_artifact_folder_icon_task,

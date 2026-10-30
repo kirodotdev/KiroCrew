@@ -43,8 +43,12 @@ import json
 import logging
 from typing import Callable
 
-from kiro_crew import irq, ledger_wake, work_ledger
-from kiro_crew.work_vocab import WORK_BLOCKED_REASONS, WORK_REASON_STATUSES
+from kiro_crew import irq, ledger_wake, work_ledger, work_preview
+from kiro_crew.work_vocab import (
+    WORK_BLOCKED_REASONS,
+    WORK_REASON_STATUSES,
+    WORK_REMOTE_DISPATCH_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -318,8 +322,16 @@ class WorkLedgerProbe(irq.Probe):
         keys never recur anyway.
         """
         found: list[irq.Observation] = []
+        remote_dispatch: bool | None = None
         for event in events:
-            if not ledger_wake.is_actionable_event(event.kind, event.status):
+            if remote_dispatch is None and (event.status or "").strip() in (
+                WORK_REMOTE_DISPATCH_STATUSES
+            ):
+                # Only a preview status pays for the switch's config read.
+                remote_dispatch = work_preview.remote_dispatch()
+            if not ledger_wake.is_actionable_event(
+                event.kind, event.status, remote_dispatch=bool(remote_dispatch)
+            ):
                 continue
             # Keyed on the event's content-addressed id, which is why these never
             # reset on a revision: the key already cannot recur, and clearing it

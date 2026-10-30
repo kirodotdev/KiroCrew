@@ -37,6 +37,13 @@ from kiro_crew.shared_crew.work_store import WorkStore
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.testing.clock import ManualClock
 
+
+@pytest.fixture(autouse=True)
+def _shared_crew_preview_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the preview's behaviour; the gate itself has its own tests."""
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+
+
 S = OperationState
 OWNER_IP = "100.64.0.1"
 #: The owner's own phone: another device of the same Tailscale user.

@@ -509,7 +509,7 @@ describe('MobileConnectModal direct tailnet link', () => {
 
   it('leads with the plain link and folds the token methods under Advanced', async () => {
     mocks.sharedCrewCapabilities.mockResolvedValue({
-      shared_crew_preview: true,
+      preview: true,
       tailnet_direct: {
         state: 'active', reason: '', method: 'cli_app_bundle', owner_login: 'o@example.test',
         urls: ['http://crew.tail1234.ts.net:5476/'], addresses: ['100.64.0.1'],

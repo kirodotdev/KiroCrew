@@ -204,6 +204,9 @@ _MATE_AUTO_GRANTS = (
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.
+#: * ``work_dispatch`` — WITHHELD, on ``session_send``'s reason: its last step sends
+#:   the seed, and the approval prompt is where a person reads that seed. Granting
+#:   it is rfc-work-dispatch.md's open question Q1, not a default.
 #: * ``session_broadcast`` — WITHHELD, on ``session_send``'s reason multiplied by
 #:   the fleet: one call runs ingested text as a user-role turn in every session
 #:   this agent created. Nothing about the fan-out narrows what is sent, so the

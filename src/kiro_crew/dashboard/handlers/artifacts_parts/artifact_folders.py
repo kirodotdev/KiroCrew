@@ -119,6 +119,7 @@ def _spawn_artifact_folder_icon_task(
     state = request.app.get("state")
     if state is None:
         return
+    _prune_icon_state_from_other_loops(asyncio.get_running_loop())
     current = _ARTIFACT_FOLDER_ICON_INFLIGHT.get(folder_id)
     # The entry counts as occupied until its own cleanup removes it, even once
     # its task is done: that cleanup is what starts the queued request, so a
@@ -165,6 +166,24 @@ def _start_artifact_folder_icon_task(
             _start_artifact_folder_icon_task(state, folder_id, queued[0], queued[1])
 
     task.add_done_callback(_cleanup)
+
+
+def _prune_icon_state_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop icon bookkeeping bound to a loop other than the running one.
+
+    These module globals outlive their loop (an embedded gateway restart, or a
+    test loop per test). A task whose loop was torn down never runs its done
+    callback, so its in-flight entry would stay forever and every later spawn
+    for that folder would only queue behind it. Its queued request goes with it:
+    only that cleanup could have started it.
+    """
+    for task in list(_ARTIFACT_FOLDER_ICON_TASKS):
+        if task.get_loop() is not loop:
+            _ARTIFACT_FOLDER_ICON_TASKS.discard(task)
+    for fid, (task, _epoch) in list(_ARTIFACT_FOLDER_ICON_INFLIGHT.items()):
+        if task.get_loop() is not loop:
+            del _ARTIFACT_FOLDER_ICON_INFLIGHT[fid]
+            _ARTIFACT_FOLDER_ICON_NEXT.pop(fid, None)
 
 
 def _cancel_artifact_folder_icon_tasks(folder_ids: Any) -> None:

@@ -195,7 +195,7 @@ class WorkflowDefinitionLibrary:
         """
         platform_compat.make_owner_only_dir(self._library_dir)
         lock_path = self._library_dir / ".revisions.lock"
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
         try:
             with platform_compat.file_lock(fd, exclusive=True, wait=True):
                 return self._create_unlocked(

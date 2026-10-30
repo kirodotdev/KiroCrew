@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, color it, and take anot
 itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 39 of its tools, written for the agent that is about to use them.
+for all 40 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -15,7 +15,7 @@ owner modules. Two halves:
   `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`,
   `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
-  `session_move_to_column`. These reach another session.
+  `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
   `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -167,6 +167,44 @@ is heading the wrong way, or the thing it is grinding on is already done.
 
 The message lands in the target's transcript tagged as sent by your session, so
 the person reading it can tell it from their own typing.
+
+### `work_dispatch`
+
+Dispatches one work item in one call, for a conductor whose agent mounts
+`@kirocrew-work`: `work_ledger_record` `action=create`, then `session_create`,
+then `work_ledger_record` `action=bind`, then `session_send` with the seed. Each
+step is the same route the four calls use, sent as you, so it is refused
+whatever the step would be refused on its own. It is not auto-approved.
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `title`, `acceptance` | yes | As `action=create` takes them |
+| `agent` | yes | The worker's agent, as `session_create` takes it |
+| `seed` | yes | The seed prompt, sent only after the bind succeeded |
+| `agent_kind`, `folder`, `model`, `reasoning_effort` | no | As `session_create` takes them |
+| **session_title** | no | The session's sidebar title; defaults to `title` |
+
+The reply names the `item_id` and `worker_session_key`. A failure names the step
+(`create`, `session_create`, `bind`, `seed`), the route's refusal code, and each
+cleanup it ran:
+
+| Failed step | Cleanup |
+|---|---|
+| `create` | none |
+| `session_create` | the item is closed `abandoned` |
+| `bind` | the session is closed, then the item |
+| `seed` | none: the item is bound and the session exists |
+
+`outcome=outcome_unknown` means a reply was lost, not that the step was refused.
+After a lost `create` or `session_create` reply, read your board and sidebar
+before dispatching again. After a lost `seed` reply, read the session with
+`session_read_message` before resending, or it may be seeded twice. To bind an
+existing session, use the four calls one at a time.
+
+`work_dispatch` never opens a work ledger. If your session owns none, step
+`create` is refused `no_ledger` and nothing is created. Open the ledger first with
+`work_ledger_record` `action=goal`, which needs the `kirocrew-work` server, then
+dispatch.
 
 ### `session_broadcast`
 

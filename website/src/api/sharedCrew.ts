@@ -91,7 +91,7 @@ export interface SharedCrewCapabilities {
   keep_awake?: KeepAwakeCapability
   /** `true` only while the gateway runs with `KIROCREW_SHARED_CREW_PREVIEW=1`.
    *  Off, or omitted by an older gateway, the sharing surfaces stay hidden. */
-  shared_crew_preview?: boolean
+  preview?: boolean
 }
 
 export type TailnetDirectState = 'active' | 'off' | 'unavailable'
