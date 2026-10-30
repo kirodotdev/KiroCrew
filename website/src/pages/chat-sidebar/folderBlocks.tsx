@@ -29,6 +29,7 @@ import { sessionRowIdentity } from './rowIdentity'
 import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, PinnedSessionDivider, createTabModeForClick } from './chrome'
 import type { LaneRows } from './laneRows'
 import type { SidebarScope } from './scope'
+import { KindSectionHeader, sectionHeaders, sectionRankOf, sectionRows } from './kindSections'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
 
@@ -42,7 +43,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
-    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestore,
+    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestore, kindSections,
     toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation } = shell
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
@@ -834,7 +835,8 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     const { fresh: freshChildSlotsRaw, stale: staleChildSlots } = splitStale(childSlots)
     // Stale rows are collapsed into their own section and are stale precisely
     // because nothing is bumping them, so only the live list needs the hold.
-    const { rows: freshChildSlots, navScope: treeChildScope, container: treeChildContainer } = heldLane(freshChildSlotsRaw, 'list', `tree:folder:${folder.id}`)
+    const { rows: freshChildSlots, navScope: treeChildScope, container: treeChildContainer } = heldLane(sectionRows(freshChildSlotsRaw, sidebarRows.isPinned, kindSections), 'list', `tree:folder:${folder.id}`, undefined, sectionRankOf(sidebarRows.isPinned, kindSections))
+    const childHeaders = sectionHeaders(freshChildSlots, sidebarRows.isPinned, kindSections)
     /**
      * The pinned conductor card: the folder body's FIRST child, before the
      * sibling folders and before the sorted rows.
@@ -877,13 +879,15 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       const isActive = isActiveRow(s)
       const nextIsActive = isActiveRow(freshChildSlots[i + 1])
       const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
-        && !startsAutomaticSection(freshChildSlots, i + 1)
+        && !startsAutomaticSection(freshChildSlots, i + 1) && !childHeaders[i + 1]
       if (startsAutomaticSection(freshChildSlots, i)) {
         // Keyed by the row it precedes, as the Fragment lanes key theirs. A
         // frame with two pinned-to-unpinned boundaries then gives each divider
         // its own key, and React removes the one that goes away.
         childNodes.push(<PinnedSessionDivider key={`pinned-divider-${sessionRowIdentity(s)}`} />)
       }
+      const kindHeader = childHeaders[i]
+      if (kindHeader) childNodes.push(<KindSectionHeader key={`kind-section-${kindHeader}-${folder.id}`} kind={kindHeader} />)
       childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
     })
     if (!searchRanked && staleExpanded.has(folder.id)

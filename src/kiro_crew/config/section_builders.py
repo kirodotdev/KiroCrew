@@ -634,6 +634,8 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
+        # Default False: an unparseable value must never declare the app an agent.
+        agent_sessions=section.read("agent_sessions", _safe_bool),
     )
 
 

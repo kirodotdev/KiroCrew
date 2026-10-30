@@ -567,13 +567,22 @@ class TestLoaderCredentialHelpers:
             # A real Call whose function is an attribute access `.load_credentials`
             # and whose keywords do not include propagate=False. AST, not text, so
             # a docstring or comment mentioning load_credentials never matches.
+            # Also a call that is HANDED `.load_credentials` as its first argument
+            # (`asyncio.to_thread(cfg.load_credentials, ...)`): the keyword then
+            # rides on that outer call, and a bare reference propagates.
             out: list[int] = []
             for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "load_credentials"
-                ):
+                if not isinstance(node, ast.Call):
+                    continue
+                direct = (
+                    isinstance(node.func, ast.Attribute) and node.func.attr == "load_credentials"
+                )
+                handed = (
+                    bool(node.args)
+                    and isinstance(node.args[0], ast.Attribute)
+                    and node.args[0].attr == "load_credentials"
+                )
+                if direct or handed:
                     passes_false = any(
                         kw.arg == "propagate"
                         and isinstance(kw.value, ast.Constant)

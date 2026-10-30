@@ -459,6 +459,13 @@ def canonical_member_key(name: str, config=None) -> str:
     one: those two already collide at the slug level, and the surfaces that care
     refuse that slug outright (``dashboard_slug_ambiguous``). Guessing here would
     turn a refusal into a write on whichever key sorted first.
+
+    When no key matches even by case, *name* is tried as a member id: a record
+    from before crews were keyed by id is keyed by its display name and is never
+    re-keyed, so its id answers with the key it is stored under. The match is
+    ``execution_context.member_config_for_id``'s, the one unique-id rule memory
+    resolution uses; a missing or ambiguous id leaves *name* unchanged. The
+    ``display_name`` label is never matched.
     """
     if not isinstance(name, str) or not name:
         return name
@@ -471,7 +478,17 @@ def canonical_member_key(name: str, config=None) -> str:
         return name
     folded = name.casefold()
     hits = [key for key in agents if isinstance(key, str) and key.casefold() == folded]
-    return hits[0] if len(hits) == 1 else name
+    if hits:
+        return hits[0] if len(hits) == 1 else name
+    if not agents:
+        return name
+    from kiro_crew.execution_context import member_config_for_id
+
+    try:
+        key, _ = member_config_for_id(config, name)
+    except ValueError:
+        return name
+    return key
 
 
 def member_slug(name: str, config=None) -> str:

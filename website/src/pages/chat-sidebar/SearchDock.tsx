@@ -7,7 +7,7 @@
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, EyeOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -147,7 +147,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
     closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError, dispatch,
-    filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, folderActionError,
+    filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
     hasRemoteExecutedRow, hiddenFilters, hiddenFolderCount, instanceSessions, isMobile, lane,
@@ -474,6 +474,24 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     nothing about one. */}
                 {((filterCounts['crew'] ?? 0) > 0 || activeFilters.has('crew')) && (
                   <p className="px-2 pt-1 pb-1.5 text-[11px] text-muted max-w-[16rem]" data-testid="filter-crew-hint">{i18nT('pages.chatSidebar.filter_crew_hint')}</p>
+                )}
+                {/* A view option, not a filter: it hides nothing and splits each list
+                    into Crew Mode / Normal / From Mates sections (./kindSections).
+                    Not offered on the tag board, whose columns are already the
+                    grouping. */}
+                {!boardLaneActive && (
+                  <DropdownMenuItem
+                    data-testid="filter-group-by-kind"
+                    role="menuitemcheckbox"
+                    aria-checked={groupByKind}
+                    title={i18nT('pages.chatSidebar.group_by_kind_hint')}
+                    // Keep the menu open, like the filter rows above.
+                    onSelect={e => { e.preventDefault(); toggleGroupByKind() }}
+                  >
+                    <Rows3 size={12} className={groupByKind ? 'text-accent' : 'text-muted'} aria-hidden="true" />
+                    <span className="flex-1 truncate">{i18nT('pages.chatSidebar.group_by_kind')}</span>
+                    {groupByKind && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                  </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
                 {/* Names its object: this menu also carries "Folder order" two

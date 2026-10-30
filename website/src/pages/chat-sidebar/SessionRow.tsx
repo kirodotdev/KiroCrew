@@ -350,7 +350,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
-    guideOnRowControl, showUnreadDot,
+    guideOnRowControl, showUnreadDot, manualReorderOff,
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
@@ -542,12 +542,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const nativeDragInFlight = useRef(false)
     useEffect(() => () => { if (nativeDragInFlight.current) onNativeDragEnd?.() }, [onNativeDragEnd])
     const reorderContainer = scope === 'flat' ? 'flat' : (s.folder_id || 'root')
+    // An unpinned row takes no manual-order move while "Group by kind" splits the list.
+    const manualOff = !isPinned && manualReorderOff === true
     // Shown on the rows a drag can place in the manual order.
-    const manualHandle = manualSort && !isPinned && dndRow && pinnedReorderEnabled
+    const manualHandle = manualSort && !isPinned && dndRow && pinnedReorderEnabled && !manualOff
     // Alt+ArrowUp/Down moves a pinned row in every sort, and an unpinned row
     // only under Manual: in another sort the chord stays the page's (the
     // transcript's turn step), and a keystroke never switches the sort.
-    const keyboardMovable = dndRow && pinnedReorderEnabled && (isPinned || manualSort)
+    const keyboardMovable = dndRow && pinnedReorderEnabled && (isPinned || manualSort) && !manualOff
     const agentName = s.agent || defaultAgent || ''
     // What the row SHOWS, kept separate from `agentName` on purpose. That value
     // is a resolution KEY — it feeds the source tint lookup, the divergence
@@ -1228,7 +1230,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       <DndDroppable
         id={`${isPinned ? 'pinned-session' : 'manual-session'}:${scope}:${rowIdentity}`}
         data={{ type: isPinned ? 'pinned-session' : 'manual-session', key: s.key, container: reorderContainer }}
-        disabled={!dndRow || !pinnedReorderEnabled || isRenaming}
+        disabled={!dndRow || !pinnedReorderEnabled || isRenaming || manualOff}
       >
         {({ setNodeRef: setPinnedDropRef, isOver: isPinnedDropOver }) => (
       <motion.div ref={setPinnedDropRef} layout={rowAnimEnabled ? 'position' : false} layoutId={rowAnimEnabled ? `slot-${layoutScope}-${rowIdentity}` : undefined}

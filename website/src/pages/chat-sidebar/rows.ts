@@ -197,6 +197,11 @@ export interface RowShell {
   recentTintCount: number
   /** `dashboard.show_unread_dot`: false hides the per-row unread dot. Absent reads as shown. */
   showUnreadDot?: boolean
+  /** "Group by kind" splits the list (`./kindSections`): the unpinned rows are then
+   *  no manual-order targets, like a ranked search, since the drawn order is the
+   *  sections' and a place between two rows would not be the one the order saves.
+   *  The pinned band keeps its own order. Absent reads as off. */
+  manualReorderOff?: boolean
   /** A dnd-kit drag is in flight, the raw LOCAL key of a dragged session (only local
    *  rows can be dragged), and that session's pinned rank and drawn position. */
   dragInFlight: boolean

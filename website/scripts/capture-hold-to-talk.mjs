@@ -281,7 +281,7 @@ else fail('hold bar still mounted over a draft')
 // The regression this closes: the mic used to be disabled on every draft, on every
 // touch device, which removed dictating ONTO existing text entirely. With no mode
 // to switch into it is a record button again, exactly as it was before this feature.
-const micRecord = page.getByRole('button', { name: 'Voice input', exact: true })
+const micRecord = page.getByRole('button', { name: /^Voice input( \(.+\))?$/ })
 if (await micRecord.count() === 1 && !(await micRecord.isDisabled())) {
   ok('mic reverts to an enabled record control with a draft')
 } else fail('mic is not an enabled record control while a draft is pending')

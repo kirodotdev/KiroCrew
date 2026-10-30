@@ -106,7 +106,7 @@ describe('ChatInput — hold-to-talk mode', () => {
     stubTouch(false)
     renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     expect(screen.queryByRole('button', { name: 'Switch to voice' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Voice input' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Voice input/ })).toBeTruthy()
   })
 
   // With a draft there is no mode to switch into, so the mic must go back to being
@@ -118,7 +118,7 @@ describe('ChatInput — hold-to-talk mode', () => {
     renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} value="a typed draft" /></ComposerVoiceSliceOverride>)
 
     expect(screen.queryByTestId('hold-to-talk')).toBeNull()
-    const mic = screen.getByRole('button', { name: 'Voice input' })
+    const mic = screen.getByRole('button', { name: /^Voice input/ })
     expect((mic as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(mic)
     expect(voiceProps.onVoiceToggle).toHaveBeenCalled()

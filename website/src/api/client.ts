@@ -249,6 +249,10 @@ export type {
 export type {
   SlackConfigData,
   SlackConfigSave,
+  SlackCapability,
+  SlackCodeSwitchKey,
+  SlackManifestChange,
+  SlackManifestStatus,
   DiscordConfigData,
   TelegramConfigData,
   DiscordConfigSave,

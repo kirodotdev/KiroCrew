@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { createTestStore } from '../../../test/helpers'
@@ -11,7 +11,8 @@ vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelVi
 
 import { switchSlot } from '../../../store/chatSlice'
 import { ApiError } from '../../../api/apiError'
-import CrewWorkerList, { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
+import CrewWorkerList, { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewWorkersTab, crewWorkerQueryKey, reopenCrewSession } from './CrewWorkerList'
+import { searchCrewWorkers } from '../../../lib/crewWorkers'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -28,6 +29,11 @@ const WORKERS = {
   ],
 }
 
+/** Opens the folded Done group (closed by default) once the list has loaded. */
+async function openFinished() {
+  fireEvent.click(await screen.findByTestId('crew-finished-toggle'))
+}
+
 function renderWith(ui: React.ReactElement, slots: unknown[] = []) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = createTestStore({ dashboard: { slots } } as never)
@@ -36,12 +42,13 @@ function renderWith(ui: React.ReactElement, slots: unknown[] = []) {
 }
 
 describe('CrewWorkerList (design B)', () => {
-  afterEach(() => vi.clearAllMocks())
+  afterEach(() => { vi.clearAllMocks(); localStorage.clear() })
 
   it('C: a sub-conductor\'s crew sits one step in under it with a "from" note, at any depth', async () => {
     const D = (key: string, title: string, by: string) => ({ ...W(key, title, 'idle', 'done'), created_by: by, dispatched_by: by })
     api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('g1', 'Grandchild', 'sub'), D('top', 'Top worker', 'root-1'), D('g2', 'Great-grandchild', 'g1'), D('sub', 'Sub conductor', 'root-1')] })
     renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await openFinished()
     await screen.findByText('Grandchild')
     const rows = screen.getAllByTestId('crew-worker-row')
     // The sub-conductor's crew right under it; deeper crew under its own dispatcher.
@@ -74,6 +81,77 @@ describe('CrewWorkerList (design B)', () => {
     expect(screen.getByTestId('crew-projects-soon')).toHaveTextContent('Projects tab · coming soon')
   })
 
+  it('folds finished workers under one Done toggle, closed by default, with the right count', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    const toggle = screen.getByTestId('crew-finished-toggle')
+    expect(toggle.tagName).toBe('BUTTON')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveTextContent('Done · 2')
+    // Done is the last group: the live ones stay on top, always shown.
+    const groups = screen.getAllByTestId('crew-worker-group')
+    expect(groups[groups.length - 1]).toHaveAttribute('data-group', 'done')
+    expect(screen.queryByText('Worker D')).toBeNull()
+    expect(screen.queryByText('Worker E')).toBeNull()
+    for (const live of ['Worker A', 'Worker B', 'Worker C', 'Worker F']) expect(screen.getByText(live)).toBeInTheDocument()
+    expect(screen.getAllByTestId('crew-worker-row')).toHaveLength(4)
+  })
+
+  it('one click opens and closes the Done group, and the choice is kept', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    const toggle = await screen.findByTestId('crew-finished-toggle')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Worker D')).toBeInTheDocument()
+    expect(screen.getByText('Worker E')).toBeInTheDocument()
+    expect(localStorage.getItem(CREW_FINISHED_OPEN_KEY)).toBe('1')
+    // A fresh mount (reload, another chat) keeps it open.
+    cleanup()
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByText('Worker D')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('crew-finished-toggle'))
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Worker D')).toBeNull()
+    expect(localStorage.getItem(CREW_FINISHED_OPEN_KEY)).toBe('0')
+  })
+
+  it('a folded Done group still shows the finished worker on screen, marked current', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<CrewWorkerList root="root-1" viewing="w-done" active />)
+    const card = await screen.findByRole('button', { name: /Worker D/ })
+    expect(card).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveTextContent('Done · 2')
+    expect(screen.queryByText('Worker E')).toBeNull()
+  })
+
+  it('a finished worker in the open Done group still opens like today', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await openFinished()
+    fireEvent.click(screen.getByRole('button', { name: /Worker D/ }))
+    expect(panel.openPanelView).toHaveBeenCalledWith('w-done', 'workers')
+    expect(store.getState().chat.activeSlot).toBe('w-done')
+  })
+
+  it('a worker that finishes leaves the live list and joins the folded count', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = createTestStore({ dashboard: { slots: [] } } as never)
+    render(<QueryClientProvider client={qc}><Provider store={store}><CrewWorkerList root="root-1" viewing="root-1" active /></Provider></QueryClientProvider>)
+    await screen.findByText('Worker A')
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveTextContent('Done · 2')
+    const next = { ...WORKERS, workers: WORKERS.workers.map(w => (w.key === 'w-work' ? { ...w, status: 'idle', group: 'done' } : w)) }
+    api.crewWorkers.mockResolvedValue(next)
+    await qc.refetchQueries({ queryKey: ['crew-workers', 'root-1'] })
+    await waitFor(() => expect(screen.getByTestId('crew-finished-toggle')).toHaveTextContent('Done · 3'))
+    expect(screen.queryByText('Worker A')).toBeNull()
+    expect(document.querySelector('[data-group="working"]')).toBeNull()
+  })
+
   it('opens a worker in the main pane with the Workers tab in front, and marks the one on screen', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     const store = renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />)
@@ -101,6 +179,7 @@ describe('CrewWorkerList (design B)', () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     api.resumeChatSlot.mockResolvedValue({ ok: true, key: 'w-gone', messages: [] })
     const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await openFinished()
     fireEvent.click(await screen.findByRole('button', { name: 'Reopen Worker E to read it' }))
     await vi.waitFor(() => expect(store.getState().chat.activeSlot).toBe('w-gone'))
     expect(api.resumeChatSlot).toHaveBeenCalledWith('dashboard_w-gone', 'Worker E')
@@ -111,6 +190,7 @@ describe('CrewWorkerList (design B)', () => {
     let answer: (v: unknown) => void = () => {}
     api.resumeChatSlot.mockReturnValue(new Promise(resolve => { answer = resolve }))
     const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await openFinished()
     fireEvent.click(await screen.findByRole('button', { name: 'Reopen Worker E to read it' }))
     await vi.waitFor(() => expect(api.resumeChatSlot).toHaveBeenCalled())
     // The person moves on while the reopen is still in flight.
@@ -149,6 +229,7 @@ describe('CrewWorkerList (design B)', () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     api.resumeChatSlot.mockRejectedValue(new Error('gone'))
     renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await openFinished()
     fireEvent.click(await screen.findByRole('button', { name: 'Reopen Worker E to read it' }))
     expect(await screen.findByText('Could not reopen that session. Try again.')).toBeInTheDocument()
   })
@@ -162,6 +243,7 @@ describe('CrewWorkerList (design B)', () => {
   it('shows no raw ledger id on a card', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await openFinished()
     const card = (await screen.findByText('Worker E')).closest('[data-testid="crew-worker-row"]') as HTMLElement
     expect(card).not.toHaveTextContent('it_9')
   })
@@ -285,5 +367,137 @@ describe('CrewWorkerList (design B)', () => {
     await screen.findByText('Worker A')
     fireEvent.click(screen.getByTestId('crew-panel-back'))
     expect(await screen.findByText('Could not reopen that session. Try again.')).toBeInTheDocument()
+  })
+})
+
+describe('CrewWorkerList search', () => {
+  afterEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear() })
+
+  const SEARCH = { ...WORKERS, workers: [...WORKERS.workers, { ...W('w-zh', '修复登录页面', 'idle', 'done'), summary: '已合并' }] }
+  const shown = () => screen.queryAllByTestId('crew-worker-row').map(r => r.getAttribute('data-worker'))
+  const type = (text: string) => fireEvent.change(screen.getByRole('textbox', { name: 'Search the crew' }), { target: { value: text } })
+
+  it('filters cards by title as the person types, case-insensitive', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('worker a')
+    expect(shown()).toEqual(['w-work'])
+    expect(screen.getAllByTestId('crew-worker-group').map(g => g.getAttribute('data-group'))).toEqual(['working'])
+  })
+
+  it('matches the task line too', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('WELCOME note')
+    expect(shown()).toEqual(['w-work'])
+  })
+
+  it('matches CJK titles, finished ones included', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('登录')
+    expect(shown()).toEqual(['w-zh'])
+    type('已合并')
+    expect(shown()).toEqual(['w-zh'])
+  })
+
+  it('shows finished matches while the Done group is folded, under a plain heading', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+    type('Worker')
+    expect(shown()).toEqual(expect.arrayContaining(['w-done', 'w-gone', 'w-work']))
+    expect(screen.queryByTestId('crew-finished-toggle')).toBeNull()
+    const done = document.querySelector('[data-group="done"]') as HTMLElement
+    expect(within(done).getByRole('heading')).toHaveTextContent('Done · 2')
+    // The search leaves the person's fold choice alone.
+    expect(localStorage.getItem(CREW_FINISHED_OPEN_KEY)).toBe('0')
+  })
+
+  it('clearing the search folds Done back as it was', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByTestId('crew-finished-toggle')
+    type('Worker D')
+    expect(shown()).toEqual(['w-done'])
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+    expect(screen.getByRole('textbox', { name: 'Search the crew' })).toHaveValue('')
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Worker D')).toBeNull()
+    // An open Done stays open after a search too.
+    fireEvent.click(screen.getByTestId('crew-finished-toggle'))
+    type('Worker A')
+    type('')
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Worker D')).toBeInTheDocument()
+  })
+
+  it('says so when nothing matches', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('  no such task ')
+    expect(shown()).toEqual([])
+    expect(screen.getByTestId('crew-search-empty')).toHaveTextContent('No crew member matches “no such task”.')
+    expect(screen.queryByText('No crew yet.')).toBeNull()
+  })
+
+  it('Esc clears the search and restores the list', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('Worker C')
+    expect(shown()).toEqual(['w-wait'])
+    const box = screen.getByRole('textbox', { name: 'Search the crew' })
+    fireEvent.keyDown(box, { key: 'Escape' })
+    expect(box).toHaveValue('')
+    expect(shown()).toHaveLength(4)
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('keeps the query when opening a match remounts the list', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('Worker D')
+    fireEvent.click(screen.getByRole('button', { name: /Worker D/ }))
+    cleanup()
+    renderWith(<CrewWorkerList root="root-1" viewing="w-done" active />)
+    expect(await screen.findByRole('textbox', { name: 'Search the crew' })).toHaveValue('Worker D')
+    await waitFor(() => expect(shown()).toEqual(['w-done']))
+    // Clearing forgets it.
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search the crew' }), { key: 'Escape' })
+    expect(sessionStorage.getItem(crewWorkerQueryKey('root-1'))).toBe('')
+  })
+
+  it('says nothing matches only once the list is read, not while it is pending or failed', async () => {
+    sessionStorage.setItem(crewWorkerQueryKey('root-1'), 'Worker D')
+    const live = { key: 'w-live', title: 'Live one', crew_root: 'root-1', running: true }
+    const slots = Array.from({ length: CREW_WORKER_SEARCH_MIN }, (_, i) => ({ ...live, key: `w-live-${i}` }))
+    api.crewWorkers.mockReturnValue(new Promise(() => {}))
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, slots)
+    expect(screen.getByRole('textbox', { name: 'Search the crew' })).toHaveValue('Worker D')
+    expect(screen.queryByTestId('crew-search-empty')).toBeNull()
+    cleanup()
+    api.crewWorkers.mockRejectedValue(new Error('boom'))
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, slots)
+    expect(await screen.findByText(/Could not load the crew list/)).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-search-empty')).toBeNull()
+  })
+
+  it('has no search box under the minimum crew size', async () => {
+    api.crewWorkers.mockResolvedValue({ ...WORKERS, workers: WORKERS.workers.slice(0, CREW_WORKER_SEARCH_MIN - 1) })
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    expect(screen.queryByTestId('crew-search')).toBeNull()
+  })
+
+  it('searchCrewWorkers folds case and full-width forms; a blank query matches all', () => {
+    const rows = SEARCH.workers as never as Parameters<typeof searchCrewWorkers>[0]
+    expect(searchCrewWorkers(rows, 'ＷＯＲＫＥＲ Ｅ').map(w => w.key)).toEqual(['w-gone'])
+    expect(searchCrewWorkers(rows, '   ')).toBe(rows)
   })
 })

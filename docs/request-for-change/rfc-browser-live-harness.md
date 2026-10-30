@@ -1,7 +1,7 @@
 ---
 title: Live browser in chat -- drive Browser Harness through a gateway CDP relay and show the page in the transcript
 status: draft
-author: Bolin Chen
+author: bolichen97
 created: 2026-10-22
 last-audited: 2026-10-22
 audited-at: 2aa6878731

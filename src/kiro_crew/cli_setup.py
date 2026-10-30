@@ -73,8 +73,22 @@ def _get_alias() -> str:
     return alias
 
 
+def _manifest_features() -> frozenset[str]:
+    """The Slack Code switches the saved config turns on (none if it cannot load).
+
+    The CLI renders the SAME manifest the dashboard serves for this install, so an
+    existing app updated from either one asks Slack for the same scopes.
+    """
+    from kiro_crew.slack.features import manifest_features
+
+    try:
+        return manifest_features(KiroCrewConfig.load())
+    except Exception:
+        return frozenset()
+
+
 def _manifest(alias: str | None = None, output: str | None = None, url: bool = False) -> None:
-    """Render slack-manifest.yaml with the user's alias substituted."""
+    """Render slack-manifest.yaml with the user's alias and Slack Code switches."""
 
     alias = alias or _get_alias()
     if not slack_manifest.valid_alias(alias):
@@ -84,19 +98,22 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
             file=sys.stderr,
         )
         sys.exit(1)
+    features = _manifest_features()
     try:
-        rendered = slack_manifest.render(alias)
+        rendered = slack_manifest.render(alias, features=features)
     except FileNotFoundError:
         print("❌ Cannot find slack-manifest.yaml", file=sys.stderr)
         sys.exit(1)
     command = slack_manifest.slash_command(alias)
+    switches = ", ".join(f"slack.{f}" for f in slack_manifest.FEATURES if f in features)
     hint = (
         f"   Slash command: /{command} — the gateway answers it once slack.command matches:\n"
         f"   kirocrew config set slack.command {command}\n"
+        f"   Slack Code switches rendered: {switches or 'none'}\n"
     )
     if url:
         print("\n🔗 Click to create your Slack app:\n")
-        print(f"{slack_manifest.deep_link(alias)}\n")
+        print(f"{slack_manifest.deep_link(alias, features)}\n")
         print(hint)
     elif output:
         out = Path(output)

@@ -381,11 +381,13 @@ class TestOrphanReconciliation:
         with (
             patch.object(manager, "_is_pid_alive", return_value=True),
             patch.object(manager, "_is_orphan_process", return_value=True) as mock_check,
-            patch.object(manager, "_kill_orphan_pid"),
+            patch.object(manager, "_kill_orphan_pid", return_value=None),
         ):
             await manager._reconcile_orphans()
 
         mock_check.assert_called_once_with(88888, 1234567890.5)
+        ts = json.loads((agent_root / "orphan_ts" / "tombstone.json").read_text(encoding="utf-8"))
+        assert (ts["cause"], ts["recovery_action"]) == ("gateway_restart", "notification_pending")
 
     @pytest.mark.asyncio
     async def test_already_tombstoned_skipped(self, agent_root):

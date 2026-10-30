@@ -573,7 +573,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
       4. ``~/.kiro/crew/gateway.log`` (foreground gateway)
     """
     follow = bool(getattr(args, "follow", False))
-    lines = int(getattr(args, "lines", 100) or 100)
+    lines = int(getattr(args, "lines", 100))
     plat = current_platform()
     unit = f"{SERVICE_NAME}.service"
 

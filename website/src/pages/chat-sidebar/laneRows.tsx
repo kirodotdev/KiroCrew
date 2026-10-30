@@ -17,6 +17,7 @@ import { CrewGroupSection, LocalGroupHeader } from './CrewGroups'
 import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, SIDEBAR_TEXT_CONTROL_CLS, STALE_TOGGLE_CLS } from './chrome'
 import { SessionRow } from './SessionRow'
 import type { SidebarScope } from './scope'
+import { KindSectionHeader, sectionHeaders, sectionRows } from './kindSections'
 
 /** Rows at or past this paint ordinal share ONE `orderStamp`, so an insertion
  *  or reorder above them does not re-render them: they snap into their new
@@ -42,7 +43,7 @@ export const SIDEBAR_DISPLACEMENT_WINDOW = 48
 
 /** The lane row renderers for one shell render. */
 export function createLaneRows(shell: SidebarScope) {
-  const { collapsedCrews, collapsedSpaces, connected, crewEnable, historyOpen, hoverPinRef, isActiveRow, isStaleExempt,
+  const { collapsedCrews, collapsedSpaces, connected, crewEnable, historyOpen, hoverPinRef, isActiveRow, isStaleExempt, kindSections,
     listNarrowed, openHistoryPane, rowActions, rowAnimEnabled, rowMotionHeld, rowViews, setStaleExpanded, shownCrewGroups,
     shownCrewRows, sidebarRows, staleCollapseMs, staleExpanded, staticRows, toggleCrewCollapsed,
     toggleSpaceCollapsed } = shell
@@ -126,9 +127,24 @@ export function createLaneRows(shell: SidebarScope) {
         </button>
         {/* The controlled region always exists so aria-controls never dangles
             in the collapsed state; only the rows are conditionally mounted. */}
-        <div id={regionId} data-stale-region={containerId} hidden={!open}>{open && staleSlots.map(s => renderSessionRow(s, depth, false))}</div>
+        <div id={regionId} data-stale-region={containerId} hidden={!open}>{open && renderStaleRows(staleSlots, depth, containerId)}</div>
       </Fragment>
     )
+  }
+  /** The open sleeping rows, split by "Group by kind" like the list above them
+   *  (./kindSections): its own headings, and none when they hold one kind. */
+  const renderStaleRows = (staleSlots: Slot[], depth: number, containerId: string) => {
+    const ordered = sectionRows(staleSlots, sidebarRows.isPinned, kindSections)
+    const headers = sectionHeaders(ordered, sidebarRows.isPinned, kindSections)
+    return ordered.map((s, i) => {
+      const kind = headers[i]
+      return (
+        <Fragment key={sessionRowIdentity(s)}>
+          {kind && <KindSectionHeader key={`kind-section-stale-${kind}-${containerId}`} kind={kind} />}
+          {renderSessionRow(s, depth, false)}
+        </Fragment>
+      )
+    })
   }
   // ── end stale-session collapse ─────────────────────────────────────────────
 

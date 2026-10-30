@@ -208,9 +208,9 @@ interface ComposerDockViewProps {
   removeDirChip: (rel: string) => void
   removeFileChip: (p: string) => void
   selectPickedFile: ReturnType<typeof useFileMentionActions>['selectPickedFile']
-  followupAddToSession: (item: FollowupItem) => void
-  followupStartInNewChat: (item: FollowupItem) => Promise<void>
-  followupStartInWorktree: (item: FollowupItem) => Promise<void>
+  followupAddToSession: (item: FollowupItem, index: number) => void
+  followupStartInNewChat: (item: FollowupItem, index: number) => Promise<void>
+  followupStartInWorktree: (item: FollowupItem, index: number) => Promise<void>
   displayMode: SlotApprovalMode
   _modelPinActive: string
   _modelPinAgent: string

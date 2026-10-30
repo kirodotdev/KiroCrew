@@ -218,6 +218,22 @@ async def test_attach_existing_checkout(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_folder_beside_the_clone_root_reads_as_external(fixtures) -> None:
+    """`<clone_root>-old/notes` shares the clone root's spelling but not its folder."""
+    server_mod, remote, _seed = fixtures
+    sibling = Path(f"{server_mod._clone_root()}-old") / "notes"
+    sibling.parent.mkdir(parents=True)
+    _git("clone", "-q", str(remote), str(sibling), cwd=sibling.parent)
+    async with signed_client(server_mod) as client:
+        cloned = await _clone(client, remote)
+        status, body = await client.post("/api/vaults/attach", {"path": str(sibling)})
+        assert status == 200, body
+        _, listing = await client.get("/api/vaults")
+        external = {v["id"]: v["external"] for v in listing["vaults"]}
+        assert external == {cloned["id"]: False, body["vault"]["id"]: True}
+
+
+@pytest.mark.asyncio
 async def test_attach_accepts_a_repo_with_no_remote(fixtures, tmp_path: Path) -> None:
     """A `git init` folder with no origin is a valid local-only vault.
 

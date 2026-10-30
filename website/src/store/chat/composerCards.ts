@@ -307,11 +307,18 @@ export const composerCardReducers = {
     if (ts != null && card.ts !== ts) return
     delete state.followups[slot]
   },
-  // Skip ONE suggestion without discarding the others. The card disappears
-  // only once its last item is gone, so skipping the first of three does not
-  // silently throw away the other two.
-  dismissFollowupItem(state: ChatState, action: PayloadAction<{ slot: string; index: number; ts?: number }>) {
-    const { slot, index, ts } = action.payload
+  // Remove ONE suggestion without discarding the others: Skip, and every action
+  // that uses an item (Start, Add to this session), come through here. The card
+  // disappears only once its last item is gone, so using the first of three
+  // does not silently throw away the other two.
+  //
+  // `item`, when given, is the suggestion the caller rendered at `index`. A
+  // Start resolves after an await, and by then another removal on the same card
+  // (a Skip from a remounted card) may have shifted the indices; the item is
+  // then looked up by content, and nothing is removed if it is already gone.
+  dismissFollowupItem(state: ChatState, action: PayloadAction<{ slot: string; index: number; ts?: number; item?: FollowupItem }>) {
+    const { slot, ts, item } = action.payload
+    let { index } = action.payload
     if (isUnsafeKey(slot)) return
     const card = state.followups?.[slot]
     if (!card) return
@@ -319,6 +326,12 @@ export const composerCardReducers = {
     // between render and click, and an unqualified dismiss would delete that
     // index from a card the user has not seen.
     if (ts != null && card.ts !== ts) return
+    if (item) {
+      const same = (c: FollowupItem) => c.title === item.title && c.description === item.description
+        && c.prompt === item.prompt && c.branch === item.branch
+      if (!card.items[index] || !same(card.items[index])) index = card.items.findIndex(same)
+      if (index < 0) return
+    }
     const items = card.items.filter((_, i) => i !== index)
     if (items.length) state.followups[slot] = { ...card, items }
     else delete state.followups[slot]

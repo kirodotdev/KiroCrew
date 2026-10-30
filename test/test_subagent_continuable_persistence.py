@@ -35,49 +35,47 @@ _close_subagent_managers = subagent_continuable_helpers._close_subagent_managers
 class TestKeepTranscript:
     """AcpSessionHandle.destroy() honors keep_transcript (shared arm)."""
 
-    def _handle(self):  # type: ignore[no-untyped-def]
-        from kiro_crew.acp.session_handle import AcpSessionHandle
-
-        with patch.object(AcpSessionHandle, "__init__", lambda self: None):
-            h = AcpSessionHandle()  # type: ignore[call-arg]
-        h._session_id = "sid-h"
-        h.keep_transcript = False
-        h.memory_mode = "persistent"
-        h._runtime = MagicMock()
-        h._runtime.terminate_session = AsyncMock()
-        return h
-
     @pytest.mark.asyncio
-    async def test_destroy_deletes_transcript_by_default(self) -> None:
-        h = self._handle()
-        with patch.object(h, "_cleanup_transcript", MagicMock()) as cleanup:
+    async def test_destroy_deletes_transcript_by_default(self, tmp_path) -> None:
+        h, sessions, files = self._handle_with_transcript(tmp_path, sid="sid-h")
+        h._runtime.terminate_session = AsyncMock()
+        with patch("kiro_crew.acp.session_handle.kiro_sessions_dir", lambda: sessions):
             await h.destroy()
-        cleanup.assert_called_once()
+        assert [f for f in files if f.exists()] == []
         h._runtime.terminate_session.assert_awaited_once_with("sid-h")
 
     @pytest.mark.asyncio
-    async def test_destroy_keeps_transcript_when_flagged(self) -> None:
-        h = self._handle()
+    async def test_destroy_keeps_transcript_when_flagged(self, tmp_path) -> None:
+        h, sessions, files = self._handle_with_transcript(tmp_path, sid="sid-h")
+        h._runtime.terminate_session = AsyncMock()
         h.keep_transcript = True
-        with patch.object(h, "_cleanup_transcript", MagicMock()) as cleanup:
+        with patch("kiro_crew.acp.session_handle.kiro_sessions_dir", lambda: sessions):
             await h.destroy()
-        cleanup.assert_not_called()
+        assert all(f.exists() for f in files)
         # terminate_session still runs — RSS reclaim is unconditional.
         h._runtime.terminate_session.assert_awaited_once_with("sid-h")
 
     @pytest.mark.asyncio
     async def test_shared_arm_teardown_sets_keep_transcript(self) -> None:
         """SubagentManager teardown flags the shared provider before shutdown."""
+
+        class _SharedProvider:
+            keep = False
+            keep_at_shutdown: bool | None = None
+
+            def set_keep_transcript(self, keep: bool) -> None:
+                self.keep = keep
+
+            async def shutdown(self) -> None:
+                self.keep_at_shutdown = self.keep
+
         manager = _manager()
         info = SubagentInfo(id="sh1", task="t")
         info._session_sharing = True
-        shared = MagicMock()
-        shared.set_keep_transcript = MagicMock()
-        shared.shutdown = AsyncMock()
+        shared = _SharedProvider()
         info._shared_provider = shared
         await manager._teardown_run_session(info, "subagent:sh1")
-        shared.set_keep_transcript.assert_called_once_with(True)
-        shared.shutdown.assert_awaited_once()
+        assert shared.keep_at_shutdown is True
 
     # ── cancellation ──
     #

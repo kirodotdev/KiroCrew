@@ -22,7 +22,7 @@ import asyncio
 import contextlib
 import logging
 import weakref
-from typing import TYPE_CHECKING, Any, AsyncIterator, Coroutine
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Coroutine
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW, KiroCrewConfig
 from kiro_crew.messaging.link import legacy_key
@@ -82,7 +82,7 @@ def _queue_tags(sender_id: str, channel: str) -> dict[str, Any]:
 class _StopHold:
     """The Slack ``!stop``s in flight on one session key, and what they detached."""
 
-    __slots__ = ("count", "held", "dropping")
+    __slots__ = ("count", "held", "dropping", "dropping_in")
 
     def __init__(self) -> None:
         self.count = 0
@@ -94,11 +94,37 @@ class _StopHold:
         #: are theirs to drop: a message sent after one's own ``!stop`` is newer
         #: intent, even when another member's overlapping stop detached it.
         self.dropping: dict[str, int] = {}
+        #: The same, for a Stop aimed at PART of a key that serves several threads (a
+        #: single-session DM, whose dashboard-linked threads share its flat key):
+        #: ``(owner, addresses, upto)``, *addresses* reading an entry's kwargs.
+        self.dropping_in: list[tuple[str, Callable[[Any], bool], int]] = []
 
 
 #: Per orchestrator, the stops in flight on each session key. Overlapping stops share
 #: one hold, so the queue is put back, and drained, only when the LAST one settles.
 _stops_in_flight: weakref.WeakKeyDictionary[Any, dict[str, _StopHold]] = weakref.WeakKeyDictionary()
+
+#: The thread each router task was started for. A single-session DM runs every
+#: thread's turn under its one flat key, so a Stop aimed at one dashboard-linked
+#: thread reads this to tell whether that key's task is the thread's own.
+_router_task_threads: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+
+
+def _track_router_task(
+    orch: GatewayOrchestrator, session_key: str, task: Any, thread_ts: Any
+) -> None:
+    """Register *task* as *session_key*'s router task, noting the thread it serves."""
+    orch._session_tasks[session_key] = task
+    if thread_ts:
+        _router_task_threads[task] = str(thread_ts)
+
+
+def router_task_thread(task: Any) -> str | None:
+    """The thread a router task was started for, or None when it named none."""
+    try:
+        return _router_task_threads.get(task)
+    except TypeError:  # a test double that cannot be weakly referenced
+        return None
 
 
 def _key_busy(orch: GatewayOrchestrator, session_key: str) -> bool:
@@ -123,13 +149,20 @@ async def _settle_stop_hold(orch: GatewayOrchestrator, session_key: str, hold: _
     if sessions is None:
         return
     owned = [(entries_queued_by(owner), upto) for owner, upto in hold.dropping.items()]
+    owned_in = [
+        (entries_queued_by(owner), addresses, upto) for owner, addresses, upto in hold.dropping_in
+    ]
 
     def _dropped(index: int, kwargs: Any) -> bool:
-        return any(index <= upto and by(kwargs) for by, upto in owned)
+        if any(index <= upto and by(kwargs) for by, upto in owned):
+            return True
+        return any(
+            index <= upto and by(kwargs) and addresses(kwargs) for by, addresses, upto in owned_in
+        )
 
     queued = [(i, entry) for i, (entries, _) in enumerate(hold.held) for entry in entries]
     pending = [(i, entry) for i, (_, entries) in enumerate(hold.held) for entry in entries]
-    if hold.dropping:
+    if hold.dropping or hold.dropping_in:
         # Only once a stop went through: a declined one drops nothing.
         sessions.clear_queue(
             session_key, only=tuple(entry for i, entry in queued if _dropped(i, entry[2]))
@@ -154,22 +187,49 @@ async def _settle_stop_hold(orch: GatewayOrchestrator, session_key: str, hold: _
 
 @contextlib.asynccontextmanager
 async def slack_stop_in_flight(
-    orch: GatewayOrchestrator | None, session_key: str
-) -> AsyncIterator[None]:
-    """Read *session_key* as busy for a Stop that detaches nothing of its own.
+    orch: GatewayOrchestrator | None,
+    session_key: str,
+    *,
+    owner: str | None = None,
+    detach: bool = False,
+    addresses: Callable[[Any], bool] | None = None,
+) -> AsyncIterator[Callable[..., None]]:
+    """Read *session_key* as busy while a Stop is in flight.
 
-    The Stop buttons let ``stop_turn(owned_by=...)`` drop the presser's entries and
-    leave everyone else's queued. Without this, the running turn can end while
-    ``stop_turn`` awaits the cancel, its turn-end drain starts one of those kept
-    entries, and an escalation to a hard reset then aborts it after it left the
-    queue. Joining the shared hold keeps every drain off the key until the last
-    overlapping Stop -- ``!stop`` included -- settles, then drains once.
+    Without this, the running turn can end while ``stop_turn`` awaits the cancel,
+    its turn-end drain starts a kept entry, and an escalation to a hard reset then
+    aborts it after it left the queue. Joining the shared hold keeps every drain
+    off the key until the last overlapping Stop -- ``!stop`` included -- settles,
+    then drains once.
+
+    The context yields ``went_through(reset=False)``, the call a Stop makes once it
+    ended a turn. With *owner* it joins the hold's drop set, so the last release
+    drops that owner's entries in every snapshot detached up to this press,
+    whichever Stop detached them, and puts everyone else's back; ``!stop`` takes
+    the same rule. Never calling it (a declined, failed or forced stop) puts
+    everything back.
+
+    *detach* also takes what was queued at the press -- the session queue and the
+    pre-session stash (``_pending_queue``) -- into the hold, as ``!stop`` does, so
+    the release cannot dispatch the presser's own messages queued behind the
+    stopped turn or a cold session start; the caller's ``stop_turn`` then takes
+    ``preserve_queue``, since a message admitted after the press is newer intent.
+    ``reset=True`` is an escalated stop that reset the session: as ``!stop``'s,
+    everything this press detached goes, for everybody, with its files. The Stop
+    buttons pass neither *owner* nor *detach*: the live queue is their
+    ``stop_turn(owned_by=...)`` to clear, as on main.
+
+    *addresses* narrows a Stop to part of a key that serves several threads -- a
+    single-session DM, whose router task and queue also carry its dashboard-linked
+    threads: it reads an entry's kwargs and says whether this Stop is about it.
+    The presser's entries are dropped, and a reset drops everybody's, only where
+    it says yes.
 
     No orchestrator (a handler double, or a call before the gateway wired one) has
     no drain to hold, so nothing is held.
     """
     if orch is None:
-        yield
+        yield lambda reset=False: None
         return
     # The router keys its tasks, holds and drains by the BARE thread ts, while a
     # button can carry the canonical ``slack:<ts>``: a hold under the canonical
@@ -177,15 +237,66 @@ async def slack_stop_in_flight(
     # an overlapping ``!stop``'s count.
     session_key = legacy_key(session_key) or session_key
     hold = _stops_in_flight.setdefault(orch, {}).setdefault(session_key, _StopHold())
+    # The last snapshot that exists at this press: this Stop's own when it
+    # detaches, else whatever an earlier overlapping Stop detached.
+    upto = len(hold.held) - 1
+    held: tuple[list[Any], list[Any]] | None = None
+
+    def went_through(reset: bool = False) -> None:
+        if reset and held is not None:
+            # A scoped reset drops only the entries this Stop addresses: the key's
+            # other threads belong to a session the reset did not touch.
+            def _in_scope(entry: Any) -> bool:
+                return addresses is None or addresses(entry[2])
+
+            gone_q = [e for e in held[0] if _in_scope(e)]
+            gone_p = [e for e in held[1] if _in_scope(e)]
+            held[0][:] = [e for e in held[0] if not _in_scope(e)]
+            held[1][:] = [e for e in held[1] if not _in_scope(e)]
+            try:
+                if orch.sessions is not None:
+                    orch.sessions.clear_queue(session_key, only=tuple(gone_q))
+            except Exception:
+                logger.warning("stop hold: dropping a reset's entries failed", exc_info=True)
+            for item in gone_p:
+                try:
+                    unlink_queued_temp_paths(item[2])
+                except Exception:
+                    logger.warning("stop hold: a reset entry's files were kept", exc_info=True)
+        # A reset drops at least what a soft stop would: the presser's entries an
+        # earlier overlapping Stop detached too.
+        if owner is not None and upto >= 0:
+            if addresses is None:
+                hold.dropping[owner] = max(hold.dropping.get(owner, -1), upto)
+            else:
+                hold.dropping_in.append((owner, addresses, upto))
+
     hold.count += 1
     try:
-        yield
+        if detach:
+            # Both queues, in the shared hold, so an overlapping Stop's snapshot
+            # indexes agree on what was queued before which press.
+            queued = orch.sessions.detach_queue(session_key) if orch.sessions else ()
+            held = (list(queued), list(orch._pending_queue.pop(session_key, None) or ()))
+            hold.held.append(held)
+            upto += 1
+        if addresses is not None:
+            # Asked about every entry this press can drop -- its own snapshot and
+            # those earlier overlapping Stops hold -- before any await, so a caller
+            # that remembers its answers judges them as they stood at the press.
+            for queued_entries, pending_entries in hold.held[: upto + 1]:
+                for entry in (*queued_entries, *pending_entries):
+                    addresses(entry[2])
+        yield went_through
     finally:
         hold.count -= 1
         if hold.count <= 0:
             _stops_in_flight.get(orch, {}).pop(session_key, None)
-            await _settle_stop_hold(orch, session_key, hold)
-            await _drain_slack_queue(orch, session_key)
+            try:
+                await _settle_stop_hold(orch, session_key, hold)
+            finally:
+                # Whatever the settle put back must still have a dispatcher.
+                await _drain_slack_queue(orch, session_key)
 
 
 # Strong references to fire-and-forget asyncio.Tasks scheduled from
@@ -250,7 +361,7 @@ async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> Non
         if not _pq:
             del orch._pending_queue[session_key]
     task = asyncio.ensure_future(_dispatch_queued(orch, session_key, *_next))
-    orch._session_tasks[session_key] = task
+    _track_router_task(orch, session_key, task, (_next[2] or {}).get("thread_ts"))
     orch._handler_tasks.add(task)
 
     def _after(done: asyncio.Task) -> None:  # type: ignore[type-arg]

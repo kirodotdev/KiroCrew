@@ -181,7 +181,7 @@ async def test_a_member_the_config_no_longer_holds_is_a_409(bound_cron, monkeypa
     from kiro_crew import execution_context
 
     def _gone(_cfg, _member_id):
-        raise RuntimeError("member identity is missing or ambiguous")
+        raise execution_context._unavailable("member identity is missing or ambiguous")
 
     monkeypatch.setattr(execution_context, "member_config_for_id", _gone)
     async with _client() as c:

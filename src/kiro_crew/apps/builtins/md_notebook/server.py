@@ -85,6 +85,7 @@ from kiro_crew.apps.builtins.md_notebook.server_store import (
     _clone_root,
     _coerce_auto_sync_mins,
     _home,
+    _is_app_clone,
     _write_pat_sync,
     _write_settings_sync,
     logger,
@@ -531,12 +532,12 @@ async def api_health(request: web.Request) -> web.Response:
 
 
 async def api_vaults(request: web.Request) -> web.Response:
-    clone_root = str(_clone_root())
     vaults = []
     for v in await read_vaults():
         # `external` = attached in place rather than cloned by this app.
         # Computed on read, never persisted.
-        vaults.append({**v, "external": not str(v["localPath"]).startswith(clone_root)})
+        cloned = await asyncio.to_thread(_is_app_clone, str(v["localPath"]))
+        vaults.append({**v, "external": not cloned})
     return web.json_response(
         {
             "vaults": vaults,

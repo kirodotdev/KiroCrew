@@ -31,7 +31,13 @@ permissions:
 
 concurrency:
   group: client-py-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A pull request's superseded revision is cancelled; a push to main is not.
+  # Pushes to main carry no pull_request number, so they all share one key
+  # through `github.ref`, and a bare `true` let a second push kill the first
+  # one's in-flight run. Merge-group entries are unaffected either way: their
+  # `github.ref` is the unique gh-readonly-queue ref, so each queue entry
+  # already has a key of its own and never collided with another.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

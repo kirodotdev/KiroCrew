@@ -990,8 +990,10 @@ def _run_session_handoff(args: dict[str, Any], ctx: ToolContext) -> str:
     manager = resp.get("manager", args["to"])
     return (
         f"\U0001f91d Handed `{target}` to `{manager}`. That session manages it now: it "
-        "can send to, read, stop and close it, and you cannot unless it is handed back. "
-        "Who created it is unchanged."
+        "can send to, read, stop and close it. If you are a fenced session you lose "
+        "that reach, unless agent.session_manager_chain is on and you still manage "
+        "that session. It cannot hand the session back to you. Who created it is "
+        "unchanged."
     )
 
 

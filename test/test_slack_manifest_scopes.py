@@ -22,10 +22,43 @@ import yaml
 from kiro_crew import slack_manifest
 
 
-def _manifest() -> dict:
-    parsed = yaml.safe_load(slack_manifest.raw_template())
+def _manifest(features: frozenset[str] = frozenset()) -> dict:
+    parsed = yaml.safe_load(slack_manifest.template(features))
     assert isinstance(parsed, dict)
     return parsed
+
+
+_BASE_BOT_SCOPES = [
+    "app_mentions:read",
+    "channels:history",
+    "channels:read",
+    "chat:write",
+    "commands",
+    "files:read",
+    "files:write",
+    "groups:history",
+    "groups:read",
+    "im:history",
+    "im:read",
+    "im:write",
+    "reactions:write",
+    "users:read",
+]
+
+_BASE_BOT_EVENTS = [
+    "app_home_opened",
+    "app_mention",
+    "file_change",
+    "member_joined_channel",
+    "message.channels",
+    "message.groups",
+    "message.im",
+]
+_AGENT_SESSION_SCOPES = ["assistant:write"]
+
+_AGENT_SESSION_EVENTS = ["agent_session_stopped", "agent_session_title_changed"]
+
+_COMBOS = slack_manifest.feature_sets()
 
 
 def _bot_scopes(manifest: dict) -> list[str]:
@@ -63,10 +96,18 @@ class TestManifestGrantsWhatTheCodeUses:
         # comment-stripped variant must carry the identical grant surface —
         # otherwise the deep-link import path would create a narrower app than
         # the documented manifest.
-        stripped = yaml.safe_load(slack_manifest.stripped_template())
-        full = _manifest()
-        assert _bot_scopes(stripped) == _bot_scopes(full)
-        assert _bot_events(stripped) == _bot_events(full)
+        for combo in _COMBOS:
+            stripped = yaml.safe_load(slack_manifest.stripped_template(combo))
+            full = _manifest(combo)
+            assert _bot_scopes(stripped) == _bot_scopes(full), combo
+            assert _bot_events(stripped) == _bot_events(full), combo
+            assert stripped.get("features") == full.get("features"), combo
+
+    def test_raw_template_parses_with_every_switch_on(self) -> None:
+        # The gates are YAML comments, so the raw file is a valid manifest that
+        # reads as "everything on"; a reader of the file sees the whole surface.
+        raw = yaml.safe_load(slack_manifest.raw_template())
+        assert _bot_scopes(raw) == _bot_scopes(_manifest(frozenset(slack_manifest.FEATURES)))
 
 
 class TestManifestGrantsNothingMore:
@@ -79,33 +120,31 @@ class TestManifestGrantsNothingMore:
     """
 
     def test_bot_scopes_are_exactly_the_reviewed_set(self) -> None:
-        assert sorted(_bot_scopes(_manifest())) == [
-            "app_mentions:read",
-            "channels:history",
-            "channels:read",
-            "chat:write",
-            "commands",
-            "files:read",
-            "files:write",
-            "groups:history",
-            "groups:read",
-            "im:history",
-            "im:read",
-            "im:write",
-            "reactions:write",
-            "users:read",
-        ]
+        for combo in _COMBOS:
+            want = set(_BASE_BOT_SCOPES)
+            if slack_manifest.AGENT_SESSIONS in combo:
+                want |= set(_AGENT_SESSION_SCOPES)
+            assert sorted(_bot_scopes(_manifest(combo))) == sorted(want), combo
 
     def test_bot_events_are_exactly_the_reviewed_set(self) -> None:
-        assert sorted(_bot_events(_manifest())) == [
-            "app_home_opened",
-            "app_mention",
-            "file_change",
-            "member_joined_channel",
-            "message.channels",
-            "message.groups",
-            "message.im",
-        ]
+        for combo in _COMBOS:
+            want = set(_BASE_BOT_EVENTS)
+            if slack_manifest.AGENT_SESSIONS in combo:
+                want |= set(_AGENT_SESSION_EVENTS)
+            events = _bot_events(_manifest(combo))
+            assert len(events) == len(set(events)), combo  # no duplicate subscription
+            assert sorted(events) == sorted(want), combo
+
+    def test_feature_blocks_follow_the_switches(self) -> None:
+        for combo in _COMBOS:
+            feats = _manifest(combo)["features"]
+            # Only the Agent sessions switch declares the app a Slack agent
+            # (one-way in Slack), and nothing ever declares assistant_view.
+            if slack_manifest.AGENT_SESSIONS in combo:
+                assert set(feats["agent_view"]) == {"agent_description"}, combo
+            else:
+                assert "agent_view" not in feats, combo
+            assert "assistant_view" not in feats, combo
 
     def test_user_token_scopes_are_exactly_the_reviewed_set(self) -> None:
         # The gateway itself runs on the bot token and calls nothing with a
@@ -113,7 +152,9 @@ class TestManifestGrantsNothingMore:
         # MCP/search integration (documented in docs/guides/slack-setup.md
         # Step 4); it still widens the OAuth consent screen, so it is pinned
         # exactly — widening it must be a deliberate, visible edit here.
-        assert sorted(_manifest()["oauth_config"]["scopes"]["user"]) == [
+        assert sorted(
+            _manifest(frozenset(slack_manifest.FEATURES))["oauth_config"]["scopes"]["user"]
+        ) == [
             "channels:history",
             "channels:read",
             "groups:history",
