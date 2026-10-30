@@ -63,10 +63,26 @@ class TestTheTablesMatchTheRecordedEngine:
         path = Path(__file__).resolve().parent / "fixtures" / "kas_builtin_tool_ids.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
+    @classmethod
+    def _mountable(cls) -> set[str]:
+        """Every id the engine's allowlist matcher can match: the local built-ins
+        plus the ones its remote wrapper serves under a ``remote_`` prefix."""
+        reg = cls._registry()
+        return set(reg["registered"]) | set(reg["remote"]["ids"])
+
     def test_every_mounted_id_is_a_registered_engine_tool(self):
-        registered = set(self._registry()["registered"])
+        mountable = self._mountable()
         for family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.values():
-            assert set(family) <= registered, sorted(set(family) - registered)
+            assert set(family) <= mountable, sorted(set(family) - mountable)
+
+    def test_every_remote_id_carries_the_engine_s_prefix(self):
+        """The remote wrapper names a tool ``remote_<name>``; an id recorded
+        without the prefix would be a local built-in filed in the wrong list."""
+        reg = self._registry()
+        assert reg["remote"]["ids"]
+        for remote_id in reg["remote"]["ids"]:
+            assert remote_id.startswith("remote_"), remote_id
+            assert remote_id not in reg["registered"], remote_id
 
     def test_the_first_verified_release_is_the_fixture_s_measured_version(self):
         """The release the id tables were first read on (the fixture's
@@ -140,7 +156,7 @@ class TestTheTablesMatchTheRecordedEngine:
         """A policy key is either a registered id or the permission-frame id the
         engine reports instead of one; anything else names nothing."""
         reg = self._registry()
-        receivable = set(reg["registered"]) | set(reg["permission_tool_id"].values())
+        receivable = self._mountable() | set(reg["permission_tool_id"].values())
         assert set(KIRO_CLI_NAME_BY_KAS_TOOL) <= receivable, sorted(
             set(KIRO_CLI_NAME_BY_KAS_TOOL) - receivable
         )
@@ -230,6 +246,29 @@ class TestExpand:
         assert expand_kiro_cli_tool_names([]) == []
 
 
+class TestWebSearchReachesTheRemoteTool:
+    """KAS serves web search as ``remote_web_search``. A spec spelling the
+    kiro-cli ``web_search`` must mount it, exclude it, and govern it under the
+    name an operator's rule is written in."""
+
+    def test_mounting_web_search_mounts_the_remote_tool(self):
+        assert expand_kiro_cli_tool_names(["web_fetch", "web_search"]) == [
+            "web_fetch",
+            "web_search",
+            "remote_web_search",
+        ]
+
+    def test_excluding_web_search_withholds_the_remote_tool(self):
+        assert expand_kiro_cli_tool_exclusions(["web_search"]) == [
+            "web_search",
+            "remote_web_search",
+        ]
+
+    def test_a_rule_written_as_web_search_binds_the_remote_tool(self):
+        assert policy_aliases("remote_web_search") == ("web_search",)
+        assert policy_alias_split("remote_web_search") == (("web_search",), ())
+
+
 class TestTheTwoReadingsHaveOppositePolarity:
     """Mounting grants, so it is bounded by the kiro-cli tool's own verbs.
     Exclusion withholds, so it reaches everything governed under the name.
@@ -252,7 +291,7 @@ class TestTheTwoReadingsHaveOppositePolarity:
         (``execute_bash`` included), less the ids the engine's exclusion matcher
         cannot see -- the permission-frame-only ids the fixture records."""
         reg = TestTheTablesMatchTheRecordedEngine._registry()
-        registered = set(reg["registered"])
+        registered = TestTheTablesMatchTheRecordedEngine._mountable()
         frame_only = set(reg["permission_tool_id"].values()) - registered
         assert frame_only == {"run_command"}
         owners = set(KIRO_CLI_NAME_BY_KAS_TOOL.values())
