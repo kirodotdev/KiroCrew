@@ -777,6 +777,14 @@ class _RunContext:
                 "ctx.send_to_session is not available for this run (no session port)"
             )
         self._refuse_on_prefix_rerun("send_to_session")
+        guard = getattr(self, "_execution_guard", None)
+        if guard is not None:
+            await guard()
+        # Each send starts (or queues) a turn, so it spends the same lifetime cap
+        # and stops at the same budget ceiling an ``agent()`` call does.
+        self._counter.increment()
+        if self.budget.would_exceed():
+            raise BudgetExceeded("budget exhausted before send_to_session")
         return await self._send_to_session_fn(
             caller_session_key=self._session_key, slot=slot, message=message
         )

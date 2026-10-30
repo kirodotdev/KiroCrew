@@ -1710,7 +1710,11 @@ Temporary run, or a rerun of one) is refused `restricted_memory_mode` on
 (`_private_caller_refusal`) is applied to the launching session by the port
 itself, with the same predicate (`member_admitted_to_scoped_surface`): a member
 it admits is carried in creator-fenced, any other private-store caller is
-refused `member_scope_denied`. `ctx.set_session_mode` resolves its target through `authorize_target`
+refused `member_scope_denied`. `ctx.send_to_session` is narrower than the
+launching session's own `session_send`: it always runs creator-fenced
+(`caller_fenced=True`), even for an owner launcher, so it reaches only the
+sessions the launching session opened or was handed and refuses any other
+`not_creator`. `ctx.set_session_mode` resolves its target through `authorize_target`
 (operation `set_mode`), requires it to be a session the launching session
 created, and refuses a mode above that session's current mode or above the
 launching session's own posture, judged again after the write. The rest

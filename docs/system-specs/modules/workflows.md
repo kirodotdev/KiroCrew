@@ -388,6 +388,12 @@ untouched. On top of those verbs the port adds only:
   (`caller_fenced=True`), any other caller bound to a private store is refused
   `member_scope_denied`, and an unreadable execution record is refused
   `member_identity_unavailable`.
+- **A send reaches only sessions the launcher opened.** `send_to_session` always
+  passes `caller_fenced=True`, whatever the scope gate decided, so even an owner
+  launcher's run reaches only the sessions the launching session created (or,
+  as for any fenced `send`, was handed) and is refused `not_creator` on any
+  other, the person's own tabs included. One approval of a run therefore cannot
+  start turns in sessions the run did not start, trust-mode ones included.
 - **A mode stays or drops, never rises.** `set_session_mode` accepts `normal`,
   `trust_reads` and `trust`, ranked in that order, and refuses
   `mode_raise_refused` for a mode above the target session's current mode or
@@ -413,9 +419,10 @@ untouched. On top of those verbs the port adds only:
   applied through the auto-tag writer (`chat_auto_tag.apply_label_tag`) without
   claiming the auto-tag once-flag, so the session's first message still gets its
   project tag.
-- **`open_session` spends the run's agent cap.** It increments the run's
-  `AgentCounter` and refuses with `BudgetExceeded` at the budget ceiling, exactly
-  as `ctx.agent()` does.
+- **`open_session` and `send_to_session` spend the run's agent cap.** Each call
+  increments the run's `AgentCounter` and refuses with `BudgetExceeded` at the
+  budget ceiling, exactly as `ctx.agent()` does, so a script cannot loop turns
+  without bound.
 - **A rerun that replays earlier calls cannot open or message sessions.** On a
   run with `replay_before > 0` (`rerun@N` with N > 0, or a restart that replays
   finished calls), `open_session` and `send_to_session` raise a `RuntimeError`
