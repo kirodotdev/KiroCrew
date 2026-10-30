@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 WORK_ID_HEADER = "X-Shared-Crew-Work"
 WORK_STATE_HEADER = "X-Shared-Crew-Work-State"
 
+#: Cancel tasks the hooks below start and do not await, held until each finishes:
+#: the loop keeps only a weak reference to a task.
+_BACKGROUND_TASKS: set["asyncio.Future[Any]"] = set()
+
+
+def _hold(task: "asyncio.Future[Any]") -> None:
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
 
 # -- chat turns ------------------------------------------------------------------
 
@@ -362,7 +371,7 @@ def subagent_cancel(manager: Any, loop: Any) -> Callable[[AcceptedWork], None]:
         if not agent_id or stop is None:
             return
         try:
-            loop.create_task(stop_child(work, agent_id))
+            _hold(loop.create_task(stop_child(work, agent_id)))
         except Exception:
             logger.debug("shared crew: subagent cancel failed", exc_info=True)
 
@@ -541,7 +550,7 @@ def _cancel_hook(cancel: Callable[[str], Any]) -> Callable[[AcceptedWork], None]
         try:
             result = cancel(run_id)
             if inspect.isawaitable(result):
-                asyncio.ensure_future(result)
+                _hold(asyncio.ensure_future(result))
         except Exception:
             logger.debug("shared crew: cancelling run %s failed", run_id, exc_info=True)
 

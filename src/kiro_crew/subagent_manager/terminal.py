@@ -1596,5 +1596,7 @@ class TerminalCoordinator(ManagerComponent):
                     )
                 )
                 _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                self._manager._report_tasks.add(_task)
+                _task.add_done_callback(self._manager._report_tasks.discard)
         except Exception:
             logger.debug("notify_injection_failed failed for %s", info.id, exc_info=True)

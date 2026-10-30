@@ -20,25 +20,97 @@ from kiro_crew.dashboard.handlers import weixin_qr
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: The dashboard files whose dropped tasks this change fixed. The guard below
-#: keeps a bare ``create_task(...)`` statement from coming back in them.
+#: Files that start fire-and-forget tasks. The guard below keeps a dropped
+#: ``create_task(...)`` out of them.
 GUARDED = (
     "src/kiro_crew/dashboard/server.py",
     "src/kiro_crew/dashboard/state_parts/dashboard_services.py",
     "src/kiro_crew/dashboard/handlers/weixin_qr.py",
+    "src/kiro_crew/dashboard/handlers/crew_log.py",
+    "src/kiro_crew/knowledge/artifact_ingest.py",
+    "src/kiro_crew/remote_session/worker.py",
+    "src/kiro_crew/shared_crew/admission_entry.py",
+    "src/kiro_crew/sprites_session/terminal.py",
+    "src/kiro_crew/subagent_manager/admission/gate.py",
+    "src/kiro_crew/subagent_manager/terminal.py",
 )
+
+_TASK_STARTERS = ("create_task", "ensure_future")
+#: Task methods that do not keep the task alive past the statement that calls them.
+_NON_HOLDING_USES = ("add_done_callback", "cancelled", "done", "exception", "result")
+
+
+def _starts_task(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    return name in _TASK_STARTERS
+
+
+def _own_scope(fn: ast.AST) -> list[ast.AST]:
+    """The nodes of *fn*'s body, not descending into nested functions or lambdas."""
+    nodes: list[ast.AST] = []
+    pending = list(ast.iter_child_nodes(fn))
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(node))
+    return nodes
+
+
+def _locally_dropped(fn: ast.FunctionDef) -> list[int]:
+    """Tasks bound to a local name whose only uses are callbacks and state reads.
+
+    Only a sync function's local is checked: an async frame stays alive while it
+    awaits, so a local there holds the task for as long as the frame does. Uses
+    are read from nested functions too, since a closure can hold the task.
+    """
+    parents = {child: node for node in ast.walk(fn) for child in ast.iter_child_nodes(node)}
+    scope = _own_scope(fn)
+    outer = {name for n in scope if isinstance(n, (ast.Global, ast.Nonlocal)) for name in n.names}
+    lines = []
+    for node in scope:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id not in outer
+            and _starts_task(node.value)
+        ):
+            continue
+        name = node.targets[0].id
+        uses = [
+            n
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+        ]
+        if all(
+            isinstance(parents.get(use), ast.Attribute)
+            and parents[use].attr in _NON_HOLDING_USES  # type: ignore[attr-defined]
+            for use in uses
+        ):
+            lines.append(node.lineno)
+    return lines
 
 
 def _dropped_task_sites(source: str) -> list[int]:
-    """Lines of statements that call ``create_task`` / ``ensure_future`` and drop the result."""
+    """Lines that start a task with ``create_task`` / ``ensure_future`` and drop it.
+
+    Three shapes: a bare statement, a lambda that returns the task to a caller
+    that discards it (a signal handler), and a sync function's local that is
+    only given callbacks before the function returns.
+    """
     lines = []
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
-            func = node.value.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name in ("create_task", "ensure_future"):
-                lines.append(node.lineno)
-    return lines
+        if isinstance(node, ast.Expr) and _starts_task(node.value):
+            lines.append(node.lineno)
+        elif isinstance(node, ast.Lambda) and _starts_task(node.body):
+            lines.append(node.lineno)
+        elif isinstance(node, ast.FunctionDef):
+            lines.extend(_locally_dropped(node))
+    return sorted(lines)
 
 
 @pytest.mark.parametrize("rel", GUARDED)
@@ -50,6 +122,22 @@ def test_no_dropped_task_statement(rel: str) -> None:
 def test_the_guard_sees_a_dropped_task() -> None:
     assert _dropped_task_sites("import asyncio\nasyncio.create_task(f())\n") == [2]
     assert _dropped_task_sites("t = asyncio.create_task(f())\n") == []
+
+
+def test_the_guard_sees_a_task_dropped_by_a_lambda() -> None:
+    source = "loop.add_signal_handler(15, lambda: asyncio.ensure_future(f()))\n"
+    assert _dropped_task_sites(source) == [1]
+
+
+def test_the_guard_sees_a_local_task_given_only_a_callback() -> None:
+    dropped = "def g():\n    t = loop.create_task(f())\n    t.add_done_callback(cb)\n"
+    held = dropped + "    TASKS.add(t)\n"
+    stored = "def g():\n    global T\n    T = loop.create_task(f())\n"
+    awaited = "async def g():\n    t = asyncio.create_task(f())\n    t.add_done_callback(cb)\n"
+    assert _dropped_task_sites(dropped) == [2]
+    assert _dropped_task_sites(held) == []
+    assert _dropped_task_sites(stored) == []
+    assert _dropped_task_sites(awaited) == []
 
 
 @pytest.mark.asyncio

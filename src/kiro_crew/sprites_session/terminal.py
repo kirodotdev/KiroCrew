@@ -32,6 +32,16 @@ SPRITE_NAME_RE = re.compile(r"kirocrew-[0-9a-f]{16}")
 #: A provider id as argv: never empty, never a flag.
 SPRITE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _CHUNK = 64 * 1024
+#: Sends started from the stdin and resize callbacks, held until each finishes:
+#: the loop keeps only a weak reference to a task.
+_BACKGROUND_TASKS: set["asyncio.Future[Any]"] = set()
+
+
+def _send_in_background(send: Any) -> None:
+    """Start the *send* awaitable as a task this module holds until it finishes."""
+    task = asyncio.ensure_future(send)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 def bridge_argv(sprite: str, token_secret: str, workdir: str, *, sprite_id: str) -> list[str]:
@@ -135,11 +145,11 @@ async def run(
             loop.remove_reader(stdin_fd)
             stdin_done.set()
             return
-        asyncio.ensure_future(ws.send_bytes(data))
+        _send_in_background(ws.send_bytes(data))
 
     def on_resize() -> None:
         new_cols, new_rows = _window_size(stdin_fd)
-        asyncio.ensure_future(
+        _send_in_background(
             ws.send_str(json.dumps({"type": "resize", "cols": new_cols, "rows": new_rows}))
         )
 

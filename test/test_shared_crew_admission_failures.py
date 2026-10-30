@@ -135,7 +135,12 @@ async def test_child_cancel_preserves_live_and_failure_paths(state):
         ),
     )
     tasks = []
-    loop = SimpleNamespace(create_task=lambda coro: tasks.append(asyncio.create_task(coro)))
+
+    def create_task(coro):
+        tasks.append(asyncio.create_task(coro))
+        return tasks[-1]
+
+    loop = SimpleNamespace(create_task=create_task)
     work = SimpleNamespace(extra={"execution_id": "child"}, session_key="dashboard:parent")
     entry.subagent_cancel(manager, loop)(work)
     if state == "error":

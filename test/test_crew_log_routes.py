@@ -1223,7 +1223,10 @@ def test_run_does_not_start_an_overlapping_flush_while_one_is_in_flight():
     publisher._flushing = False
     publisher._run()
     loop.create_task.assert_called_once_with("the-flush-pass")
-    loop.create_task.return_value.add_done_callback.assert_called_once_with(publisher._finished)
+    task = loop.create_task.return_value
+    assert task in publisher._tasks
+    task.add_done_callback.assert_any_call(publisher._tasks.discard)
+    task.add_done_callback.assert_any_call(publisher._finished)
 
 
 def test_finished_reschedules_when_work_arrived_mid_flush():
