@@ -15,7 +15,6 @@ import importlib
 import json
 import re
 import sys
-import time
 
 import pytest
 
@@ -44,6 +43,22 @@ ISSUE_HOSTS = (
     "https://blueyJam.example.com/a/b",
 )
 LOWERCASE_CONTROL = "https://honeyjar.atlassian.net/wiki/x"
+
+
+def _count_anchored_attempts(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count each anchored ``JWT_RE.match`` the scan makes; the list grows by one per call."""
+    calls: list[int] = []
+    real = jwt_header.JWT_RE
+
+    class _Counting:
+        pattern = real.pattern
+
+        def match(self, text: str, pos: int = 0) -> re.Match[str] | None:
+            calls.append(pos)
+            return real.match(text, pos)
+
+    monkeypatch.setattr(jwt_header, "JWT_RE", _Counting())
+    return calls
 
 
 def _spans(text: str) -> list[str]:
@@ -163,17 +178,26 @@ class TestJwtMatches:
         text = ("eyJ" * 2000) + ".a.b"
         assert _spans(text) == [text]
 
-    def test_a_dotless_eyj_run_is_scanned_in_linear_time(self) -> None:
+    def test_a_dotless_eyj_run_is_scanned_in_linear_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """``JWT_RE.search`` is quadratic here (measured 6.3 s at 48 KB); this scan is not.
 
-        One anchored attempt per base64url run, then skip the run. CPU time rather
-        than wall clock, so a descheduled worker cannot red it; the margin is two
-        orders of magnitude below the quadratic cost at this size (~10 s).
+        One anchored attempt per base64url run, then skip the run. The bound is a
+        count of anchored attempts, not a clock: ``search`` would try every ``eyJ``
+        in the run (20,000 here), this scan tries the first one only, and every
+        further run adds exactly one attempt.
         """
+        attempts = _count_anchored_attempts(monkeypatch)
         text = "eyJ" * 20_000  # 60 KB, no dot anywhere: nothing can match
-        started = time.thread_time()
         assert _spans(text) == []
-        assert time.thread_time() - started < 1.0
+        assert len(attempts) == 1
+
+        attempts.clear()
+        runs = 400
+        text = ("eyJ" * 50 + " ") * runs  # many hostile runs, none of them a token
+        assert _spans(text) == []
+        assert len(attempts) == runs
 
     def test_a_dotless_run_is_skipped_as_one_step(self) -> None:
         """The invariant behind the linear scan: a failed attempt at the first ``eyJ``
@@ -189,11 +213,11 @@ class TestSingleHome:
     """Every consumer reads the verdict from here; a second copy is a drift pair."""
 
     def test_the_scrubber_and_the_stream_holdback_bind_the_shared_verdict(self) -> None:
-        from kiro_crew import security
-        from kiro_crew.security import redaction
+        from kiro_crew.security import redaction, redaction_patterns, text_redaction
 
         assert redaction.is_jwt_lookalike is jwt_header.is_jwt_lookalike
-        assert security.is_json_object_segment is jwt_header.is_json_object_segment
+        assert redaction_patterns.is_jwt_lookalike is jwt_header.is_jwt_lookalike
+        assert text_redaction.is_json_object_segment is jwt_header.is_json_object_segment
 
     def test_the_log_floor_and_the_gate_bind_the_shared_scan(self) -> None:
         from kiro_crew import log_redaction

@@ -277,7 +277,8 @@ def get_credential_patterns() -> list[re.Pattern[str]]:
 
 
 # The JWS/JWE branch is shape-only (it matches `honeyJar.example.com`), so its hits need a
-# JSON-object header. Only it and the one-dot link token start with `eyJ`: two dots mark them.
+# JSON-object header: `jwt_header.is_jwt_lookalike`, shared with the log floor and the
+# decisions gate. Only it and the one-dot link token start with `eyJ`: two dots mark them.
 _CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
     _CREDENTIAL_PATTERNS.pattern.replace(f"|{JWT_MULTI_SEGMENT}", "", 1)
 )

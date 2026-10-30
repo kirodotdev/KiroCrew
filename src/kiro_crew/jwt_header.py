@@ -13,7 +13,7 @@ hostname label does not.
 
 This module is that check, in ONE place. ``credential_patterns`` cannot hold it
 because that module may import nothing at all (``test_credential_patterns.py``
-pins the AST import-free), and ``security.redaction`` cannot be the home because
+pins the AST import-free), and the ``security`` package cannot be the home because
 ``log_redaction`` installs at CLI bootstrap, before the security package loads.
 So both of them, and ``decisions.gate``, import from here. This module imports
 only the stdlib and the import-free spelling home, so it keeps the log floor's
@@ -24,7 +24,7 @@ pins it to the frontend copy in ``website/src/utils/sanitize.ts``, which still
 matches on shape alone by its own in-tree ruling (backend first, mirror later).
 
 Two consumers scan with it in two ways, on purpose. The scrubber keeps the JWT
-alternative inside its 23-branch alternation (``security.redaction``), because
+alternative inside its alternation (``security.redaction_patterns``), because
 branch ORDER decides what a span is called there (a Bearer header subsumes its
 JWT; a link token retried at the same start); it imports only the verdict,
 :func:`is_jwt_lookalike`. A consumer of the bare spelling -- the log floor, the
