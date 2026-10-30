@@ -6,7 +6,7 @@ created: 2026-10-12
 last-audited: 2026-10-12
 audited-at: c4c51aac52
 doc-pr: 19438
-implementation-prs: []
+implementation-prs: [19599]
 tracking-issues: [13892]
 supersedes: []
 superseded-by: []
@@ -61,7 +61,6 @@ gateway default, which moves every chat and needs a restart.
 - **Custom or additional backends** (for example several accounts of one
   harness). That is [#14861](https://github.com/kirodotdev/KiroCrew/pull/14861)'s
   territory; this RFC selects among the registry as it is.
-- **Carrying agent context across backends.** See Design §2.
 - **Automatic rotation** between backends.
 - **Translating model ids** between harnesses. `model` stays a per-backend id.
 
@@ -91,21 +90,33 @@ listing the backends that can start. Nothing is stored on a refusal.
 
 ### 2. Switching
 
-Setting a different backend ends the chat's current agent session; the next
-turn starts a fresh session on the new backend. The transcript stays visible in
-the chat. The agent's context is **not** carried over: the new harness starts
-with no memory of the conversation. This is the accepted cost of a switch, and
-the UI and the tool result both say so.
+A backend is fixed when a session starts, so the swap happens between turns.
+Setting a different backend saves the pick and queues a reset, the way an
+agent's model pick is queued; the chat's next turn resets its session onto the
+new backend before it starts. The transcript stays visible in
+the chat. The conversation **is** carried over: the new session's cold start
+replays the chat's transcript, as it does after a model switch or any other
+fresh start. The replay is text the gateway builds, not a harness's native
+session state, so it works the same on every backend. A common reason to switch
+is a spent quota mid-task, and the new backend needs the conversation to carry
+on. A switch sends the history to the new backend's provider. In Phase 1 the
+switch comes from an agent through `session_set_backend`, which reaches only
+sessions that agent created (`authorize_target` with the creator fence applied
+to every caller), and the tool's
+description, its result and the in-chat notice all say the transcript is
+replayed, so the person sees it happened. Phase 2 gives the owner the switch
+directly (see Cost below).
 
 A model id belongs to one backend, so a switch also clears the slot's stored
 `model` (and its Auto routing flag) to the new backend's default, the same
 rule a provider switch applies to every slot (`server_runtime/config_watch.py`).
-A switch that is refused or rolled back restores both.
 
-A switch while a turn is in flight is refused with 409, as
-`api_chat_slot_model` in `src/kiro_crew/dashboard/chat_api/slot_model.py` refuses a
-model switch that would tear down a streaming turn. Setting the backend the
-slot already has is a no-op.
+A switch never tears down a running session itself. A turn in flight finishes
+on the old backend, and the reset waits for attached sub-agents, as every
+queued reset does. The next turn start also compares a picked chat's live
+session with its pick, so a session that came up on another backend (a hard
+Stop respawns on the gateway default, as on main) is reset there too. Setting
+the backend the slot already has is a no-op.
 
 ### 3. Persistence and lineage
 
@@ -118,15 +129,19 @@ compaction successor, so those keep the chat's backend with no new code.
 
 ### 4. Agent surface
 
-- `POST /api/chat/slots/{slot}/backend`, registered beside
-  `/api/chat/slots/{slot}/model`, takes `{"backend": "<name>"}` or
-  `{"backend": ""}` to clear.
+- `POST /api/session-control/set-backend`, beside `set-model`, takes
+  `{"target": "<slot>", "backend": "<name>"}` or `"backend": ""` to clear.
 - MCP tool `session_set_backend` in `src/kiro_crew/mcp_dashboard_session_tools.py`, beside
-  `session_set_model`, calls the same handler logic.
+  `session_set_model`, posts to that route.
 
-Both run the same validation and the same ownership gate
-(`deny_app_slot_access`), so an app or member principal the endpoint refuses is
-refused identically through the tool.
+The route runs `authorize_target`, the gate every session-control verb uses,
+before the switch and again after each lock await. It holds every caller to the
+creator fence, so an agent re-picks only sessions it created; moving any other
+chat to another provider is left to the Phase 2 dropdown, where a person
+clicks. A crewmate DM or worker session is refused, the worker judged from its
+durable execution record. The switch itself is one function,
+`switch_slot_backend` in `src/kiro_crew/dashboard/chat_handlers.py`, which the
+Phase 2 dropdown will call through a dashboard route of its own.
 
 ## Migration plan
 
@@ -176,9 +191,10 @@ kwargs it has on main. No existing route or tool changes.
 
 - **Change the gateway default.** Rejected: moves every chat and needs a
   restart.
-- **Carry context across the switch** (replay the transcript into the new
-  harness). Rejected for now: harnesses differ in tool and message shapes, and a
-  lossy replay is worse than a clean start the user is told about.
+- **Start the new backend with no memory of the conversation.** Rejected: it
+  defeats the common reason to switch (a spent quota mid-task), and holding
+  history back would need a cutoff in every reader of the transcript that feeds
+  a prompt (replay, Side Chat, recent-session context), not one switch.
 - **Degrade an unavailable pick to Kiro.** Rejected for the same reason as for
   sub-agents: an explicit request that silently changes meaning misleads.
 - **The #15978 design.** Not taken: it kept a second store for the pick and grew

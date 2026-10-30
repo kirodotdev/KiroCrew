@@ -61,6 +61,8 @@ def _slot(key: str = "chat-cov-1") -> _ChatSlot:
 
 def _state(tmp_path, **kwargs) -> DashboardState:
     sessions = MagicMock(count=0)
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     sessions.get_pid = MagicMock(return_value=None)
     sessions.get_slack_link = MagicMock(return_value=(None, None))
     sessions.set_slack_link = MagicMock()
@@ -77,6 +79,8 @@ def _state(tmp_path, **kwargs) -> DashboardState:
     # Left as a bare MagicMock it would answer a truthy object, which the runner
     # would store as the slot's requested model and hand to the crew-log emitter.
     sessions.allocation_requested_model = MagicMock(return_value="")
+    # None: the live session started on the gateway default, not a pick.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.record_failure = AsyncMock()
     sessions.remove_if_unclaimed = AsyncMock(return_value=False)

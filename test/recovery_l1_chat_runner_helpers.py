@@ -47,6 +47,8 @@ class _RecordingSlot(_ChatSlot):
 def _l1_state(tmp_path):
     """A DashboardState whose client ends every turn on an infra refusal."""
     sessions = MagicMock(count=0)
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     sessions.get_pid = MagicMock(return_value=None)
     client = AsyncMock()
     sessions.get_or_create = AsyncMock(return_value=(client, True, False))

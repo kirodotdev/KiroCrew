@@ -472,12 +472,35 @@ class TestEveryCallerPassesThePin:
                         and isinstance(test.comparators[0], ast.Constant)
                         and test.comparators[0].value is None
                     ), where
-        assert calls >= 9, "the scan found too few callers to be looking at the source"
+        assert calls >= 5, "the scan found too few callers to be looking at the source"
         assert missing == []
         # H17: the pin reaches the gate only as the pre-gate check's own result,
         # evaluated in the call's arguments, so an unstartable pin has already
         # refused and nothing stale or unchecked can arrive.
         assert unchecked == []
+
+    def test_every_slot_backend_call_hands_over_the_config(self):
+        # A chat's pre-session readers reach the gate through
+        # ``chat_runner.slot_backend``, which reads the pin from *config*.
+        root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        missing: list[str] = []
+        calls = 0
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "slot_backend(" not in text:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name != "slot_backend":
+                    continue
+                calls += 1
+                if not any(kw.arg == "config" for kw in node.keywords):
+                    missing.append(f"{path.relative_to(root)}:{node.lineno}")
+        assert calls >= 10, "the scan found too few callers to be looking at the source"
+        assert missing == []
 
 
 class TestConfigRoundTrip:

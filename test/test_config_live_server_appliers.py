@@ -379,13 +379,15 @@ class TestServerAppliers:
             # names a lost run if that release never comes.
             await await_until(release, timeout=30, what="the stubbed provider reload")
 
-        slot = SimpleNamespace(model="claude-x", _model_pick_gen=0)
+        slot = SimpleNamespace(model="claude-x", backend="", _model_pick_gen=0)
+        # A chat pinned to a backend keeps its model across a gateway switch.
+        pinned = SimpleNamespace(model="gpt-y", backend="codex", _model_pick_gen=0)
         pushed: list[bool] = []
         state = SimpleNamespace(
             workflow_service=None,
             channel_manager=None,
             sessions=SimpleNamespace(reload_provider_factory=reload_provider_factory),
-            _slots={"s1": slot},
+            _slots={"s1": slot, "s2": pinned},
             push_slots_update=lambda: pushed.append(True),
             _background_tasks=set(),
         )
@@ -409,6 +411,7 @@ class TestServerAppliers:
             await asyncio.gather(*state._background_tasks)
         assert calls == [cfg]
         assert slot.model == "" and slot._model_pick_gen == 1 and pushed == [True]
+        assert pinned.model == "gpt-y" and pinned._model_pick_gen == 0
         # Stamped as the runtime's own write, so a reader that treats a moved
         # generation as a person's pick (a crew's triage switch) skips it.
         assert slot._model_runtime_pick_gen == 1

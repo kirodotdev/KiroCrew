@@ -142,6 +142,7 @@ async def _run_inner_impl(
     from kiro_crew.agent_sdk import capture_prompt_timeout
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
     from kiro_crew.recovery.ladder import InfraError
+    from kiro_crew.subagent_manager import backend_inheritance as _inherit
     from kiro_crew.taskq.dependency import classify_exception
 
     # The per-scope dependency coordinator (None without a durable queue):
@@ -338,6 +339,8 @@ async def _run_inner_impl(
     # is a Kiro request and must reach the factory under a non-Kiro default.
     if info.backend is not None:
         extra_kwargs["backend_override"] = info.backend
+    elif info.parent_session_key and not own_worker and not info.conversation_key:
+        _inherit.inherit_parent_backend(self._manager._sessions, info, extra_kwargs)
     if info.bare:
         extra_kwargs["bare"] = True
     if info.allowed_tools:

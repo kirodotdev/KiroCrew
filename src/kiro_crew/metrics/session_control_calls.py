@@ -43,7 +43,7 @@ server's tools, and their outcomes into one series.
   answered with (:func:`outcome_for_status`), or ``error`` for a handler that
   raised.
 
-At most 20 x 18 x 2 = 720 series: twenty ``op`` values (the nineteen named
+At most 21 x 18 x 2 = 756 series: twenty-one ``op`` values (the twenty named
 verbs plus ``other``, which the registered ``revive`` and ``history`` routes
 reach), eighteen ``caller`` values and two outcomes. A backend that should not
 carry all of them can drop ``outcome`` from its dimensions.
@@ -107,6 +107,7 @@ SESSION_CONTROL_OPS: Final[frozenset[str]] = frozenset(
         "reload",
         "rename",
         "set_model",
+        "set_backend",
         "end_wait",
         "adopt",
         "handoff",

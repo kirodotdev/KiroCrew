@@ -615,6 +615,7 @@ class _NoHooks:
 #: An async method's answer is what awaiting it gives.
 _SESSION_ANSWERS: dict[str, Any] = {
     "aflush": None,
+    "allocation_backend_override": None,
     "allocation_requested_model": "",
     "begin_turn": None,
     # The healthy session cuts its turn cleanly at the ceiling: the native

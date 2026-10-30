@@ -368,6 +368,19 @@ def fresh_start_unclaimed(self: SessionManager, key: str) -> bool:
     return session is not None and session.first_turn is FirstTurnState.FRESH
 
 
+def allocation_backend_override(self: SessionManager, key: str) -> str | None:
+    """Return the ``backend_override`` *key*'s live session started with, or ``None``."""
+    session = self._sessions.get(self._fold_key(key))
+    return session.backend_override if session is not None else None
+
+
+def record_backend_override(self: SessionManager, key: str, override: str | None) -> None:
+    """Record *override* as the backend pick *key*'s live session runs on."""
+    session = self._sessions.get(self._fold_key(key))
+    if session is not None:
+        session.backend_override = override
+
+
 def record_effort_override(self: SessionManager, key: str, level: str) -> None:
     """Record *level*, picked on *key*'s live session, as its effort override.
 

@@ -200,6 +200,16 @@ def init_session_fields(self: _ChatSlot) -> None:
     # choice landed even when that choice returned to the level it saw.
     self._effort_pick_gen = 0
     self._reasoning_effort = ""
+    # The backend this chat runs on, spelled as a governance policy id
+    # (``"kiro"``, ``"codex"`` ...). "" = the gateway default. Read when the
+    # session is allocated (``chat_runner.slot_backend_override``).
+    self.backend = ""
+    # A switch notice held while a turn streams, posted when its cycle ends
+    # (queue_cycle): appended mid-stream it would split the reply's chunk rows.
+    self._held_backend_notice = ""
+    # The pick a "your backend is not available" notice was last posted for,
+    # so a pick the gate keeps degrading is announced once, not every turn.
+    self._degraded_pick_noticed = ""
     # Per-session auto-compact threshold override (percent). None = follow
     # the global session.autocompact_pct. Persisted with the slot and
     # re-seeded into the SessionManager after restore.
