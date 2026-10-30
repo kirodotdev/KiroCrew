@@ -141,7 +141,7 @@ async def test_a_real_compact_failure_still_warns_counts_and_recycles(monkeypatc
     assert outcome == "recycled"
     assert shutdowns == [0], "the failed session is recycled once"
     assert counted == [
-        {"success": False}
+        {"success": False, "trigger": "threshold"}
     ], "a recycle after a failed /compact counts as a failed compaction"
     assert [
         r

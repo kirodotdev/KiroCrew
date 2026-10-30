@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
@@ -198,13 +199,22 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     # status receipt is missing or arrives late.
     await self._ready_confirmed_session()
     self.essential_delivery.prepare_command(command)
-    send = (
-        self._client.stream_events
-        if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
-        else self._client.stream_command
-    )
+    if stale_compaction.is_compact_command(command):
+        # This compaction's status is its own, not an abandoned idle one's.
+        stale_compaction.clear_provider_stale_compaction_status(self)
+    native = self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    send = self._client.stream_command if native else self._client.stream_events
+    # Whether THIS command makes a model request is the transport's per-command
+    # answer: a session handle keeps /compact and /help on session/prompt even
+    # on kiro, and only a real commands/execute call leaves the floor alone.
+    per_command = getattr(self._client, "command_is_native", None)
+    makes_no_request = per_command(command) if native and callable(per_command) else native
     async with aclosing(
-        self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
+        # Native commands/execute makes no model request, so it never moves
+        # the idle-compaction request floor.
+        self.essential_delivery.stream(
+            command, send, lambda: self.context_incarnation, requests_model=not makes_no_request
+        )
     ) as events:
         async for e in events:
             yield self._to_llm_event(e)
@@ -214,6 +224,7 @@ async def compact(self: AcpProvider, context: str = "") -> None:
     """Trigger native /compact with optional context-preserving prompt."""
     await self._ready_confirmed_session()
     self.essential_delivery.invalidate()
+    stale_compaction.clear_provider_stale_compaction_status(self)
     if context:
         # Truncate to avoid overwhelming the compact prompt
         prompt = context[:4000] if len(context) > 4000 else context

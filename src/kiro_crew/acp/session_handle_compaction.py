@@ -30,6 +30,7 @@ from kiro_crew.acp._dispatch import (
     redact_text,
 )
 from kiro_crew.acp.client import compaction_failure_detail, parse_slash_command
+from kiro_crew.acp.stale_compaction import is_stale_compaction_status
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_INLINE_COMPACTION,
@@ -263,6 +264,8 @@ async def wait_for_compaction(
                 params = msg.params or {}
                 status = params.get("status", {})
                 s_type = status.get("type", "") if isinstance(status, dict) else str(status)
+                if is_stale_compaction_status(self, s_type):
+                    continue
                 if s_type in ("completed", "failed"):
                     if s_type == "completed":
                         # This drain path bypasses the prompt dispatch

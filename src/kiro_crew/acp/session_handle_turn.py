@@ -233,6 +233,22 @@ async def prompt(
         await turn.aclose()
 
 
+def command_is_native(self: AcpSessionHandle, command: str) -> bool:
+    """Whether :meth:`stream_command` sends *command* over ``commands/execute``.
+
+    Positive capability gate: only the kiro harness implements
+    _kiro.dev/commands/execute, so native execution requires
+    acp_backend == ACP_BACKEND_KIRO — every other harness (KAS today,
+    any harness added later) fails CLOSED onto the prompt transport
+    instead of inheriting a kiro-only RPC (harness parity H5/H6). A native
+    command makes no model request; the prompt transport does.
+    """
+    cmd_name, _ = parse_slash_command(command)
+    return (
+        self._runtime.acp_backend == ACP_BACKEND_KIRO and cmd_name not in _PROMPT_TRANSPORT_COMMANDS
+    )
+
+
 async def stream_command(
     self: AcpSessionHandle, command: str, timeout: float | None = None
 ) -> AsyncIterator[AcpEvent]:
@@ -264,15 +280,7 @@ async def stream_command(
     command turn; an explicit ``timeout`` still wins.
     """
     cmd_name, cmd_args = parse_slash_command(command)
-    # Positive capability gate: only the kiro harness implements
-    # _kiro.dev/commands/execute, so native execution requires
-    # acp_backend == ACP_BACKEND_KIRO — every other harness (KAS today,
-    # any harness added later) fails CLOSED onto the prompt transport
-    # instead of inheriting a kiro-only RPC (harness parity H5/H6).
-    native = (
-        self._runtime.acp_backend == ACP_BACKEND_KIRO and cmd_name not in _PROMPT_TRANSPORT_COMMANDS
-    )
-    if not native:
+    if not command_is_native(self, command):
         async for event in self.prompt(command, timeout=timeout):
             yield event
         return

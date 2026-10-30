@@ -59,6 +59,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
 )
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
+from kiro_crew.acp.stale_compaction import is_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -952,6 +953,9 @@ async def _dispatch_events(
                 params = msg.params or {}
                 status = params.get("status", {})
                 status_type = status.get("type", "") if isinstance(status, dict) else str(status)
+                if not msg.fanout_no_owner and is_stale_compaction_status(self, status_type):
+                    # The late status of an abandoned idle compaction, not this turn's.
+                    continue
                 # A compaction notification carrying no sessionId is fanned
                 # out to EVERY co-tenant queue (AcpRuntime marks the copies
                 # fanout_no_owner once more than one session is registered),

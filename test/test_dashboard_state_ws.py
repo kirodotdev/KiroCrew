@@ -980,6 +980,40 @@ class TestCompactCallbackWiring:
         assert "92%" in added["content"]
 
     @pytest.mark.asyncio
+    async def test_an_idle_failure_claims_no_excerpt(self, state: DashboardState) -> None:
+        """An idle compaction that failed or reported nothing kept the session as it was."""
+        from kiro_crew.dashboard.state_parts.session_events import (
+            _AUTO_COMPACT_FAILED_NOTICE,
+            _AUTO_COMPACT_IDLE_FAILED_NOTICE,
+            _AUTO_RECYCLE_NOTICE,
+            _RESTART_MEMORY_TAIL,
+        )
+        from kiro_crew.session_compaction import (
+            COMPACT_OUTCOME_COMPACTED_IDLE,
+            COMPACT_OUTCOME_RECYCLED,
+        )
+
+        slot = state.get_or_create_slot("chat-1")
+        cb = self._captured_callback(state)
+
+        await cb(
+            "dashboard:chat-1",
+            60.0,
+            success=False,
+            outcome=COMPACT_OUTCOME_COMPACTED_IDLE,
+        )
+        failed = slot.messages[-1]["content"]
+        assert failed == _AUTO_COMPACT_IDLE_FAILED_NOTICE.format(pct=60)
+        assert failed != _AUTO_COMPACT_FAILED_NOTICE.format(pct=60)
+        assert _RESTART_MEMORY_TAIL not in failed
+        assert "excerpt" not in failed
+        assert "nothing was changed" in failed
+
+        # The threshold path's recycle keeps its own notice and the excerpt tail.
+        await cb("dashboard:chat-1", 85.0, success=True, outcome=COMPACT_OUTCOME_RECYCLED)
+        assert slot.messages[-1]["content"] == _AUTO_RECYCLE_NOTICE.format(pct=85)
+
+    @pytest.mark.asyncio
     async def test_callback_broadcasts_context_usage_reset(self, state: DashboardState) -> None:
         ws = MagicMock(closed=False)
         ws.send_str = AsyncMock()
@@ -995,6 +1029,46 @@ class TestCompactCallbackWiring:
         # reset lets the frontend drop its stored token counts too — they
         # describe the pre-compaction transcript.
         assert context[0]["data"] == {"slot": "chat-1", "pct": 0.0, "reset": True}
+
+    @pytest.mark.asyncio
+    async def test_an_idle_failure_keeps_the_context_reading(self, state: DashboardState) -> None:
+        """A kept session's usage did not drop, so only real compactions reset the meter."""
+        from kiro_crew.session_compaction import (
+            COMPACT_OUTCOME_COMPACTED,
+            COMPACT_OUTCOME_COMPACTED_IDLE,
+        )
+
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        state.register_ws(ws)
+        state.get_or_create_slot("chat-1")
+        state.broadcast_context_usage("chat-1", {"slot": "chat-1", "pct": 61.0})
+        stored = dict(state._context_snapshots["chat-1"])
+        ws.send_str.reset_mock()
+        cb = self._captured_callback(state)
+
+        def resets() -> list[dict]:
+            payloads = [json.loads(c.args[0]) for c in ws.send_str.call_args_list]
+            return [
+                p["data"]
+                for p in payloads
+                if p.get("type") == "context_usage" and p["data"].get("reset")
+            ]
+
+        await cb(
+            "dashboard:chat-1",
+            61.0,
+            success=False,
+            outcome=COMPACT_OUTCOME_COMPACTED_IDLE,
+        )
+        assert resets() == []
+        assert state._context_snapshots["chat-1"] == stored
+
+        await cb("dashboard:chat-1", 61.0, success=True, outcome=COMPACT_OUTCOME_COMPACTED_IDLE)
+        assert resets() == [{"slot": "chat-1", "pct": 0.0, "reset": True}]
+
+        await cb("dashboard:chat-1", 92.0, success=True, outcome=COMPACT_OUTCOME_COMPACTED)
+        assert len(resets()) == 2
 
     @pytest.mark.asyncio
     async def test_callback_broadcast_runs_even_if_append_fails(

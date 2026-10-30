@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_adopted_autocompact_pct``, ``_cfg``.
 
-Instance fields read: ``_background_runtime``.
+Instance fields read: ``_background_runtime``, ``_compaction``.
 """
 
 from __future__ import annotations
@@ -111,6 +111,12 @@ async def _on_config_change(self: SessionManager, change: ConfigChange) -> None:
     else:
         async with self._lock:
             self._cfg = change.new
+    if not getattr(getattr(change.new, "session", None), "idle_compaction", False):
+        # Turning the setting off ends every pending idle stretch now, rather
+        # than leaving each timer to decline when it fires.
+        compaction = self.__dict__.get("_compaction")
+        if compaction is not None:
+            compaction.idle.cancel_all()
     if change.touched("watchdog", "agent.chat_turn_timeout_secs") or any(
         path.rsplit(".", 1)[-1].startswith("watchdog_") for path in change.under("agents")
     ):

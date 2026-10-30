@@ -754,3 +754,122 @@ class TestCompactionFailureIsTransient:
         }
         assert compaction_failure_detail(frame) == "High traffic — try another model."
         assert compaction_failure_is_transient(frame) is True
+
+
+class TestStaleIdleCompactionStatus:
+    """The late status of an idle ``/compact`` Crew stopped waiting for.
+
+    Without the mark, a late ``failed`` read by the next turn arms the
+    post-failure budget, which ends a silent turn with
+    ``STOP_REASON_COMPACTION_FAILED`` and the dashboard then resets the session;
+    a late ``completed`` resets the meter and announces a compaction mid-turn.
+    """
+
+    def _status(self, status_type: str):
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        return JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS, params={"status": {"type": status_type}}
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_late_failed_status_does_not_end_the_next_turn(self):
+        from kiro_crew.acp.stale_compaction import discard_stale_compaction_status
+        from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, JsonRpcMessage
+
+        client = AcpClient()
+        discard_stale_compaction_status(client, within_secs=300.0)
+        complete_msg = JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
+
+        async def fake_prompt_loop(req_id, timeout):
+            yield "compaction", self._status("failed")
+            yield "complete", complete_msg
+
+        client.ensure_ready = AsyncMock()
+        client._send_prompt = AsyncMock(return_value=1)
+        client._prompt_loop = fake_prompt_loop
+
+        events = [ev async for ev in client.stream_events("test")]
+
+        assert EVENT_COMPACTION_STATUS not in [e.kind for e in events]
+        assert events[-1].kind == EVENT_COMPLETE
+        assert events[-1].stop_reason == "end_turn"
+        # The budget that would end a silent turn was never armed.
+        assert client._compaction_failed_at is None
+
+    @pytest.mark.asyncio
+    async def test_the_mark_ends_at_the_first_terminal_status(self, tmp_path):
+        from kiro_crew.acp.stale_compaction import discard_stale_compaction_status
+
+        client = AcpClient(work_dir=tmp_path)
+        discard_stale_compaction_status(client, within_secs=300.0)
+        assert client._handle_compaction_status(self._status("started")) is True
+        assert client._handle_compaction_status(self._status("completed")) is True
+        # The next one is a real compaction's.
+        assert client._handle_compaction_status(self._status("failed")) is False
+        assert client._compaction_failed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_the_mark_lapses_after_its_window(self, tmp_path, monkeypatch):
+        from kiro_crew.acp import stale_compaction
+        from kiro_crew.testing.clock import ManualClock
+
+        clock = ManualClock()
+        clock.install(monkeypatch, stale_compaction)
+        client = AcpClient(work_dir=tmp_path)
+        stale_compaction.discard_stale_compaction_status(client, within_secs=30.0)
+        clock.advance(29.0)
+        assert client._handle_compaction_status(self._status("started")) is True
+        clock.advance(1.0)
+        assert client._handle_compaction_status(self._status("failed")) is False
+
+    @pytest.mark.asyncio
+    async def test_wait_for_compaction_skips_the_late_status(self, tmp_path):
+        from kiro_crew.acp.stale_compaction import discard_stale_compaction_status
+
+        client = AcpClient(work_dir=tmp_path)
+        discard_stale_compaction_status(client, within_secs=300.0)
+        frames = [self._status("failed"), self._status("completed")]
+
+        async def _read(timeout: float = 0.0):
+            return frames.pop(0) if frames else None
+
+        client._read_message = _read
+        client._drain_post_compaction_metadata = AsyncMock()
+        result = await client.wait_for_compaction(timeout=5.0)
+        assert result["type"] == "completed"
+
+    def test_only_an_acp_client_or_session_handle_is_marked(self):
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.stale_compaction import discard_provider_stale_compaction_status
+
+        client = AcpClient()
+        assert discard_provider_stale_compaction_status(
+            SimpleNamespace(client=client), within_secs=1.0
+        )
+        assert client._stale_compaction_until is not None
+        assert not discard_provider_stale_compaction_status(
+            SimpleNamespace(client=SimpleNamespace()), within_secs=1.0
+        )
+
+    def test_a_new_compact_clears_the_mark(self):
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.stale_compaction import (
+            clear_provider_stale_compaction_status,
+            discard_provider_stale_compaction_status,
+            is_compact_command,
+        )
+
+        client = AcpClient()
+        provider = SimpleNamespace(_client=client)
+        assert discard_provider_stale_compaction_status(provider, within_secs=300.0)
+        clear_provider_stale_compaction_status(provider)
+        assert client._stale_compaction_until is None
+        # The next compaction's terminal status is read, not dropped.
+        assert client._handle_compaction_status(self._status("completed")) is False
+        assert is_compact_command("/compact")
+        assert is_compact_command("/compact keep the plan")
+        assert not is_compact_command("/compaction")
+        assert not is_compact_command("/context")

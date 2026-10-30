@@ -313,8 +313,9 @@ def test_there_is_one_budget_resolver():
 
 #: Variables a production call may pass that already hold a resolved budget:
 #: the coordinator's remaining slice of its own resolved budget
-#: (``session_compaction.py``).
-_RESOLVED_BUDGET_NAMES = frozenset({"result_wait_used"})
+#: (``session_compaction.py``), and the idle drain's short bound capped by the
+#: same resolver (``session_idle_compaction.py``).
+_RESOLVED_BUDGET_NAMES = frozenset({"result_wait_used", "drain_budget"})
 
 
 def _call_name(func: ast.expr) -> str | None:

@@ -617,9 +617,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         background_wake_pending,
         chat_done_payload,
         chunk_generation,
+        idle_compaction_blocker,
         subagents_attached,
         subagents_attached_async,
         synthesis_fire_verdict,
+        wire_session_idle_compaction_probe,
         wire_session_subagent_probe,
     )
     from kiro_crew.dashboard.chat_utils_display import (  # noqa: F401

@@ -369,3 +369,60 @@ def wire_session_subagent_probe(state: DashboardState) -> None:
         return await subagents_attached_async(state, slot, session_key, "rss_recycle")
 
     state.sessions.set_subagent_probe(_probe)
+    # The idle-compaction probe reads the same slots and is wired at the same
+    # two points, so it is installed with this one.
+    wire_session_idle_compaction_probe(state)
+
+
+def idle_compaction_blocker(state: DashboardState, session_key: str) -> str | None:
+    """What keeps *session_key*'s chat from being idle, or ``None`` when nothing does.
+
+    The dashboard half of the ``session.idle_compaction`` check: the manager
+    reads its own turn permit, queue, recycle marker and probes, and asks this
+    for the signals only the dashboard holds. Synchronous and in-memory, because
+    the manager reads it in the step it commits the compaction. A session with no
+    open tab is refused too: no one is about to return to it through the
+    dashboard.
+    """
+    slot_key = dashboard_slot_key(session_key)
+    slot = state.get_slot(slot_key) if slot_key else None
+    if slot is None:
+        return "no_slot"
+    if slot.running:
+        return "slot_turn"
+    wake = slot._wake_starting_task
+    if wake is not None and not wake.done():
+        return "slot_turn"
+    if slot.queue_depth:
+        return "slot_queue"
+    if slot._question_pending:
+        return "question"
+    if slot._compacting or slot._pending_synthesis or slot._subagent_deliveries_inflight:
+        return "slot_activity"
+    approvals = getattr(state, "_pending_approvals", {}) or {}
+    if any(record.get("slot") == slot.key for record in approvals.values()):
+        return "approval"
+    # An unfinished workflow run delivers into this session and starts a turn
+    # there; the same registry signal ``background_wake_pending`` reads.
+    workflows = getattr(state, "workflow_service", None)
+    if workflows is not None and workflows.registry.has_pending_work_for(session_key):
+        return "workflow"
+    # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
+    from kiro_crew.autonudge import get_instance
+
+    service = get_instance()
+    loop = service.get_by_slot(slot.key) if service is not None else None
+    if loop is not None and loop.active:
+        return "monitor_loop"
+    return None
+
+
+def wire_session_idle_compaction_probe(state: DashboardState) -> None:
+    """Hand ``SessionManager`` the probe its idle compaction consults (see above).
+
+    A manager double without the setter is left alone: it runs no idle
+    compaction, and its manager answers every idle check busy.
+    """
+    setter = getattr(state.sessions, "set_idle_compaction_probe", None)
+    if callable(setter):
+        setter(lambda session_key: idle_compaction_blocker(state, session_key))

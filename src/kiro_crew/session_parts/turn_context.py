@@ -155,6 +155,32 @@ async def compact_if_needed(self: SessionManager, key: str) -> str:
     return await self._compaction.compact_if_needed(key)
 
 
+async def compact_if_idle(self: SessionManager, key: str, *, generation: int | None = None) -> str:
+    """Delegate the once-per-idle-stretch compaction ``session.idle_compaction`` fires."""
+    return await self._compaction.idle.compact_if_idle(key, generation=generation)
+
+
+def cancel_idle_compaction(self: SessionManager, key: str) -> bool:
+    """End *key*'s idle-compaction stretch; the session is in use again.
+
+    Called from the claim, registry-change and config paths, some of which run
+    on a manager a test built without its compaction boundary, so a manager
+    with none answers False.
+    """
+    compaction = self.__dict__.get("_compaction")
+    if compaction is None:
+        return False
+    return bool(compaction.idle.cancel(key))
+
+
+def forget_idle_compaction(self: SessionManager, key: str) -> bool:
+    """End *key*'s idle stretch and drop its idle state; its session was replaced or removed."""
+    compaction = self.__dict__.get("_compaction")
+    if compaction is None:
+        return False
+    return bool(compaction.idle.forget(key))
+
+
 def set_compact_callback(self: SessionManager, cb: _CompactCallback | None) -> None:
     """Register the compaction completion callback."""
     self._compaction.set_compact_callback(cb)
@@ -278,7 +304,11 @@ def _trigger_compaction(
 
 
 async def _compact_session(self: SessionManager, key: str, pct: float) -> str:
-    """Delegate backend-specific compaction execution."""
+    """Delegate backend-specific compaction execution.
+
+    The trigger is not a parameter here: the coordinator records it when it
+    commits the compaction and reads it back, so this seam keeps its shape.
+    """
     return await self._compaction._compact_session(key, pct)
 
 

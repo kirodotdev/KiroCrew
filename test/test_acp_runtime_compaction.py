@@ -513,3 +513,44 @@ async def test_wait_for_compaction_timeout_restores_a_concurrent_frame():
     assert result == {"type": "timeout"}
     # The concurrent frame is back on the queue for the next reader, not dropped.
     assert q["sA"].get_nowait() is live_frame
+
+
+@pytest.mark.asyncio
+async def test_a_late_idle_compaction_status_is_dropped_by_the_next_turn():
+    """A shared-runtime turn drops the late status of an abandoned idle
+    ``/compact``: a ``failed`` there would arm the budget that ends the turn
+    with the compaction stop reason. The next terminal status is its own."""
+    from kiro_crew.acp.stale_compaction import discard_stale_compaction_status
+    from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, METHOD_COMPACTION_STATUS
+
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    discard_stale_compaction_status(handle, within_secs=300.0)
+    task = await _start_reader(rt)
+    try:
+        events = []
+        armed: list[object] = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+                armed.append(handle._compaction_failed_at)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        for status_type in ("failed", "completed"):
+            _feed(
+                reader,
+                {
+                    "method": METHOD_COMPACTION_STATUS,
+                    "params": {"sessionId": "sA", "status": {"type": status_type}},
+                },
+            )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await await_until(driver, what="the driver finishing its turn")
+        comp = [e.text for e in events if e.kind == EVENT_COMPACTION_STATUS]
+        assert comp == ["completed"]
+        assert all(a is None for a in armed)
+    finally:
+        await _stop_reader(task)

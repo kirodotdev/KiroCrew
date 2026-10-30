@@ -101,7 +101,13 @@ def session_generation(self: SessionManager, key: str) -> int:
 
 
 def _advance_session_generation(self: SessionManager, key: str) -> int:
-    """Advance ownership generation after registry publication/removal."""
+    """Advance ownership generation after registry publication/removal.
+
+    Every reset, recycle and removal passes here, so this is also where the
+    key's idle-compaction stretch ends and its idle state is dropped: the
+    session it was armed on is gone.
+    """
+    self.forget_idle_compaction(key)
     return self._allocation_boundary().advance_ownership_generation(key)
 
 
@@ -135,6 +141,7 @@ def _spawn_in_flight(self: SessionManager, key: str) -> str | None:
 
 async def try_acquire(self: SessionManager, key: str) -> bool:
     """Try to acquire an exact-key idle session."""
+    self.cancel_idle_compaction(key)
     return await self._allocation_boundary().try_acquire(key)
 
 
@@ -251,7 +258,10 @@ async def get_or_create(
 
     ``start_priority`` orders a cold start in the start queues; a caller passes
     FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+
+    A claim is activity, so it ends the key's idle-compaction stretch first.
     """
+    self.cancel_idle_compaction(key)
     if key == BACKGROUND_KEY:
         # ``_bg`` is one persistent session shared by every background job,
         # so it is always the background agent, whichever caller reaches it

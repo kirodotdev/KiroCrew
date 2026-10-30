@@ -610,6 +610,7 @@ def command_target(env, shared):
         handle = SimpleNamespace(
             prompt=wire.stream_events,
             stream_command=wire.stream_events,
+            command_is_native=lambda _command: True,
             session_id="shared",
             served_model="",
             native_context_documents={},

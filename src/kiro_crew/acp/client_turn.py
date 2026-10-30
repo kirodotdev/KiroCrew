@@ -1215,7 +1215,9 @@ async def _dispatch_events(
         elif action == "metadata":
             self._track_metadata(msg)
         elif action == "compaction":
-            self._handle_compaction_status(msg)
+            if self._handle_compaction_status(msg):
+                # The late status of an abandoned idle compaction, not this turn's.
+                continue
             params = msg.params or {}
             status = params.get("status", {})
             status_type = status.get("type", "") if isinstance(status, dict) else str(status)

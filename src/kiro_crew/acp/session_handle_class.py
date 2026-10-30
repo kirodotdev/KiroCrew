@@ -227,6 +227,7 @@ class AcpSessionHandle:
     wait_turn_done = _sh_turn.wait_turn_done
     prompt = _sh_turn.prompt
     stream_command = _sh_turn.stream_command
+    command_is_native = _sh_turn.command_is_native
     _run_turn = _sh_turn._run_turn
     _close_abandoned_turn = _sh_turn._close_abandoned_turn
     # The per-turn event loop: ``kiro_crew.acp.session_handle_dispatch``.

@@ -16,6 +16,9 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
+
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -532,6 +535,68 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
 # Every other member is read by the marker alone, so its own ``think`` call with
 # that title is never taken for a compaction.
 ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
+
+# How long each backend's provider keeps a conversation's prompt prefix cached
+# after the last request, in seconds, for ``session.idle_compaction``. A backend
+# absent from the table, or whose resolver answers ``None``, has a lifetime Crew
+# cannot know and is never idle-compacted: guessing too long compacts after the
+# cache is gone, guessing too short spends a model call for nothing.
+#
+# kiro: 300 s, measured from recorded kiro-cli 2.32.0 turns. A turn starting at
+# 290-300 s after the previous one ended paid more than twice the warm cost on 21%
+# of turns, and one starting at 300-310 s on 99%.
+# codex: 1800 s. The provider documents a 30 minute minimum after the last write or
+# reuse, and codex-acp sends a stable cache key with no retention override.
+# claude: only when ``CLAUDE_CODE_PROMPT_CACHE_TTL`` names the tier. Claude Code
+# picks a one hour or a five minute cache from the account's billing state, which
+# Crew cannot see, so with the variable unset the backend is skipped.
+# kas manages its own compaction, deepseek can only be recycled, and opencode,
+# goose and pi cache at whatever provider the user configured: all absent.
+CLAUDE_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_PROMPT_CACHE_TTL"
+#: The values of ``CLAUDE_PROMPT_CACHE_TTL_ENV`` Crew reads, in seconds.
+CLAUDE_PROMPT_CACHE_TTLS: Mapping[str, float] = MappingProxyType({"5m": 300.0, "1h": 3600.0})
+
+
+def claude_prompt_cache_lifetime(env: Mapping[str, str]) -> float | None:
+    """The claude cache tier *env* names, or ``None`` when it names none Crew knows."""
+    return CLAUDE_PROMPT_CACHE_TTLS.get(str(env.get(CLAUDE_PROMPT_CACHE_TTL_ENV, "")).strip())
+
+
+PROMPT_CACHE_LIFETIMES: Mapping[str, Callable[[Mapping[str, str]], float | None]] = (
+    MappingProxyType(
+        {
+            ACP_BACKEND_KIRO: lambda _env: 300.0,
+            ACP_BACKEND_CODEX: lambda _env: 1800.0,
+            ACP_BACKEND_CLAUDE: claude_prompt_cache_lifetime,
+        }
+    )
+)
+
+#: A lifetime at or under this many seconds fires a fixed margin early; a longer
+#: one fires at a fraction of itself.
+PROMPT_CACHE_SHORT_LIFETIME_SECS = 600.0
+#: How early an idle compaction fires on a short lifetime. It covers the time from
+#: the trigger to the request reaching the provider. The lifetime counts from the
+#: start of the last request, so the timer is measured from the provider's request
+#: floor (the start of the turn's last model request), not from the turn end. This
+#: one value sets kiro's fire time, 255 s, which the idle-compaction RFC's Phase 1
+#: entry measurement kept; the 255 to 285 s sweep is still open there.
+PROMPT_CACHE_SHORT_MARGIN_SECS = 45.0
+#: The fraction of a long lifetime after which an idle compaction fires.
+PROMPT_CACHE_LONG_FIRE_FRACTION = 0.9
+
+
+def prompt_cache_lifetime_secs(backend: str, env: Mapping[str, str]) -> float | None:
+    """The prompt-cache lifetime *backend* runs with under launch *env*, or ``None``."""
+    resolver = PROMPT_CACHE_LIFETIMES.get(backend)
+    return None if resolver is None else resolver(env)
+
+
+def idle_compaction_delay_secs(lifetime_secs: float) -> float:
+    """Seconds of idleness after which a chat with this cache lifetime is compacted."""
+    if lifetime_secs <= PROMPT_CACHE_SHORT_LIFETIME_SECS:
+        return max(lifetime_secs - PROMPT_CACHE_SHORT_MARGIN_SECS, 0.0)
+    return lifetime_secs * PROMPT_CACHE_LONG_FIRE_FRACTION
 
 
 # Backends implementing ``_kiro.dev/commands/execute`` — the kiro extension that

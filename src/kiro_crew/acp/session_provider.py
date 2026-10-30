@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
+from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -778,11 +779,18 @@ class AcpSessionProvider(LLMProvider):
         # so the next warm turn resends the complete snapshot even when the
         # status receipt is missing or arrives late.
         self.essential_delivery.prepare_command(command)
+        if stale_compaction.is_compact_command(command):
+            # This compaction's status is its own, not an abandoned idle one's.
+            stale_compaction.clear_provider_stale_compaction_status(self)
         claim = self._claim_shared_turn()
         try:
             async with aclosing(
                 self.essential_delivery.stream(
-                    command, self._handle.stream_command, lambda: self.context_incarnation
+                    command,
+                    self._handle.stream_command,
+                    lambda: self.context_incarnation,
+                    # Native commands/execute makes no model request.
+                    requests_model=not self._handle.command_is_native(command),
                 )
             ) as events:
                 async for event in events:
@@ -1348,6 +1356,7 @@ class AcpSessionProvider(LLMProvider):
     async def compact(self, context: str = "") -> None:
         """Trigger context compaction."""
         self.essential_delivery.invalidate()
+        stale_compaction.clear_provider_stale_compaction_status(self)
         await self._guarded(self._handle.compact(context))
 
     async def wait_for_compaction(

@@ -685,6 +685,9 @@ class SessionManager:
     agent_autocompact_default = _turn_context.agent_autocompact_default
     set_autocompact_pct = _turn_context.set_autocompact_pct
     compact_if_needed = _turn_context.compact_if_needed
+    compact_if_idle = _turn_context.compact_if_idle
+    cancel_idle_compaction = _turn_context.cancel_idle_compaction
+    forget_idle_compaction = _turn_context.forget_idle_compaction
     set_compact_callback = _turn_context.set_compact_callback
     set_compacting_callback = _turn_context.set_compacting_callback
     is_compacting = _turn_context.is_compacting
@@ -796,6 +799,8 @@ class SessionManager:
     _has_attached_subagents = _sweeps._has_attached_subagents
     set_injection_probe = _sweeps.set_injection_probe
     _has_pending_injection = _sweeps._has_pending_injection
+    set_idle_compaction_probe = _sweeps.set_idle_compaction_probe
+    _idle_compaction_blocker = _sweeps._idle_compaction_blocker
     _expire_idle_hook = _sweeps._expire_idle_hook
     _bg_drain_reap_hook = _sweeps._bg_drain_reap_hook
     _orphan_mcp_hook = _sweeps._orphan_mcp_hook
@@ -852,6 +857,9 @@ class SessionManager:
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None
+        # Installed by the dashboard (set_idle_compaction_probe); None means no
+        # chat can be shown idle, so no idle compaction runs.
+        self._idle_compaction_probe: "Callable[[str], str | None] | None" = None
         # Both cold-start widths are restart settings. Built on the gateway boot
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues

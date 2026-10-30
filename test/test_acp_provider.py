@@ -573,6 +573,99 @@ class TestCompactRouting:
         assert len(body) == 4000
 
 
+class TestStaleCompactionMarkEndsAtANewCompact:
+    """An abandoned idle ``/compact`` marks the provider's status reader. A
+    compaction Crew starts later on that provider (the threshold path's
+    ``stream_command("/compact")``, a manual or channel ``compact()``) must
+    settle on its own status, not have it dropped as the abandoned one's."""
+
+    @staticmethod
+    def _status(status_type: str):
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        return JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS, params={"status": {"type": status_type}}
+        )
+
+    def _dedicated(self, tmp_path: Path, frames: list) -> tuple[AcpProvider, object]:
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.stale_compaction import discard_provider_stale_compaction_status
+
+        provider = _build_provider(backend="")
+        client = AcpClient(work_dir=tmp_path)
+        client.ensure_ready = AsyncMock()
+        client.confirm_member_projection = AsyncMock()
+        client.stream_command = MagicMock(return_value=_async_iter([]))
+        client.stream_events = MagicMock(return_value=_async_iter([]))
+        client._drain_post_compaction_metadata = AsyncMock()
+
+        async def _read(timeout: float = 0.0):
+            return frames.pop(0) if frames else None
+
+        client._read_message = _read
+        provider._client = client
+        assert discard_provider_stale_compaction_status(provider, within_secs=300.0)
+        return provider, client
+
+    @pytest.mark.asyncio
+    async def test_a_threshold_compact_inside_the_window_reads_its_own_completion(self, tmp_path):
+        provider, client = self._dedicated(tmp_path, [self._status("completed")])
+
+        await _drain(provider.stream_command("/compact"))
+        result = await provider.wait_for_compaction(timeout=5.0)
+
+        assert result["type"] == "completed"
+        assert client._stale_compaction_until is None
+
+    @pytest.mark.asyncio
+    async def test_a_manual_compact_inside_the_window_reads_its_own_completion(self, tmp_path):
+        provider, client = self._dedicated(tmp_path, [self._status("completed")])
+
+        await provider.compact()
+        result = await provider.wait_for_compaction(timeout=5.0)
+
+        assert result["type"] == "completed"
+        assert client._stale_compaction_until is None
+
+    @pytest.mark.asyncio
+    async def test_another_slash_command_keeps_the_mark(self, tmp_path):
+        provider, client = self._dedicated(tmp_path, [])
+
+        await _drain(provider.stream_command("/context"))
+
+        assert client._stale_compaction_until is not None
+
+    @pytest.mark.asyncio
+    async def test_the_shared_runtime_handle_is_marked_and_cleared(self):
+        """The kiro path swaps an ``AcpSessionProvider`` into ``_client``; the
+        mark must reach its handle, and a ``/compact`` through it clears it."""
+        from kiro_crew.acp.stale_compaction import discard_provider_stale_compaction_status
+
+        handle = AcpSessionHandle("s1", asyncio.Queue(), MagicMock())
+
+        async def _stream_command(command: str, *args, **kwargs):
+            yield AcpEvent(kind="complete", stop_reason="end_turn")
+
+        # Whichever transport the routing picks for this backend.
+        handle.stream_command = _stream_command
+        handle.prompt = _stream_command
+        provider = _build_provider(backend="")
+        session_provider = AcpSessionProvider(handle, runtime=MagicMock())
+        session_provider._claim_shared_turn = MagicMock(return_value=None)
+        session_provider._end_shared_turn = AsyncMock()
+        provider._client = session_provider
+
+        assert discard_provider_stale_compaction_status(provider, within_secs=300.0)
+        assert handle._stale_compaction_until is not None
+        await _drain(provider.stream_command("/compact"))
+        assert handle._stale_compaction_until is None
+
+        assert discard_provider_stale_compaction_status(provider._client, within_secs=300.0)
+        handle.compact = AsyncMock()
+        await provider._client.compact()
+        assert handle._stale_compaction_until is None
+
+
 class TestEffortControl:
     """Provider-level effort orchestration: backend branch selection,
     capability gating, live-apply, and clear semantics."""

@@ -126,7 +126,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_goose_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_guard_unresolved_mcp_refs": ("function", False, "779b51571c73", "client_mcp_array"),
     "_hand_back_unrevoked_claim": ("function", False, "d12bff1e2bd1", "client_seed_ownership"),
-    "_handle_compaction_status": ("function", False, "87459833bc5c", "client_usage"),
+    "_handle_compaction_status": ("function", False, "50405edf7b6a", "client_usage"),
     "_handle_config_option_update": ("function", False, "87459833bc5c", "client_model_selection"),
     "_handle_elicitation_request": ("function", True, "e64128661dfa", "client_elicitation"),
     "_handle_permission": ("function", True, "87459833bc5c", "client_permissions"),

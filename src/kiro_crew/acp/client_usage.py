@@ -13,6 +13,9 @@ Instance fields written: ``_between_turn_credits``, ``_claude_compaction_pending
 
 Instance fields read: ``_model``, ``_resolved_model_id``, ``last_prompt_stats``,
 ``memory_mode``.
+
+The stale compaction-status mark is read and cleared through
+:mod:`kiro_crew.acp.stale_compaction`, which owns that field.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from kiro_crew.acp._dispatch import (
     redact_text,
 )
 from kiro_crew.acp.client_timeouts import _POST_COMPACTION_METADATA_GRACE_SECS, _READ_TIMEOUT
+from kiro_crew.acp.stale_compaction import is_stale_compaction_status
 from kiro_crew.acp.transport_errors import (
     AcpError,
     compaction_failure_detail,
@@ -170,9 +174,14 @@ def _track_metadata(self: AcpClient, msg: JsonRpcMessage, *, between_turns: bool
         self.last_prompt_stats.note_metadata_frame(pct_f, metering)
 
 
-def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
+def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> bool:
     """Log a ``_kiro.dev/compaction/status`` notification and, on
     completion, drop the now-stale context-usage counts.
+
+    Returns True, having changed nothing, when the status is the late one of
+    an idle compaction Crew stopped waiting for
+    (``stale_compaction.is_stale_compaction_status``); the caller then drops
+    the frame instead of reading it as its own turn's compaction.
 
     This is the single chokepoint every compaction-status arrival routes
     through (all prompt dispatch loops and ``wait_for_compaction``), so the
@@ -183,6 +192,10 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     """
     params = msg.params or {}
     status = params.get("status", "")
+    if is_stale_compaction_status(
+        self, status.get("type", "") if isinstance(status, dict) else str(status)
+    ):
+        return True
     logger.info("Compaction status: %s", status)
     # On failure, kiro-cli's notification carries no dedicated error/reason
     # field today (only `status.type` + an optional `summary`, which is
@@ -202,6 +215,7 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     elif s_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+    return False
 
 
 def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
@@ -442,7 +456,8 @@ async def wait_for_compaction(self: AcpClient, timeout: float = COMPACT_WAIT_TIM
         if msg is None:
             continue
         if msg.is_method(METHOD_COMPACTION_STATUS):
-            self._handle_compaction_status(msg)
+            if self._handle_compaction_status(msg):
+                continue
             params = msg.params or {}
             status = params.get("status", {})
             s_type = status.get("type", "") if isinstance(status, dict) else str(status)

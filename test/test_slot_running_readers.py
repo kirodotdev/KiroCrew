@@ -193,6 +193,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
                 ("chat_turn/eager_spawn.py", "_eager_spawn"),
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
+                # An idle compaction never starts on a slot a send has reserved,
+                # even before its model turn begins.
+                ("chat_utils_completion.py", "idle_compaction_blocker"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
                 # A native-card answer steers into the turn only when one runs;
                 # on a reserved-but-not-executing slot slot.running is still

@@ -51,7 +51,8 @@ member: the class binds it by name (``kiro_crew.session``), so it reads and writ
 manager's own state on the instance, and a patch of the member on the class or
 on an instance reaches every caller.
 
-Instance fields written: ``_cleanup``, ``_injection_probe``, ``_subagent_probe``.
+Instance fields written: ``_cleanup``, ``_idle_compaction_probe``, ``_injection_probe``,
+``_subagent_probe``.
 
 Instance fields read: none.
 """
@@ -263,6 +264,34 @@ def _has_pending_injection(self: SessionManager, key: str) -> bool:
     if probe is None:
         return False
     return bool(probe(key))
+
+
+def set_idle_compaction_probe(
+    self: SessionManager, fn: "Callable[[str], str | None] | None"
+) -> None:
+    """Install the "what keeps *key*'s chat from being idle?" predicate.
+
+    ``session.idle_compaction`` consults it in the step it commits an idle
+    compaction: the dashboard owns the signals the manager cannot see -- the
+    slot's running or reserved turn and its queue, an open question card, a
+    pending approval, an armed auto-nudge or monitor loop. The probe answers a
+    short reason, or ``None`` when nothing is live. Synchronous by contract, so
+    it can be read with no await before the commit. ``None`` uninstalls it.
+    """
+    self._idle_compaction_probe = fn
+
+
+def _idle_compaction_blocker(self: SessionManager, key: str) -> str | None:
+    """Answer the installed idle probe; with none installed, refuse.
+
+    Fails closed, unlike the two probes above: an idle compaction is optional
+    work, so a manager with no dashboard to ask has no evidence the chat is idle.
+    A raising probe propagates; the coordinator reads that as busy too.
+    """
+    probe = getattr(self, "_idle_compaction_probe", None)
+    if probe is None:
+        return "no_activity_probe"
+    return probe(key)
 
 
 # ── Idle cleanup ──
