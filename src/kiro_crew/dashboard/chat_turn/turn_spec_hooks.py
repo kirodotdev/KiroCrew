@@ -34,7 +34,12 @@ from kiro_crew.dashboard.state import (
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
 )
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_STOP, pre_tool_match_names
+from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_STOP,
+    hook_block_detail,
+    pre_tool_match_names,
+)
 from kiro_crew.slack.outbound import PostedOptions
 
 if TYPE_CHECKING:
@@ -418,20 +423,21 @@ async def _fire(
                     },
                 )
             elif r.exit_code == 2:
-                injected.append(
-                    f"BLOCKED:{r.hook_name}:{r.stderr[:200] if r.stderr else 'hook denied'}"
-                )
+                # A hook Crew refused to run is not a hook that answered "deny":
+                # hook_block_detail names the refusal and its rule so the log, the
+                # model's notice and the activity row do not read as a bare exit 2.
+                injected.append(f"BLOCKED:{r.hook_name}:{hook_block_detail(r, 'hook denied')}")
                 logger.warning(
                     "Hook %s blocked tool: %s",
                     r.hook_name,
-                    r.stderr[:200] if r.stderr else "exit 2",
+                    hook_block_detail(r, "exit 2"),
                 )
                 state.broadcast_ws(
                     "activity_event",
                     {
                         "slot": slot.key,
                         "kind": "hook",
-                        "text": f"Hook {r.hook_name} BLOCKED: {r.stderr[:100] if r.stderr else 'denied'}",
+                        "text": f"Hook {r.hook_name} BLOCKED: {hook_block_detail(r, 'denied')[:100]}",
                     },
                 )
             elif r.exit_code not in (0, 2):

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         ScriptHook,
         ScriptHookStore,
         _global_script_hook_store,
+        hook_block_detail,
         logger,
         webhooks,
     )
@@ -229,7 +230,9 @@ async def permission_pre_tool_block(
         return f"PreToolUse hook could not run: {exc}"[:500]
     for r in results:
         if r.exit_code == 2:
-            return f"{r.hook_name}: {r.stderr[:200] if r.stderr else 'hook denied'}"
+            detail = hook_block_detail(r, "hook denied")
+            logger.warning("PreToolUse hook %s blocked tool: %s", r.hook_name, detail)
+            return f"{r.hook_name}: {detail}"
         if r.exit_code != 0:
             detail = (
                 r.error[:200] if r.error else (r.stderr[-200:] or f"exited with code {r.exit_code}")

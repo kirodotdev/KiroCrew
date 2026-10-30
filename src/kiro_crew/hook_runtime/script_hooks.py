@@ -108,6 +108,41 @@ class ScriptHookResult:
     def succeeded(self) -> bool:
         return self.exit_code == 0
 
+    @property
+    def refused_by_policy(self) -> bool:
+        """Exit 2 that Crew produced itself: the command was refused and never ran.
+
+        A hook that ran and exited 2 has no ``error`` (its reason is its stderr);
+        a governance or deny-list refusal in :func:`run_script_hook` sets ``error``
+        and leaves both streams empty.
+        """
+        return self.exit_code == 2 and bool(self.error) and not self.stdout and not self.stderr
+
+    def block_detail(self, fallback: str) -> str:
+        """Why this exit-2 result blocks, for logs and for the model's notice.
+
+        A policy refusal names itself and its rule (the first line of the
+        refusal, which carries the matched pattern, never the hook command);
+        a hook that ran gives its own stderr, else *fallback*.
+        """
+        return hook_block_detail(self, fallback)
+
+
+def hook_block_detail(result: Any, fallback: str) -> str:
+    """:meth:`ScriptHookResult.block_detail` for any hook result, read by attribute.
+
+    The block paths take the result a hook store returns, which is not always a
+    :class:`ScriptHookResult`, so they read its fields rather than call a method
+    it may not have.
+    """
+    error = getattr(result, "error", "") or ""
+    stderr = getattr(result, "stderr", "") or ""
+    stdout = getattr(result, "stdout", "") or ""
+    if getattr(result, "exit_code", None) == 2 and error and not stdout and not stderr:
+        first = error.splitlines()[0].strip()
+        return f"refused by Kiro Crew policy, hook not run: {first}"[:300]
+    return stderr[:200] if stderr else fallback
+
 
 async def run_script_hook(
     hook: ScriptHook,

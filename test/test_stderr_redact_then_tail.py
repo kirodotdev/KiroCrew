@@ -22,6 +22,7 @@ stream longer than the bound: exactly the last-line marker must survive.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import subprocess
 import sys
@@ -426,8 +427,12 @@ def test_chat_runner_hook_excerpts_anchor_by_exit_semantics() -> None:
     """
     block = _hook_fire_block()
     assert block.count("r.stdout[:200]") == 1
-    assert block.count("r.stderr[:200] if r.stderr else") == 2  # BLOCKED payload + warning log
-    assert block.count("r.stderr[:100] if r.stderr else") == 1  # BLOCKED activity event
+    # The exit-2 reason (BLOCKED payload, warning log, activity event) comes from
+    # hook_block_detail, which keeps the head of the hook's stderr.
+    assert block.count("hook_block_detail(r, ") == 3
+    from kiro_crew.hooks import hook_block_detail
+
+    assert "stderr[:200] if stderr else" in inspect.getsource(hook_block_detail)
     assert "r.stderr[-200:] if r.stderr else" in block  # fail-closed crash detail
     assert block.rstrip().endswith("r.stderr[-200:])")  # non-gating crash warning
     assert "r.stderr[:200])" not in block
