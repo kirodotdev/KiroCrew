@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import web
@@ -43,6 +44,13 @@ _OP_DEFINITION_RUN = "workflow_definition_run"
 _OP_DEFINITION_PROMOTE = "workflow_definition_promote"
 
 
+def _redact_key(key):
+    """Keep non-finite mapping keys distinct from the null key."""
+    if isinstance(key, float) and not math.isfinite(key):
+        return json.dumps(key, allow_nan=True)
+    return _redact_obj(key)
+
+
 def _redact_obj(obj):
     """Recursively redact LLM-derived strings in a JSON-able structure.
 
@@ -51,15 +59,24 @@ def _redact_obj(obj):
     …}``) and a values-only walk would pass it through untouched. Two distinct
     credential-shaped keys can collapse into one redacted key — losing a
     pathological key is strictly preferable to leaking the secret.
+
+    A float value that is not finite becomes ``None``; non-finite mapping keys
+    keep their JSON string spelling. A run's result is whatever its
+    script returned, and ``ctx.budget.remaining()`` is ``math.inf`` when the run
+    has no ceiling; JSON has no ``Infinity`` or ``NaN``, so the browser's
+    ``JSON.parse`` would reject the whole payload. ``None`` is what
+    ``JSON.stringify`` writes for them.
     """
     if isinstance(obj, str):
         s, _ = redact_exfiltration_urls(obj)
         s, _ = redact_credentials(s)
         return s
-    if isinstance(obj, list):
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, (list, tuple)):
         return [_redact_obj(x) for x in obj]
     if isinstance(obj, dict):
-        return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
+        return {_redact_key(k): _redact_obj(v) for k, v in obj.items()}
     return obj
 
 
@@ -78,11 +95,14 @@ async def _json_response_off_loop(payload: Any, *, status: int = 200) -> web.Res
     interleave) and produces an immutable string. The worker thread then
     rebuilds its own structure from that string, so it only ever touches
     objects it created — it can never observe, or race, live registry state.
+
+    ``_redact_obj`` turns a non-finite float into ``None``, and the final dump
+    refuses any that would still go out as a bare ``Infinity`` or ``NaN``.
     """
     unredacted = json.dumps(payload)
 
     def _redact_and_serialize() -> str:
-        return json.dumps(_redact_obj(json.loads(unredacted)))
+        return json.dumps(_redact_obj(json.loads(unredacted)), allow_nan=False)
 
     text = await asyncio.to_thread(_redact_and_serialize)
     return web.Response(text=text, status=status, content_type="application/json")

@@ -244,6 +244,72 @@ def test_handler_send_redacts_before_writing_to_the_wire() -> None:
     assert "[REDACTED: suspicious URL" in wire
 
 
+def test_handler_send_writes_unbounded_budget_run_as_strict_json() -> None:
+    """A run with no budget returns ``ctx.budget.remaining() == math.inf``.
+
+    ``_send`` writes the run as strict JSON (no bare ``Infinity``), with the
+    non-finite value as ``null``, so the tab's ``JSON.parse`` accepts it.
+    """
+    from kiro_crew.apps.builtins.workflows.server import _Handler
+
+    payload = handle_run(
+        {
+            "source": (
+                "META = {}\n"
+                "async def workflow(ctx):\n"
+                "    r = ctx.budget.remaining()\n"
+                "    return {'remaining': r, 'pair': (r, 1)}\n"
+            )
+        }
+    )
+    assert payload["ok"] is True
+
+    handler = _Handler.__new__(_Handler)  # skip socket-binding __init__
+    written: list[bytes] = []
+
+    class _FakeWFile:
+        def write(self, b: bytes) -> None:
+            written.append(b)
+
+    handler.wfile = _FakeWFile()
+    handler.send_response = lambda code: None  # type: ignore[method-assign]
+    handler.send_header = lambda *a, **k: None  # type: ignore[method-assign]
+    handler.end_headers = lambda: None  # type: ignore[method-assign]
+
+    handler._send(200, payload)
+
+    def _refuse(constant: str):
+        pytest.fail(f"wire is not strict JSON: it carries {constant}")
+
+    body = json.loads(b"".join(written).decode("utf-8"), parse_constant=_refuse)
+    assert body["result"] == {"remaining": None, "pair": [None, 1]}
+
+
+@pytest.mark.parametrize(
+    ("key", "wire_key"),
+    [(float("inf"), "Infinity"), (float("-inf"), "-Infinity"), (float("nan"), "NaN")],
+)
+def test_handler_send_preserves_non_finite_mapping_keys(key: float, wire_key: str) -> None:
+    from io import BytesIO
+    from unittest.mock import Mock
+
+    from kiro_crew.apps.builtins.workflows.server import _Handler
+
+    handler = _Handler.__new__(_Handler)
+    handler.wfile = BytesIO()
+    handler.send_response = Mock()
+    handler.send_header = Mock()
+    handler.end_headers = Mock()
+
+    handler._send(200, {"result": {key: "unbounded", None: "unspecified"}})
+
+    def _refuse(constant: str):
+        pytest.fail(f"wire is not strict JSON: it carries {constant}")
+
+    body = json.loads(handler.wfile.getvalue().decode("utf-8"), parse_constant=_refuse)
+    assert body["result"] == {wire_key: "unbounded", "null": "unspecified"}
+
+
 # --------------------------------------------------------------------------- #
 # Process entrypoint
 # --------------------------------------------------------------------------- #

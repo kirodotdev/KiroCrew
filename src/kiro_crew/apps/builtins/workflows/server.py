@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -40,6 +41,13 @@ from kiro_crew.workflows.validate import validate
 logger = logging.getLogger("kirocrew.app.workflows")
 
 
+def _redact_key(key: Any) -> Any:
+    """Keep non-finite mapping keys distinct from the null key."""
+    if isinstance(key, float) and not math.isfinite(key):
+        return json.dumps(key, allow_nan=True)
+    return _redact_obj(key)
+
+
 def _redact_obj(obj: Any) -> Any:
     """Recursively redact credentials + exfiltration URLs from a response payload.
 
@@ -48,15 +56,22 @@ def _redact_obj(obj: Any) -> Any:
     backend must redact before serving to the dashboard, mirroring the gateway
     handlers (dashboard/handlers/workflows.py::_redact_obj). Applied centrally in
     ``_send`` so every response surface is covered.
+
+    A float value that is not finite becomes ``None``; non-finite mapping keys
+    keep their JSON string spelling. As in the gateway handlers, a
+    run with no budget ceiling has ``ctx.budget.remaining() == math.inf``, and
+    JSON has no ``Infinity`` or ``NaN``.
     """
     if isinstance(obj, str):
         return redact_via_context(obj)
-    if isinstance(obj, list):
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, (list, tuple)):
         return [_redact_obj(x) for x in obj]
     if isinstance(obj, dict):
         # Keys too: agent output is parsed into these structures, so a credential
         # can arrive as a mapping key and a values-only walk would leak it.
-        return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
+        return {_redact_key(k): _redact_obj(v) for k, v in obj.items()}
     return obj
 
 
@@ -188,7 +203,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload: Any) -> None:
         # Redact credentials / exfiltration URLs from all LLM-derived content
         # before it leaves this backend (parity with the gateway handlers).
-        data = json.dumps(_redact_obj(payload)).encode("utf-8")
+        data = json.dumps(_redact_obj(payload), allow_nan=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))

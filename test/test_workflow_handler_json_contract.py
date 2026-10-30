@@ -201,3 +201,117 @@ async def test_runs_list_is_compact_and_detail_carries_result() -> None:
         got = await client.get("/api/workflows/runs/wf_1")
         assert got.status == 200
         assert (await got.json())["result"] == big_result
+
+
+def _strict_json(text: str):
+    """Parse ``text`` the way the browser's ``JSON.parse`` does: no NaN/Infinity."""
+    import json
+
+    def _refuse(constant: str):
+        pytest.fail(f"response is not strict JSON: it carries {constant}")
+
+    return json.loads(text, parse_constant=_refuse)
+
+
+async def test_unbounded_budget_result_is_valid_json() -> None:
+    """A run with no budget ceiling that returns ``ctx.budget.remaining()``.
+
+    ``remaining()`` is ``math.inf`` then. A bare ``Infinity`` in the run detail
+    makes ``JSON.parse`` reject it, so the panel shows "Could not load snapshot"
+    for a run that finished. Drives a real run end to end.
+    """
+    from kiro_crew.dashboard.handlers.workflows import api_workflow_run_get
+    from kiro_crew.workflows.service import WorkflowService
+
+    svc = WorkflowService(sessions=None, persist=False)
+    source = (
+        "META = {}\n"
+        "async def workflow(ctx):\n"
+        "    return {'remaining': ctx.budget.remaining(), 'spent': ctx.budget.spent()}\n"
+    )
+    run_id = (await svc.start(source=source, name="unbounded"))["run_id"]
+    handle = svc.registry.get(run_id)
+    assert handle is not None
+    task = handle.task
+    if task is not None:
+        await task
+    snap = svc.result(run_id)
+    assert snap is not None and snap["status"] == "finished"
+
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=svc)
+    app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get(f"/api/workflows/runs/{run_id}")
+        text = await response.text()
+
+    assert response.status == 200
+    body = _strict_json(text)
+    assert body["result"] == {"remaining": None, "spent": 0}
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+async def test_non_finite_floats_anywhere_become_null(value: float) -> None:
+    """Result, nested lists and event payloads all go out as strict JSON."""
+    from kiro_crew.dashboard.handlers.workflows import api_workflow_run_get
+
+    detail = {
+        "run_id": "wf_1",
+        "status": "finished",
+        "result": {"x": value, "items": [1.5, value]},
+        "events": [{"kind": "log", "payload": {"score": value}}],
+    }
+    svc = SimpleNamespace(result=lambda _rid: detail)
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=svc)
+    app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get("/api/workflows/runs/wf_1")
+        text = await response.text()
+
+    assert response.status == 200
+    body = _strict_json(text)
+    assert body["result"] == {"x": None, "items": [1.5, None]}
+    assert body["events"][0]["payload"] == {"score": None}
+
+
+async def test_live_run_event_is_strict_json() -> None:
+    """The live ``workflow_run_event`` push goes through ``_redact_obj`` too.
+
+    A ``run_finished`` event carries the run's result, so an unbounded budget's
+    ``math.inf`` must leave as ``None`` on the WebSocket as well.
+    """
+    import json
+
+    from kiro_crew.dashboard.handlers.workflows import _redact_obj
+
+    event = {
+        "type": "run_finished",
+        "data": {
+            "result": {"remaining": float("inf"), "pair": (float("nan"), 1)},
+            "duration_s": 0.5,
+        },
+    }
+    safe = _redact_obj(event)
+    assert safe["data"] == {
+        "result": {"remaining": None, "pair": [None, 1]},
+        "duration_s": 0.5,
+    }
+    _strict_json(json.dumps(safe, allow_nan=False))
+
+
+@pytest.mark.parametrize("infinity", [float("inf"), float("-inf")])
+async def test_non_finite_mapping_keys_keep_distinct_entries(infinity: float) -> None:
+    import json
+
+    from kiro_crew.dashboard.handlers.workflows import _redact_obj
+
+    payload = {infinity: "unbounded", None: "unspecified", float("nan"): "n"}
+    safe = _redact_obj(payload)
+    infinity_key = "Infinity" if infinity > 0 else "-Infinity"
+    assert safe == {infinity_key: "unbounded", None: "unspecified", "NaN": "n"}
+    assert _strict_json(json.dumps(safe, allow_nan=False)) == {
+        infinity_key: "unbounded",
+        "null": "unspecified",
+        "NaN": "n",
+    }
