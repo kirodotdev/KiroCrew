@@ -235,6 +235,40 @@ _READINESS_ADMISSION_CASES = [
 ]
 
 
+def _readiness_lane_specs() -> list[str]:
+    """Every spec pushed onto `workflow_specs`, across all its branches.
+
+    The array is assembled conditionally in a shell step -- a stacked pull
+    request drops CI, Fast Gate and Build, a fork drops CodeQL and reads the
+    review lanes as check runs -- so the union over the branches is the set of
+    lanes any pull request can be evaluated against.
+
+    Comment lines go first: a spec is always a bare quoted string on a line of
+    its own, while the comments between them carry parentheses that would end a
+    block match early.
+    """
+    script = _step_script(_workflow("pr-readiness.yml"), "Evaluate current revision")
+    specs: list[str] = []
+    collecting = False
+    for line in script.splitlines():
+        text = line.strip()
+        if text.startswith("#"):
+            continue
+        if collecting:
+            if text == ")":
+                collecting = False
+                continue
+            if match := re.fullmatch(r'"([^"]+)"', text):
+                specs.append(match.group(1))
+            continue
+        if text == "workflow_specs+=(":
+            collecting = True
+            continue
+        if match := re.fullmatch(r'workflow_specs\+=\("([^"]+)"\)', text):
+            specs.append(match.group(1))
+    return specs
+
+
 def _allowed_tools(workflow: str) -> str:
     """The `--allowedTools` ARGUMENT line, not the prose that mentions the flag."""
     for line in workflow.splitlines():
@@ -758,6 +792,86 @@ class TestPrReadiness:
         assert "github.event.workflow_run.event == 'pull_request'" in gate
         assert "github.event.workflow_run.event == 'dynamic'" in gate
         assert "github.event.workflow_run.event == 'workflow_run'" not in gate
+
+    def test_the_subscription_list_is_exactly_the_lanes_readiness_evaluates(self) -> None:
+        # The allowlist and the lane set are two halves of one mechanism, and
+        # deleting an entry from the allowlist is a merge-gate regression that
+        # leaves every other check green.
+        #
+        # For most lanes the subscription's only job is the re-run hold. The
+        # job gate refuses a first-attempt `pull_request` run, because the
+        # `pull_request_target` run for that head already published
+        # `checking`. A re-run REUSES the run and increments the attempt, so
+        # no `requested` fires and no other event reports the lane going red
+        # again -- readiness keeps publishing the pre-re-run `success` for the
+        # whole re-run. `PR Readiness` is the one required status, so armed
+        # auto-merge can land through that window. `pr-readiness-sweep.yml`
+        # cannot close it either: its evidence is COMPLETED checks and a lane
+        # that is running has none.
+        #
+        # So the relationship is equality, derived in both directions: a lane
+        # with no subscription loses that hold, and a subscription that
+        # evaluates nothing spends a dispatch per completion for no verdict.
+        specs = _readiness_lane_specs()
+        # Separates a broken extractor from a wrong allowlist. The equality
+        # below catches both, but only this says which: no count is asserted,
+        # because a legitimate restructure of the lanes changes it.
+        assert specs, "no lane specs were read out of the evaluation step"
+
+        declared: dict[str, str] = {}
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if isinstance(doc, dict) and isinstance(doc.get("name"), str):
+                declared[path.name] = doc["name"]
+
+        required: set[str] = set()
+        for spec in specs:
+            fields = spec.split("|")
+            if fields[0].startswith("checkrun:"):
+                # A fork lane's verdict is read from the head's check-runs, so
+                # the lane itself needs no subscription. The workflow whose
+                # completion triggers it (the fourth field) does: its newest
+                # run and attempt for the head is what "current" means there.
+                assert len(fields) == 4, f"check-run spec is not four fields: {spec!r}"
+                assert fields[3] in declared, f"spec names no such workflow: {spec!r}"
+                required.add(declared[fields[3]])
+            elif fields[0] in declared:
+                # The bridge is the FILE, not the spec's label. The allowlist
+                # matches a workflow by its `name:`, and the two differ:
+                # internal-content-scan-gate.yml is labelled "Internal Content
+                # Scan" here and subscribed under its own name, "Internal
+                # Content Scan Gate". A label-matching test would miss it.
+                required.add(declared[fields[0]])
+            else:
+                # GitHub's managed default-setup CodeQL has no file in this
+                # repository, so its label is the only name to match on. It is
+                # the ONLY spec allowed to name no file: accepting any unknown
+                # source here would let a misspelt filename keep this test
+                # green on the label while readiness resolves no run at all.
+                assert fields[0] == "dynamic/github-code-scanning/codeql", (
+                    f"spec names neither a workflow in {WORKFLOWS} nor the "
+                    f"managed CodeQL setup: {spec!r}"
+                )
+                required.add(fields[1])
+
+        # The one subscription that is deliberately not a lane: readiness never
+        # aggregates its verdict and listens to it for its
+        # `pull_request_review` runs alone, which no other subscribed workflow
+        # produces. Read from the file so a rename fails here rather than
+        # silently dropping the trigger.
+        scr = yaml.safe_load(_workflow("sensitive-change-review.yml"))
+        required.add(scr["name"])
+
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        readiness_on = readiness.get("on") or readiness[True]
+        monitored = set(readiness_on["workflow_run"]["workflows"])
+
+        assert monitored == required, (
+            "evaluated lanes missing from the workflow_run allowlist, so a "
+            f"re-run of each publishes a stale verdict: {sorted(required - monitored)}; "
+            "allowlist entries that evaluate nothing, so each completion "
+            f"spends a dispatch for no verdict: {sorted(monitored - required)}"
+        )
 
     def test_a_review_holds_readiness_through_the_sensitive_change_review_run(self) -> None:
         # A submitted, edited or dismissed review starts a Sensitive Change
