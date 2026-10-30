@@ -108,7 +108,7 @@ class _GateMixin(ManagerComponent):
         _claimed: "tuple[int, bool, str] | None" = None,
         _window_hint: "bool | None" = None,
         _child_registration: bool = True,
-        _crew_log_asked: "tuple[str, int] | None" = None,
+        _crew_log_asked: "tuple[str, int, int] | None" = None,
         _memory_mode: str | None = None,
         *,
         crew: str = "",
@@ -518,6 +518,16 @@ class _GateMixin(ManagerComponent):
         # store, so a refused spawn leaves no row; from here on the row exists
         # and every later exit either starts it, defers it, or marks it failed.
         # A drained spawn (_from_queue) already has its row. ---
+        # The asking unit, turn and attempt, read once on the first pass and carried
+        # on the row below, so a durable replay after a restart pins the unit that
+        # asked rather than the parent's post-restart one.
+        if _crew_log_asked is None and not _from_queue:
+            # Imported here: this body runs on the facade's globals.
+            from kiro_crew.subagent_manager.admission.gate_reporting import (
+                crew_log_asking_origin,
+            )
+
+            _crew_log_asked = crew_log_asking_origin(self._manager._sessions, parent_session_key)
         queue_params: dict = {
             "task": task,
             "parent_session_key": parent_session_key,

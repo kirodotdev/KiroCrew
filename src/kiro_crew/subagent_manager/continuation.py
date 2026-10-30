@@ -98,7 +98,7 @@ class ContinuationCoordinator(ManagerComponent):
             sid = unit_for_session_key(self._manager._sessions, info.parent_session_key)
             if not sid:
                 return
-            setattr(info, "_crew_log_followup_asked", (sid, crew_log_emit.live_turn(sid)))
+            setattr(info, "_crew_log_followup_asked", (sid, *crew_log_emit.asking_turn(sid)))
         except Exception:
             _logger.debug("crew log: pinning a follow-up origin failed", exc_info=True)
 
@@ -368,7 +368,7 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
-        _crew_log_asked: "tuple[str, int] | None" = None,
+        _crew_log_asked: "tuple[str, int, int] | None" = None,
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id* (sync callers).
 
@@ -416,7 +416,7 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
-        _crew_log_asked: "tuple[str, int] | None" = None,
+        _crew_log_asked: "tuple[str, int, int] | None" = None,
     ) -> SubagentInfo | None:
         """:meth:`continue_conversation_impl` for event-loop callers: the same
         prelude, then ``spawn_async`` (write-before-ack with the store write on
@@ -506,7 +506,7 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
-        _crew_log_asked: "tuple[str, int] | None" = None,
+        _crew_log_asked: "tuple[str, int, int] | None" = None,
         *,
         _execution_context=None,
         _captured_state=...,

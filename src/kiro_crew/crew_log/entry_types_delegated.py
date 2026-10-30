@@ -39,6 +39,17 @@ TYPES: tuple[EntryType, ...] = (
                     "existed."
                 ),
             ),
+            Field(
+                "attempt",
+                JSON_INT,
+                note=(
+                    "Which try at turn asked, matching turn/started's attempt, so a child "
+                    "of a regenerated or rewound turn names its own try. Written only "
+                    "beside turn. ABSENT means not observed, which is not attempt 1: the "
+                    "dispatch can be pinned before the turn's attempt is derived, and "
+                    "every log written before the field omits it."
+                ),
+            ),
             Field("agent", JSON_STRING, note="The child's agent name, when one was resolved."),
             Field("model", JSON_STRING, note="The child's model, when one was resolved."),
             Field(

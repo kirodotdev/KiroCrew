@@ -80,7 +80,8 @@ _last_config: "OrderedDict[str, tuple[Any, ...]]" = OrderedDict()
 #: dropped transition would silently widen who may read the log.
 _last_class: "OrderedDict[str, tuple[str, str, bool, str]]" = OrderedDict()
 
-#: dispatched child id -> (parent session id, the parent turn that asked, opened).
+#: dispatched child id -> (parent session id, the parent turn that asked, opened,
+#: that turn's attempt or 0 when unobserved).
 #: A child's spawn entry, steer and terminal outcome are all produced after the
 #: asking turn has ended, so the ordinal cannot be re-derived when they land; it is
 #: captured at the dispatch and read back here. ``opened`` says whether the run
@@ -89,7 +90,7 @@ _last_class: "OrderedDict[str, tuple[str, str, bool, str]]" = OrderedDict()
 #: NOT trimmed by turn liveness like the maps above -- an entry deliberately
 #: OUTLIVES the turn that created it, which is the whole reason it exists -- so it
 #: is bounded FIFO and released by the child's own terminal entry.
-_child_origin: "OrderedDict[str, tuple[str, int, bool]]" = OrderedDict()
+_child_origin: "OrderedDict[str, tuple[str, int, bool, int]]" = OrderedDict()
 
 #: Superseded crew logs whose tail THIS process has repaired, oldest first, so a
 #: predecessor walk (:func:`_walk_to_predecessor`) stops at one rather than walking

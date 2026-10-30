@@ -168,7 +168,7 @@ def continue_conversation(
     cwd: str = "",
     _preassigned_id: str = "",
     _memory_mode: str | None = None,
-    _crew_log_asked: "tuple[str, int] | None" = None,
+    _crew_log_asked: "tuple[str, int, int] | None" = None,
 ) -> SubagentInfo | None:
     original, refusal = self._claim_continuation(conv_id, task, parent_session_key)
     if refusal is not None:
@@ -206,7 +206,7 @@ async def continue_conversation_async(
     cwd: str = "",
     _preassigned_id: str = "",
     _memory_mode: str | None = None,
-    _crew_log_asked: "tuple[str, int] | None" = None,
+    _crew_log_asked: "tuple[str, int, int] | None" = None,
 ) -> SubagentInfo | None:
     original, refusal = self._claim_continuation(conv_id, task, parent_session_key)
     if refusal is not None:
@@ -244,7 +244,7 @@ def _continue_prelude(
     cwd: str = "",
     _preassigned_id: str = "",
     _memory_mode: str | None = None,
-    _crew_log_asked: "tuple[str, int] | None" = None,
+    _crew_log_asked: "tuple[str, int, int] | None" = None,
     *,
     _execution_context=None,
     _captured_state=...,
